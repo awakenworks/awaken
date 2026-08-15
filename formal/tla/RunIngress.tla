@@ -56,6 +56,17 @@ Reclaim(candidate) ==
     /\ leaseEpoch' = leaseEpoch + 1
     /\ UNCHANGED <<runState, hasTicket, dispatchState, endedOnce>>
 
+\* Pre-execution admission may discover that a subordinate authority is
+\* temporarily busy. Only the exact current owner/epoch may return that claim
+\* to Pending; the lease epoch remains spent so a stale owner stays fenced.
+Relinquish(candidate, epoch) ==
+    /\ dispatchState = "Leased"
+    /\ owner = candidate
+    /\ epoch = leaseEpoch
+    /\ dispatchState' = "Pending"
+    /\ owner' = NoOwner
+    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
+
 SettleAwaiting(candidate, epoch) ==
     /\ dispatchState = "Leased"
     /\ owner = candidate
@@ -125,9 +136,19 @@ StaleSettle(candidate, epoch) ==
     /\ epoch # leaseEpoch
     /\ UNCHANGED vars
 
+StaleRelinquish(candidate, epoch) ==
+    /\ candidate \in Owners
+    /\ epoch \in 0..MaxEpoch
+    /\ \/ dispatchState # "Leased"
+       \/ candidate # owner
+       \/ epoch # leaseEpoch
+    /\ UNCHANGED vars
+
 Next ==
     \/ \E candidate \in Owners: Claim(candidate)
     \/ \E candidate \in Owners: Reclaim(candidate)
+    \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
+           Relinquish(candidate, epoch)
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            SettleAwaiting(candidate, epoch)
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
@@ -136,6 +157,8 @@ Next ==
            ExhaustRetries(candidate, epoch)
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            StaleSettle(candidate, epoch)
+    \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
+           StaleRelinquish(candidate, epoch)
     \/ Cancel
     \/ Supersede
     \/ RequeueDeadLetter

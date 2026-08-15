@@ -105,6 +105,16 @@ pub(super) fn load(path: &Path) -> Result<ObjectBackingConfig, String> {
             }
         }
     }
+    let mut resource_databases = contract
+        .databases
+        .iter()
+        .filter(|database| database.role == "resources");
+    resource_databases.next().ok_or_else(|| {
+        "deployment_backing_file requires exactly one resources database role".to_owned()
+    })?;
+    if resource_databases.next().is_some() {
+        return Err("deployment_backing_file contains duplicate resources database roles".into());
+    }
     let mut secret_roles = std::collections::BTreeSet::new();
     for secret in &contract.secrets {
         if !secret_roles.insert(secret.role.as_str()) {
@@ -241,6 +251,12 @@ mod tests {
         let mut empty_connection_ref = valid();
         empty_connection_ref["databases"][0]["connection_secret_ref"] = serde_json::json!("");
         assert!(load(write(empty_connection_ref).path()).is_err());
+        let mut missing_resources_database = valid();
+        missing_resources_database["databases"] = serde_json::json!([]);
+        assert!(load(write(missing_resources_database).path()).is_err());
+        let mut unrelated_database = valid();
+        unrelated_database["databases"][0]["role"] = serde_json::json!("analytics");
+        assert!(load(write(unrelated_database).path()).is_err());
         let mut provider_conflict = valid();
         provider_conflict["objects"][0]["region"] = serde_json::json!("us-central1");
         assert!(load(write(provider_conflict).path()).is_err());

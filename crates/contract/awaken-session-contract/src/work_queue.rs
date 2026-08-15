@@ -278,6 +278,38 @@ pub enum SessionWorkAcquisition {
     RealizationRenewal,
 }
 
+/// Whether an absent Session Work lease may be repaired through the canonical
+/// wake path. A live claimed Run is the only durable intent that can authorize
+/// revival; renewal and terminal Session observations must remain inert.
+#[must_use]
+pub const fn session_work_revival_is_authorized(
+    acquisition: SessionWorkAcquisition,
+    session_is_terminal: bool,
+    lease_was_acquired: bool,
+) -> bool {
+    !lease_was_acquired
+        && !session_is_terminal
+        && matches!(acquisition, SessionWorkAcquisition::ClaimedRun)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
+    let session_is_terminal: bool = kani::any();
+    let lease_was_acquired: bool = kani::any();
+    let claimed_run: bool = kani::any();
+    let acquisition = if claimed_run {
+        SessionWorkAcquisition::ClaimedRun
+    } else {
+        SessionWorkAcquisition::RealizationRenewal
+    };
+
+    assert_eq!(
+        session_work_revival_is_authorized(acquisition, session_is_terminal, lease_was_acquired,),
+        claimed_run && !session_is_terminal && !lease_was_acquired
+    );
+}
+
 /// Coordinator-side view that subordinates private Run execution to the one
 /// public Environment Work ownership decision without exposing the Work store.
 #[async_trait]

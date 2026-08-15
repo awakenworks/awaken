@@ -8,6 +8,9 @@ use std::sync::{Arc, Weak};
 
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::RepositoryBindingVerifier;
+use awaken_run_ingress_contract::{
+    SessionResourceInstallDecision, session_resource_install_decision,
+};
 use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, SharedHost};
@@ -50,51 +53,50 @@ impl DispatchSessionRuntime {
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
-        let is_replacement = previous
-            .as_ref()
-            .is_some_and(|previous| previous != manifest);
-        if let Some(previous) = previous.as_ref().filter(|previous| *previous != manifest) {
-            // A claimed Run may advance a live Session only to a strictly newer
-            // durable Resource generation. Exact replay is handled above; an
-            // older generation or same-generation/different-value envelope is
-            // stale or corrupt and must never replace the active projection.
-            if previous.workspace_id != manifest.workspace_id
-                || manifest.revision <= previous.revision
-            {
-                return Err(RunError::bad_request(
-                    "a claimed Worker cannot replace the active Session Resource generation",
-                ));
+        let decision = match &previous {
+            Some(previous) => session_resource_install_decision(
+                true,
+                previous == manifest,
+                previous.workspace_id == manifest.workspace_id,
+                previous.revision,
+                manifest.revision,
+            ),
+            None => session_resource_install_decision(false, false, false, 0, manifest.revision),
+        };
+        match decision {
+            SessionResourceInstallDecision::Reject => Err(RunError::bad_request(
+                "a claimed Worker cannot replace the active Session Resource generation",
+            )),
+            // A newer/different generation reuses the canonical live Session
+            // transition with claim-fenced remote reads and without mutating the
+            // authority-side reference graph.
+            SessionResourceInstallDecision::Replace => {
+                managed
+                    .apply_session_inputs_with_context(
+                        thread,
+                        &manifest.workspace_id,
+                        manifest.revision,
+                        &manifest.resources,
+                        claim,
+                    )
+                    .await
+            }
+            SessionResourceInstallDecision::Stage => {
+                // Re-stage even when the manifest is unchanged: immutable File
+                // bytes, config-version integrity, and credential revocation are
+                // live-deny checks at every claimed operation.
+                managed
+                    .stage_resource_manifest(
+                        thread,
+                        &manifest.workspace_id,
+                        manifest.revision,
+                        &manifest.resources,
+                        claim,
+                    )
+                    .await?;
+                Ok(())
             }
         }
-        if is_replacement {
-            // Claimed-generation decision table: newer/different => reuse the
-            // canonical live Session transition with claim-fenced remote reads
-            // and without mutating the authority-side reference graph. Older,
-            // same-generation/different, and cross-Workspace were fenced above.
-            return managed
-                .apply_session_inputs_with_context(
-                    thread,
-                    &manifest.workspace_id,
-                    manifest.revision,
-                    &manifest.resources,
-                    claim,
-                )
-                .await;
-        }
-        // Re-stage even when the manifest is unchanged: immutable File bytes,
-        // config-version integrity, and credential revocation are live-deny checks
-        // at every claimed operation. Worker projection never mutates the
-        // authority-side intrinsic Resource reference graph.
-        managed
-            .stage_resource_manifest(
-                thread,
-                &manifest.workspace_id,
-                manifest.revision,
-                &manifest.resources,
-                claim,
-            )
-            .await?;
-        Ok(())
     }
 
     async fn stage_mcp(

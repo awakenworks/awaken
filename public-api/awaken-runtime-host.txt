@@ -309,6 +309,7 @@ pub awaken_runtime_host::SandboxSettings::container_hand_idle_secs: u64
 pub awaken_runtime_host::SandboxSettings::container_hand_residency: awaken_runtime_host::ContainerHandResidency
 pub awaken_runtime_host::SandboxSettings::inherit_agent_stderr: bool
 pub awaken_runtime_host::SandboxSettings::k8s_buildkit_image: alloc::string::String
+pub awaken_runtime_host::SandboxSettings::k8s_continuation_volume: core::option::Option<awaken_sandbox_container::runtime::K8sContinuationVolume>
 pub awaken_runtime_host::SandboxSettings::k8s_image_pull_secrets: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_host::SandboxSettings::k8s_namespace: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::k8s_network_policy_enforcement: core::option::Option<awaken_runtime_host::K8sNetworkPolicyEnforcement>

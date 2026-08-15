@@ -431,6 +431,19 @@ impl VaultState {
                 "credential source belongs to another Workspace".into(),
             ));
         }
+        binding.validate().map_err(|error| {
+            awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
+        })?;
+        if workspace_id.is_some_and(|workspace_id| binding.workspace_id != workspace_id) {
+            return Err(awaken_credential_vault::CredentialError::InvalidSource(
+                "credential material binding belongs to another Workspace".into(),
+            ));
+        }
+        if !policy.allowed_plaintext_holders.contains(selected_holder) {
+            return Err(awaken_credential_vault::CredentialError::InvalidSource(
+                "selected plaintext holder is not authorized by credential policy".into(),
+            ));
+        }
         let revision = u64::try_from(source.version).map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
                 "credential revision is negative".into(),
@@ -457,6 +470,11 @@ impl VaultState {
                 })
                 .await
                 .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
+            envelope
+                .validate_issuance(&access, selected_holder, binding)
+                .map_err(|error| {
+                    awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
+                })?;
             access = access.with_envelope(envelope);
         }
         Ok((source, access))

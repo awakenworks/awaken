@@ -179,11 +179,13 @@ pub fn awaken_cli::DrainController::new() -> alloc::sync::Arc<Self>
 pub fn awaken_cli::DrainController::set_registration_supervisor(&self, alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>)
 pub fn awaken_cli::DrainController::set_service_lifecycle(&self, awaken_service_lifecycle::ServiceLifecycle)
 pub struct awaken_cli::ManagedServiceAdapters
+pub awaken_cli::ManagedServiceAdapters::credential_envelope_issuer: core::option::Option<alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>
 pub awaken_cli::ManagedServiceAdapters::list_price_provider: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>>
 pub awaken_cli::ManagedServiceAdapters::request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_cli::ManagedServiceAdapters::same_origin_managed_runtime: bool
 pub awaken_cli::ManagedServiceAdapters::tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 impl awaken_cli::ManagedServiceAdapters
+pub fn awaken_cli::ManagedServiceAdapters::with_credential_envelope_issuer(self, alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_list_price_provider(self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_request_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_same_origin_managed_runtime(self) -> Self

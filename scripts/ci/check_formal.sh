@@ -17,6 +17,7 @@ rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
 python3 scripts/ci/check_formal_coverage.py
+python3 scripts/ci/check_formal_surface.py
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
@@ -45,6 +46,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent
+  run_kani awaken-acp-contract \
+    --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
@@ -52,7 +55,14 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
     --harness first_heartbeat_is_authorized_exactly_once \
-    --harness matching_heartbeat_rejects_every_other_receipt
+    --harness matching_heartbeat_rejects_every_other_receipt \
+    --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
+    --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run \
+    --harness accepted_managed_budget_cost_never_wraps \
+    --harness source_disposal_requires_ready_phase_and_checkpoint \
+    --harness terminal_execution_never_reopens \
+    --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
+    --harness runtime_intervals_open_once_and_never_close_before_start
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
     --harness any_uncovered_selector_fails_closed \
@@ -76,6 +86,25 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness credential_cooldown_boundary_is_exact_and_inclusive \
     --harness exhausted_credentials_are_unavailable_at_every_time \
     --harness a_pool_with_no_enabled_available_member_fails_closed
+  run_kani awaken-config-resolver \
+    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence
+  run_kani awaken-agent-config \
+    --harness processing_geography_requires_exact_evidence_from_every_candidate
+  run_kani awaken-credential-contract \
+    --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
+    --harness environment_credential_custody_selects_exactly_one_authorized_profile
+  run_kani awaken-run-ingress-contract \
+    --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation
+  run_kani awaken-credential-materializer \
+    --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source
+  run_kani awaken-executable-agent-contract \
+    --harness requested_agent_profile_accepts_only_the_same_positive_revision
+  run_kani awaken-file-store --features object-store \
+    --harness object_store_configuration_accepts_exactly_the_provider_compatible_shape
+  run_kani awaken-protocol-acp \
+    --harness permission_consensus_is_a_conservative_order_independent_semilattice
+  run_kani awaken-sandbox-container \
+    --harness continuation_writable_roots_share_one_claim_without_aliasing
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \
     --harness migration_step_never_rolls_back_or_skips_a_version \
@@ -93,7 +122,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_tool_calls_only_accept_result_staging \
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
     --harness child_result_is_consumed_only_from_ready \
-    --harness terminal_delivery_phases_never_reopen
+    --harness terminal_delivery_phases_never_reopen \
+    --harness advisor_never_substitutes_for_primary_model_admission
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -126,6 +156,13 @@ else
 fi
 
 tla_jar="${TLA2TOOLS_JAR:-}"
+if [ -z "$tla_jar" ]; then
+  user_data_root="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  installed_tla_jar="$user_data_root/tlaplus/tla2tools.jar"
+  if [ -f "$installed_tla_jar" ]; then
+    tla_jar="$installed_tla_jar"
+  fi
+fi
 if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; then
   tlc_state_root="$formal_tmp_root/tlc-states"
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -179,6 +216,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/webhook-outbox" \
     -config formal/tla/WebhookOutbox.cfg formal/tla/WebhookOutbox.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/registration-intent" \
+    -config formal/tla/RegistrationIntent.cfg formal/tla/RegistrationIntent.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/erasure-saga" \
     -config formal/tla/ErasureSaga.cfg formal/tla/ErasureSaga.tla

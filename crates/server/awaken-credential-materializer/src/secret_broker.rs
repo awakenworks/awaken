@@ -23,19 +23,54 @@ fn split_exact_vault_reference(reference: &str) -> Result<(&str, Option<u64>), S
 }
 
 #[cfg(feature = "authority")]
+fn exact_vault_revision_is_admitted(actual: i64, expected: Option<u64>) -> bool {
+    actual > 0 && expected.is_none_or(|expected| u64::try_from(actual) == Ok(expected))
+}
+
+#[cfg(feature = "authority")]
 fn verify_exact_vault_revision(
     source: &awaken_credential_vault::CredentialSource,
     revision: Option<u64>,
 ) -> Result<(), String> {
-    let Some(expected) = revision else {
-        return Ok(());
-    };
-    let actual = u64::try_from(source.version)
-        .map_err(|_| "credential material revision is invalid".to_string())?;
-    if actual != expected {
+    if source.version <= 0 {
+        return Err("credential material revision is invalid".into());
+    }
+    if !exact_vault_revision_is_admitted(source.version, revision) {
         return Err("credential material revision mismatch".into());
     }
     Ok(())
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::exact_vault_revision_is_admitted;
+
+    #[kani::proof]
+    fn exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source() {
+        let actual: i64 = kani::any();
+        let has_pin: bool = kani::any();
+        let expected: u64 = kani::any();
+        let requested = has_pin.then_some(expected);
+
+        assert_eq!(
+            exact_vault_revision_is_admitted(actual, requested),
+            actual > 0 && (!has_pin || u64::try_from(actual) == Ok(expected))
+        );
+    }
+}
+
+#[cfg(all(test, feature = "authority"))]
+mod exact_revision_tests {
+    use super::exact_vault_revision_is_admitted;
+
+    #[test]
+    fn invalid_or_mismatched_source_revisions_fail_closed() {
+        assert!(!exact_vault_revision_is_admitted(-1, None));
+        assert!(!exact_vault_revision_is_admitted(0, None));
+        assert!(exact_vault_revision_is_admitted(7, None));
+        assert!(exact_vault_revision_is_admitted(7, Some(7)));
+        assert!(!exact_vault_revision_is_admitted(7, Some(8)));
+    }
 }
 
 #[async_trait::async_trait]

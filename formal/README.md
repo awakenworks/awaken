@@ -17,6 +17,9 @@ the corresponding ToolBatch call terminal and completes its relationship.
 
 The named harnesses in the strict gate invoke production pure functions directly:
 
+- `awaken-acp-contract`
+  - ACP capability detection is authorized exactly by a live `Verified`
+    observation; missing, unavailable, and failed probes remain false.
 - `awaken-agent-contract`
   - an ended Run is absorbing;
   - legacy wire state/ticket pairs enter exactly the legal typed
@@ -37,6 +40,8 @@ The named harnesses in the strict gate invoke production pure functions directly
   - stopping a WorkQueue item is absorbing.
   - the first heartbeat receipt is authorized once and every later heartbeat
     requires the matching receipt.
+  - stopped Session Work is revived only by a claimed nonterminal Run after an
+    initial acquisition found no lease; realization renewal remains inert.
 - `awaken-runtime-contract`
   - terminal tool calls never re-enter execution;
   - only a matching approval ticket enters execution;
@@ -62,6 +67,38 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-credential-vault`
   - disabled, cooling, and exhausted pool members remain ineligible;
   - a pool with no eligible member fails closed.
+- `awaken-credential-contract`
+  - an issued recipient-bound envelope is accepted exactly when its reference,
+    payload fingerprint, recipient, and plaintext boundary all match the
+    complete selected request.
+  - Environment credential custody selects ACP, installed hosted Cloud, or
+    self-hosted Native profile from the exact complete input relation.
+- `awaken-run-ingress-contract`
+  - a Worker replaces a frozen Session Resource manifest exactly when it is a
+    non-replay, same-Workspace generation with a strictly greater revision;
+    stale, conflicting, and cross-Workspace generations are rejected.
+- `awaken-credential-materializer`
+  - every Vault source revision is positive, and an exact material reference is
+    accepted only when its pin equals that source revision; an unpinned legacy
+    reference cannot bypass invalid persisted revision state.
+- `awaken-executable-agent-contract`
+  - an explicitly requested Agent profile is accepted only when both revisions
+    are positive and the returned immutable profile revision exactly matches;
+    a custom profile source cannot substitute mutable current selection.
+- `awaken-session-contract`
+  - a resolved Environment snapshot must retain the selected identity and a
+    positive revision; a publication-pinned resolution must also return the
+    exact requested revision before the snapshot can be frozen.
+- `awaken-file-store`
+  - object-store allocation accepts exactly a nonempty normalized bucket/prefix
+    shape with a nonblank S3 region or with no S3-only coordinates for GCS.
+- `awaken-protocol-acp`
+  - MCP alias permission consensus is a conservative, commutative, associative,
+    and idempotent semilattice with deny absorption and allow identity.
+- `awaken-sandbox-container`
+  - every retained writable root shares exactly one claim slot while receiving
+    a distinct subpath slot; the ephemeral fallback assigns distinct volume
+    slots instead.
 - `awaken-worker-contract`
   - non-ready workers never accept work and accepted protocol versions are in range;
   - `NeverReplace` rejects every replacement;
@@ -127,9 +164,11 @@ production logic.
 - `AuthzKernel.tla`, `LiveInbox.tla`, and `CheckpointRecovery.tla` cover total
   request classification, editable process-local input, and crash-safe streaming
   watermark/checkpoint behavior.
-- `WebhookOutbox.tla`, `ErasureSaga.tla`, and `CredentialCreation.tla` cover
-  atomic lifecycle/outbox commit, revision-CAS checkpointed erasure under two
-  competing replicas with idempotent target replay, and durable
+- `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
+  `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
+  Environment revision+intent commit with crash-window replay and
+  revision-fenced idempotent projection, revision-CAS checkpointed erasure
+  under two competing replicas with idempotent target replay, and durable
   credential-intent recovery.
 - `MemoryCAS.tla`, `SkillVersionPin.tla`, `ToolResultProtocol.tla`,
   `WorkerDrain.tla`, and `WorkerCredentialLiveness.tla` cover memory
@@ -328,12 +367,31 @@ The repository-wide CI entry point runs the strict formal-verification gate.
 `check-all.sh` passes `--require-tools`, so missing Kani,
 TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 
-`formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
-that every evidence path exists and that at least 70% of formalizable safety
-obligations have a machine-checked production link. The current ledger is
-169/169 formalizable obligations proved or machine-linked, plus 10 explicitly
-external obligations, for 100% formalizable coverage. Environmental properties are listed separately and never
+`formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
+CI gate verifies that every evidence path exists and that at least 70% of
+formalizable safety obligations have a machine-checked production link. At
+this review checkpoint the ledger is 206/223 formalizable obligations proved
+or machine-linked, plus 10 explicitly external obligations, for 92.4%
+formalizable coverage. Seventeen executable-only rows remain explicit proof
+candidates.
+Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
+
+The number 223 is not a count derived from all source code: it is the number of
+manually enumerated rows marked `formalizable` in that ledger. To prevent that
+curated denominator from hiding an unenumerated module,
+`scripts/ci/check_formal_surface.py` independently scans production Rust for
+authorization decisions, state machines, synchronization, durable fences and
+transactions, recovery/retry protocols, and plaintext credential boundaries.
+The formal gate prints both denominators on every run. At this checkpoint the
+source-oriented inventory finds 570 candidate modules: 144 are classified, 127
+have at least one proved obligation linked to the production file, and 426 are
+not yet classified. This deliberately over-approximating inventory is the work
+queue for expansion; it is not a claim that every signal in every listed file
+is itself a distinct proof obligation. A module may leave the uncovered set
+only through a ledger link or a reviewed `formal/surface-exclusions.json`
+boundary with a concrete reason. The eventual strict target is zero uncovered
+source surfaces and zero executable-only formalizable obligations.
 
 ## Loom concurrency exploration
 

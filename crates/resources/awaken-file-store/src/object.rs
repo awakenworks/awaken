@@ -17,6 +17,39 @@ pub enum ObjectStoreProvider {
     Gcs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectStoreConfigDecision {
+    Accept,
+    MissingBucketOrPrefix,
+    InvalidPrefix,
+    MissingS3Region,
+    GcsHasS3Coordinates,
+}
+
+const fn object_store_config_decision(
+    provider: ObjectStoreProvider,
+    bucket_nonempty: bool,
+    prefix_nonempty: bool,
+    prefix_normalized: bool,
+    region_present: bool,
+    region_nonempty: bool,
+    endpoint_present: bool,
+) -> ObjectStoreConfigDecision {
+    if !bucket_nonempty || !prefix_nonempty {
+        return ObjectStoreConfigDecision::MissingBucketOrPrefix;
+    }
+    if !prefix_normalized {
+        return ObjectStoreConfigDecision::InvalidPrefix;
+    }
+    match provider {
+        ObjectStoreProvider::S3 if !region_nonempty => ObjectStoreConfigDecision::MissingS3Region,
+        ObjectStoreProvider::Gcs if endpoint_present || region_present => {
+            ObjectStoreConfigDecision::GcsHasS3Coordinates
+        }
+        ObjectStoreProvider::S3 | ObjectStoreProvider::Gcs => ObjectStoreConfigDecision::Accept,
+    }
+}
+
 /// Secret-free object allocation. Credentials come only from the provider
 /// workload-identity chain; this value never accepts static keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,25 +63,73 @@ pub struct ObjectFileStoreConfig {
 
 impl ObjectFileStoreConfig {
     pub fn validate(&self) -> Result<(), FileStoreError> {
-        if self.bucket.trim().is_empty() || self.prefix.trim_matches('/').is_empty() {
-            return Err(e("object bucket and prefix must be non-empty"));
-        }
-        if self
-            .prefix
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-        {
-            return Err(e("object prefix must be a normalized relative path"));
-        }
-        match self.provider {
-            ObjectStoreProvider::S3 if self.region.as_deref().is_none_or(str::is_empty) => {
+        let decision = object_store_config_decision(
+            self.provider,
+            !self.bucket.trim().is_empty(),
+            !self.prefix.trim_matches('/').is_empty(),
+            !self
+                .prefix
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == ".."),
+            self.region.is_some(),
+            self.region
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            self.endpoint.is_some(),
+        );
+        match decision {
+            ObjectStoreConfigDecision::Accept => Ok(()),
+            ObjectStoreConfigDecision::MissingBucketOrPrefix => {
+                Err(e("object bucket and prefix must be non-empty"))
+            }
+            ObjectStoreConfigDecision::InvalidPrefix => {
+                Err(e("object prefix must be a normalized relative path"))
+            }
+            ObjectStoreConfigDecision::MissingS3Region => {
                 Err(e("S3 object backing requires a region"))
             }
-            ObjectStoreProvider::Gcs if self.endpoint.is_some() || self.region.is_some() => Err(e(
+            ObjectStoreConfigDecision::GcsHasS3Coordinates => Err(e(
                 "GCS object backing does not accept S3 region or endpoint fields",
             )),
-            _ => Ok(()),
         }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{ObjectStoreConfigDecision, ObjectStoreProvider, object_store_config_decision};
+
+    #[kani::proof]
+    fn object_store_configuration_accepts_exactly_the_provider_compatible_shape() {
+        let provider = if kani::any::<bool>() {
+            ObjectStoreProvider::S3
+        } else {
+            ObjectStoreProvider::Gcs
+        };
+        let bucket_nonempty: bool = kani::any();
+        let prefix_nonempty: bool = kani::any();
+        let prefix_normalized: bool = kani::any();
+        let region_present: bool = kani::any();
+        let region_nonempty: bool = kani::any();
+        let endpoint_present: bool = kani::any();
+
+        let accepted = object_store_config_decision(
+            provider,
+            bucket_nonempty,
+            prefix_nonempty,
+            prefix_normalized,
+            region_present,
+            region_nonempty,
+            endpoint_present,
+        ) == ObjectStoreConfigDecision::Accept;
+        let provider_exact = match provider {
+            ObjectStoreProvider::S3 => region_nonempty,
+            ObjectStoreProvider::Gcs => !region_present && !endpoint_present,
+        };
+        assert_eq!(
+            accepted,
+            bucket_nonempty && prefix_nonempty && prefix_normalized && provider_exact
+        );
     }
 }
 
@@ -223,6 +304,18 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+        assert!(
+            ObjectFileStoreConfig {
+                provider: ObjectStoreProvider::S3,
+                bucket: "awaken-a".into(),
+                prefix: "deployments/a/files".into(),
+                region: Some("  ".into()),
+                endpoint: None,
+            }
+            .validate()
+            .is_err(),
+            "blank S3 region is not a deployment coordinate"
         );
     }
 

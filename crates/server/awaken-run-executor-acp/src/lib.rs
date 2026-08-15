@@ -33,8 +33,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
     AcpError, AcpFailure, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
-    PermissionAsk, PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage,
-    SupervisePolicy, TerminationReason, TurnConfig, classify_error,
+    PermissionAsk, PermissionConsensus, PermissionResolver, PermissionVerdict, RawAcpError,
+    RunFactAppender, Stage, SupervisePolicy, TerminationReason, TurnConfig, classify_error,
+    combine_permission_consensus, permission_consensus_class,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -1305,6 +1306,7 @@ impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
             return self.base.resolve(ask).await;
         }
 
+        let mut consensus = PermissionConsensus::Allow;
         let mut confirmation = None;
         for server_name in self.mcp_server_names {
             let candidate = PermissionAsk {
@@ -1312,7 +1314,10 @@ impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
                 call_id: ask.call_id.clone(),
                 arguments: ask.arguments.clone(),
             };
-            match self.base.resolve(&candidate).await {
+            let verdict = self.base.resolve(&candidate).await;
+            consensus =
+                combine_permission_consensus(consensus, permission_consensus_class(&verdict));
+            match verdict {
                 PermissionVerdict::Deny => return PermissionVerdict::Deny,
                 PermissionVerdict::Await { correlation_id } => {
                     confirmation.get_or_insert(correlation_id);
@@ -1320,9 +1325,14 @@ impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
                 PermissionVerdict::Allow => {}
             }
         }
-        confirmation.map_or(PermissionVerdict::Allow, |correlation_id| {
-            PermissionVerdict::Await { correlation_id }
-        })
+        match consensus {
+            PermissionConsensus::Allow => PermissionVerdict::Allow,
+            PermissionConsensus::Await => PermissionVerdict::Await {
+                correlation_id: confirmation
+                    .expect("await consensus retains the first correlation id"),
+            },
+            PermissionConsensus::Deny => PermissionVerdict::Deny,
+        }
     }
 }
 

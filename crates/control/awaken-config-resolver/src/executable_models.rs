@@ -14,6 +14,71 @@ pub enum ExecutableModelReadiness {
     DialectUnavailable,
 }
 
+#[must_use]
+const fn executable_model_readiness(
+    offering_active: bool,
+    executor_available: bool,
+    dialect_supported: bool,
+    brokered: bool,
+    brokered_access_enabled: bool,
+    matching_direct_credential: bool,
+) -> ExecutableModelReadiness {
+    if !offering_active {
+        ExecutableModelReadiness::OfferingUnavailable
+    } else if !executor_available {
+        ExecutableModelReadiness::RuntimeUnavailable
+    } else if !dialect_supported {
+        ExecutableModelReadiness::DialectUnavailable
+    } else if brokered {
+        if brokered_access_enabled {
+            ExecutableModelReadiness::Ready
+        } else {
+            ExecutableModelReadiness::RuntimeUnavailable
+        }
+    } else if matching_direct_credential {
+        ExecutableModelReadiness::Ready
+    } else {
+        ExecutableModelReadiness::CredentialUnavailable
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn brokered_and_direct_model_readiness_require_their_exact_access_evidence() {
+    let offering_active = kani::any();
+    let executor_available = kani::any();
+    let dialect_supported = kani::any();
+    let brokered = kani::any();
+    let brokered_access_enabled = kani::any();
+    let matching_direct_credential = kani::any();
+    let readiness = executable_model_readiness(
+        offering_active,
+        executor_available,
+        dialect_supported,
+        brokered,
+        brokered_access_enabled,
+        matching_direct_credential,
+    );
+
+    if !offering_active {
+        assert_eq!(readiness, ExecutableModelReadiness::OfferingUnavailable);
+    } else if !executor_available {
+        assert_eq!(readiness, ExecutableModelReadiness::RuntimeUnavailable);
+    } else if !dialect_supported {
+        assert_eq!(readiness, ExecutableModelReadiness::DialectUnavailable);
+    } else if brokered {
+        assert_eq!(
+            readiness == ExecutableModelReadiness::Ready,
+            brokered_access_enabled
+        );
+    } else {
+        assert_eq!(
+            readiness == ExecutableModelReadiness::Ready,
+            matching_direct_credential
+        );
+    }
+}
+
 /// One installed executor's provider-model consumption contract.
 ///
 /// This is a secret-free planning input projected from the executor's own
@@ -76,32 +141,29 @@ pub fn project_executable_models(
         .iter()
         .flat_map(|offering| {
             executors.iter().map(move |executor| {
-                let readiness = if offering.status != awaken_model_catalog::OfferingStatus::Active {
-                    ExecutableModelReadiness::OfferingUnavailable
-                } else if !executor.available {
-                    ExecutableModelReadiness::RuntimeUnavailable
-                } else if !executor.supports(offering.dialect.as_str()) {
-                    ExecutableModelReadiness::DialectUnavailable
-                } else if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-                    if brokered_access_enabled {
-                        ExecutableModelReadiness::Ready
-                    } else {
-                        ExecutableModelReadiness::RuntimeUnavailable
-                    }
-                } else if credentials.iter().any(|credential| {
-                    credential.status == awaken_credential_vault::CredentialStatus::Active
-                        && credential.is_executable_origin()
-                        && credential_can_supply(
-                            offering.provider_id.as_str(),
-                            Some(offering.protocol_endpoint_id.as_str()),
-                            &executor.backend_ref,
-                            credential,
-                        )
-                }) {
-                    ExecutableModelReadiness::Ready
+                let brokered = offering.source == awaken_model_catalog::OfferingSource::Brokered;
+                let matching_direct_credential = if brokered {
+                    false
                 } else {
-                    ExecutableModelReadiness::CredentialUnavailable
+                    credentials.iter().any(|credential| {
+                        credential.status == awaken_credential_vault::CredentialStatus::Active
+                            && credential.is_executable_origin()
+                            && credential_can_supply(
+                                offering.provider_id.as_str(),
+                                Some(offering.protocol_endpoint_id.as_str()),
+                                &executor.backend_ref,
+                                credential,
+                            )
+                    })
                 };
+                let readiness = executable_model_readiness(
+                    offering.status == awaken_model_catalog::OfferingStatus::Active,
+                    executor.available,
+                    executor.supports(offering.dialect.as_str()),
+                    brokered,
+                    brokered_access_enabled,
+                    matching_direct_credential,
+                );
                 ExecutableModelOption {
                     backend_ref: executor.backend_ref.clone(),
                     provider_id: offering.provider_id.0.clone(),

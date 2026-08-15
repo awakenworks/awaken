@@ -3,6 +3,7 @@
 
 import json
 import pathlib
+import re
 import sys
 
 
@@ -25,12 +26,14 @@ def fail(message: str) -> None:
 data = json.loads(LEDGER.read_text(encoding="utf-8"))
 minimum = float(data["minimum_ratio"])
 obligations = data["obligations"]
+formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
 if not 0.0 < minimum <= 1.0:
     fail(f"minimum_ratio must be in (0, 1], got {minimum}")
 if not obligations:
     fail("the obligation ledger is empty")
 
 ids: set[str] = set()
+ledger_harnesses: set[str] = set()
 for obligation in obligations:
     obligation_id = obligation["id"]
     if obligation_id in ids:
@@ -54,13 +57,33 @@ for obligation in obligations:
             fail(f"{obligation_id} references missing evidence {relative}")
 
     has_formal_model = any(
-        relative.startswith("formal/tla/") and relative.endswith((".tla", ".cfg"))
+        relative.startswith("formal/tla/") and relative.endswith(".tla")
         for relative in evidence
     )
     has_executable_link = any(
         relative.startswith("crates/") and relative.endswith(".rs")
         for relative in evidence
     )
+    for relative in evidence:
+        if relative.startswith("formal/tla/") and relative not in formal_gate:
+            fail(f"{obligation_id} formal evidence {relative} is absent from strict CI")
+
+    harnesses = obligation.get("proof_harnesses", [])
+    if len(harnesses) != len(set(harnesses)):
+        fail(f"{obligation_id} contains duplicate proof harnesses")
+    if harnesses:
+        ledger_harnesses.update(harnesses)
+        source = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in evidence
+            if relative.startswith("crates/") and relative.endswith(".rs")
+        )
+        for harness in harnesses:
+            if f"fn {harness}" not in source:
+                fail(f"{obligation_id} names missing Kani harness {harness}")
+            if f"--harness {harness}" not in formal_gate:
+                fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
+
     if status == "machine_linked":
         if not has_formal_model:
             fail(f"{obligation_id} is machine-linked without a formal model or proof")
@@ -69,26 +92,31 @@ for obligation in obligations:
     elif status == "kernel_proved":
         if not has_executable_link:
             fail(f"{obligation_id} is kernel-proved without production Rust evidence")
-        harnesses = obligation.get("proof_harnesses", [])
         if not harnesses:
             fail(f"{obligation_id} is kernel-proved without named Kani harnesses")
-        if len(harnesses) != len(set(harnesses)):
-            fail(f"{obligation_id} contains duplicate proof harnesses")
-        source = "\n".join(
-            (ROOT / relative).read_text(encoding="utf-8")
-            for relative in evidence
-            if relative.startswith("crates/") and relative.endswith(".rs")
-        )
-        formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
-        for harness in harnesses:
-            if f"fn {harness}" not in source:
-                fail(f"{obligation_id} names missing Kani harness {harness}")
-            if f"--harness {harness}" not in formal_gate:
-                fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
     elif status == "modeled_only" and not has_formal_model:
         fail(f"{obligation_id} is modeled-only without a formal model")
     elif status == "executable_only" and not has_executable_link:
         fail(f"{obligation_id} is executable-only without executable Rust evidence")
+
+source_harnesses: dict[str, list[str]] = {}
+proof_pattern = re.compile(
+    r"#\[kani::proof\]\s*(?:#\[[^\]]+\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+for path in (ROOT / "crates").glob("**/*.rs"):
+    relative = path.relative_to(ROOT).as_posix()
+    for harness in proof_pattern.findall(path.read_text(encoding="utf-8")):
+        source_harnesses.setdefault(harness, []).append(relative)
+
+for harness, paths in sorted(source_harnesses.items()):
+    if f"--harness {harness}" not in formal_gate:
+        fail(
+            f"source Kani harness {harness} in {', '.join(paths)} is absent from strict CI"
+        )
+    if harness not in ledger_harnesses:
+        fail(
+            f"source Kani harness {harness} in {', '.join(paths)} is absent from the obligation ledger"
+        )
 
 formalizable = [item for item in obligations if item["formalizable"]]
 linked = [

@@ -117,6 +117,7 @@ pub fn awaken_session_contract::work_queue::WorkQueue::stop<'life0, 'life1, 'lif
 pub fn awaken_session_contract::work_queue::WorkQueue::update_metadata<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::work_queue::WorkItem>, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::wake_session<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::work_queue::next_heartbeat_receipt(u64, core::option::Option<&str>) -> alloc::string::String
+pub const fn awaken_session_contract::work_queue::session_work_revival_is_authorized(awaken_session_contract::work_queue::SessionWorkAcquisition, bool, bool) -> bool
 pub enum awaken_session_contract::ActivationState
 pub awaken_session_contract::ActivationState::Active
 pub awaken_session_contract::ActivationState::Failed
@@ -1322,6 +1323,7 @@ pub fn awaken_session_contract::realization_generation_authorizes(&awaken_sessio
 pub fn awaken_session_contract::realization_lease_authorizes(&awaken_session_contract::SessionRealizationLease, &awaken_session_contract::SessionRealizationLease, u64) -> bool
 pub const fn awaken_session_contract::realization_lease_is_live_at(u64, u64) -> bool
 pub fn awaken_session_contract::repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage
+pub const fn awaken_session_contract::resolved_environment_snapshot_is_exact(bool, u64, core::option::Option<u64>) -> bool
 pub fn awaken_session_contract::resolved_toolsets(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> alloc::vec::Vec<awaken_session_contract::AgentTool>
 pub fn awaken_session_contract::toolset_policies(&[awaken_session_contract::AgentTool]) -> alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub fn awaken_session_contract::validate_skill_bundle(&awaken_session_contract::ResolvedSkillBinding, awaken_resource_contract::SkillVersion) -> core::result::Result<awaken_resource_contract::SkillVersion, awaken_session_contract::SkillBundleSourceError>

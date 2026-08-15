@@ -59,3 +59,4 @@ pub fn awaken_acp_contract::AcpCapabilityNegotiator::negotiate<'life0, 'life1, '
 pub trait awaken_acp_contract::AcpCapabilityObservationSource: core::marker::Send + core::marker::Sync
 pub fn awaken_acp_contract::AcpCapabilityObservationSource::capability_observations<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_acp_contract::AcpCapabilityObservation>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_acp_contract::capability_fingerprint(&str, &str, &awaken_acp_contract::NegotiatedAcpCapabilities) -> alloc::string::String
+pub const fn awaken_acp_contract::has_verified_capability_observation(core::option::Option<awaken_acp_contract::AcpCapabilityObservationState>) -> bool

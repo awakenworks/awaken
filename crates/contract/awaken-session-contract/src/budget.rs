@@ -72,14 +72,7 @@ impl ManagedListPriceSnapshot {
                 .ok_or_else(|| ManagedListPriceError::MissingModel(model.clone()))?;
             cost = cost
                 .checked_add(
-                    u128::from(model_usage.input_tokens)
-                        * u128::from(rates.input_micros_per_million)
-                        + u128::from(model_usage.output_tokens)
-                            * u128::from(rates.output_micros_per_million)
-                        + u128::from(model_usage.cache_read_tokens)
-                            * u128::from(rates.cache_read_micros_per_million)
-                        + u128::from(model_usage.cache_creation_tokens)
-                            * u128::from(rates.cache_creation_micros_per_million),
+                    checked_model_cost(model_usage, *rates).ok_or_else(list_cost_overflow)?,
                 )
                 .ok_or_else(|| {
                     ManagedListPriceError::InvalidSnapshot("list cost overflow".into())
@@ -87,28 +80,93 @@ impl ManagedListPriceSnapshot {
         }
         cost = cost
             .checked_add(
-                u128::from(usage.active_seconds)
-                    * u128::from(self.runtime_rates.active_micros_per_million_seconds),
+                checked_cost_term(
+                    usage.active_seconds,
+                    self.runtime_rates.active_micros_per_million_seconds,
+                    1,
+                )
+                .ok_or_else(list_cost_overflow)?,
             )
             .and_then(|value| {
-                value.checked_add(
-                    u128::from(usage.web_fetch_requests)
-                        * u128::from(self.runtime_rates.web_fetch_micros_per_request)
-                        * Self::COST_DENOMINATOR,
+                checked_cost_term(
+                    usage.web_fetch_requests,
+                    self.runtime_rates.web_fetch_micros_per_request,
+                    Self::COST_DENOMINATOR,
                 )
+                .and_then(|term| value.checked_add(term))
             })
             .and_then(|value| {
-                value.checked_add(
-                    u128::from(usage.web_search_requests)
-                        * u128::from(self.runtime_rates.web_search_micros_per_request)
-                        * Self::COST_DENOMINATOR,
+                checked_cost_term(
+                    usage.web_search_requests,
+                    self.runtime_rates.web_search_micros_per_request,
+                    Self::COST_DENOMINATOR,
                 )
+                .and_then(|term| value.checked_add(term))
             })
-            .ok_or_else(|| ManagedListPriceError::InvalidSnapshot("list cost overflow".into()))?;
+            .ok_or_else(list_cost_overflow)?;
         Ok(cost)
     }
 
     const COST_DENOMINATOR: u128 = 1_000_000;
+}
+
+fn checked_cost_term(quantity: u64, rate: u64, scale: u128) -> Option<u128> {
+    match u128::from(quantity).checked_mul(u128::from(rate)) {
+        Some(value) => value.checked_mul(scale),
+        None => None,
+    }
+}
+
+fn checked_model_cost(
+    usage: ManagedModelUsageCursor,
+    rates: ManagedTokenListRates,
+) -> Option<u128> {
+    let input = match checked_cost_term(usage.input_tokens, rates.input_micros_per_million, 1) {
+        Some(value) => value,
+        None => return None,
+    };
+    let output = match checked_cost_term(usage.output_tokens, rates.output_micros_per_million, 1) {
+        Some(value) => value,
+        None => return None,
+    };
+    let cache_read = match checked_cost_term(
+        usage.cache_read_tokens,
+        rates.cache_read_micros_per_million,
+        1,
+    ) {
+        Some(value) => value,
+        None => return None,
+    };
+    let cache_creation = match checked_cost_term(
+        usage.cache_creation_tokens,
+        rates.cache_creation_micros_per_million,
+        1,
+    ) {
+        Some(value) => value,
+        None => return None,
+    };
+    checked_sum4([input, output, cache_read, cache_creation])
+}
+
+fn checked_sum4(terms: [u128; 4]) -> Option<u128> {
+    terms
+        .into_iter()
+        .try_fold(0_u128, |total, term| total.checked_add(term))
+}
+
+fn list_cost_overflow() -> ManagedListPriceError {
+    ManagedListPriceError::InvalidSnapshot("list cost overflow".into())
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn accepted_managed_budget_cost_never_wraps() {
+    let terms = [kani::any(), kani::any(), kani::any(), kani::any()];
+    if let Some(total) = checked_sum4(terms) {
+        for term in terms {
+            assert!(total >= term);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -377,5 +435,49 @@ mod tests {
         );
         assert!(!budget.reconcile_cumulative_usage(usage).unwrap(), "R2");
         assert!(!budget.can_admit_model_request(), "R3");
+    }
+
+    #[test]
+    fn list_cost_overflow_is_rejected_without_panicking_or_wrapping() {
+        let mut snapshot = snapshot();
+        snapshot.model_rates.insert(
+            "overflow".into(),
+            ManagedTokenListRates {
+                input_micros_per_million: u64::MAX,
+                output_micros_per_million: u64::MAX,
+                cache_read_micros_per_million: u64::MAX,
+                cache_creation_micros_per_million: u64::MAX,
+            },
+        );
+        let usage = ManagedBudgetUsageCursor {
+            by_model: BTreeMap::from([(
+                "overflow".into(),
+                ManagedModelUsageCursor {
+                    input_tokens: u64::MAX,
+                    output_tokens: u64::MAX,
+                    cache_read_tokens: u64::MAX,
+                    cache_creation_tokens: u64::MAX,
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.usage_cost_numerator(usage),
+            Err(ManagedListPriceError::InvalidSnapshot(
+                "list cost overflow".into()
+            ))
+        );
+
+        snapshot.model_rates.clear();
+        snapshot.runtime_rates.web_fetch_micros_per_request = u64::MAX;
+        assert_eq!(
+            snapshot.usage_cost_numerator(ManagedBudgetUsageCursor {
+                web_fetch_requests: u64::MAX,
+                ..Default::default()
+            }),
+            Err(ManagedListPriceError::InvalidSnapshot(
+                "list cost overflow".into()
+            ))
+        );
     }
 }

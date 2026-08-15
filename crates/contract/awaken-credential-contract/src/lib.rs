@@ -14,6 +14,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 mod http_effect;
 pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
+#[cfg(kani)]
+mod formal;
 mod realization_capabilities;
 pub use realization_capabilities::{
     ACP_CREDENTIAL_CONSUMER_PREFIX, CREDENTIAL_REALIZATION_CAPABILITY_PREFIX,
@@ -219,6 +221,30 @@ pub struct CredentialRealizationProfile {
     pub resource_holder: PlaintextHolder,
 }
 
+/// Exact source selected while freezing one Environment credential profile.
+/// This is a source choice, not an ordered runtime fallback list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialRealizationSelection {
+    SelfHostedAcp,
+    HostedCloud,
+    SelfHostedNative,
+}
+
+#[must_use]
+pub const fn credential_realization_selection(
+    acp_runtime: bool,
+    cloud_environment: bool,
+    hosted_profile_installed: bool,
+) -> CredentialRealizationSelection {
+    if acp_runtime {
+        CredentialRealizationSelection::SelfHostedAcp
+    } else if cloud_environment && hosted_profile_installed {
+        CredentialRealizationSelection::HostedCloud
+    } else {
+        CredentialRealizationSelection::SelfHostedNative
+    }
+}
+
 fn self_hosted_worker_holder() -> PlaintextHolder {
     PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN)
 }
@@ -317,6 +343,27 @@ impl CredentialEnvelope {
             return Err(CredentialMaterialError::EnvelopeExpired);
         }
         Ok(())
+    }
+
+    /// Validate that an issuer returned the envelope for the exact request it
+    /// was given. This check belongs at issuance, before the envelope can enter
+    /// a durable execution pin; last-mile validation is a second fence and must
+    /// not be asked to repair a substituted issuer response.
+    pub fn validate_issuance(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        binding: &CredentialMaterialBinding,
+    ) -> Result<(), CredentialMaterialError> {
+        binding.validate()?;
+        let envelope_ref = self.envelope_ref();
+        validate_credential_envelope_issuance_claim(
+            !envelope_ref.id.trim().is_empty(),
+            envelope_ref.payload_fingerprint
+                == credential_envelope_payload_fingerprint(access, selected_holder, binding),
+            self.recipient() == &selected_holder.trust_domain,
+            self.required_boundary() == selected_holder.boundary,
+        )
     }
 
     fn required_boundary(&self) -> PlaintextBoundary {
@@ -910,6 +957,24 @@ pub fn credential_envelope_payload_fingerprint(
         selected_holder,
         binding,
     ))
+}
+
+/// Heap-free issuance decision shared by the production envelope adapter and
+/// Kani. Success requires every independently supplied claim to match; there is
+/// no partial-success or fallback branch.
+fn validate_credential_envelope_issuance_claim(
+    reference_nonempty: bool,
+    payload_fingerprint_matches: bool,
+    recipient_matches: bool,
+    boundary_matches: bool,
+) -> Result<(), CredentialMaterialError> {
+    if !reference_nonempty || !payload_fingerprint_matches {
+        return Err(CredentialMaterialError::PayloadMismatch);
+    }
+    if !recipient_matches || !boundary_matches {
+        return Err(CredentialMaterialError::RecipientMismatch);
+    }
+    Ok(())
 }
 
 /// Exact plaintext-to-ciphertext boundary supplied by a hosted deployment.

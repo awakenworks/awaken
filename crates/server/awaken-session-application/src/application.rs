@@ -287,6 +287,10 @@ impl SessionApplication {
             .unwrap_or_else(|| {
                 awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string()
             });
+        let required_revision = match (requested_environment_id, published_environment) {
+            (None, Some(binding)) => Some(binding.revision),
+            _ => None,
+        };
         let resolved = match (requested_environment_id, published_environment) {
             (None, Some(binding)) => {
                 self.environments
@@ -312,6 +316,15 @@ impl SessionApplication {
         .ok_or_else(|| {
             RunError::bad_request(format!("environment `{environment_id}` is unavailable"))
         })?;
+        if !awaken_session_contract::resolved_environment_snapshot_is_exact(
+            resolved.snapshot.environment_id == environment_id,
+            resolved.snapshot.revision.0,
+            required_revision,
+        ) {
+            return Err(RunError::bad_request(format!(
+                "environment `{environment_id}` resolver returned another identity or revision"
+            )));
+        }
         validate_sandbox_provisioning_runtime(
             resolved.snapshot.sandbox_provisioning,
             published_backend_ref,
@@ -587,11 +600,11 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
             .environments
             .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
             .await?;
-        if acquired.is_some()
-            || terminal
-            || acquisition
-                == awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal
-        {
+        if !awaken_session_contract::work_queue::session_work_revival_is_authorized(
+            acquisition,
+            terminal,
+            acquired.is_some(),
+        ) {
             return Ok(acquired
                 .map(SessionWorkOwnership::Leased)
                 .unwrap_or(SessionWorkOwnership::Unowned));
