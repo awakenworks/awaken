@@ -1524,7 +1524,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         holder,
                         CredentialRealizationKind::WorkerRelay,
                         &request.workspace_id,
-                        &(&request.name, &request.target),
+                        &request.target,
                     )
                     .await
                     .map_err(|error| match error {
