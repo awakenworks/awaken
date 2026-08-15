@@ -59,8 +59,13 @@ Reclaim(worker, item) ==
     /\ expires' = [expires EXCEPT ![item] = now + 1]
     /\ UNCHANGED now
 
-Ack(item) ==
+\* Acknowledgement and stop are owner-fenced mutations.  Production SQLite and
+\* PostgreSQL hold the row transaction while comparing the owner; the in-memory
+\* reference holds its work lock across the LeaseBook comparison and mutation.
+Ack(worker, item) ==
+    /\ worker \in Workers
     /\ item \in WorkItems
+    /\ owner[item] = worker
     /\ state[item] # "Removed"
     /\ state' = [state EXCEPT ![item] = IF @ = "Queued" THEN "Starting" ELSE @]
     /\ UNCHANGED <<owner, epoch, heartbeat, expires, now>>
@@ -80,8 +85,10 @@ Heartbeat(worker, item, expected) ==
     /\ expires' = [expires EXCEPT ![item] = now + 1]
     /\ UNCHANGED <<state, owner, epoch, now>>
 
-Stop(item) ==
+Stop(worker, item) ==
+    /\ worker \in Workers
     /\ item \in WorkItems
+    /\ owner[item] = worker
     /\ state[item] # "Removed"
     /\ state' = [state EXCEPT ![item] = "Stopped"]
     /\ owner' = [owner EXCEPT ![item] = NoWorker]
@@ -105,10 +112,10 @@ AdvanceTime ==
 Next ==
     \/ \E worker \in Workers, item \in WorkItems: Claim(worker, item)
     \/ \E worker \in Workers, item \in WorkItems: Reclaim(worker, item)
-    \/ \E item \in WorkItems: Ack(item)
+    \/ \E worker \in Workers, item \in WorkItems: Ack(worker, item)
     \/ \E worker \in Workers, item \in WorkItems, expected \in 0..MaxHeartbeat:
          Heartbeat(worker, item, expected)
-    \/ \E item \in WorkItems: Stop(item)
+    \/ \E worker \in Workers, item \in WorkItems: Stop(worker, item)
     \/ RemoveEnvironment
     \/ AdvanceTime
 

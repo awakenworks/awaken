@@ -23,6 +23,10 @@ python3 scripts/ci/check_formal_surface.py
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
 # kernel and directory methods remain the production code.
 cargo test -p awaken-worker-registry --features loom --lib loom_tests
+# Explore the production reference WorkQueue's owner/epoch/expiry snapshot.
+# Reclaim, release and observation share the same implementation used outside
+# the Loom proof build; only the mutex implementation is substituted.
+cargo test -p awaken-work-store --features loom --lib lease_book::loom_tests
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement

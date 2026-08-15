@@ -21,8 +21,8 @@ BY Z3T(30) DEF Reclaim, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    TerminalStates, KernelAssumptions
 
 LEMMA AckSafety ==
-    \A item \in WorkItems:
-      KernelAssumptions /\ Safety /\ Ack(item) => Safety'
+    \A worker \in Workers, item \in WorkItems:
+      KernelAssumptions /\ Safety /\ Ack(worker, item) => Safety'
 BY Z3T(30) DEF Ack, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, WorkStates,
    TerminalStates, KernelAssumptions
@@ -35,8 +35,8 @@ BY Z3T(30) DEF Heartbeat, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    TerminalStates, KernelAssumptions
 
 LEMMA StopSafety ==
-    \A item \in WorkItems:
-      KernelAssumptions /\ Safety /\ Stop(item) => Safety'
+    \A worker \in Workers, item \in WorkItems:
+      KernelAssumptions /\ Safety /\ Stop(worker, item) => Safety'
 BY Z3T(30) DEF Stop, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, WorkStates,
    TerminalStates, KernelAssumptions
