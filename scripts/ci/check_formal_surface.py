@@ -19,6 +19,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
 EXCLUSIONS = ROOT / "formal" / "surface-exclusions.json"
+CLASSIFICATIONS = ROOT / "formal" / "surface-classifications.json"
+FEATURES = ROOT / "formal" / "features.json"
 
 
 # Each category is a disjunction of conjunctions.  This keeps a lone word in a
@@ -142,6 +144,72 @@ def load_exclusions() -> dict[str, dict[str, str]]:
     return exclusions
 
 
+def load_requirement_ids() -> set[str]:
+    raw = json.loads(FEATURES.read_text(encoding="utf-8"))
+    requirement_ids: set[str] = set()
+    for feature in raw.get("features", []):
+        feature_id = str(feature.get("id", ""))
+        for requirement in feature.get("requirements", []):
+            local_id = str(requirement.get("id", ""))
+            requirement_id = f"{feature_id}.{local_id}"
+            if not feature_id or not local_id or requirement_id in requirement_ids:
+                fail(f"duplicate or empty product requirement id {requirement_id!r}")
+            requirement_ids.add(requirement_id)
+    return requirement_ids
+
+
+def load_classifications(
+    obligation_ids: set[str], requirement_ids: set[str]
+) -> dict[str, dict[str, object]]:
+    if not CLASSIFICATIONS.exists():
+        return {}
+    raw = json.loads(CLASSIFICATIONS.read_text(encoding="utf-8"))
+    if raw.get("version") != 1:
+        fail("surface classifications version must be 1")
+    items = raw.get("classifications")
+    if not isinstance(items, list):
+        fail("surface classifications must contain a classifications list")
+    classifications: dict[str, dict[str, object]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            fail("every surface classification must be an object")
+        path = str(item.get("path", ""))
+        reason = str(item.get("reason", ""))
+        linked_obligations = item.get("obligation_ids")
+        requirement_id = item.get("requirement_id")
+        has_obligations = isinstance(linked_obligations, list) and bool(linked_obligations)
+        has_requirement = isinstance(requirement_id, str) and bool(requirement_id)
+        if not path or not reason:
+            fail("every surface classification needs path and reason")
+        if has_obligations == has_requirement:
+            fail(
+                f"surface classification {path} must name exactly one of "
+                "obligation_ids or requirement_id"
+            )
+        if path in classifications:
+            fail(f"duplicate surface classification {path}")
+        if not (ROOT / path).is_file():
+            fail(f"surface classification references missing source {path}")
+        if has_obligations:
+            if any(not isinstance(item_id, str) or not item_id for item_id in linked_obligations):
+                fail(f"surface classification {path} has an invalid obligation id")
+            if len(linked_obligations) != len(set(linked_obligations)):
+                fail(f"surface classification {path} repeats an obligation id")
+            missing = sorted(set(linked_obligations) - obligation_ids)
+            if missing:
+                fail(
+                    f"surface classification {path} names missing obligations: "
+                    + ", ".join(missing)
+                )
+        elif requirement_id not in requirement_ids:
+            fail(
+                f"surface classification {path} names missing complete product "
+                f"requirement id {requirement_id!r}"
+            )
+        classifications[path] = item
+    return classifications
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -157,6 +225,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    obligations_by_id = {item["id"]: item for item in ledger["obligations"]}
     by_source: dict[str, list[dict[str, object]]] = {}
     for obligation in ledger["obligations"]:
         for evidence in obligation.get("evidence", []):
@@ -164,6 +233,9 @@ def main() -> None:
                 by_source.setdefault(evidence, []).append(obligation)
 
     exclusions = load_exclusions()
+    classifications = load_classifications(
+        set(obligations_by_id), load_requirement_ids()
+    )
     inventory: list[dict[str, object]] = []
     for root in PRODUCTION_ROOTS:
         for path in root.glob("**/*.rs"):
@@ -174,7 +246,17 @@ def main() -> None:
             if not signals:
                 continue
             relative = path.relative_to(ROOT).as_posix()
-            obligations = by_source.get(relative, [])
+            source_obligations = by_source.get(relative, [])
+            classification = classifications.get(relative)
+            classified_obligation_ids = (
+                classification.get("obligation_ids", []) if classification else []
+            )
+            obligations = source_obligations + [
+                obligations_by_id[item_id] for item_id in classified_obligation_ids
+            ]
+            product_requirement = (
+                classification.get("requirement_id") if classification else None
+            )
             formally_linked = [
                 item["id"]
                 for item in obligations
@@ -195,6 +277,8 @@ def main() -> None:
                     "obligations": [item["id"] for item in obligations],
                     "formal_evidence_obligations": formally_linked,
                     "direct_proof_obligations": directly_proved,
+                    "product_requirement": product_requirement,
+                    "classification": classification,
                     "excluded": exclusions.get(relative),
                 }
             )
@@ -207,9 +291,29 @@ def main() -> None:
             "exclusions no longer match detected surfaces: "
             + ", ".join(stale_exclusions)
         )
+    stale_classifications = sorted(set(classifications) - paths)
+    if stale_classifications:
+        fail(
+            "classifications no longer match detected surfaces: "
+            + ", ".join(stale_classifications)
+        )
+    redundant_classifications = sorted(
+        path
+        for path in classifications
+        if path in exclusions or bool(by_source.get(path))
+    )
+    if redundant_classifications:
+        fail(
+            "classifications duplicate an exclusion or source-ledger link: "
+            + ", ".join(redundant_classifications)
+        )
 
     classified = [
-        item for item in inventory if item["obligations"] or item["excluded"] is not None
+        item
+        for item in inventory
+        if item["obligations"]
+        or item["product_requirement"] is not None
+        or item["excluded"] is not None
     ]
     formal_evidence_linked = [
         item for item in inventory if item["formal_evidence_obligations"]
@@ -217,14 +321,24 @@ def main() -> None:
     direct_proof_linked = [
         item for item in inventory if item["direct_proof_obligations"]
     ]
+    product_requirement_linked = [
+        item for item in inventory if item["product_requirement"] is not None
+    ]
     uncovered = [
-        item for item in inventory if not item["obligations"] and item["excluded"] is None
+        item
+        for item in inventory
+        if not item["obligations"]
+        and item["product_requirement"] is None
+        and item["excluded"] is None
     ]
     classified_ratio = len(classified) / len(inventory) if inventory else 1.0
     formal_evidence_ratio = (
         len(formal_evidence_linked) / len(inventory) if inventory else 1.0
     )
     direct_proof_ratio = len(direct_proof_linked) / len(inventory) if inventory else 1.0
+    product_requirement_ratio = (
+        len(product_requirement_linked) / len(inventory) if inventory else 1.0
+    )
 
     if args.json:
         print(
@@ -235,10 +349,12 @@ def main() -> None:
                         "classified": len(classified),
                         "formal_evidence_linked": len(formal_evidence_linked),
                         "direct_proof_linked": len(direct_proof_linked),
+                        "product_requirement_linked": len(product_requirement_linked),
                         "uncovered": len(uncovered),
                         "classified_ratio": classified_ratio,
                         "formal_evidence_linked_ratio": formal_evidence_ratio,
                         "direct_proof_linked_ratio": direct_proof_ratio,
+                        "product_requirement_linked_ratio": product_requirement_ratio,
                     },
                     "surfaces": inventory,
                 },
@@ -254,6 +370,8 @@ def main() -> None:
             f"({formal_evidence_ratio:.1%}); "
             f"{len(direct_proof_linked)}/{len(inventory)} direct-proof-linked "
             f"({direct_proof_ratio:.1%}); "
+            f"{len(product_requirement_linked)}/{len(inventory)} product-requirement-linked "
+            f"({product_requirement_ratio:.1%}); "
             f"{len(uncovered)} uncovered"
         )
         for item in uncovered[:25]:
