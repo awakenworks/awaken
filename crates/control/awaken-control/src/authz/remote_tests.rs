@@ -13,13 +13,30 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower::ServiceExt as _;
 
-use super::RemoteManagementAuthz;
-use crate::authz::{cloud_management_guard, now_unix};
+use super::{RemoteManagementAuthz, cloud_authorization_denial_detail};
+use crate::authz::{cloud_management_guard, now_unix, qualify_hosted_runtime_action};
 
 const SEED: [u8; 32] = [19; 32];
 const KID: &str = "awaken-local-cloud-test";
 const ISSUER: &str = "https://fake-accounts.test";
 const AUDIENCE: &str = "awaken-runtime";
+
+#[test]
+fn cloud_denial_names_the_qualified_action_and_workspace_scope() {
+    // Cause/effect decision table: a denied remote action must expose both
+    // policy coordinates needed to diagnose its missing grant: the qualified
+    // action key and trusted Workspace. It must never regress to the ambiguous
+    // legacy "denied this action" text.
+    let detail = cloud_authorization_denial_detail(
+        &qualify_hosted_runtime_action("run.read"),
+        "workspace_customer_a",
+    );
+
+    assert_eq!(
+        detail,
+        "cloud IAM denied action 'awaken.runtime::run.read' at Workspace 'workspace_customer_a'"
+    );
+}
 
 #[derive(Clone)]
 struct CloudIamState {

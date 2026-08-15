@@ -9,6 +9,16 @@ use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote
 
 use super::{ActionNamespace, now_rfc3339, now_unix, qualified_action};
 
+pub(super) fn cloud_authorization_denial_detail(
+    action: &awaken_iam_contract::ActionKey,
+    workspace: &str,
+) -> String {
+    format!(
+        "cloud IAM denied action '{}' at Workspace '{}'",
+        action.0, workspace
+    )
+}
+
 #[derive(Clone)]
 struct RemoteGateConfig {
     base_url: String,
