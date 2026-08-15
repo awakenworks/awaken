@@ -962,8 +962,8 @@ impl SessionRuntime for ManagedHost {
         // run, so it is tagged External (what a product maps operator steering onto).
         match inbox.offer_as(MessageOrigin::External, user_message(content)) {
             Offer::Accepted(id) => Ok(id.0),
-            // The attempt closed between lookup and offer: same outcome as no
-            // attempt at all.
+            // The attempt closed between lookup and offer, or its finite live
+            // identity space was exhausted: both route like no active inbox.
             Offer::Closed => Err(LiveInboxError::Inactive),
         }
     }
