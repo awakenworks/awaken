@@ -211,3 +211,25 @@ The default container realization remains attached exec. Resident selection is
 admissible only when the provider truthfully exposes a reopenable channel and a
 durable operation ledger. Unknown selections and resident mode on non-Kubernetes
 providers fail before capability advertisement or Sandbox creation.
+
+## 2026-08-15 amendment: recovery demand is a Worker claim requirement
+
+An immutable Agent snapshot that selects `DurableRequest` for a canonical Hand
+tool creates a hard Worker-placement demand. `PlacementRequirements` carries the
+selected recovery modes and `WorkerManifest` carries the recovery capability
+derived from the same typed `ContainerHandResidency` value that constructs the
+SessionEnvironment executor. The existing `can_claim` compatibility kernel uses
+`ToolRecoveryMode::is_supported_by`; no string capability, second registry, or
+product-owned recovery vocabulary is introduced.
+
+An incompatible Worker cannot claim the Run. Absence of a compatible Worker
+therefore leaves the durable dispatch Pending so deployment repair or scale-out
+can restore availability without weakening effect safety. Explicit manifests
+may not advertise a recovery capability different from the installed deployment
+topology. Runtime still validates the realized executor before entering it,
+because a serialized manifest cannot prove the health of a live provider.
+
+Recovery after dispatch remains unchanged: a surviving resident Hand can join
+the stable request, while loss of the Hand process or its result is
+`Indeterminate` and is never converted into a replay merely to preserve
+availability.

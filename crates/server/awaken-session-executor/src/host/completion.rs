@@ -180,6 +180,11 @@ pub fn remote_worker_placement(
     };
     placement.required_credentials = required_credentials;
     placement.required_acp_capabilities = worker_acp_capabilities(models);
+    placement.required_sandbox_tool_recovery =
+        awaken_ext_builtin_tools::selected_hand_recovery_modes(&models.tool_descriptors)
+            .into_iter()
+            .filter(|mode| *mode != awaken_runtime_contract::tool::ToolRecoveryMode::NeverReplay)
+            .collect();
     let requires_local_environment = requires_local_environment(models);
     let requires_opaque_process = std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
@@ -973,6 +978,47 @@ mod completion_tests {
         let image = remote_worker_placement(&host_models(), Some(&prepared), None, true);
         assert!(image.sandbox.custom_rootfs, "R5 rootfs");
         assert!(!image.sandbox.package_provisioning, "R5 packages");
+    }
+
+    #[test]
+    fn hand_recovery_policy_compiles_into_the_existing_worker_requirement() {
+        use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+
+        // Cause/effect decision table: C1=a selected canonical Hand descriptor
+        // freezes DurableRequest; C2=a non-Hand task descriptor has the same
+        // policy. R1 !C1+C2 => no Sandbox demand, because task recovery is owned
+        // by its own executor; R2 C1+C2 => exactly one DurableRequest demand.
+        // This derives placement from the immutable snapshot without a second
+        // Agent field or a concrete tool-id list in the placement owner.
+        let mut models = host_models();
+        let builtins = awaken_ext_builtin_tools::builtin_tools();
+        let hand = builtins
+            .iter()
+            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Hand)
+            .expect("Hand catalog is non-empty")
+            .descriptor
+            .clone();
+        let task = builtins
+            .iter()
+            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Task)
+            .expect("Task catalog is non-empty")
+            .descriptor
+            .clone()
+            .with_recovery(ToolRecoveryPolicy::durable_request());
+        models.tool_descriptors = vec![hand.clone(), task.clone()];
+        let task_only = remote_worker_placement(&models, None, None, true);
+        assert!(task_only.required_sandbox_tool_recovery.is_empty(), "R1");
+
+        models.tool_descriptors = vec![
+            hand.with_recovery(ToolRecoveryPolicy::durable_request()),
+            task,
+        ];
+        let resident_hand = remote_worker_placement(&models, None, None, true);
+        assert_eq!(
+            resident_hand.required_sandbox_tool_recovery,
+            [ToolRecoveryMode::DurableRequest].into_iter().collect(),
+            "R2"
+        );
     }
 
     #[test]
