@@ -1,4 +1,25 @@
 pub mod awaken_worker_transport_security
+pub enum awaken_worker_transport_security::RemoteCredentialPosture
+pub awaken_worker_transport_security::RemoteCredentialPosture::ExactlyOneSigned
+pub awaken_worker_transport_security::RemoteCredentialPosture::Invalid
+pub awaken_worker_transport_security::RemoteCredentialPosture::Missing
+pub awaken_worker_transport_security::RemoteCredentialPosture::MtlsOnly
+pub awaken_worker_transport_security::RemoteCredentialPosture::Multiple
+pub awaken_worker_transport_security::RemoteCredentialPosture::UnsignedHeader
+pub enum awaken_worker_transport_security::RemoteEndpointPosture
+pub awaken_worker_transport_security::RemoteEndpointPosture::EmbeddedAuthority
+pub awaken_worker_transport_security::RemoteEndpointPosture::Https
+pub awaken_worker_transport_security::RemoteEndpointPosture::Invalid
+pub awaken_worker_transport_security::RemoteEndpointPosture::OtherScheme
+pub awaken_worker_transport_security::RemoteEndpointPosture::PlainHttp
+pub awaken_worker_transport_security::RemoteEndpointPosture::QueryOrFragment
+pub enum awaken_worker_transport_security::RemoteIdentityPosture
+pub awaken_worker_transport_security::RemoteIdentityPosture::ConfiguredEmpty
+pub awaken_worker_transport_security::RemoteIdentityPosture::ConfiguredWhitespace
+pub awaken_worker_transport_security::RemoteIdentityPosture::CredentialEmpty
+pub awaken_worker_transport_security::RemoteIdentityPosture::CredentialWhitespace
+pub awaken_worker_transport_security::RemoteIdentityPosture::Exact
+pub awaken_worker_transport_security::RemoteIdentityPosture::Mismatch
 pub enum awaken_worker_transport_security::WorkerAuthError
 pub awaken_worker_transport_security::WorkerAuthError::Invalid(alloc::string::String)
 pub awaken_worker_transport_security::WorkerAuthError::Missing
@@ -29,6 +50,11 @@ impl awaken_worker_transport_security::MtlsWorkerPrincipal
 pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::bootstrap(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_worker_transport_security::WorkerCredentialError>
 pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::certificate_sha256(&self) -> &str
 pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::registered(awaken_worker_contract::WorkerIdentity, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_worker_transport_security::WorkerCredentialError>
+pub struct awaken_worker_transport_security::RemoteWorkerTransportSelection
+impl awaken_worker_transport_security::RemoteWorkerTransportSelection
+pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::binds_exact_worker_id(self) -> bool
+pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::requires_https(self) -> bool
+pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::requires_signed_credential(self) -> bool
 pub struct awaken_worker_transport_security::SignedWorkerAuthenticator
 impl awaken_worker_transport_security::SignedWorkerAuthenticator
 pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::enroll(&self, awaken_worker_transport_security::WorkerSigningCredential)
@@ -72,6 +98,7 @@ pub fn awaken_worker_transport_security::WorkerUpstream::base_url(&self) -> &str
 pub fn awaken_worker_transport_security::WorkerUpstream::client(&self) -> &reqwest::async_impl::client::Client
 pub fn awaken_worker_transport_security::WorkerUpstream::http_client(&self) -> reqwest::async_impl::client::Client
 pub fn awaken_worker_transport_security::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::remote(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_worker_transport_security::WorkerSigningCredential>) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_worker_transport_security::WorkerUpstream::request_authorizer(&self) -> alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>
 pub fn awaken_worker_transport_security::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
 pub fn awaken_worker_transport_security::WorkerUpstream::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>) -> Self
@@ -109,6 +136,7 @@ pub async fn awaken_worker_transport_security::authenticate_worker_request(axum:
 pub fn awaken_worker_transport_security::load_projected_request_authorizer(&std::path::Path, &str) -> core::result::Result<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>, alloc::string::String>
 pub fn awaken_worker_transport_security::parse_projected_signing_credentials(&str) -> core::result::Result<alloc::vec::Vec<awaken_worker_transport_security::WorkerSigningCredential>, alloc::string::String>
 pub fn awaken_worker_transport_security::projected_request_authorizer(&str, &str) -> core::result::Result<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>, alloc::string::String>
+pub const fn awaken_worker_transport_security::select_remote_worker_transport(awaken_worker_transport_security::RemoteEndpointPosture, awaken_worker_transport_security::RemoteCredentialPosture, awaken_worker_transport_security::RemoteIdentityPosture) -> core::option::Option<awaken_worker_transport_security::RemoteWorkerTransportSelection>
 pub async fn awaken_worker_transport_security::verify_claim_owner(core::option::Option<&dyn awaken_worker_contract::WorkerDirectory>, &awaken_worker_transport_security::VerifiedWorkerContext, core::option::Option<&awaken_worker_contract::WorkerIdentity>, &awaken_run_ingress_contract::dispatch::RunClaim, u64) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_worker_transport_security::verify_current_worker_identity(&dyn awaken_worker_contract::WorkerDirectory, &awaken_worker_transport_security::VerifiedWorkerContext, &awaken_worker_contract::WorkerIdentity, u64, bool) -> core::result::Result<awaken_worker_contract::WorkerSnapshot, alloc::string::String>
 pub fn awaken_worker_transport_security::verify_worker_identity(&awaken_worker_transport_security::VerifiedWorkerContext, &awaken_worker_contract::WorkerIdentity) -> core::result::Result<(), alloc::string::String>

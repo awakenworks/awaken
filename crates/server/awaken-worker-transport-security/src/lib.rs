@@ -674,6 +674,133 @@ impl WorkerRequestAuthenticator for MtlsWorkerAuthenticator {
     }
 }
 
+/// Closed classification of the remote Coordinator endpoint presented to the
+/// production Worker transport constructor.
+///
+/// Six values are intentional: together with the credential and identity
+/// classifications they make the complete 6 x 6 x 6 admission space finite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteEndpointPosture {
+    Https,
+    PlainHttp,
+    EmbeddedAuthority,
+    QueryOrFragment,
+    OtherScheme,
+    Invalid,
+}
+
+/// Closed classification of authentication material at the remote boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteCredentialPosture {
+    ExactlyOneSigned,
+    Missing,
+    Multiple,
+    UnsignedHeader,
+    MtlsOnly,
+    Invalid,
+}
+
+/// Closed classification of the configured and credential-bound Worker IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteIdentityPosture {
+    Exact,
+    ConfiguredEmpty,
+    CredentialEmpty,
+    ConfiguredWhitespace,
+    CredentialWhitespace,
+    Mismatch,
+}
+
+/// The only authority-bearing transport posture admitted for a remote Worker.
+/// Its fields are deliberately not configurable: admission always preserves
+/// all three security requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteWorkerTransportSelection {
+    require_https: bool,
+    require_signed_credential: bool,
+    bind_exact_worker_id: bool,
+}
+
+impl RemoteWorkerTransportSelection {
+    #[must_use]
+    pub const fn requires_https(self) -> bool {
+        self.require_https
+    }
+
+    #[must_use]
+    pub const fn requires_signed_credential(self) -> bool {
+        self.require_signed_credential
+    }
+
+    #[must_use]
+    pub const fn binds_exact_worker_id(self) -> bool {
+        self.bind_exact_worker_id
+    }
+}
+
+/// Select the production remote transport from the complete finite posture
+/// algebra. Exactly one of the 216 combinations is admitted.
+#[must_use]
+pub const fn select_remote_worker_transport(
+    endpoint: RemoteEndpointPosture,
+    credential: RemoteCredentialPosture,
+    identity: RemoteIdentityPosture,
+) -> Option<RemoteWorkerTransportSelection> {
+    match (endpoint, credential, identity) {
+        (
+            RemoteEndpointPosture::Https,
+            RemoteCredentialPosture::ExactlyOneSigned,
+            RemoteIdentityPosture::Exact,
+        ) => Some(RemoteWorkerTransportSelection {
+            require_https: true,
+            require_signed_credential: true,
+            bind_exact_worker_id: true,
+        }),
+        _ => None,
+    }
+}
+
+fn classify_remote_endpoint(base_url: &str) -> RemoteEndpointPosture {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return RemoteEndpointPosture::Invalid;
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return RemoteEndpointPosture::EmbeddedAuthority;
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return RemoteEndpointPosture::QueryOrFragment;
+    }
+    match url.scheme() {
+        "https" if url.host_str().is_some() => RemoteEndpointPosture::Https,
+        "http" => RemoteEndpointPosture::PlainHttp,
+        _ => RemoteEndpointPosture::OtherScheme,
+    }
+}
+
+fn classify_remote_credentials(count: usize) -> RemoteCredentialPosture {
+    match count {
+        0 => RemoteCredentialPosture::Missing,
+        1 => RemoteCredentialPosture::ExactlyOneSigned,
+        _ => RemoteCredentialPosture::Multiple,
+    }
+}
+
+fn classify_remote_identity(configured: &str, credential: &str) -> RemoteIdentityPosture {
+    if configured.is_empty() {
+        RemoteIdentityPosture::ConfiguredEmpty
+    } else if credential.is_empty() {
+        RemoteIdentityPosture::CredentialEmpty
+    } else if configured.trim().is_empty() {
+        RemoteIdentityPosture::ConfiguredWhitespace
+    } else if credential.trim().is_empty() {
+        RemoteIdentityPosture::CredentialWhitespace
+    } else if configured == credential {
+        RemoteIdentityPosture::Exact
+    } else {
+        RemoteIdentityPosture::Mismatch
+    }
+}
+
 /// Client-side worker transport configuration. A managed composition injects a
 /// TLS-configured client and the identity bound to its WorkerLease; the same
 /// values are then used for dispatch, claimed commit, and ordinary commit calls.
@@ -705,6 +832,41 @@ impl WorkerUpstream {
             worker_id: "awaken-worker".to_string(),
             worker_identity: None,
         }
+    }
+
+    /// Construct the production remote Worker transport. Unlike [`Self::new`],
+    /// which remains the explicit local/test compatibility constructor, this
+    /// path fails closed unless the endpoint is HTTPS, exactly one signing
+    /// credential is supplied, and its Worker ID exactly matches the configured
+    /// identity.
+    pub fn remote(
+        base_url: impl Into<String>,
+        worker_id: impl Into<String>,
+        mut credentials: Vec<WorkerSigningCredential>,
+    ) -> Result<Self, String> {
+        let base_url = base_url.into();
+        let worker_id = worker_id.into();
+        let credential_posture = classify_remote_credentials(credentials.len());
+        let credential_worker_id = credentials
+            .first()
+            .map_or("", WorkerSigningCredential::worker_id);
+        let identity_posture = classify_remote_identity(&worker_id, credential_worker_id);
+        select_remote_worker_transport(
+            classify_remote_endpoint(&base_url),
+            credential_posture,
+            identity_posture,
+        )
+        .ok_or_else(|| {
+            "remote Worker transport requires HTTPS, exactly one signing credential, and an exact configured worker_id"
+                .to_owned()
+        })?;
+
+        let credential = credentials
+            .pop()
+            .expect("admitted remote transport has exactly one credential");
+        Ok(Self::new(base_url)
+            .with_worker_id(worker_id)
+            .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(credential))))
     }
 
     #[must_use]
@@ -783,6 +945,90 @@ impl WorkerUpstream {
 
     pub fn request_authorizer(&self) -> Arc<dyn WorkerRequestAuthorizer> {
         self.request_authorizer.clone()
+    }
+}
+
+#[cfg(kani)]
+fn remote_endpoint_from_index(index: u8) -> RemoteEndpointPosture {
+    match index {
+        0 => RemoteEndpointPosture::Https,
+        1 => RemoteEndpointPosture::PlainHttp,
+        2 => RemoteEndpointPosture::EmbeddedAuthority,
+        3 => RemoteEndpointPosture::QueryOrFragment,
+        4 => RemoteEndpointPosture::OtherScheme,
+        _ => RemoteEndpointPosture::Invalid,
+    }
+}
+
+#[cfg(kani)]
+fn remote_credential_from_index(index: u8) -> RemoteCredentialPosture {
+    match index {
+        0 => RemoteCredentialPosture::ExactlyOneSigned,
+        1 => RemoteCredentialPosture::Missing,
+        2 => RemoteCredentialPosture::Multiple,
+        3 => RemoteCredentialPosture::UnsignedHeader,
+        4 => RemoteCredentialPosture::MtlsOnly,
+        _ => RemoteCredentialPosture::Invalid,
+    }
+}
+
+#[cfg(kani)]
+fn remote_identity_from_index(index: u8) -> RemoteIdentityPosture {
+    match index {
+        0 => RemoteIdentityPosture::Exact,
+        1 => RemoteIdentityPosture::ConfiguredEmpty,
+        2 => RemoteIdentityPosture::CredentialEmpty,
+        3 => RemoteIdentityPosture::ConfiguredWhitespace,
+        4 => RemoteIdentityPosture::CredentialWhitespace,
+        _ => RemoteIdentityPosture::Mismatch,
+    }
+}
+
+/// Exhaustively covers the finite 6 x 6 x 6 posture algebra and proves that
+/// only HTTPS + one signed credential + exact identity is admitted.
+#[cfg(kani)]
+#[kani::proof]
+fn worker_transport_selector_admits_only_three_exact_postures() {
+    let endpoint_index: u8 = kani::any();
+    let credential_index: u8 = kani::any();
+    let identity_index: u8 = kani::any();
+    kani::assume(endpoint_index < 6);
+    kani::assume(credential_index < 6);
+    kani::assume(identity_index < 6);
+
+    let endpoint = remote_endpoint_from_index(endpoint_index);
+    let credential = remote_credential_from_index(credential_index);
+    let identity = remote_identity_from_index(identity_index);
+    let admitted = select_remote_worker_transport(endpoint, credential, identity);
+    let exact = endpoint == RemoteEndpointPosture::Https
+        && credential == RemoteCredentialPosture::ExactlyOneSigned
+        && identity == RemoteIdentityPosture::Exact;
+    assert_eq!(admitted.is_some(), exact);
+}
+
+/// Any admitted remote selection retains every required security property; no
+/// state can downgrade TLS/signing or broaden the Worker identity binding.
+#[cfg(kani)]
+#[kani::proof]
+fn remote_transport_never_downgrades_or_widens_identity() {
+    let endpoint_index: u8 = kani::any();
+    let credential_index: u8 = kani::any();
+    let identity_index: u8 = kani::any();
+    kani::assume(endpoint_index < 6);
+    kani::assume(credential_index < 6);
+    kani::assume(identity_index < 6);
+
+    if let Some(selection) = select_remote_worker_transport(
+        remote_endpoint_from_index(endpoint_index),
+        remote_credential_from_index(credential_index),
+        remote_identity_from_index(identity_index),
+    ) {
+        assert!(selection.requires_https());
+        assert!(selection.requires_signed_credential());
+        assert!(selection.binds_exact_worker_id());
+        assert_eq!(endpoint_index, 0);
+        assert_eq!(credential_index, 0);
+        assert_eq!(identity_index, 0);
     }
 }
 
@@ -1003,6 +1249,38 @@ mod tests {
             format!("secret-{id}").into_bytes(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn production_remote_transport_requires_the_exact_secure_posture() {
+        assert!(
+            WorkerUpstream::remote(
+                "https://coordinator.invalid",
+                "worker-signed",
+                vec![credential("remote")],
+            )
+            .is_ok()
+        );
+        for rejected in [
+            WorkerUpstream::remote(
+                "http://coordinator.invalid",
+                "worker-signed",
+                vec![credential("remote")],
+            ),
+            WorkerUpstream::remote(
+                "https://coordinator.invalid",
+                "worker-other",
+                vec![credential("remote")],
+            ),
+            WorkerUpstream::remote("https://coordinator.invalid", "worker-signed", Vec::new()),
+            WorkerUpstream::remote(
+                "https://coordinator.invalid",
+                "worker-signed",
+                vec![credential("one"), credential("two")],
+            ),
+        ] {
+            assert!(rejected.is_err());
+        }
     }
 
     fn signed_parts(

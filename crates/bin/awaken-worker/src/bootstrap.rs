@@ -194,8 +194,6 @@ impl WorkerDaemonConfig {
         ));
         let credentials =
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
-        let mut upstream = awaken_worker_transport_security::WorkerUpstream::new(&self.server)
-            .with_worker_id(&self.worker.worker_id);
         let credential_file = self
             .worker
             .request_credential_file
@@ -203,12 +201,21 @@ impl WorkerDaemonConfig {
             .ok_or_else(|| {
                 "server-mode Worker requires worker_request_credential_file".to_owned()
             })?;
-        upstream = upstream.with_request_authorizer(
-            awaken_worker_transport_security::load_projected_request_authorizer(
-                credential_file,
-                &self.worker.worker_id,
-            )?,
-        );
+        let credential_source = std::fs::read_to_string(credential_file).map_err(|error| {
+            format!(
+                "read Worker request credential {}: {error}",
+                credential_file.display()
+            )
+        })?;
+        let transport_credentials =
+            awaken_worker_transport_security::parse_projected_signing_credentials(
+                &credential_source,
+            )?;
+        let upstream = awaken_worker_transport_security::WorkerUpstream::remote(
+            &self.server,
+            &self.worker.worker_id,
+            transport_credentials,
+        )?;
 
         let mut manifest = self
             .worker
@@ -315,7 +322,7 @@ mod tests {
         )
         .unwrap();
         write(&format!(
-            "role='worker'\nmode='server'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             credential.display()
         ));
         let resolved = WorkerDaemonConfig::load(&path, None).expect("R1");
@@ -338,7 +345,7 @@ mod tests {
         // rules keep the strict database-less Worker boundary on the same K8s
         // adapter as all-in-one.
         write(&format!(
-            "role='worker'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\ncontainer_image='awaken-sandbox:local'\n",
+            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\ncontainer_image='awaken-sandbox:local'\n",
             credential.display()
         ));
         let k8s = WorkerDaemonConfig::load(&path, None).expect("S1");
@@ -384,7 +391,7 @@ mod tests {
         )
         .unwrap();
         write(&format!(
-            "role='worker'\nmode='server'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             credential.display()
         ));
         let error = WorkerDaemonConfig::load(&path, None)
@@ -396,7 +403,7 @@ mod tests {
 
         let missing_credential = directory.path().join("missing-worker.json");
         write(&format!(
-            "role='worker'\nmode='server'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             missing_credential.display()
         ));
         let error = WorkerDaemonConfig::load(&path, None)
