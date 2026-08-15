@@ -57,7 +57,11 @@ impl MountCoordinator {
     pub fn acquire(&self, store_id: &str) -> Result<PathBuf, FuseError> {
         let mut mounts = self.mounts.lock().expect("mounts mutex poisoned");
         if let Some(entry) = mounts.get_mut(store_id) {
-            entry.refcount += 1;
+            entry.refcount = entry.refcount.checked_add(1).ok_or_else(|| {
+                FuseError::Internal(format!(
+                    "mount reference limit exceeded for store `{store_id}`"
+                ))
+            })?;
             return Ok(entry.mountpoint.clone());
         }
         // First reference: mount once.
@@ -155,6 +159,7 @@ impl Mount for crate::fuse::MemoryMountHandle {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingMount {
@@ -215,6 +220,67 @@ mod tests {
         coord.release("memstore_1");
         assert_eq!(unmounts.load(Ordering::SeqCst), 1);
         assert_eq!(coord.active_mounts(), 0);
+    }
+
+    #[test]
+    fn concurrent_acquirers_share_one_mount_until_the_last_release() {
+        // C1 eight callers race to acquire the same store. E1 the mutex admits
+        // exactly one mount creation; E2 every successful acquire is reflected in
+        // the reference count before any release; E3 no release unmounts until the
+        // last reference leaves; E4 teardown happens exactly once.
+        const CALLERS: usize = 8;
+        let (coord, mounts, unmounts) = coordinator();
+        let coord = Arc::new(coord);
+        let acquired = Arc::new(Barrier::new(CALLERS + 1));
+        let release = Arc::new(Barrier::new(CALLERS + 1));
+
+        std::thread::scope(|scope| {
+            for _ in 0..CALLERS {
+                let coord = coord.clone();
+                let acquired = acquired.clone();
+                let release = release.clone();
+                scope.spawn(move || {
+                    coord.acquire("memstore_shared").expect("acquire mount");
+                    acquired.wait();
+                    release.wait();
+                    coord.release("memstore_shared");
+                });
+            }
+
+            acquired.wait();
+            assert_eq!(mounts.load(Ordering::SeqCst), 1, "E1");
+            assert_eq!(coord.refcount("memstore_shared"), CALLERS, "E2");
+            assert_eq!(unmounts.load(Ordering::SeqCst), 0, "E3");
+            release.wait();
+        });
+
+        assert_eq!(coord.refcount("memstore_shared"), 0);
+        assert_eq!(coord.active_mounts(), 0);
+        assert_eq!(unmounts.load(Ordering::SeqCst), 1, "E4");
+    }
+
+    #[test]
+    fn reference_count_overflow_fails_closed_without_mutating_the_mount() {
+        // The finite model has an explicit RejectOverflow transition. Drive the
+        // production boundary directly: rejection preserves the live mount and
+        // its count instead of wrapping to zero and enabling a premature unmount.
+        let (coord, mounts, unmounts) = coordinator();
+        coord.acquire("memstore_full").expect("initial mount");
+        coord
+            .mounts
+            .lock()
+            .expect("mounts mutex")
+            .get_mut("memstore_full")
+            .expect("registered mount")
+            .refcount = usize::MAX;
+
+        let error = coord
+            .acquire("memstore_full")
+            .expect_err("overflowing acquire must fail closed");
+        assert!(error.to_string().contains("reference limit exceeded"));
+        assert_eq!(coord.refcount("memstore_full"), usize::MAX);
+        assert_eq!(mounts.load(Ordering::SeqCst), 1);
+        assert_eq!(unmounts.load(Ordering::SeqCst), 0);
     }
 
     #[test]

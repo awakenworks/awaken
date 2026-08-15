@@ -176,6 +176,11 @@ production logic.
   followers that cannot return early, cooperative completion, deadline abort,
   and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
   proves the shutdown admission and return barriers directly.
+- `MountCoordinator.tla` covers the shared FUSE mount reference-count state
+  machine under concurrent acquire/release: one published live mount per store,
+  last-reference teardown, failed-mount atomicity, unknown-release idempotence,
+  and fail-closed reference-count exhaustion. `MountCoordinatorProof.tla`
+  proves the complete inductive safety invariant for every modeled transition.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
@@ -270,6 +275,7 @@ At the current source revision TLAPS discharges all obligations:
 - Managed WorkQueue safety: 35/35.
 - LiveInbox reorder atomicity: 3/3.
 - Service lifecycle shutdown barriers: 4/4.
+- Shared mount reference safety: 29/29.
 
 ## TLC exhaustive finite checks
 
@@ -294,6 +300,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |
 | LiveInbox | 3,025 | 81 | 7 |
 | ServiceLifecycle | 226 | 131 | 9 |
+| MountCoordinator | 361 | 81 | 11 |
 | CheckpointRecovery | 462 | 141 | 8 |
 | WebhookOutbox | 10 | 6 | 4 |
 | RegistrationIntent | 1,454 | 487 | 17 |
@@ -387,14 +394,14 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 212/229 formalizable obligations proved
-or machine-linked, plus 10 explicitly external obligations, for 92.6%
+this review checkpoint the ledger is 216/233 formalizable obligations proved
+or machine-linked, plus 10 explicitly external obligations, for 92.7%
 formalizable coverage. Seventeen executable-only rows remain explicit proof
 candidates.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
-The denominator (previously 223 and now 229 as new obligations were discovered)
+The denominator (previously 229 and now 233 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -402,8 +409,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 147 are classified, 130
-have at least one proved obligation linked to the production file, and 423 are
+source-oriented inventory finds 570 candidate modules: 148 are classified, 131
+have at least one proved obligation linked to the production file, and 422 are
 not yet classified. This deliberately over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
@@ -441,6 +448,13 @@ remain outside the state-machine proof. They require idempotency contracts,
 adapter integration tests, fault injection, real-runtime isolation tests,
 k6/soak tests, and operational reconciliation; a larger finite TLC bound alone
 cannot prove them.
+
+`MountCoordinator` proves the in-process registry and reference-count protocol,
+including concurrent serialization and rejection at the finite counter bound.
+It assumes callers pair one release with each successful acquire. Whether the
+kernel actually mounts/unmounts FUSE, drains every file descriptor, and preserves
+filesystem semantics remains part of the explicitly external container/kernel
+boundary and is exercised by Linux kernel-VFS integration tests rather than TLA+.
 
 The `host-executor/v1` capability pins the declared model identity and fails
 closed on a replacement that does not install that identity. Proving that two
