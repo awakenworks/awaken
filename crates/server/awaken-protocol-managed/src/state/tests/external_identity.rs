@@ -1,9 +1,12 @@
 use super::*;
 
-/// The only required create field is the agent; every other field defaults.
+/// Managed creation requires both the Agent and an explicit Environment.
 pub(in crate::state) fn bare_create_params() -> SessionCreateParams {
-    serde_json::from_value(serde_json::json!({ "agent": "assistant" }))
-        .expect("minimal create params deserialize")
+    serde_json::from_value(serde_json::json!({
+        "agent": "assistant",
+        "environment_id": "env_local"
+    }))
+    .expect("minimal create params deserialize")
 }
 
 #[tokio::test]

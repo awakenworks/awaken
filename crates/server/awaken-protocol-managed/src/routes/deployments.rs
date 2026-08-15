@@ -25,7 +25,7 @@ use crate::types::deployment::{
     DeploymentUpdateParams, RunError, Schedule, TriggerContext,
 };
 use crate::types::resource::ResourceInput;
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
 #[path = "deployments/launcher.rs"]
 mod launcher;
@@ -97,16 +97,11 @@ fn wire_error(error: DeploymentApplicationError) -> WireError {
 }
 
 fn selector(input: &crate::types::AgentRef) -> Result<AgentSelector, WireError> {
-    if let crate::types::AgentRef::Object(reference) = input
-        && (!matches!(
-            reference.kind.as_ref(),
-            Some(crate::types::AgentRefKind::Agent)
-        ) || reference.system.is_some()
-            || reference.tools.is_some()
-            || reference.mcp_servers.is_some()
-            || reference.skills.is_some()
-            || reference.model.is_some())
-    {
+    if matches!(
+        input,
+        crate::types::AgentRef::Object(reference)
+            if matches!(reference.as_ref(), crate::types::AgentRefObject::AgentWithOverrides { .. })
+    ) {
         return Err(invalid(
             "deployment Agent object must be an unmodified `agent` reference",
         ));
@@ -371,7 +366,7 @@ async fn list_deployments(
     State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentListParams>,
     scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Page<Deployment>>, WireError> {
+) -> Result<Json<PageCursor<Deployment>>, WireError> {
     if query.include_archived && query.status.is_some() {
         return Err(invalid(
             "include_archived and status filters cannot be combined",
@@ -538,7 +533,7 @@ async fn list_runs(
     State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentRunListParams>,
     scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Page<DeploymentRun>>, WireError> {
+) -> Result<Json<PageCursor<DeploymentRun>>, WireError> {
     let page = page_query(&query.page)?;
     let data = application
         .list_runs(&request_scope(&scope))

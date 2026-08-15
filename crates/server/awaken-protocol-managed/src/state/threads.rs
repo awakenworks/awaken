@@ -212,7 +212,6 @@ impl ManagedState {
         Ok(ListEventsResponse {
             data: page.items.to_vec(),
             next_page: page.next_page,
-            has_more: page.has_more,
         })
     }
 

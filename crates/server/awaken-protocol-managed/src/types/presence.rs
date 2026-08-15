@@ -10,3 +10,13 @@ where
 {
     Deserialize::deserialize(deserializer).map(Some)
 }
+
+/// Deserialize a field that may be omitted but whose explicit JSON `null` is
+/// not part of the wire contract.
+pub(crate) fn optional_non_null<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}

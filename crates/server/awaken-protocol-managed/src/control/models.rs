@@ -17,6 +17,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use serde_json::json;
 
+use crate::types::Page;
+
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
 /// RFC-3339 `created_at`; a reproducible constant keeps tests stable).
 const CREATED_AT: &str = "2026-01-01T00:00:00Z";
@@ -138,26 +140,23 @@ fn models_router_for(models: AvailableModels) -> Router {
 async fn list_models(
     State(available): State<AvailableModels>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
     let Ok(models) = available.in_workspace(&workspace).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({ "error": "model directory unavailable" })),
-        );
+        )
+            .into_response();
     };
     let data: Vec<_> = models.iter().map(ModelEntry::to_json).collect();
     let first_id = models.first().map(|m| m.id.clone());
     let last_id = models.last().map(|m| m.id.clone());
     (
         StatusCode::OK,
-        axum::Json(json!({
-            "data": data,
-            "has_more": false,
-            "first_id": first_id,
-            "last_id": last_id,
-        })),
+        axum::Json(Page::new(data, false, first_id, last_id)),
     )
+        .into_response()
 }
 
 /// `GET /v1/models/{id}` — one model as `BetaModelInfo`, or `404`. Doubles as the

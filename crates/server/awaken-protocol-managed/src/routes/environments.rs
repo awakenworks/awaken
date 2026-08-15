@@ -30,7 +30,7 @@ use crate::types::environment::{
     EnvironmentConfigParams, EnvironmentConfigUpdateParams, EnvironmentCreateParams,
     EnvironmentUpdateParams, PackagesUpdateParams,
 };
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
 mod work_routes;
 
@@ -240,7 +240,7 @@ async fn retrieve_env(
 async fn list_envs(
     State(state): State<Arc<EnvironmentAuthoringState>>,
     Query(page): Query<PageQuery>,
-) -> Json<Page<Environment>> {
+) -> Json<PageCursor<Environment>> {
     let data: Vec<Environment> = state
         .application
         .list_active()

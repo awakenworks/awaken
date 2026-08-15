@@ -28,6 +28,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::types::{ErrorResponse, PageCursor};
 
 fn timestamp(nanos: u128) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(
@@ -193,7 +194,14 @@ pub fn memory_stores_router(
 }
 
 fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    (status, Json(json!({ "error": message.into() }))).into_response()
+    let error_type = if status == StatusCode::NOT_FOUND {
+        "not_found_error"
+    } else if status.is_server_error() {
+        "api_error"
+    } else {
+        "invalid_request_error"
+    };
+    (status, Json(ErrorResponse::new(error_type, message))).into_response()
 }
 
 fn not_found(what: &str) -> axum::response::Response {
@@ -308,11 +316,7 @@ async fn list_stores(
         Err(error) => return application_error(error),
     };
     let data: Vec<Value> = definitions.iter().map(project_def).collect();
-    (
-        StatusCode::OK,
-        Json(json!({ "data": data, "has_more": false, "next_page": null })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
 }
 
 async fn update_store(
@@ -404,13 +408,10 @@ async fn path_of(state: &MemoryStoreApi, store: &str, mid: &str) -> Option<Strin
 fn memory_conflict() -> axum::response::Response {
     (
         StatusCode::CONFLICT,
-        Json(json!({
-            "type": "error",
-            "error": {
-                "type": "memory_precondition_failed_error",
-                "message": "content_sha256 precondition did not match",
-            }
-        })),
+        Json(ErrorResponse::new(
+            "memory_precondition_failed_error",
+            "content_sha256 precondition did not match",
+        )),
     )
         .into_response()
 }
@@ -564,11 +565,10 @@ async fn list_memories(
     };
     (
         StatusCode::OK,
-        Json(json!({
-            "data": page.items,
-            "has_more": page.has_more,
-            "next_page": page.next_page,
-        })),
+        Json(PageCursor {
+            data: page.items.to_vec(),
+            next_page: page.next_page,
+        }),
     )
         .into_response()
 }
@@ -715,11 +715,7 @@ async fn list_versions(
         .iter()
         .map(|version| project_version(version, &id, view))
         .collect();
-    (
-        StatusCode::OK,
-        Json(json!({ "data": data, "has_more": false, "next_page": null })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
 }
 
 async fn get_version(

@@ -24,7 +24,7 @@ use tokio_stream::Stream;
 
 use crate::state::{ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
-    DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
+    DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
@@ -940,11 +940,11 @@ async fn archive_session(
 async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<SessionThread>>, WireErr> {
+) -> Result<Json<PageCursor<SessionThread>>, WireErr> {
     state.ensure_session(&id).await.map_err(error_response)?;
     state
         .list_threads(&id)
-        .map(Page::single)
+        .map(PageCursor::single)
         .map(Json)
         .map_err(error_response)
 }
@@ -1229,14 +1229,14 @@ async fn create_resource(
 async fn list_resources(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<crate::types::resource::SessionResource>>, WireErr> {
+) -> Result<Json<PageCursor<crate::types::resource::SessionResource>>, WireErr> {
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
     state
         .list_resources(&id)
-        .map(Page::single)
+        .map(PageCursor::single)
         .map(Json)
         .map_err(error_response)
 }

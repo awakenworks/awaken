@@ -5,7 +5,6 @@
 //! candidates. Session finalization and root CAS belong exclusively to
 //! [`awaken_session_application::SessionApplication`].
 
-use crate::types::McpServer;
 use crate::types::agent::AgentMcpServer;
 use awaken_session_application::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 
@@ -26,7 +25,6 @@ pub(crate) fn agent_mcp_candidate(
 /// Session aggregate, not array order or credential presence, resolves logical
 /// name precedence and target conflicts after canonical normalization.
 pub(super) fn initial_mcp_candidates(
-    session: &[McpServer],
     agent: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
     agent_override: Option<&[AgentMcpServer]>,
 ) -> Vec<McpAttachmentCandidate> {
@@ -34,19 +32,7 @@ pub(super) fn initial_mcp_candidates(
         || agent.map_or(0, |view| view.mcp_servers.len()),
         <[AgentMcpServer]>::len,
     );
-    let mut candidates = Vec::with_capacity(session.len() + agent_len);
-    candidates.extend(
-        session
-            .iter()
-            .cloned()
-            .map(|server| McpAttachmentCandidate {
-                name: server.name,
-                target: McpAttachmentCandidateTarget::HttpUrl(server.url),
-                prompts_as_skills: false,
-                published_credential: None,
-                origin: awaken_session_contract::McpAttachmentOrigin::Session,
-            }),
-    );
+    let mut candidates = Vec::with_capacity(agent_len);
     if let Some(agent_override) = agent_override {
         candidates.extend(agent_override.iter().cloned().map(|server| {
             agent_mcp_candidate(server, awaken_session_contract::McpAttachmentOrigin::Agent)

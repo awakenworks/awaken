@@ -13,6 +13,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::types::Page;
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -128,13 +129,7 @@ async fn list_files(
     let first_id = selected.first().map(|record| record.id.clone());
     let last_id = selected.last().map(|record| record.id.clone());
     let data = selected.into_iter().map(metadata).collect::<Vec<Value>>();
-    Json(json!({
-        "data": data,
-        "has_more": has_more,
-        "first_id": first_id,
-        "last_id": last_id,
-    }))
-    .into_response()
+    Json(Page::new(data, has_more, first_id, last_id)).into_response()
 }
 
 fn valid_filename(filename: &str) -> bool {

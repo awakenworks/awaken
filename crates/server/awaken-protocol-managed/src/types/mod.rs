@@ -45,5 +45,5 @@ pub mod tunnel;
 pub mod user_profile;
 pub mod vault;
 
-pub use page::{Page, PageQuery, paginate, paginate_by};
+pub use page::{Page, PageCursor, PageQuery, paginate, paginate_by};
 pub use session::*;

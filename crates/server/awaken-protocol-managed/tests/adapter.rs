@@ -2129,7 +2129,7 @@ async fn events_are_paged_by_cursor() {
     .await;
     let full_ids = ids(&full);
     assert_eq!(full_ids.len(), 8, "two turns produced eight events");
-    assert_eq!(full["has_more"], serde_json::json!(false));
+    assert!(full.get("has_more").is_none());
     assert_eq!(full["next_page"], serde_json::Value::Null);
 
     // First page of 2 → more remain, cursor names the 2nd event.
@@ -2141,7 +2141,7 @@ async fn events_are_paged_by_cursor() {
     )
     .await;
     assert_eq!(ids(&p1), full_ids[0..2]);
-    assert_eq!(p1["has_more"], serde_json::json!(true));
+    assert!(p1.get("has_more").is_none());
     assert_eq!(p1["next_page"], serde_json::json!(full_ids[1]));
 
     // RunResume after the cursor, to the end.
@@ -2154,7 +2154,7 @@ async fn events_are_paged_by_cursor() {
     )
     .await;
     assert_eq!(ids(&p2), full_ids[2..]);
-    assert_eq!(p2["has_more"], serde_json::json!(false));
+    assert!(p2.get("has_more").is_none());
     assert_eq!(p2["next_page"], serde_json::Value::Null);
 
     // The two pages reassemble the whole list, in order, no overlap.

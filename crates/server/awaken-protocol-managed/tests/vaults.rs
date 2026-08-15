@@ -584,8 +584,8 @@ async fn list_vaults_returns_one_full_page_sorted_by_id() {
 
     let (s, page) = call(&h.app, "GET", "/v1/vaults", None).await;
     assert_eq!(s, StatusCode::OK);
-    // The SDK `PageCursor` shape: data + has_more + next_page (single page here).
-    assert_eq!(page["has_more"], false);
+    // The SDK `PageCursor` shape is exactly data + next_page.
+    assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
     let data = page["data"].as_array().unwrap();
     assert_eq!(data.len(), 2);
@@ -612,7 +612,7 @@ async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(page["has_more"], false);
+    assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
     let ids: Vec<&str> = page["data"]
         .as_array()

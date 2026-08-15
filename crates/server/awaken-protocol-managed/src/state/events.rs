@@ -132,14 +132,8 @@ impl ManagedState {
 
     fn public_inbound_kind(event: &InboundEvent) -> OutboundKind {
         match event {
-            InboundEvent::UserMessage {
-                content,
-                session_thread_id,
-                model,
-            } => OutboundKind::UserMessage {
+            InboundEvent::UserMessage { content } => OutboundKind::UserMessage {
                 content: content.clone(),
-                session_thread_id: session_thread_id.clone(),
-                model: model.clone(),
             },
             InboundEvent::SystemMessage { content } => OutboundKind::SystemMessage {
                 content: content.clone(),
@@ -236,14 +230,7 @@ impl ManagedState {
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             if let Err(error) = state
-                .send_event_batch(
-                    &session_id,
-                    SendEventsRequest {
-                        events,
-                        user_profile_id: None,
-                    },
-                    true,
-                )
+                .send_event_batch(&session_id, SendEventsRequest { events }, true)
                 .await
             {
                 tracing::warn!(%session_id, %error, "create-time initial events failed");
@@ -774,28 +761,18 @@ impl ManagedState {
         &self,
         session_id: &str,
         agent_id: &str,
-        user_profile_id: Option<String>,
         inbound: &InboundEvent,
     ) -> Result<(), StateError> {
         match inbound {
-            InboundEvent::UserMessage { content, model, .. } => {
+            InboundEvent::UserMessage { content } => {
                 let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                if let Some(model) = model {
-                    self.application.rebind_model(session_id, model).await?;
-                }
                 let sink = Arc::new(PreviewSink::new(
                     self.live_sender(session_id),
                     self.event_seq.clone(),
                 ));
                 let outcome = self
                     .application
-                    .run_session_message(
-                        agent_id,
-                        session_id,
-                        content.clone(),
-                        user_profile_id,
-                        sink.clone(),
-                    )
+                    .run_session_message(agent_id, session_id, content.clone(), None, sink.clone())
                     .await;
                 let outcome = match outcome {
                     Ok(outcome) => outcome,
@@ -1091,7 +1068,7 @@ impl ManagedState {
             });
 
             let processing = self
-                .process_inbound_event(session_id, &agent_id, req.user_profile_id.clone(), inbound)
+                .process_inbound_event(session_id, &agent_id, inbound)
                 .await;
             self.mark_inbound_processed(session_id, &event_id);
             if matches!(
@@ -1367,7 +1344,6 @@ impl ManagedState {
         Ok(ListEventsResponse {
             data: page.items.to_vec(),
             next_page: page.next_page,
-            has_more: page.has_more,
         })
     }
 }
@@ -1514,7 +1490,10 @@ mod tests {
         // | R7   | T  | F  | F  | F  | F  | T  | F  | F  | F   | T   | E4,E9           |
         let runtime = LifecycleRuntime::default();
         let state = ManagedState::new(runtime.clone());
-        let request = serde_json::from_value(serde_json::json!({"agent":"coder"})).unwrap();
+        let request = serde_json::from_value(serde_json::json!({
+            "agent":"coder", "environment_id":"env_local"
+        }))
+        .unwrap();
         let session = state.create_session(request, None).await.unwrap();
         let thread = session.id;
         let first = Message::text(MessageId("cross-user".into()), Role::User, "build");

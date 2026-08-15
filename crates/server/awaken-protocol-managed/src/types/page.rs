@@ -1,5 +1,4 @@
-//! The Anthropic Managed Agents `PageCursor` shape (`{ data, next_page }`, plus a
-//! harmless `has_more` the official client ignores) shared by the managed CRUD
+//! The Anthropic Managed Agents `PageCursor` shape (`{ data, next_page }`) shared by the managed CRUD
 //! families. The request is `?limit=&page=<cursor>` (Anthropic `PageCursorParams`),
 //! where `page` carries the previous response's opaque `next_page`. Pagination is
 //! the kernel's after-id cursor over each row's `id`, so a small collection still
@@ -8,23 +7,47 @@
 use awaken_agent_contract::page::{paginate_by_id, paginate_by_key};
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// One cursor page of `T`.
+/// Anthropic `PageCursor<T>` used by Managed resource collections.
 #[derive(Debug, Clone, Serialize)]
-pub struct Page<T> {
+pub struct PageCursor<T> {
     pub data: Vec<T>,
-    pub has_more: bool,
     pub next_page: Option<String>,
 }
 
-impl<T> Page<T> {
+impl<T> PageCursor<T> {
     /// One full page: every row, no continuation. For a collection an aggregate
     /// invariant keeps small (not a paginated list).
     #[must_use]
     pub fn single(data: Vec<T>) -> Self {
         Self {
             data,
-            has_more: false,
             next_page: None,
+        }
+    }
+}
+
+/// Anthropic's id-based `Page<T>` used by Files and Models.
+#[derive(Debug, Clone, Serialize)]
+pub struct Page<T> {
+    pub data: Vec<T>,
+    pub has_more: bool,
+    pub first_id: Option<String>,
+    pub last_id: Option<String>,
+}
+
+impl<T> Page<T> {
+    #[must_use]
+    pub fn new(
+        data: Vec<T>,
+        has_more: bool,
+        first_id: Option<String>,
+        last_id: Option<String>,
+    ) -> Self {
+        Self {
+            data,
+            has_more,
+            first_id,
+            last_id,
         }
     }
 }
@@ -65,14 +88,17 @@ where
 /// tolerant auto-paginator. Stays in the adapter's typed vocabulary — no `Value`
 /// round-trip — so the anti-corruption boundary is not blurred.
 #[must_use]
-pub fn paginate<T: Clone>(data: Vec<T>, query: &PageQuery, id_of: impl Fn(&T) -> &str) -> Page<T> {
+pub fn paginate<T: Clone>(
+    data: Vec<T>,
+    query: &PageQuery,
+    id_of: impl Fn(&T) -> &str,
+) -> PageCursor<T> {
     match paginate_by_id(&data, query.page.as_deref(), query.limit, id_of) {
-        Ok(page) => Page {
+        Ok(page) => PageCursor {
             data: page.items.to_vec(),
-            has_more: page.has_more,
             next_page: page.next_page,
         },
-        Err(_) => Page::single(Vec::new()),
+        Err(_) => PageCursor::single(Vec::new()),
     }
 }
 
@@ -83,13 +109,41 @@ pub fn paginate_by<T: Clone>(
     data: Vec<T>,
     query: &PageQuery,
     key_of: impl Fn(&T) -> String,
-) -> Page<T> {
+) -> PageCursor<T> {
     match paginate_by_key(&data, query.page.as_deref(), query.limit, key_of) {
-        Ok(page) => Page {
+        Ok(page) => PageCursor {
             data: page.items.to_vec(),
-            has_more: page.has_more,
             next_page: page.next_page,
         },
-        Err(_) => Page::single(Vec::new()),
+        Err(_) => PageCursor::single(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_envelopes_are_disjoint_sdk_contracts() {
+        // Cause/effect decision table:
+        // | SDK paginator | required fields                         | forbidden fields |
+        // | PageCursor    | data, next_page                         | has_more, ids     |
+        // | Page          | data, has_more, first_id, last_id       | next_page         |
+        let cursor = serde_json::to_value(PageCursor::single(vec!["a"])).unwrap();
+        assert_eq!(cursor["data"][0], "a");
+        assert!(cursor["next_page"].is_null());
+        assert!(cursor.get("has_more").is_none());
+        assert!(cursor.get("first_id").is_none());
+
+        let page = serde_json::to_value(Page::new(
+            vec!["a"],
+            false,
+            Some("a".into()),
+            Some("a".into()),
+        ))
+        .unwrap();
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["first_id"], "a");
+        assert!(page.get("next_page").is_none());
     }
 }

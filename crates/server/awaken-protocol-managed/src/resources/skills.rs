@@ -29,6 +29,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::types::{ErrorResponse, PageCursor};
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -174,7 +175,14 @@ pub fn skills_router(
 }
 
 fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    (status, Json(json!({ "error": message.into() }))).into_response()
+    let error_type = if status == StatusCode::NOT_FOUND {
+        "not_found_error"
+    } else if status.is_server_error() {
+        "api_error"
+    } else {
+        "invalid_request_error"
+    };
+    (status, Json(ErrorResponse::new(error_type, message))).into_response()
 }
 
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
@@ -429,11 +437,7 @@ async fn list_skills(
         .iter()
         .map(project_definition)
         .collect::<Vec<_>>();
-    (
-        StatusCode::OK,
-        Json(json!({ "data": data, "has_more": false, "next_page": null })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
 }
 
 async fn retrieve_skill(
@@ -552,11 +556,7 @@ async fn list_versions(
     match state.versions(&workspace, &id).await {
         Some(Ok(versions)) if !versions.is_empty() => {
             let data: Vec<Value> = versions.iter().map(project_version).collect();
-            (
-                StatusCode::OK,
-                Json(json!({ "data": data, "has_more": false, "next_page": null })),
-            )
-                .into_response()
+            (StatusCode::OK, Json(PageCursor::single(data))).into_response()
         }
         Some(Err(error)) => store_error(error),
         Some(Ok(_)) | None => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),

@@ -18,7 +18,7 @@ use crate::types::user_profile::{
     EnrollmentUrl, Relationship, TrustGrant, TrustGrantStatus, UserProfile,
     UserProfileCreateParams, UserProfileUpdateParams,
 };
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
 struct UserProfileHttpState {
     application: Arc<DataSubjectApplication>,
@@ -181,7 +181,7 @@ async fn retrieve_profile(
 async fn list_profiles(
     State(state): State<Arc<UserProfileHttpState>>,
     Query(page): Query<PageQuery>,
-) -> Result<Json<Page<UserProfile>>, WireError> {
+) -> Result<Json<PageCursor<UserProfile>>, WireError> {
     let data = state
         .application
         .list_user_profiles(&state.org)

@@ -119,6 +119,21 @@ pub enum MultiagentRosterEntry {
     Id(String),
     Reference(AgentRosterReference),
     SelfReference(SelfRosterReference),
+    Advisor(AdvisorRosterEntry),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisorRosterEntry {
+    pub model: String,
+    #[serde(rename = "type")]
+    pub kind: AdvisorRosterEntryKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum AdvisorRosterEntryKind {
+    #[serde(rename = "advisor")]
+    Advisor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,8 +311,6 @@ pub struct Agent {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub archived_at: Option<String>,
-    pub disabled_at: Option<String>,
-    pub status: AgentStatus,
     pub created_at: String,
     pub updated_at: String,
     pub name: String,
@@ -310,14 +323,6 @@ pub struct Agent {
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,
     pub version: u64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    Published,
-    Disabled,
-    Archived,
 }
 
 #[cfg(test)]
@@ -351,7 +356,9 @@ mod tests {
                     "type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false
                 }}
             ],
-            "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]},
+            "multiagent": {"type":"coordinator","agents":[
+                "worker", {"type":"self"}, {"type":"advisor","model":"claude-opus-4-6"}
+            ]},
         });
         let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
         let AgentTool::Custom { input_schema, .. } = &parsed.tools[2] else {
@@ -359,6 +366,11 @@ mod tests {
         };
         assert_eq!(input_schema.keywords["additionalProperties"], false);
         assert_eq!(parsed.mcp_servers[0].name, "docs");
+        assert!(matches!(
+            parsed.multiagent,
+            Some(MultiagentConfig::Coordinator { ref agents })
+                if matches!(agents[2], MultiagentRosterEntry::Advisor(_))
+        ));
         assert_eq!(
             serde_json::to_value(&parsed.mcp_servers[0]).unwrap()["type"],
             "url"
@@ -389,5 +401,33 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<AgentCreateParams>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn agent_response_contains_only_the_sdk_fields() {
+        // Cause/effect decision table: official fields serialize; historical
+        // Awaken-only lifecycle fields (`status`, `disabled_at`) have no DTO owner
+        // and therefore cannot appear in the response object.
+        let value = serde_json::to_value(Agent {
+            id: "agent_1".into(),
+            object_type: "agent",
+            archived_at: None,
+            created_at: "2026-08-15T00:00:00Z".into(),
+            updated_at: "2026-08-15T00:00:00Z".into(),
+            name: "assistant".into(),
+            description: None,
+            model: ModelConfig::new("claude-sonnet-4-6"),
+            system: None,
+            metadata: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            multiagent: None,
+            version: 1,
+        })
+        .unwrap();
+        assert!(value.get("status").is_none());
+        assert!(value.get("disabled_at").is_none());
+        assert_eq!(value["type"], "agent");
     }
 }

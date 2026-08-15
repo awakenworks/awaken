@@ -35,7 +35,10 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let state = ManagedState::from_application(Arc::new(application));
     let created = state
         .create_session(
-            serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "agent": "assistant", "environment_id": "env_local"
+            }))
+            .unwrap(),
             None,
         )
         .await
@@ -84,7 +87,10 @@ async fn child_thread_archive_is_runtime_backed_fail_closed_and_idempotent() {
     let runtime = EndSessionRecorder::default();
     let ended = runtime.ended.clone();
     let state = ManagedState::new(runtime);
-    let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+    let request = serde_json::from_value(serde_json::json!({
+        "agent": "assistant", "environment_id": "env_local"
+    }))
+    .unwrap();
     let session = state.create_session(request, None).await.unwrap();
     {
         let mut sessions = state.sessions.lock().unwrap();
@@ -140,7 +146,10 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     let runtime = EndSessionRecorder::default();
     let interrupted = runtime.interrupted.clone();
     let state = ManagedState::new(runtime);
-    let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+    let request = serde_json::from_value(serde_json::json!({
+        "agent": "assistant", "environment_id": "env_local"
+    }))
+    .unwrap();
     let session = state.create_session(request, None).await.unwrap();
     {
         let mut sessions = state.sessions.lock().unwrap();
@@ -164,7 +173,6 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
 
     let send = |event| SendEventsRequest {
         events: vec![event],
-        user_profile_id: None,
     };
     state
         .send_events(
@@ -593,6 +601,7 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
     let state = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant",
+        "environment_id": "env_local",
         "resources": [{
             "type": "file",
             "file_id": "immutable-file",
@@ -639,6 +648,7 @@ async fn session_create_enforces_the_500_file_boundary() {
             .collect::<Vec<_>>();
         serde_json::from_value(serde_json::json!({
             "agent": "assistant",
+            "environment_id": "env_local",
             "resources": resources
         }))
         .unwrap()
@@ -704,7 +714,10 @@ impl SessionRuntime for EndSessionFailer {
 #[tokio::test]
 async fn child_thread_archive_failure_commits_no_terminal_projection() {
     let state = ManagedState::new(EndSessionFailer);
-    let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
+    let request = serde_json::from_value(serde_json::json!({
+        "agent": "assistant", "environment_id": "env_local"
+    }))
+    .unwrap();
     let session = state.create_session(request, None).await.unwrap();
     {
         let mut sessions = state.sessions.lock().unwrap();
@@ -744,6 +757,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant",
+        "environment_id": "env_local",
         "resources": [{
             "type": "file",
             "file_id": "immutable-file",

@@ -15,16 +15,16 @@ use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus,
-    AgentUpdateParams, MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
+    AdvisorRosterEntry, AdvisorRosterEntryKind, Agent, AgentCreateParams, AgentListParams,
+    AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
+    MultiagentRosterEntry,
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_contract::{
-    AGENT_TOOLSET_TOOL_IDS, AgentTool, CustomToolInputSchema, is_agent_toolset_member,
-    resolved_toolsets, toolset_policies,
+    AgentTool, CustomToolInputSchema, is_agent_toolset_member, resolved_toolsets, toolset_policies,
 };
 use awaken_tenancy::ScopeId;
 
@@ -330,6 +330,9 @@ fn typed_multiagent(value: WireMultiagent) -> MultiagentConfig {
                     version: reference.version,
                 },
                 MultiagentRosterEntry::SelfReference(_) => MultiagentTarget::SelfReference,
+                MultiagentRosterEntry::Advisor(advisor) => MultiagentTarget::Advisor {
+                    model: advisor.model,
+                },
             })
             .collect(),
     }
@@ -380,6 +383,42 @@ fn config_from_create(
 }
 
 fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+    let name_chars = config.name.as_deref().unwrap_or_default().chars().count();
+    if !(1..=256).contains(&name_chars) {
+        return Err(ManagedAgentError::Invalid(
+            "name must be 1-256 characters".into(),
+        ));
+    }
+    if config
+        .description
+        .as_ref()
+        .is_some_and(|description| description.chars().count() > 2_048)
+    {
+        return Err(ManagedAgentError::Invalid(
+            "description supports at most 2048 characters".into(),
+        ));
+    }
+    if config.instructions.chars().count() > 100_000 {
+        return Err(ManagedAgentError::Invalid(
+            "system supports at most 100000 characters".into(),
+        ));
+    }
+    if config.metadata.len() > 16
+        || config
+            .metadata
+            .iter()
+            .any(|(key, value)| key.chars().count() > 64 || value.chars().count() > 512)
+    {
+        return Err(ManagedAgentError::Invalid(
+            "metadata supports at most 16 pairs with 64-character keys and 512-character values"
+                .into(),
+        ));
+    }
+    if config.skills.len() > 20 {
+        return Err(ManagedAgentError::Invalid(
+            "skills supports at most 20 entries".into(),
+        ));
+    }
     if config.max_steps == 0 {
         return Err(ManagedAgentError::Invalid(
             "max_steps must be greater than or equal to 1".into(),
@@ -470,15 +509,7 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             .validate(&config.id)
             .map_err(ManagedAgentError::Invalid)?;
     }
-    let declared_count = config.client_tools.len()
-        + config
-            .toolsets
-            .iter()
-            .map(|toolset| match toolset.source {
-                ToolsetSource::Agent => AGENT_TOOLSET_TOOL_IDS.len(),
-                ToolsetSource::Mcp { .. } => toolset.overrides.len(),
-            })
-            .sum::<usize>();
+    let declared_count = config.client_tools.len() + config.toolsets.len();
     if declared_count > 128 {
         return Err(ManagedAgentError::Invalid(
             "tools supports at most 128 declared entries".into(),
@@ -527,17 +558,10 @@ fn project(revision: AgentConfigRevision) -> Agent {
     let id = config.id.clone();
     let model = render_managed_model_id(&config.model_binding).unwrap_or_default();
     let tools = wire_tools(&config.toolsets, &config.client_tools);
-    let status = match config.lifecycle() {
-        AgentLifecycle::Published => AgentStatus::Published,
-        AgentLifecycle::Disabled => AgentStatus::Disabled,
-        AgentLifecycle::Archived => AgentStatus::Archived,
-    };
     Agent {
         id: id.clone(),
         object_type: "agent",
         archived_at: config.archived_at,
-        disabled_at: config.disabled_at,
-        status,
         created_at: OBJECT_AT.to_string(),
         updated_at: OBJECT_AT.to_string(),
         name: config.name.unwrap_or_else(|| id.clone()),
@@ -587,7 +611,12 @@ fn project(revision: AgentConfigRevision) -> Agent {
                             version: Some(revision_number),
                         },
                     )),
-                    MultiagentTarget::Advisor { .. } => None,
+                    MultiagentTarget::Advisor { model } => Some(MultiagentRosterEntry::Advisor(
+                        AdvisorRosterEntry {
+                            model,
+                            kind: AdvisorRosterEntryKind::Advisor,
+                        },
+                    )),
                 })
                 .collect::<Vec<_>>();
             WireMultiagent::Coordinator { agents }
@@ -843,47 +872,6 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     })?;
                 let _ = revision;
                 self.project_current(workspace_id, current).await
-            }
-            ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
-                format!("Agent changed concurrently (current version: {current_revision:?})"),
-            )),
-        }
-    }
-
-    async fn disable(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
-        if workspace_id == RESERVED_ADMIN_SCOPE {
-            return Err(ManagedAgentError::NotFound);
-        }
-        let scope = Self::scope(workspace_id);
-        let current = self
-            .plane
-            .get_versioned(&scope, id)
-            .await
-            .map_err(ManagedAgentError::Storage)?
-            .ok_or(ManagedAgentError::NotFound)?;
-        match current.config.lifecycle() {
-            AgentLifecycle::Disabled => return Ok(project(current)),
-            AgentLifecycle::Archived => {
-                return Err(ManagedAgentError::Invalid(
-                    "archived Agent cannot be disabled".into(),
-                ));
-            }
-            AgentLifecycle::Published => {}
-        }
-        let mut config = current.config;
-        config.disabled_at = Some(lifecycle_timestamp());
-        match self
-            .plane
-            .put_if_revision(&scope, &config, current.revision)
-            .await
-            .map_err(ManagedAgentError::Storage)?
-        {
-            ConfigWrite::Applied { revision } => {
-                self.plane
-                    .withdraw(workspace_id, id, revision)
-                    .await
-                    .map_err(ManagedAgentError::Storage)?;
-                Ok(project(AgentConfigRevision { config, revision }))
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -1215,22 +1203,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_agent_lifecycle_follows_disable_archive_retention_rules() {
+    async fn managed_agent_archive_retains_immutable_publication() {
         // Cause/effect graph:
-        // C1 Published + disable -> E1 current execution is unavailable while
-        // the immutable publication remains addressable; C2 Disabled + disable
-        // -> E2 idempotent; C3 Disabled + update/publish -> E3 fail closed;
-        // C4 Disabled + archive -> E4 Archived terminal state with the same
-        // historical publication retained; C5 Archived + archive -> E5
-        // idempotent.
+        // C1 Published + archive -> E1 current execution becomes unavailable while
+        // the immutable publication remains addressable; C2 Archived + archive ->
+        // E2 idempotent. Disable remains a native configuration-plane lifecycle
+        // operation and is deliberately absent from the Managed SDK repository.
         //
         // Decision table:
         // | rule | current   | command | current executable | exact snapshot | result |
-        // | L1   | Published | disable | no                 | yes            | Disabled |
-        // | L2   | Disabled  | disable | no                 | yes            | no new revision |
-        // | L3   | Disabled  | update  | no                 | yes            | reject |
-        // | L4   | Disabled  | archive | no                 | yes            | Archived |
-        // | L5   | Archived  | archive | no                 | yes            | no new revision |
+        // | L1   | Published | archive | no                 | yes            | archived |
+        // | L2   | Archived  | archive | no                 | yes            | no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
@@ -1247,7 +1230,6 @@ mod tests {
             AgentSkill::Custom { skill_id, .. } if skill_id == "skill-docs"
         ));
         assert!(catalog.current("workspace-a", &created.id).is_some());
-        assert_eq!(created.status, AgentStatus::Published);
         let fingerprint = catalog
             .current("workspace-a", &created.id)
             .expect("published")
@@ -1255,13 +1237,12 @@ mod tests {
             .fingerprint
             .0;
 
-        let disabled = repository
-            .disable("workspace-a", &created.id)
+        let archived = repository
+            .archive("workspace-a", &created.id)
             .await
             .unwrap();
-        assert_eq!(disabled.version, 2, "L1");
-        assert_eq!(disabled.status, AgentStatus::Disabled, "L1");
-        assert!(disabled.disabled_at.is_some(), "L1");
+        assert_eq!(archived.version, 2, "L1");
+        assert!(archived.archived_at.is_some(), "L1");
         assert!(catalog.current("workspace-a", &created.id).is_none(), "L1");
         assert!(
             plane
@@ -1271,50 +1252,11 @@ mod tests {
                 .is_some(),
             "L1"
         );
-
-        let disabled_again = repository
-            .disable("workspace-a", &created.id)
-            .await
-            .unwrap();
-        assert_eq!(disabled_again.version, 2, "L2");
-        assert!(
-            matches!(
-                repository
-                    .update("workspace-a", &created.id, update_params(2))
-                    .await,
-                Err(ManagedAgentError::Invalid(_))
-            ),
-            "L3"
-        );
-        assert!(
-            plane
-                .publish(&ScopeId::from("workspace-a"), &created.id)
-                .await
-                .is_err(),
-            "L3"
-        );
-
-        let archived = repository
-            .archive("workspace-a", &created.id)
-            .await
-            .unwrap();
-        assert_eq!(archived.version, 3, "L4");
-        assert_eq!(archived.status, AgentStatus::Archived, "L4");
-        assert!(archived.disabled_at.is_none(), "L4");
-        assert!(archived.archived_at.is_some(), "L4");
-        assert!(
-            plane
-                .publication(&ScopeId::from("workspace-a"), &fingerprint)
-                .await
-                .unwrap()
-                .is_some(),
-            "L4"
-        );
         let archived_again = repository
             .archive("workspace-a", &created.id)
             .await
             .unwrap();
-        assert_eq!(archived_again.version, 3, "L5");
+        assert_eq!(archived_again.version, 2, "L2");
     }
 
     #[tokio::test]
@@ -1495,11 +1437,10 @@ mod tests {
     }
 
     #[test]
-    fn managed_multiagent_rejects_nonstandard_advisor_entries() {
-        // Causes: C1 official Agent/self roster entry; C2 private advisor entry.
-        // Effects: E1 typed roster; E2 fail-fast decode before repository access.
-        // Decision table: C1 -> E1; C2 -> E2. Native AgentConfig may still own
-        // an advisor target, but the Managed wire has no parallel union member.
+    fn managed_multiagent_accepts_the_official_advisor_entry() {
+        // Causes: C1 Agent reference; C2 official advisor entry; C3 unknown tag.
+        // Effects: E1/E2 typed roster; E3 fail-fast decode before repository access.
+        // Decision table: C1 -> E1; C2 -> E2; C3 -> E3.
         assert!(
             serde_json::from_value::<WireMultiagent>(json!({
                 "type": "coordinator",
@@ -1513,8 +1454,16 @@ mod tests {
                 "type": "coordinator",
                 "agents": [{"type":"advisor", "model":"claude-opus-5"}]
             }))
-            .is_err(),
+            .is_ok(),
             "E2"
+        );
+        assert!(
+            serde_json::from_value::<WireMultiagent>(json!({
+                "type": "coordinator",
+                "agents": [{"type":"future", "model":"claude-opus-5"}]
+            }))
+            .is_err(),
+            "E3"
         );
     }
 

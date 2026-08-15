@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use super::{WireError, bad_request, not_found};
 use crate::routes::ManagedJson;
 use crate::types::environment::{Work, WorkHeartbeat, WorkQueueStats, WorkUpdateParams};
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
 use awaken_environment_execution_application::{
     EnvironmentExecutionApplication, EnvironmentExecutionError,
@@ -34,7 +34,7 @@ pub(super) async fn list_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path(id): Path<String>,
     Query(page): Query<PageQuery>,
-) -> Result<Json<Page<Work>>, WireError> {
+) -> Result<Json<PageCursor<Work>>, WireError> {
     let data: Vec<Work> = state
         .list_work(&id)
         .await
