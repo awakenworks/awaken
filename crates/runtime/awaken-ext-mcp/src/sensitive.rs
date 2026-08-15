@@ -24,11 +24,37 @@ use serde_json::Value;
 /// The placeholder written over a sensitive value by [`redact_arguments`].
 pub const REDACTED: &str = "[redacted]";
 
+/// The only two projections permitted at the recording boundary.
+///
+/// Keeping this decision separate from JSON traversal gives the production
+/// redactor a small, closed security kernel: every supported sensitivity
+/// marker selects `Redacted`; only their complete absence selects `Public`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProjectionExposure {
+    Public,
+    Redacted,
+}
+
+#[must_use]
+const fn projection_exposure(
+    explicit_sensitive: bool,
+    write_only: bool,
+    password_format: bool,
+) -> ProjectionExposure {
+    if explicit_sensitive || write_only || password_format {
+        ProjectionExposure::Redacted
+    } else {
+        ProjectionExposure::Public
+    }
+}
+
 /// Whether a (sub)schema marks its value sensitive.
 fn is_sensitive(schema: &Value) -> bool {
-    schema.get("x-sensitive").and_then(Value::as_bool) == Some(true)
-        || schema.get("writeOnly").and_then(Value::as_bool) == Some(true)
-        || schema.get("format").and_then(Value::as_str) == Some("password")
+    projection_exposure(
+        schema.get("x-sensitive").and_then(Value::as_bool) == Some(true),
+        schema.get("writeOnly").and_then(Value::as_bool) == Some(true),
+        schema.get("format").and_then(Value::as_str) == Some("password"),
+    ) == ProjectionExposure::Redacted
 }
 
 /// Inject `"x-sensitive": true` at each dotted property `path` (e.g.
@@ -131,6 +157,46 @@ pub fn redact_arguments(schema: &Value, arguments: &Value) -> Value {
             None => arguments.clone(),
         },
         _ => arguments.clone(),
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn sensitive_marker_never_projects_payload_publicly() {
+        let explicit_sensitive: bool = kani::any();
+        let write_only: bool = kani::any();
+        let password_format: bool = kani::any();
+
+        let projection = projection_exposure(explicit_sensitive, write_only, password_format);
+        if explicit_sensitive || write_only || password_format {
+            assert_eq!(projection, ProjectionExposure::Redacted);
+        } else {
+            assert_eq!(projection, ProjectionExposure::Public);
+        }
+    }
+
+    #[kani::proof]
+    fn sensitivity_markers_can_never_widen_a_redacted_projection() {
+        let explicit_sensitive: bool = kani::any();
+        let write_only: bool = kani::any();
+        let password_format: bool = kani::any();
+        let add_explicit_sensitive: bool = kani::any();
+        let add_write_only: bool = kani::any();
+        let add_password_format: bool = kani::any();
+
+        let before = projection_exposure(explicit_sensitive, write_only, password_format);
+        let after = projection_exposure(
+            explicit_sensitive || add_explicit_sensitive,
+            write_only || add_write_only,
+            password_format || add_password_format,
+        );
+
+        if before == ProjectionExposure::Redacted {
+            assert_eq!(after, ProjectionExposure::Redacted);
+        }
     }
 }
 
