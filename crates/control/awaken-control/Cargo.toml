@@ -17,6 +17,7 @@ authority = "control"
 # NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
+awaken-authorization-contract.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-acp-contract.workspace = true
 awaken-deployment-contract.workspace = true

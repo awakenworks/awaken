@@ -1,5 +1,8 @@
 //! Deterministic authorization profiles owned by Awaken.
 
+use awaken_authorization_contract::{
+    AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, WorkspaceRoleAuthority,
+};
 use awaken_iam_contract::{
     ActionKey, ActionScopeRule, AuthorizationProfileDocument, CreateAuthorizationProfile,
     GrantEffect, GrantSnapshot, GrantSubjectRef, NamespaceId, ResourceModelRegistration, ScopeKind,
@@ -50,6 +53,15 @@ pub(super) fn qualify_role(role: &str) -> RoleId {
         RoleId(role.to_owned())
     } else {
         RoleId(format!("{prefix}{role}"))
+    }
+}
+
+fn workspace_action_pattern(authority: WorkspaceRoleAuthority) -> &'static str {
+    match authority.management_action_pattern() {
+        Some(pattern) => pattern,
+        None => authority
+            .resource_action_pattern()
+            .expect("every integration-role authority belongs to the Workspace profile"),
     }
 }
 
@@ -123,10 +135,8 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
             });
         }
     }
-    for (index, pattern) in ["workspace.*", "model_supply.read", "skill.*"]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, authority) in AGENT_PUBLISHER_AUTHORITIES.iter().copied().enumerate() {
+        let pattern = workspace_action_pattern(authority);
         grants.push(GrantSnapshot {
             id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:publisher:{index}"),
             subject: GrantSubjectRef::Role {
@@ -137,15 +147,18 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
             effect: GrantEffect::Allow,
         });
     }
-    grants.push(GrantSnapshot {
-        id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:credential_ingress"),
-        subject: GrantSubjectRef::Role {
-            role_id: AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE.to_owned(),
-        },
-        action_pattern: qualify_action("apikey.*").0,
-        scope: ScopeRef::Global,
-        effect: GrantEffect::Allow,
-    });
+    for authority in CREDENTIAL_INGRESS_AUTHORITIES {
+        let pattern = workspace_action_pattern(*authority);
+        grants.push(GrantSnapshot {
+            id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:credential_ingress"),
+            subject: GrantSubjectRef::Role {
+                role_id: AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE.to_owned(),
+            },
+            action_pattern: qualify_action(pattern).0,
+            scope: ScopeRef::Global,
+            effect: GrantEffect::Allow,
+        });
+    }
     for (index, pattern) in [
         "workspace.*",
         "apikey.*",

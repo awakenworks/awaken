@@ -347,6 +347,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-authorization-contract"
+version = "1.0.0-dev"
+
+[[package]]
 name = "awaken-authz-enforce"
 version = "1.0.0-dev"
 dependencies = [
@@ -566,6 +570,7 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-config",
  "awaken-agent-contract",
+ "awaken-authorization-contract",
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-config-service",
