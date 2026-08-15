@@ -513,6 +513,81 @@ async fn archive_session_rehydrates_after_process_restart() {
 }
 
 #[tokio::test]
+async fn archive_session_does_not_require_a_retired_agent_publication_after_restart() {
+    // Cause/effect graph: C1 durable Session freezes Agent revision 7; C2 the
+    // disposable projection and exact Control publication are unavailable after
+    // restart; C3 archive requests terminal cleanup. Effects: E1 the durable
+    // baseline supplies the cleanup projection; E2 the Session terminates and
+    // releases its Runtime exactly once; E3 ordinary interactive rehydration
+    // remains fail-closed elsewhere. Requiring mutable Control presentation for
+    // C3 leaks every already-terminal Run and hot-loops its downstream inbox.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    let mut persisted = sample_persisted("sesn_retired_agent_cleanup");
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &persisted.baseline
+    else {
+        panic!("fixture baseline must be frozen");
+    };
+    persisted.baseline = awaken_session_contract::SessionBaselineState::Frozen(
+        awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: baseline.environment.clone(),
+                runtime_placement: baseline.runtime_placement,
+                mcp_authoring: baseline.mcp_authoring.clone(),
+                agent_id: baseline.agent_id.clone(),
+                agent_revision: Some(7),
+                model: baseline.model.clone(),
+                runtime: baseline.runtime.clone(),
+                delegate_ids: baseline.delegate_ids.clone(),
+                toolsets: baseline.toolsets.clone(),
+                mounts: baseline.mounts.clone(),
+                env: baseline.env.clone(),
+                prompts: baseline.prompts.clone(),
+                transcript_prefix: baseline.transcript_prefix.clone(),
+            },
+        ),
+    );
+    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+
+    let runtime = EndSessionRecorder::default();
+    let ended = runtime.ended.clone();
+    let prepared = runtime.prepared.clone();
+    let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+    let archived = restarted
+        .archive_session("sesn_retired_agent_cleanup")
+        .await
+        .expect("terminal cleanup uses durable baseline without Control publication");
+    assert_eq!(archived.status, SessionStatus::Terminated, "E1/E2");
+    assert_eq!(archived.agent.version, 7, "E1 keeps the frozen revision");
+    assert_eq!(
+        ended.lock().unwrap().as_slice(),
+        &["sesn_retired_agent_cleanup"],
+        "E2"
+    );
+    assert!(
+        prepared.lock().unwrap().is_empty(),
+        "E2 never prepares a Runtime"
+    );
+    assert_eq!(
+        repo.get("sesn_retired_agent_cleanup")
+            .await
+            .unwrap()
+            .execution,
+        SessionExecutionState::Terminated,
+        "E2"
+    );
+
+    restarted
+        .archive_session("sesn_retired_agent_cleanup")
+        .await
+        .expect("terminal replay is idempotent");
+    assert_eq!(
+        ended.lock().unwrap().len(),
+        1,
+        "E2 replay has no second cleanup"
+    );
+}
+
+#[tokio::test]
 async fn archive_persists_release_before_and_after_sandbox_teardown() {
     let repo = Arc::new(ephemeral_session_repo());
     let state = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
