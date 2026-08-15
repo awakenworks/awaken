@@ -2413,6 +2413,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "loom",
  "proptest",
  "rusqlite",
  "serde_json",

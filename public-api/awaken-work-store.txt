@@ -8,7 +8,6 @@ pub fn awaken_work_store::LeaseBook::is_leased_with_reclaim_age(&self, &str, u64
 pub fn awaken_work_store::LeaseBook::is_owned_by(&self, &str, &str) -> bool
 pub fn awaken_work_store::LeaseBook::lease(&self, &str, u64)
 pub fn awaken_work_store::LeaseBook::lease_for(&self, &str, u64, u64)
-pub fn awaken_work_store::LeaseBook::own(&self, &str, &str) -> core::result::Result<u64, &'static str>
 pub fn awaken_work_store::LeaseBook::record_poll(&self, &str, &str, u64)
 pub fn awaken_work_store::LeaseBook::release(&self, &str)
 pub fn awaken_work_store::LeaseBook::workers_polling(&self, &str, u64) -> i64
