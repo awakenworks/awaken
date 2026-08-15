@@ -313,7 +313,6 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        interval.tick().await;
         loop {
             interval.tick().await;
             if let Err(error) = lifecycle.reconcile_environment_warmups().await {

@@ -373,12 +373,12 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
 
 /// Cause/effect design:
 /// C1=Worker has external provider+capacity, C2=warm target > 0, C3=warmup
-/// succeeds, C4=prompt shutdown after Ready. E1=the canonical empty Container
-/// shape is warmed before Ready is observable, E2=target is forwarded exactly,
-/// E3=shutdown drains capacity before deregistration completes.
-/// Decision rule: (C1,C2,C3,C4)->(E1,E2,E3).
+/// succeeds, C4=prompt shutdown after Ready and asynchronous warmup. E1=Ready
+/// is independent of capacity evidence, E2=the canonical empty Container shape
+/// is warmed once with the exact target, E3=shutdown drains capacity before
+/// deregistration completes. Decision rule: (C1,C2,C3,C4)->(E1,E2,E3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_warms_before_ready_and_drains_capacity_on_shutdown() {
+async fn worker_publishes_ready_then_warms_and_drains_capacity_on_shutdown() {
     let upstream = FakeWorkerUpstream::start();
     let capacity = Arc::new(RecordingCapacity::default());
     let mut deployment = local_coordinator_deployment();
@@ -399,14 +399,17 @@ async fn worker_warms_before_ready_and_drains_capacity_on_shutdown() {
     .build()
     .expect("valid warm-capacity Worker topology")
     .run_until(async {
+        let mut observed_ready = false;
         for _ in 0..300 {
             if upstream
                 .requests()
                 .iter()
                 .any(|path| path == "/v1/worker/heartbeat")
             {
-                let warmups = capacity.warmups.lock().unwrap();
-                assert_eq!(warmups.len(), 1, "Ready cannot precede warmup");
+                observed_ready = true;
+            }
+            let warmups = capacity.warmups.lock().unwrap().clone();
+            if observed_ready && warmups.len() == 1 {
                 assert_eq!(warmups[0].1, 2);
                 assert_eq!(
                     warmups[0].0.isolation,
@@ -432,8 +435,8 @@ async fn worker_warms_before_ready_and_drains_capacity_on_shutdown() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_reconciles_current_environment_shape_before_ready() {
-    // FMECA: F1 Worker advertises Ready before exact Environment capacity exists
+async fn worker_reconciles_current_environment_shape_after_ready() {
+    // FMECA: F1 Ready is misread as exact Environment capacity evidence
     // (S5 O6 D2, RPN60); F2 warmup uses a default spec instead of the frozen
     // projection (S8 O4 D3, RPN96); F3 warmup transport failure blocks Worker
     // readiness (S7 O3 D2, RPN42); F4 receipt is published for failed/zero
@@ -447,12 +450,13 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
     // Cause graph: C1=current cloud snapshot; C2=capacity enabled; C3=prewarm
     // succeeds; C4=transport available; C5=desired cost exceeds total budget;
     // C6=current config shape changes; C7=default and Environment compete for a
-    // total budget of one. E1=exact shape requested before heartbeat; E2=Worker
+    // total budget of one. E1=Ready publishes independently and the exact shape
+    // is requested asynchronously; E2=Worker
     // continues cold without receipt; E3=stable prefix selected within budget;
     // E4=old unused capacity discarded before replacement warmup; E5=only one
     // prewarm call occurs, with Environment priority. Decision table:
     // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effect |
-    // | E1   | 1  | 1  | 1  | 1  | 0  | 0  | 0  | exact warm then Ready |
+    // | E1   | 1  | 1  | 1  | 1  | 0  | 0  | 0  | Ready, then exact warm |
     // | E2   | 1  | 1  | 0  | 1  | -  | 0  | -  | cold Ready, no receipt |
     // | E3   | -  | 1  | -  | 0  | -  | 0  | -  | cold Ready, prior receipt retained |
     // | E4   | 1  | 1  | 1  | 1  | 1  | 0  | 1  | E3,E5, one exact prewarm |
@@ -504,19 +508,18 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
     .unwrap()
     .run_until(async {
         let mut changed = false;
+        let mut observed_ready = false;
         for _ in 0..1_500 {
             if upstream
                 .requests()
                 .iter()
                 .any(|path| path == "/v1/worker/heartbeat")
             {
-                let warmups = capacity.warmups.lock().unwrap();
-                if !changed {
-                    assert_eq!(
-                        warmups.len(),
-                        1,
-                        "E4/E5 one unified plan cannot oversubscribe total=1"
-                    );
+                observed_ready = true;
+            }
+            let warmups = capacity.warmups.lock().unwrap().clone();
+            if observed_ready {
+                if !changed && warmups.len() == 1 {
                     let exact = &warmups[0].0;
                     assert_eq!(
                         exact.network,
@@ -534,10 +537,12 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
                         Some("registry.example/env@sha256:exact"),
                         "E1 exact image"
                     );
-                    drop(warmups);
                     upstream.set_environment_warmups_json(replacement_response.clone());
                     changed = true;
-                } else if warmups.len() == 2 && !capacity.discarded.lock().unwrap().is_empty() {
+                } else if changed
+                    && warmups.len() == 2
+                    && !capacity.discarded.lock().unwrap().is_empty()
+                {
                     assert_eq!(
                         warmups[1].0.network,
                         awaken_provisioning_contract::NetworkPolicy::Unrestricted,
@@ -556,8 +561,9 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
 
 /// Cause/effect design:
 /// C1=capacity warmup fails, C2=provider/isolation selection remains valid.
-/// E1=Worker still publishes Ready with the existing cold-create path, E2=no
-/// alternate/lower-isolation provider is selected, E3=capacity shutdown still runs.
+/// E1=Worker publishes Ready independently and the asynchronous warmup is
+/// attempted once, E2=no alternate/lower-isolation provider is selected,
+/// E3=capacity shutdown still runs.
 /// Decision rule: (C1,C2)->(E1,E2,E3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
@@ -582,13 +588,16 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
     .build()
     .expect("valid failure-degradation Worker topology")
     .run_until(async {
+        let mut observed_ready = false;
         for _ in 0..300 {
             if upstream
                 .requests()
                 .iter()
                 .any(|path| path == "/v1/worker/heartbeat")
             {
-                assert_eq!(capacity.warmups.lock().unwrap().len(), 1, "E1/E2");
+                observed_ready = true;
+            }
+            if observed_ready && capacity.warmups.lock().unwrap().len() == 1 {
                 return Ok(WorkerShutdown::Prompt);
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

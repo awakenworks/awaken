@@ -70,7 +70,10 @@ async fn create(app: &Router) -> String {
         app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        serde_json::json!({
+            "agent": "coder",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

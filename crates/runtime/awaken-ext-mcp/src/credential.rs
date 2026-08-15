@@ -37,7 +37,8 @@ pub enum AuthRetrySafety {
 pub fn auth_retry_safety(request: &Value) -> AuthRetrySafety {
     match request.get("method").and_then(Value::as_str) {
         Some(
-            "ping"
+            "initialize"
+            | "ping"
             | "tools/list"
             | "resources/list"
             | "resources/templates/list"
@@ -57,12 +58,13 @@ mod tests {
 
     #[test]
     fn auth_retry_classifier_is_an_explicit_fail_closed_decision_table() {
-        // Cause/effect graph: C1=known read-only method; C2=tools/call;
-        // C3=unknown/missing/notification method. Effects E1=one auth retry,
+        // Cause/effect graph: C1=protocol handshake or known read-only method;
+        // C2=tools/call; C3=unknown/missing/notification method. Effects E1=one auth retry,
         // E2=credential may rotate but request is never replayed. Decision
         // rules MR1=C1=>E1; MR2=C2|C3=>E2. FMECA: a false E1 can duplicate an
         // external mutation, so every method outside the allowlist is MR2.
         for method in [
+            "initialize",
             "ping",
             "tools/list",
             "resources/list",

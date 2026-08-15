@@ -273,6 +273,11 @@ pub struct ControlSessionCreationInputs {
     pub model: String,
     #[serde(default)]
     pub execution_model_ref: String,
+    /// Complete Session-local model semantics when the caller overrides the
+    /// Agent model. `None` means the immutable Agent route and inference controls
+    /// remain authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<crate::SessionModelOverride>,
     pub runtime: Option<String>,
     pub mcp_authoring: SessionMcpAuthoringContext,
     #[serde(default)]
@@ -326,6 +331,7 @@ impl SessionCreationIntent {
             agent_revision,
             model,
             execution_model_ref,
+            model_override,
             runtime,
             mcp_authoring,
             delegate_ids,
@@ -347,6 +353,7 @@ impl SessionCreationIntent {
                 agent_id,
                 agent_revision,
                 model,
+                model_override,
                 runtime,
                 delegate_ids,
                 toolsets,
@@ -376,11 +383,13 @@ pub struct SessionBaseline {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
     pub model: String,
-    /// Runtime coordinate resolved from `model` by the published Agent source.
-    /// It is fingerprinted with the baseline and never inferred from public
-    /// Managed syntax after Session admission.
+    /// Runtime coordinate resolved from `model` by the canonical publication
+    /// resolver (the Agent publication or a Session-local override). It is
+    /// fingerprinted and never inferred from public syntax after admission.
     #[serde(default)]
     pub execution_model_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<crate::SessionModelOverride>,
     pub runtime: Option<String>,
     #[serde(default)]
     pub delegate_ids: Vec<String>,
@@ -404,6 +413,7 @@ pub struct SessionBaselineInputs {
     pub agent_id: String,
     pub agent_revision: Option<u64>,
     pub model: String,
+    pub model_override: Option<crate::SessionModelOverride>,
     pub runtime: Option<String>,
     pub delegate_ids: Vec<String>,
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
@@ -444,6 +454,7 @@ impl SessionBaseline {
             agent_revision: Option<u64>,
             model: &'a str,
             execution_model_ref: &'a str,
+            model_override: &'a Option<crate::SessionModelOverride>,
             runtime: &'a Option<String>,
             delegate_ids: &'a [String],
             toolsets: &'a [awaken_agent_contract::ToolsetPolicy],
@@ -460,6 +471,7 @@ impl SessionBaseline {
             agent_id,
             agent_revision,
             model,
+            model_override,
             runtime,
             delegate_ids,
             toolsets,
@@ -476,6 +488,7 @@ impl SessionBaseline {
             agent_revision,
             model: &model,
             execution_model_ref: &execution_model_ref,
+            model_override: &model_override,
             runtime: &runtime,
             delegate_ids: &delegate_ids,
             toolsets: &toolsets,
@@ -493,6 +506,7 @@ impl SessionBaseline {
             agent_revision,
             model,
             execution_model_ref,
+            model_override,
             runtime,
             delegate_ids,
             toolsets,
@@ -627,6 +641,7 @@ mod tests {
             agent_id: "agent".into(),
             agent_revision: None,
             model: "model".into(),
+            model_override: None,
             runtime: None,
             delegate_ids: Vec::new(),
             toolsets: Vec::new(),
@@ -649,6 +664,7 @@ mod tests {
             agent_revision: None,
             model: "model".into(),
             execution_model_ref: "model".into(),
+            model_override: None,
             runtime: Some("native".into()),
             mcp_authoring: SessionMcpAuthoringContext::default(),
             delegate_ids: vec!["delegate".into()],

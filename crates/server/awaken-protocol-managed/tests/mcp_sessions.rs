@@ -413,16 +413,23 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
     })
     .with_vaults(vaults);
 
-    let bad: awaken_protocol_managed::types::SessionCreateParams =
-        serde_json::from_value(json!({ "agent": "a", "vault_ids": ["vlt_missing"] })).unwrap();
+    let bad: awaken_protocol_managed::types::SessionCreateParams = serde_json::from_value(json!({
+        "agent": "a",
+        "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        "vault_ids": ["vlt_missing"]
+    }))
+    .unwrap();
     assert!(matches!(
         state.check_bind("default", &bad).await,
         Err(awaken_protocol_managed::StateError::VaultNotFound(_))
     ));
 
     // No referenced vault → the bind is legal.
-    let ok: awaken_protocol_managed::types::SessionCreateParams =
-        serde_json::from_value(json!({ "agent": "a" })).unwrap();
+    let ok: awaken_protocol_managed::types::SessionCreateParams = serde_json::from_value(json!({
+        "agent": "a",
+        "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+    }))
+    .unwrap();
     assert!(state.check_bind("default", &ok).await.is_ok());
 }
 
@@ -431,13 +438,48 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, body)
 }
 
+/// Build the official `agent_with_overrides` MCP union once for these lifecycle
+/// tests. MCP declarations and toolsets are a bijection on the SDK wire.
+fn session_with_mcp(agent_id: &str, mcp_servers: Vec<Value>, vault_ids: Vec<String>) -> Value {
+    let tools = mcp_servers
+        .iter()
+        .map(|server| {
+            json!({
+                "type": "mcp_toolset",
+                "mcp_server_name": server["name"].as_str().expect("MCP fixture name")
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "agent": {
+            "id": agent_id,
+            "type": "agent_with_overrides",
+            "mcp_servers": mcp_servers,
+            "tools": tools
+        },
+        "vault_ids": vault_ids
+    })
+}
+
 async fn call_with_headers(
     app: &Router,
     method: &str,
     uri: &str,
-    body: Option<Value>,
+    mut body: Option<Value>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, axum::http::HeaderMap, Value) {
+    // These tests isolate MCP lifecycle decisions. Every Session fixture still
+    // sends the SDK-required explicit Environment; this transport helper never
+    // changes production behavior or grants a local fallback.
+    if method == "POST"
+        && uri == "/v1/sessions"
+        && let Some(object) = body.as_mut().and_then(Value::as_object_mut)
+    {
+        object.insert(
+            "environment_id".into(),
+            json!(awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID),
+        );
+    }
     let mut b = Request::builder().method(method).uri(uri);
     for (name, value) in headers {
         b = b.header(*name, *value);
@@ -530,12 +572,11 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            // The SDK sends `type: "url"`; it is tolerated on input.
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": [vault_id],
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec![vault_id.clone()],
+        )),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -654,11 +695,11 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": "https://mcp.example.com/sse" }],
-            "vault_ids": [vault_id.clone()]
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": "https://mcp.example.com/sse" })],
+            vec![vault_id.clone()],
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -711,11 +752,11 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "ordered",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": [vaults[1].clone(), vaults[0].clone()]
-        })),
+        Some(session_with_mcp(
+            "ordered",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec![vaults[1].clone(), vaults[0].clone()],
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -731,11 +772,11 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "anonymous",
-            "mcp_servers": [{ "name": "other", "type": "url", "url": "https://other.example.com/mcp" }],
-            "vault_ids": [vaults[0].clone()]
-        })),
+        Some(session_with_mcp(
+            "anonymous",
+            vec![json!({ "name": "other", "type": "url", "url": "https://other.example.com/mcp" })],
+            vec![vaults[0].clone()],
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -762,11 +803,11 @@ async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": [vault_id]
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec![vault_id],
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -810,11 +851,11 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": [vault_id.clone()],
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec![vault_id.clone()],
+        )),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -870,11 +911,11 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": ["vlt_missing"],
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec!["vlt_missing".into()],
+        )),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -903,11 +944,11 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
         &h.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "calc-agent",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
-            "vault_ids": [vault_id, "vlt_bogus"],
-        })),
+        Some(session_with_mcp(
+            "calc-agent",
+            vec![json!({ "name": "calc", "type": "url", "url": MCP_URL })],
+            vec![vault_id, "vlt_bogus".into()],
+        )),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -952,10 +993,11 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             &h.app,
             "POST",
             "/v1/sessions",
-            Some(json!({
-                "agent": "calc-agent",
-                "mcp_servers": [{"type": "url", "name": "calc", "url": MCP_URL}]
-            })),
+            Some(session_with_mcp(
+                "calc-agent",
+                vec![json!({"type": "url", "name": "calc", "url": MCP_URL})],
+                Vec::new(),
+            )),
         )
         .await;
         assert_eq!(s, status, "{kind:?}");
@@ -1167,10 +1209,11 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         &failed.app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "hot-agent",
-            "mcp_servers": [{"type": "url", "name": "calc", "url": "https://old.example/mcp"}]
-        })),
+        Some(session_with_mcp(
+            "hot-agent",
+            vec![json!({"type": "url", "name": "calc", "url": "https://old.example/mcp"})],
+            Vec::new(),
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

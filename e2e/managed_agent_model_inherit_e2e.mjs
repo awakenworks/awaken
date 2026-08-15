@@ -6,19 +6,20 @@
 // authoritative model — the same truth `/v1/agents` projects — not the host default.
 // The session path reads it through the existing `AgentConfigSource` port (the one
 // `/v1/agents` already uses), not a second source. For a published Agent, an
-// `agent_with_overrides.model` may confirm that exact public model id, but cannot
-// splice an unpublished id onto the frozen backend/credential route.
+// `agent_with_overrides.model` may confirm that exact public model id. A host
+// without the canonical model resolver fails a different id as unavailable; it
+// never splices the id onto the frozen backend/credential route.
 //
 // Cause/effect graph and decision table:
 //   C1 published Agent has model M; C2 Session supplies an override; C3 override=M.
 //   C1 -> E1 `/v1/agents` and a plain Session project M from one publication.
 //   C1 + C2 + C3 -> E2 accept the same immutable route.
-//   C1 + C2 + !C3 -> E3 reject before Session persistence.
+//   C1 + C2 + !C3 + no resolver -> E3 unavailable before Session persistence.
 //
 //   Rule  C1  C2  C3  Expected
 //   M1    Y   N   -   Agent=M, Session=M
 //   M2    Y   Y   Y   Agent=M, Session=M
-//   M3    Y   Y   N   400 agent_model_override_unpublished
+//   M3    Y   Y   N   503 resolver unavailable
 //
 // Deterministic (config mode). Scoped to the model axis: publishes an agent with a
 // known model, then asserts what the session echoes on `session.agent.model`.
@@ -92,21 +93,21 @@ async function main() {
     });
     assert.equal(equalOverride.agent.model.id, 'config-model');
 
-    // M3: a different string is not sufficient publication evidence and must not
-    // be stitched to the Agent's existing backend/credential pins.
+    // M3: this config-only scenario intentionally has no model-catalog resolver;
+    // a different id must fail unavailable rather than reuse the Agent route.
     await assert.rejects(
       () => client.beta.sessions.create({
         agent: { id: AGENT, type: 'agent_with_overrides', model: 'override-model' },
         environment_id: 'env_local',
         betas: BETAS,
       }),
-      (error) => error.status === 400
-        && error.message.includes('agent_model_override_unpublished'),
+      (error) => error.status === 503
+        && error.message.includes('model override resolution is not configured'),
     );
-    pass('published Agent accepts only its frozen model id and rejects route splicing');
+    pass('config-only host fails alternate model resolution without route splicing');
   });
 
-  console.log('E2E PASS: session inherits the published model; equal override is accepted and route splicing is rejected.');
+  console.log('E2E PASS: session inherits the published model; equal override is accepted and missing resolution fails closed.');
   process.exitCode = 0;
 }
 

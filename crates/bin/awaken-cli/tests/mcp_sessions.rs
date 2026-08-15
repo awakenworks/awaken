@@ -118,10 +118,14 @@ const CALC_TOKEN: &str = "calc-bearer-token"; // awaken-allow: secret
 /// Confirmation and rejection are covered by the managed adapter policy tests;
 /// this file owns the first row and opts in explicitly instead of weakening the
 /// production `always_ask` default.
-fn always_allow_mcp_agent(id: &str, server_name: &str) -> Value {
+/// Exact official `agent_with_overrides` replacement for one Session MCP server.
+/// The server and its toolset travel in the same typed Agent reference; there is
+/// no parallel top-level Session extension.
+fn always_allow_mcp_agent_with_server(id: &str, server_name: &str, url: &str) -> Value {
     json!({
         "id": id,
         "type": "agent_with_overrides",
+        "mcp_servers": [{ "name": server_name, "type": "url", "url": url }],
         "tools": always_allow_mcp_tools(server_name)
     })
 }
@@ -424,8 +428,8 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": always_allow_mcp_agent("assistant", "calc"),
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
+            "agent": always_allow_mcp_agent_with_server("assistant", "calc", &url),
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
             "vault_ids": [vault_id],
         })),
     )
@@ -511,7 +515,8 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": always_allow_mcp_agent("calc-agent", "calc"),
+            "agent": "calc-agent",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
             "vault_ids": [vault_id]
         })),
     )
@@ -552,8 +557,8 @@ async fn missing_vault_credential_fails_initial_mcp_realization_loudly() {
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": "assistant",
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
+            "agent": always_allow_mcp_agent_with_server("assistant", "calc", &url),
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
         })),
     )
     .await;
@@ -624,8 +629,8 @@ async fn create_mcp_session_response(
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": always_allow_mcp_agent("assistant", "calc"),
-            "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
+            "agent": always_allow_mcp_agent_with_server("assistant", "calc", url),
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
             "vault_ids": [vault_id],
         })),
     )
@@ -634,7 +639,7 @@ async fn create_mcp_session_response(
 
 async fn create_mcp_session(app: &Router, vault_id: &str, url: &str) -> String {
     let (s, session) = create_mcp_session_response(app, vault_id, url).await;
-    assert_eq!(s, StatusCode::OK);
+    assert_eq!(s, StatusCode::OK, "{session}");
     session["id"].as_str().unwrap().to_string()
 }
 
@@ -651,7 +656,9 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
-    let id = create_mcp_session(&app, &vault_id, &url).await;
+    let (status, session) = create_mcp_session_response(&app, &vault_id, &url).await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let id = session["id"].as_str().unwrap().to_string();
 
     // The turn still succeeds: the refresher exchanged the token mid-connect.
     let (s, _) = send_user_message(&app, &id, "add 2 3").await;

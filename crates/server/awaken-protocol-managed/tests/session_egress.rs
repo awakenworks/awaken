@@ -231,11 +231,16 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     async fn create_session(app: &Router, environment_id: &str, with_mcp: bool) {
         let mut body = json!({ "agent": "a", "environment_id": environment_id });
         if with_mcp {
-            body["mcp_servers"] = json!([{
-                "type": "url",
-                "name": "docs",
-                "url": "https://Docs.Example.test:443/rpc"
-            }]);
+            body["agent"] = json!({
+                "id": "a",
+                "type": "agent_with_overrides",
+                "mcp_servers": [{
+                    "type": "url",
+                    "name": "docs",
+                    "url": "https://Docs.Example.test:443/rpc"
+                }],
+                "tools": [{"type": "mcp_toolset", "mcp_server_name": "docs"}]
+            });
         }
         let (status, response) = call(app, "POST", "/v1/sessions", Some(body)).await;
         assert_eq!(status, StatusCode::OK, "{response}");

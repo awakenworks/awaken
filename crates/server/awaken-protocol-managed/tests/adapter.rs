@@ -63,12 +63,25 @@ fn types(list: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// Add the SDK-required Environment to an exact wire fixture. Call sites remain
+/// explicit about constructing a Session request; the test harness never grants
+/// the production-forbidden implicit local fallback.
+fn session_request(mut body: serde_json::Value) -> serde_json::Value {
+    body.as_object_mut()
+        .expect("Session request fixture is an object")
+        .insert(
+            "environment_id".into(),
+            serde_json::json!(awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID),
+        );
+    body
+}
+
 async fn create(app: &Router) -> String {
     let s = json_call(
         app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        session_request(serde_json::json!({ "agent": "coder" })),
     )
     .await;
     s["id"].as_str().unwrap().to_string()
@@ -99,10 +112,10 @@ async fn session_create_idempotency_replays_one_canonical_session() {
             .oneshot(
                 request
                     .body(Body::from(
-                        serde_json::to_vec(&serde_json::json!({
+                        serde_json::to_vec(&session_request(serde_json::json!({
                             "agent": "coder",
                             "title": title,
-                        }))
+                        })))
                         .unwrap(),
                     ))
                     .unwrap(),
@@ -158,13 +171,13 @@ async fn session_create_idempotency_replays_one_canonical_session() {
                 .header("content-type", "application/json")
                 .header("idempotency-key", "seeded-session")
                 .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({
+                    serde_json::to_vec(&session_request(serde_json::json!({
                         "agent": "coder",
                         "initial_events": [{
                             "type": "user.message",
                             "content": [{"type": "text", "text": "once"}]
                         }]
-                    }))
+                    })))
                     .unwrap(),
                 ))
                 .unwrap(),
@@ -185,7 +198,9 @@ async fn session_create_idempotency_replays_one_canonical_session() {
     );
 
     let state = Arc::new(ManagedState::new(EchoFake));
-    let request = || serde_json::from_value(serde_json::json!({ "agent": "coder" })).unwrap();
+    let request = || {
+        serde_json::from_value(session_request(serde_json::json!({ "agent": "coder" }))).unwrap()
+    };
     let owner_a = state
         .create_session_with_initial_events_idempotent(
             request(),
@@ -387,7 +402,7 @@ async fn session_agent_model_override_is_honored_and_echoed() {
         &app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        session_request(serde_json::json!({ "agent": "coder" })),
     )
     .await;
     assert_eq!(base["agent"]["model"]["id"], "test-model");
@@ -397,13 +412,13 @@ async fn session_agent_model_override_is_honored_and_echoed() {
         &app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({
+        session_request(serde_json::json!({
             "agent": {
                 "id": "coder",
                 "type": "agent_with_overrides",
                 "model": { "id": "test-model", "speed": "fast" }
             }
-        }),
+        })),
     )
     .await;
     assert_eq!(over["agent"]["model"]["id"], "test-model");
@@ -421,9 +436,9 @@ async fn clearing_the_model_on_a_session_override_is_rejected() {
         .uri("/v1/sessions")
         .header("content-type", "application/json")
         .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({
+            serde_json::to_vec(&session_request(serde_json::json!({
                 "agent": { "id": "coder", "type": "agent_with_overrides", "model": null }
-            }))
+            })))
             .unwrap(),
         ))
         .unwrap();
@@ -451,10 +466,13 @@ async fn clearing_the_model_on_a_session_override_is_rejected() {
 async fn session_initial_events_follow_the_atomic_decision_table() {
     let idle_app = router(Arc::new(ManagedState::new(EchoFake)));
     for (rule, body) in [
-        ("C1 omitted", serde_json::json!({"agent": "coder"})),
+        (
+            "C1 omitted",
+            session_request(serde_json::json!({"agent": "coder"})),
+        ),
         (
             "C1 empty",
-            serde_json::json!({"agent": "coder", "initial_events": []}),
+            session_request(serde_json::json!({"agent": "coder", "initial_events": []})),
         ),
     ] {
         let (status, session) = json_response(&idle_app, "POST", "/v1/sessions", body).await;
@@ -467,13 +485,13 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
         &running_app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({
+        session_request(serde_json::json!({
             "agent": "coder",
             "initial_events": [{
                 "type": "user.message",
                 "content": [{"type": "text", "text": "start"}]
             }]
-        }),
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "C2 message admitted");
@@ -512,7 +530,7 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
         &outcome_app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({
+        session_request(serde_json::json!({
             "agent": "coder",
             "initial_events": [{
                 "type": "user.define_outcome",
@@ -520,7 +538,7 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
                 "rubric": {"type": "text", "content": "done"},
                 "max_iterations": 20
             }]
-        }),
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "C2 single outcome admitted");
@@ -542,35 +560,35 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
     let invalid_cases = [
         (
             "C3 unsupported",
-            serde_json::json!({"agent":"coder", "initial_events":[{
+            session_request(serde_json::json!({"agent":"coder", "initial_events":[{
                 "type":"system.message", "content":[{"type":"text", "text":"x"}]
-            }]}),
+            }]})),
         ),
         (
             "C4 mixed atomic",
-            serde_json::json!({"agent":"coder", "initial_events":[
+            session_request(serde_json::json!({"agent":"coder", "initial_events":[
                 message.clone(), {"type":"user.interrupt"}
-            ]}),
+            ]})),
         ),
         (
             "C5 over maximum",
-            serde_json::json!({
+            session_request(serde_json::json!({
                 "agent":"coder",
                 "initial_events": vec![message.clone(); 51]
-            }),
+            })),
         ),
         (
             "C6 two outcomes",
-            serde_json::json!({
+            session_request(serde_json::json!({
                 "agent":"coder",
                 "initial_events":[outcome.clone(), outcome]
-            }),
+            })),
         ),
         (
             "C6 missing rubric",
-            serde_json::json!({"agent":"coder", "initial_events":[{
+            session_request(serde_json::json!({"agent":"coder", "initial_events":[{
                 "type":"user.define_outcome", "description":"finish"
-            }]}),
+            }]})),
         ),
     ];
     for (rule, body) in invalid_cases {
@@ -693,7 +711,7 @@ async fn create_session_advertises_capabilities() {
         &app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        session_request(serde_json::json!({ "agent": "coder" })),
     )
     .await;
 
@@ -716,7 +734,7 @@ async fn create_session_defaults_to_empty_surface() {
         &app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        session_request(serde_json::json!({ "agent": "coder" })),
     )
     .await;
     assert!(s["agent"]["tools"].as_array().unwrap().is_empty());
@@ -737,7 +755,7 @@ async fn session_capability_objects_match_wire_contract() {
         &app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        session_request(serde_json::json!({ "agent": "coder" })),
     )
     .await;
 
@@ -1691,12 +1709,12 @@ async fn system_message_and_interrupt_follow_the_admission_decision_table() {
     assert!(events["data"].as_array().unwrap().is_empty(), "H4 no event");
 }
 
-/// Cause/effect decision table for Managed attribution projection:
-/// R1 user_profile_id=present + user.message -> the exact opaque id reaches the
-/// attributed runtime port; R2 absent -> `None`; non-message events never invoke
-/// the run port (covered by `system_message_and_interrupt_follow_the_admission_decision_table`).
+/// Official event-envelope decision table: R1 removed `user_profile_id` present
+/// -> 400 and no Runtime effect; R2 official user.message only -> admitted with
+/// no out-of-contract attribution. User Profiles are a separate resource and do
+/// not add a field to the Session events SDK shape.
 #[tokio::test]
-async fn user_profile_is_projected_at_request_grain() {
+async fn removed_user_profile_event_field_is_rejected() {
     let subjects = Arc::new(Mutex::new(Vec::new()));
     let app = router(Arc::new(ManagedState::new(RecordingFake {
         systems: Arc::new(Mutex::new(Vec::new())),
@@ -1705,22 +1723,33 @@ async fn user_profile_is_projected_at_request_grain() {
         supports_mid_conversation_system: true,
     })));
     let id = create(&app).await;
-    for (profile, text) in [(Some("user_alice"), "attributed"), (None, "unattributed")] {
-        let mut body = serde_json::json!({
+    let (status, _) = json_response(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({
             "events": [{
                 "type": "user.message",
-                "content": [{ "type": "text", "text": text }]
-            }]
-        });
-        if let Some(profile) = profile {
-            body["user_profile_id"] = serde_json::json!(profile);
-        }
-        json_call(&app, "POST", &format!("/v1/sessions/{id}/events"), body).await;
-    }
-    assert_eq!(
-        *subjects.lock().unwrap(),
-        vec![Some("user_alice".into()), None]
-    );
+                "content": [{ "type": "text", "text": "attributed" }]
+            }],
+            "user_profile_id": "user_alice"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R1");
+    assert!(subjects.lock().unwrap().is_empty(), "R1");
+
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({"events": [{
+            "type": "user.message",
+            "content": [{"type": "text", "text": "unattributed"}]
+        }]}),
+    )
+    .await;
+    assert_eq!(*subjects.lock().unwrap(), vec![None], "R2");
 }
 
 /// A runtime that records the ORDER of `interrupt` vs `run` calls and echoes each
@@ -1979,7 +2008,7 @@ async fn create_owned(app: &Router, scope: Option<&str>) -> String {
         .uri("/v1/sessions")
         .header("content-type", "application/json")
         .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({ "agent": "coder" })).unwrap(),
+            serde_json::to_vec(&session_request(serde_json::json!({ "agent": "coder" }))).unwrap(),
         ))
         .unwrap();
     if let Some(scope) = scope {

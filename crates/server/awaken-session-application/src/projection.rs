@@ -90,6 +90,24 @@ impl SessionApplication {
                     }
                 }
                 snapshot
+                    .map(|mut snapshot| {
+                        if let Some(model_override) = &baseline.model_override {
+                            if let Some(publication) = &model_override.publication {
+                                snapshot.resolved_spec.model_binding = publication.primary.clone();
+                                snapshot.resolved_spec.model_candidates =
+                                    publication.candidates.clone();
+                            }
+                            snapshot.resolved_spec.plugin_config.inference =
+                                model_override.inference.clone();
+                            snapshot.recompute_fingerprint().map_err(|error| {
+                                RunError::internal(format!(
+                                    "Session model override publication is invalid: {error}"
+                                ))
+                            })?;
+                        }
+                        Ok(snapshot)
+                    })
+                    .transpose()?
             }
             None => None,
         };

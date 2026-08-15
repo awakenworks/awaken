@@ -198,6 +198,7 @@ pub fn awaken_session_application::SessionApplication::replace_repository(&mut s
 pub fn awaken_session_application::SessionApplication::requires_external_realization(&self, &awaken_session_contract::session_repo::PersistedSession) -> bool
 pub async fn awaken_session_application::SessionApplication::resolve_managed_list_price_snapshot(&self, awaken_session_contract::budget::ManagedListPriceRequest) -> core::result::Result<awaken_session_contract::budget::ManagedListPriceSnapshot, awaken_session_contract::budget::ManagedListPriceError>
 pub async fn awaken_session_application::SessionApplication::resolve_session_environment(&self, core::option::Option<&str>, core::option::Option<&awaken_executable_agent_contract::session_profile::ExecutableAgentEnvironment>, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<awaken_session_application::ResolvedSessionEnvironment, awaken_session_contract::session::RunError>
+pub async fn awaken_session_application::SessionApplication::resolve_session_model_override(&self, &str, &str, &str, awaken_runtime_contract::agent_bindings::InferenceOptions) -> core::result::Result<awaken_session_contract::model_resolution::SessionModelOverride, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::runtime_incarnation(&self) -> &str
 pub fn awaken_session_application::SessionApplication::runtime_placement(&self) -> awaken_session_contract::baseline::SessionRuntimePlacement
 pub fn awaken_session_application::SessionApplication::session_repository_handle(&self) -> alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
@@ -205,6 +206,7 @@ pub fn awaken_session_application::SessionApplication::set_config_source(&mut se
 pub fn awaken_session_application::SessionApplication::set_credential_source(&mut self, alloc::sync::Arc<dyn awaken_session_application::SessionCredentialSource>)
 pub fn awaken_session_application::SessionApplication::set_lifecycle_notifier(&mut self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>)
 pub fn awaken_session_application::SessionApplication::set_managed_list_price_provider(&mut self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>)
+pub fn awaken_session_application::SessionApplication::set_model_publication_resolver(&mut self, alloc::sync::Arc<dyn awaken_session_contract::model_resolution::SessionModelPublicationResolver>)
 pub fn awaken_session_application::SessionApplication::set_repository_credential_ingress(&mut self, alloc::sync::Arc<dyn awaken_session_application::RepositoryCredentialIngress>)
 pub fn awaken_session_application::SessionApplication::set_resource_catalog(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>)
 pub fn awaken_session_application::SessionApplication::set_resource_purge_scheduler(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>)

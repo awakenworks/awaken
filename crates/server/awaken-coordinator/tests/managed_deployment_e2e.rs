@@ -5,7 +5,16 @@ use std::sync::Arc;
 use awaken_deployment_application::{
     DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
 };
+use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
+use awaken_executable_agent_contract::{
+    ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentSessionProfile,
+};
 use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, ManagedState, deployments_router};
+use awaken_runtime_contract::snapshot::AgentId;
+use awaken_runtime_contract::{
+    AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
+    AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
+};
 use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router_and_host};
 use awaken_tenancy::WorkspaceScope;
@@ -15,6 +24,44 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+async fn published_assistant_catalog(
+    workspace_id: &str,
+    model_ref: &str,
+) -> Arc<ExecutableAgentCatalog> {
+    let fingerprint = "scenario-assistant-v1";
+    let mut snapshot = ExecutableAgentSnapshot::builder("assistant")
+        .model(ModelBinding::new("scenario", model_ref, "default"))
+        .fingerprint(fingerprint)
+        .build();
+    snapshot.metadata = AgentSnapshotMetadata {
+        source: AgentConfigRevisionRef {
+            agent_id: AgentId("assistant".into()),
+            revision: 1,
+        },
+        publication_version: AgentPublicationVersion("assistant-v1".into()),
+        resolution: Default::default(),
+        fingerprint: AgentSnapshotFingerprint(fingerprint.into()),
+    };
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    LocalExecutableAgentRegistrar::new(catalog.clone())
+        .register(ExecutableAgentRegistration {
+            workspace_id: workspace_id.into(),
+            agent_id: "assistant".into(),
+            source_revision: 1,
+            snapshot,
+            session_profile: ExecutableAgentSessionProfile {
+                source_revision: 1,
+                model: Some(model_ref.into()),
+                execution_model_ref: Some(model_ref.into()),
+                backend_ref: "default".into(),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("register the Deployment's exact Agent publication");
+    catalog
+}
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut builder = Request::builder()
@@ -78,7 +125,9 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // the R1 Session. This covers the response-loss retry before an HTTP adapter exists.
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
-    let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
+    let catalog = published_assistant_catalog(&workspace_id, "claude-sonnet-5").await;
+    let managed =
+        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
     // cross-tenant 404, not the launch or initial-Event contract.
@@ -161,7 +210,9 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     // D5 C5 -> E5, then unpause advances the future-only cursor.
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
-    let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
+    let catalog = published_assistant_catalog(&workspace_id, "claude-sonnet-5").await;
+    let managed =
+        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
     let deployments = Arc::new(DeploymentApplication::new());
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.clone(),

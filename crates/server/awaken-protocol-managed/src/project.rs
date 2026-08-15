@@ -15,7 +15,7 @@ use awaken_agent_contract::event::{
 use awaken_session_contract::Pending;
 
 use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
-use crate::types::{OutboundKind, StopReason};
+use crate::types::{EvaluatedPermission, OutboundKind, StopReason};
 
 /// Reserved MCP tool-name prefix — a custom tool may not claim it.
 const MCP_RESERVED_PREFIX: &str = "mcp__";
@@ -269,8 +269,8 @@ impl Transcoder for ManagedEncoder {
             } if name.starts_with(MCP_TOOL_PREFIX) => {
                 self.mcp_ids.insert(id.clone());
                 let evaluated_permission = match disposition {
-                    ToolDisposition::PendingBuiltin => Some("ask".to_string()),
-                    _ => Some("allow".to_string()),
+                    ToolDisposition::PendingBuiltin => Some(EvaluatedPermission::Ask),
+                    _ => Some(EvaluatedPermission::Allow),
                 };
                 vec![ProjectedEvent::with_id(
                     id.clone(),
@@ -296,12 +296,12 @@ impl Transcoder for ManagedEncoder {
                     ToolDisposition::PendingBuiltin => OutboundKind::AgentToolUse {
                         name: name.clone(),
                         input: input.clone(),
-                        evaluated_permission: Some("ask".to_string()),
+                        evaluated_permission: Some(EvaluatedPermission::Ask),
                     },
                     ToolDisposition::Executed => OutboundKind::AgentToolUse {
                         name: name.clone(),
                         input: input.clone(),
-                        evaluated_permission: Some("allow".to_string()),
+                        evaluated_permission: Some(EvaluatedPermission::Allow),
                     },
                 };
                 vec![ProjectedEvent::with_id(id.clone(), kind)]

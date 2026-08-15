@@ -29,9 +29,7 @@ use awaken_session_contract::{
 use awaken_tenancy::ScopeId;
 
 mod lifecycle_identity;
-mod model_controls;
 use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
-use model_controls::{inference_from_wire, model_config};
 
 const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
 pub struct ConfigPlaneManagedAgentRepository {
@@ -341,12 +339,8 @@ fn config_from_create(
     id: String,
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
-    let model = params.model.into_config();
-    let inference = inference_from_wire(
-        model.speed,
-        model.effort.map(|value| value.resolved()),
-        model.inference_geo,
-    )?;
+    let model = params.model.into_config().into_resolved();
+    let inference = model.inference_options();
     let model_binding = parse_managed_model_id(&model.id)
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
     let multiagent = params.multiagent.map(typed_multiagent);
@@ -574,7 +568,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
         updated_at,
         name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
-        model: model_config(model, config.inference),
+        model: awaken_protocol_managed::types::ModelConfig::from_inference(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
         mcp_servers: config
@@ -797,11 +791,8 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
             let prior_effort = config.inference.effort;
             let prior_acp = acp_configuration_to_preserve(&config, &model.id);
-            config.inference = inference_from_wire(
-                model.speed,
-                model.effort.map(|value| value.resolved()),
-                model.inference_geo,
-            )?;
+            let model = model.into_resolved();
+            config.inference = model.inference_options();
             if preserve_effort {
                 config.inference.effort = prior_effort;
             }
@@ -968,7 +959,9 @@ mod tests {
     use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
-    use awaken_protocol_managed::types::{ModelEffort, ModelSpeed};
+    use awaken_protocol_managed::types::{
+        ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo, ModelSpeed,
+    };
     use awaken_runtime_contract::agent_bindings::{
         InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
     };
@@ -1331,13 +1324,12 @@ mod tests {
             let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
             let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
             let mut params = create_params("controlled");
-            params.model = serde_json::from_value(json!({
-                "id": "claude-opus-4-8",
-                "speed": "fast",
-                "effort": {"type": "xhigh"},
-                "inference_geo": "us"
-            }))
-            .unwrap();
+            params.model = ModelInput::Config(ModelConfigParams {
+                id: "claude-opus-4-8".into(),
+                speed: Some(ModelSpeed::Fast),
+                effort: Some(ModelEffortInput::Tagged(ModelEffort::Xhigh)),
+                inference_geo: Some(ModelInferenceGeo::Us),
+            });
             let created = repository.create("workspace-a", params).await.unwrap();
             assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
             assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
@@ -1360,7 +1352,7 @@ mod tests {
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
         assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
-        assert_eq!(restored.model.inference_geo.as_deref(), Some("us"));
+        assert_eq!(restored.model.inference_geo, Some(ModelInferenceGeo::Us));
         plane
             .publish(&ScopeId::from("workspace-a"), &id)
             .await
@@ -1410,21 +1402,23 @@ mod tests {
         );
         let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
         let mut worker = create_params("worker");
-        worker.model = serde_json::from_value(json!({
-            "id": "model-a",
-            "inference_geo": "us"
-        }))
-        .unwrap();
+        worker.model = ModelInput::Config(ModelConfigParams {
+            id: "model-a".into(),
+            speed: None,
+            effort: None,
+            inference_geo: Some(ModelInferenceGeo::Us),
+        });
         let worker = repository.create("workspace-a", worker).await.unwrap();
 
-        let coordinator = |geo: Option<&str>| {
+        let coordinator = |geo: Option<ModelInferenceGeo>| {
             let mut params = create_params("coordinator");
             params.model = match geo {
-                Some(geo) => serde_json::from_value(json!({
-                    "id": "model-a",
-                    "inference_geo": geo
-                }))
-                .unwrap(),
+                Some(geo) => ModelInput::Config(ModelConfigParams {
+                    id: "model-a".into(),
+                    speed: None,
+                    effort: None,
+                    inference_geo: Some(geo),
+                }),
                 None => ModelInput::Id("model-a".into()),
             };
             params.multiagent = Some(
@@ -1437,11 +1431,15 @@ mod tests {
             params
         };
         let accepted = repository
-            .create("workspace-a", coordinator(Some("us")))
+            .create("workspace-a", coordinator(Some(ModelInferenceGeo::Us)))
             .await
             .expect("G1");
-        assert_eq!(accepted.model.inference_geo.as_deref(), Some("us"), "G1");
-        for (rule, geo) in [("G2", Some("global")), ("G3", None)] {
+        assert_eq!(
+            accepted.model.inference_geo,
+            Some(ModelInferenceGeo::Us),
+            "G1"
+        );
+        for (rule, geo) in [("G2", Some(ModelInferenceGeo::Global)), ("G3", None)] {
             let error = repository
                 .create("workspace-a", coordinator(geo))
                 .await

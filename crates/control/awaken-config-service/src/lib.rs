@@ -27,6 +27,7 @@ mod publication;
 mod registration_reconciliation;
 mod service_access;
 mod service_wiring;
+mod session_model_resolution;
 mod tool_catalog;
 
 pub use binding_resolver::{
@@ -47,6 +48,7 @@ pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_m
 pub use management_audit::{ManagementAuditPlane, ManagementAuditRepository};
 pub use plugin_validation::PluginPublicationResolver;
 pub use publication::{PublishError, ValidationIssue};
+pub use session_model_resolution::ConfigSessionModelPublicationResolver;
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };

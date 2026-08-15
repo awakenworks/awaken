@@ -151,6 +151,8 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 awaken-control.workspace = true
+awaken-executable-agent-catalog.workspace = true
+awaken-environment-contract.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }

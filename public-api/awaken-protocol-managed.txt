@@ -492,6 +492,10 @@ pub awaken_protocol_managed::types::session::ConfirmResult::Allow
 pub awaken_protocol_managed::types::session::ConfirmResult::Deny
 pub enum awaken_protocol_managed::types::session::Currency
 pub awaken_protocol_managed::types::session::Currency::USD
+pub enum awaken_protocol_managed::types::session::EvaluatedPermission
+pub awaken_protocol_managed::types::session::EvaluatedPermission::Allow
+pub awaken_protocol_managed::types::session::EvaluatedPermission::Ask
+pub awaken_protocol_managed::types::session::EvaluatedPermission::Deny
 pub enum awaken_protocol_managed::types::session::InboundEvent
 pub awaken_protocol_managed::types::session::InboundEvent::SystemMessage
 pub awaken_protocol_managed::types::session::InboundEvent::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -536,6 +540,9 @@ pub awaken_protocol_managed::types::session::ModelEffortLevel::Low
 pub awaken_protocol_managed::types::session::ModelEffortLevel::Max
 pub awaken_protocol_managed::types::session::ModelEffortLevel::Medium
 pub awaken_protocol_managed::types::session::ModelEffortLevel::Xhigh
+pub enum awaken_protocol_managed::types::session::ModelInferenceGeo
+pub awaken_protocol_managed::types::session::ModelInferenceGeo::Global
+pub awaken_protocol_managed::types::session::ModelInferenceGeo::Us
 pub enum awaken_protocol_managed::types::session::ModelOverride
 pub awaken_protocol_managed::types::session::ModelOverride::Absent
 pub awaken_protocol_managed::types::session::ModelOverride::Set(awaken_protocol_managed::types::ModelConfig)
@@ -551,7 +558,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult::c
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult::mcp_tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse
-pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::evaluated_permission: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::mcp_server_name: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::name: alloc::string::String
@@ -571,7 +578,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::AgentToolResult::cont
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolResult::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolResult::tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse
-pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::name: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::SessionDeleted
@@ -723,15 +730,16 @@ pub awaken_protocol_managed::types::session::ListEventsResponse::next_page: core
 pub struct awaken_protocol_managed::types::session::ModelConfig
 pub awaken_protocol_managed::types::session::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::session::ModelConfig::id: alloc::string::String
-pub awaken_protocol_managed::types::session::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::ModelConfig::inference_geo: core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>
 pub awaken_protocol_managed::types::session::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
+pub fn awaken_protocol_managed::types::ModelConfig::inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::session::ModelConfigParams
 pub awaken_protocol_managed::types::session::ModelConfigParams::effort: core::option::Option<awaken_protocol_managed::types::ModelEffortInput>
 pub awaken_protocol_managed::types::session::ModelConfigParams::id: alloc::string::String
-pub awaken_protocol_managed::types::session::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::ModelConfigParams::inference_geo: core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>
 pub awaken_protocol_managed::types::session::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
@@ -802,6 +810,7 @@ pub awaken_protocol_managed::types::session::SessionCreateParams::resources: all
 pub awaken_protocol_managed::types::session::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
 impl awaken_protocol_managed::types::SessionCreateParams
+pub fn awaken_protocol_managed::types::SessionCreateParams::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_protocol_managed::types::SessionCreateParams::validate_common(&self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_protocol_managed::types::SessionCreateParams::validate_public(&self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_protocol_managed::types::session::SessionError
@@ -1112,6 +1121,10 @@ pub awaken_protocol_managed::types::ConfirmResult::Allow
 pub awaken_protocol_managed::types::ConfirmResult::Deny
 pub enum awaken_protocol_managed::types::Currency
 pub awaken_protocol_managed::types::Currency::USD
+pub enum awaken_protocol_managed::types::EvaluatedPermission
+pub awaken_protocol_managed::types::EvaluatedPermission::Allow
+pub awaken_protocol_managed::types::EvaluatedPermission::Ask
+pub awaken_protocol_managed::types::EvaluatedPermission::Deny
 pub enum awaken_protocol_managed::types::InboundEvent
 pub awaken_protocol_managed::types::InboundEvent::SystemMessage
 pub awaken_protocol_managed::types::InboundEvent::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -1156,6 +1169,9 @@ pub awaken_protocol_managed::types::ModelEffortLevel::Low
 pub awaken_protocol_managed::types::ModelEffortLevel::Max
 pub awaken_protocol_managed::types::ModelEffortLevel::Medium
 pub awaken_protocol_managed::types::ModelEffortLevel::Xhigh
+pub enum awaken_protocol_managed::types::ModelInferenceGeo
+pub awaken_protocol_managed::types::ModelInferenceGeo::Global
+pub awaken_protocol_managed::types::ModelInferenceGeo::Us
 pub enum awaken_protocol_managed::types::ModelOverride
 pub awaken_protocol_managed::types::ModelOverride::Absent
 pub awaken_protocol_managed::types::ModelOverride::Set(awaken_protocol_managed::types::ModelConfig)
@@ -1171,7 +1187,7 @@ pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult::content: a
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult::mcp_tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse
-pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::evaluated_permission: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::mcp_server_name: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::name: alloc::string::String
@@ -1191,7 +1207,7 @@ pub awaken_protocol_managed::types::OutboundKind::AgentToolResult::content: allo
 pub awaken_protocol_managed::types::OutboundKind::AgentToolResult::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::OutboundKind::AgentToolResult::tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse
-pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::name: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::SessionDeleted
@@ -1343,15 +1359,16 @@ pub awaken_protocol_managed::types::ListEventsResponse::next_page: core::option:
 pub struct awaken_protocol_managed::types::ModelConfig
 pub awaken_protocol_managed::types::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::ModelConfig::id: alloc::string::String
-pub awaken_protocol_managed::types::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::ModelConfig::inference_geo: core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>
 pub awaken_protocol_managed::types::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
+pub fn awaken_protocol_managed::types::ModelConfig::inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::ModelConfigParams
 pub awaken_protocol_managed::types::ModelConfigParams::effort: core::option::Option<awaken_protocol_managed::types::ModelEffortInput>
 pub awaken_protocol_managed::types::ModelConfigParams::id: alloc::string::String
-pub awaken_protocol_managed::types::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::ModelConfigParams::inference_geo: core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>
 pub awaken_protocol_managed::types::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
@@ -1437,6 +1454,7 @@ pub awaken_protocol_managed::types::SessionCreateParams::resources: alloc::vec::
 pub awaken_protocol_managed::types::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
 impl awaken_protocol_managed::types::SessionCreateParams
+pub fn awaken_protocol_managed::types::SessionCreateParams::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_protocol_managed::types::SessionCreateParams::validate_common(&self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_protocol_managed::types::SessionCreateParams::validate_public(&self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_protocol_managed::types::SessionError

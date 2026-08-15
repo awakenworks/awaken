@@ -940,6 +940,7 @@ mod mutation_tests {
                     agent_revision: None,
                     model: "model".into(),
                     execution_model_ref: "model".into(),
+                    model_override: None,
                     runtime: None,
                     mcp_authoring: Default::default(),
                     toolsets: Vec::new(),

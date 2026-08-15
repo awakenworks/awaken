@@ -127,7 +127,10 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .uri("/v1/sessions")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"agent":"assistant"}"#))
+        .body(Body::from(format!(
+            r#"{{"agent":"assistant","environment_id":"{}"}}"#,
+            awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+        )))
         .unwrap();
     let resp = app.clone().oneshot(request).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "guarded create succeeds");

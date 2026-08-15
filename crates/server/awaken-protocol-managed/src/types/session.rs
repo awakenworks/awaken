@@ -305,6 +305,22 @@ pub struct SessionCreateParams {
 }
 
 impl SessionCreateParams {
+    /// Build the smallest valid official SDK request without assembling a JSON
+    /// object. Optional Managed fields remain absent/empty until explicitly set.
+    #[must_use]
+    pub fn new(agent: impl Into<String>, environment_id: impl Into<String>) -> Self {
+        Self {
+            agent: AgentRef::Id(agent.into()),
+            budget: None,
+            initial_events: Vec::new(),
+            environment_id: environment_id.into(),
+            title: None,
+            metadata: std::collections::BTreeMap::new(),
+            vault_ids: Vec::new(),
+            resources: Vec::new(),
+        }
+    }
+
     pub fn validate_common(&self) -> Result<(), String> {
         self.agent.validate_sdk_limits()?;
         if self.metadata.len() > 16
@@ -377,7 +393,7 @@ pub struct ModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<String>,
+    pub inference_geo: Option<ModelInferenceGeo>,
 }
 
 impl ModelConfig {
@@ -415,9 +431,47 @@ impl ModelConfig {
                 ReasoningEffort::Max => ModelEffort::Max,
             }),
             inference_geo: (inference.inference_geo == Some(InferenceGeography::Us))
-                .then(|| "us".to_owned()),
+                .then_some(ModelInferenceGeo::Us),
         }
     }
+
+    /// Lower official Managed inference controls into the one neutral runtime
+    /// contract. `global` is the absence of an extra geography restriction.
+    #[must_use]
+    pub fn inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions {
+        use awaken_runtime_contract::agent_bindings::{
+            InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
+        };
+
+        let inference_geo = match self.inference_geo {
+            None | Some(ModelInferenceGeo::Global) => None,
+            Some(ModelInferenceGeo::Us) => Some(InferenceGeography::Us),
+        };
+        InferenceOptions {
+            speed: self.speed.map(|speed| match speed {
+                ModelSpeed::Standard => InferenceSpeed::Standard,
+                ModelSpeed::Fast => InferenceSpeed::Fast,
+            }),
+            effort: self.effort.map(|effort| match effort {
+                ModelEffort::Low => ReasoningEffort::Low,
+                ModelEffort::Medium => ReasoningEffort::Medium,
+                ModelEffort::High => ReasoningEffort::High,
+                ModelEffort::Xhigh => ReasoningEffort::Xhigh,
+                ModelEffort::Max => ReasoningEffort::Max,
+            }),
+            inference_geo,
+        }
+    }
+}
+
+/// The SDK's closed inference-geography vocabulary. Unsupported geography
+/// strings fail at the serde boundary instead of surviving as partially
+/// validated configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInferenceGeo {
+    Global,
+    Us,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,7 +539,7 @@ pub struct ModelConfigParams {
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
-    pub inference_geo: Option<String>,
+    pub inference_geo: Option<ModelInferenceGeo>,
 }
 
 impl ModelConfigParams {
@@ -783,6 +837,15 @@ pub enum ConfirmResult {
     Deny,
 }
 
+/// The SDK's closed permission decision attached to Agent tool-use events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatedPermission {
+    Allow,
+    Ask,
+    Deny,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OutcomeRubric {
@@ -1047,7 +1110,7 @@ pub enum OutboundKind {
         name: String,
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
-        evaluated_permission: Option<String>,
+        evaluated_permission: Option<EvaluatedPermission>,
     },
     #[serde(rename = "agent.tool_result")]
     AgentToolResult {
@@ -1066,7 +1129,7 @@ pub enum OutboundKind {
         mcp_server_name: String,
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
-        evaluated_permission: Option<String>,
+        evaluated_permission: Option<EvaluatedPermission>,
     },
     /// The result of an MCP tool call (`agent.mcp_tool_result`), keyed by
     /// `mcp_tool_use_id`.
@@ -1385,9 +1448,10 @@ mod tests {
 
     #[test]
     fn model_geo_projection_exposes_only_the_official_boundary() {
-        // Cause/effect graph: C1=US official boundary, C2=internal Provider
-        // boundary. Effects: E1=official inference_geo; E2=Provider details stay
-        // absent from the Managed projection. R1(C1)->E1; R2(C2)->E2.
+        // Cause/effect graph: C1=neutral US, C2=neutral Provider-only region,
+        // C3=wire global, C4=wire US. Effects: E1=typed official US; E2=Provider
+        // detail stays absent; E3=no neutral restriction; E4=neutral US.
+        // Decision rules: R1(C1)->E1; R2(C2)->E2; R3(C3)->E3; R4(C4)->E4.
         let us = ModelConfig::from_inference(
             "model",
             InferenceOptions {
@@ -1395,7 +1459,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(us.inference_geo.as_deref(), Some("us"), "R1");
+        assert_eq!(us.inference_geo, Some(ModelInferenceGeo::Us), "R1");
 
         let eu = ModelConfig::from_inference(
             "model",
@@ -1405,6 +1469,16 @@ mod tests {
             },
         );
         assert!(eu.inference_geo.is_none(), "R2");
+
+        let mut wire = ModelConfig::new("model");
+        wire.inference_geo = Some(ModelInferenceGeo::Global);
+        assert!(wire.inference_options().inference_geo.is_none(), "R3");
+        wire.inference_geo = Some(ModelInferenceGeo::Us);
+        assert_eq!(
+            wire.inference_options().inference_geo,
+            Some(InferenceGeography::Us),
+            "R4"
+        );
     }
 
     /// Causal graph: rubric object tag + variant payload -> one closed domain
@@ -1491,6 +1565,9 @@ mod tests {
 
     #[test]
     fn agent_with_overrides_replaces_the_model_for_the_session() {
+        // Cause/effect decision table: string model -> typed default controls;
+        // object + official geography -> typed geography; object + any unknown
+        // geography literal -> serde rejection before state construction.
         // Bare-string model override.
         let s: AgentRef = serde_json::from_str(
             r#"{"id":"assistant","type":"agent_with_overrides","model":"claude-sonnet-5"}"#,
@@ -1513,10 +1590,17 @@ mod tests {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
                 assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
-                assert_eq!(cfg.inference_geo.as_deref(), Some("us"));
+                assert_eq!(cfg.inference_geo, Some(ModelInferenceGeo::Us));
             }
             other => panic!("expected Set, got {other:?}"),
         }
+        assert!(
+            serde_json::from_str::<AgentRef>(
+                r#"{"id":"assistant","type":"agent_with_overrides","model":{"id":"claude-opus-4-8","inference_geo":"eu"}}"#,
+            )
+            .is_err(),
+            "an unsupported closed-enum literal never reaches model resolution"
+        );
     }
 
     #[test]
@@ -1600,15 +1684,12 @@ mod tests {
     fn session_create_requires_environment_and_rejects_non_sdk_mcp_field() {
         // Cause/effect decision table:
         // | environment_id | top-level mcp_servers | result |
-        // | present        | absent                | accept |
+        // | present        | absent                | typed construction/accept |
         // | absent         | absent                | reject |
         // | present        | present               | reject |
-        let valid = serde_json::json!({
-            "agent": "assistant",
-            "environment_id": "environment_1"
-        });
-        let parsed: SessionCreateParams = serde_json::from_value(valid).unwrap();
+        let parsed = SessionCreateParams::new("assistant", "environment_1");
         assert_eq!(parsed.environment_id, "environment_1");
+        assert_eq!(parsed.agent.id(), "assistant");
         for invalid in [
             serde_json::json!({"agent":"assistant"}),
             serde_json::json!({

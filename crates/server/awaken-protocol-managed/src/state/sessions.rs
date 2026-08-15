@@ -434,32 +434,43 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))));
         }
-        // Cause/effect decision table for Session model authority:
-        // R1 no override + published Agent -> inherit its complete publication;
-        // R2 equal official override -> accept without changing the route;
-        // R3 different official override + published Agent -> reject before state.
-        // The SDK DTO rejects `model: null`; metadata never selects execution.
-        // This prevents a model string from being stitched to the Agent's old
-        // backend/credential pins. Selecting another route requires publishing an
-        // Agent for that Managed model id first.
-        let selected_model: Option<ModelConfig> = match req.agent.model_override() {
+        // Cause/effect decision table for Session model authority: R1 absent ->
+        // inherit the Agent publication; R2 equal override -> reuse its route and
+        // replace inference controls;
+        // R3 different override + resolver -> freeze the complete newly resolved
+        // publication; R4 different override + unavailable/invalid resolver ->
+        // fail before Session persistence. A public id is never stitched onto the
+        // Agent's old backend, endpoint, or credential provisioning.
+        let published_model = config_view
+            .as_ref()
+            .and_then(|view| view.model.clone())
+            .unwrap_or_else(|| self.application.model());
+        let (selected_model, model_override): (
+            Option<ModelConfig>,
+            Option<awaken_session_contract::SessionModelOverride>,
+        ) = match req.agent.model_override() {
             ModelOverride::Set(cfg) => {
-                if config_view
-                    .as_ref()
-                    .and_then(|view| view.model.as_deref())
-                    .is_some_and(|published| published != cfg.id)
-                {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "agent_model_override_unpublished: publish or update an Agent with this model id before creating the Session",
-                    )));
-                }
-                Some(cfg)
+                let inference = cfg.inference_options();
+                let model_override = self
+                    .application
+                    .resolve_session_model_override(
+                        &owner_scope,
+                        &cfg.id,
+                        &published_model,
+                        inference,
+                    )
+                    .await
+                    .map_err(StateError::Run)?;
+                (Some(cfg), Some(model_override))
             }
-            ModelOverride::Absent => config_view.as_ref().and_then(|view| {
-                view.model
-                    .clone()
-                    .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
-            }),
+            ModelOverride::Absent => (
+                config_view.as_ref().and_then(|view| {
+                    view.model
+                        .clone()
+                        .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
+                }),
+                None,
+            ),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = requested_agent_version
@@ -477,7 +488,7 @@ impl ManagedState {
             .unwrap_or_default();
         let selected_geo = selected_model
             .as_ref()
-            .and_then(|model| model.inference_geo.as_deref());
+            .and_then(|model| model.inference_options().inference_geo);
         for delegate_ref in config_view
             .as_ref()
             .into_iter()
@@ -499,12 +510,7 @@ impl ManagedState {
                         "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
                     )))
                 })?;
-            if delegate
-                .inference
-                .inference_geo
-                .map(|geography| geography.as_str())
-                != selected_geo
-            {
+            if delegate.inference.inference_geo != selected_geo {
                 return Err(StateError::Run(RunError::bad_request(format!(
                     "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
                     selected_geo, delegate.inference.inference_geo
@@ -603,13 +609,20 @@ impl ManagedState {
         let agent_environment = config_view
             .as_ref()
             .and_then(|view| view.environment.as_ref());
-        // The immutable Agent publication is the only backend authority.  The
-        // baseline persists this projection so recovery and Worker placement do
-        // not need to reopen the publication registry.
-        let published_backend_ref = config_view
+        // The frozen Agent publication, or a complete resolved Session model
+        // replacement, is the only backend authority. The baseline persists the
+        // selected publication so recovery and Worker placement never reopen the
+        // registry or stitch together coordinates from different routes.
+        let published_backend_ref = model_override
             .as_ref()
-            .map(|view| view.backend_ref.clone())
-            .filter(|backend_ref| !backend_ref.trim().is_empty());
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.backend_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .map(|view| view.backend_ref.clone())
+                    .filter(|backend_ref| !backend_ref.trim().is_empty())
+            });
         let mcp_targets = mcp_drafts
             .iter()
             .map(|draft| draft.target.clone())
@@ -692,9 +705,15 @@ impl ManagedState {
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.application.model()));
-        let execution_model_ref = config_view
+        let execution_model_ref = model_override
             .as_ref()
-            .and_then(|view| view.execution_model_ref.clone())
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.model_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .and_then(|view| view.execution_model_ref.clone())
+            })
             .unwrap_or_else(|| resolved_model.id.clone());
         let budget_state = match &req.budget {
             Some(budget) => {
@@ -744,6 +763,7 @@ impl ManagedState {
                 }),
                 model: resolved_model.id.clone(),
                 execution_model_ref,
+                model_override,
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_tools.toolsets.clone(),

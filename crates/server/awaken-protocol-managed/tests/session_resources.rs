@@ -14,6 +14,11 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
+use awaken_protocol_managed::types::agent::ModelInput;
+use awaken_protocol_managed::types::session::{
+    AgentRef, AgentRefObject, ModelConfigParams, ModelEffortInput, ModelEffortLevel,
+    ModelInferenceGeo, ModelSpeed, SessionCreateParams,
+};
 use awaken_protocol_managed::{ManagedState, router as managed_router};
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, FileId, InputBinding, InputResourceId,
@@ -449,6 +454,54 @@ impl ExecutableAgentProfileSource for AgentWithBackend {
 
 struct AgentWithPublishedModel;
 
+#[derive(Clone)]
+struct FixedSessionModelResolver {
+    result: Result<
+        awaken_session_contract::SessionModelPublication,
+        awaken_session_contract::SessionModelResolutionError,
+    >,
+    calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionModelPublicationResolver for FixedSessionModelResolver {
+    async fn resolve_session_model(
+        &self,
+        workspace_id: &str,
+        model_reference: &str,
+    ) -> Result<
+        awaken_session_contract::SessionModelPublication,
+        awaken_session_contract::SessionModelResolutionError,
+    > {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((workspace_id.to_owned(), model_reference.to_owned()));
+        self.result.clone()
+    }
+}
+
+fn session_with_model(model: &str) -> SessionCreateParams {
+    session_with_model_input(ModelInput::Id(model.into()))
+}
+
+fn session_with_model_input(model: ModelInput) -> SessionCreateParams {
+    let mut request = SessionCreateParams::new(
+        "model-agent",
+        awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+    );
+    request.agent = AgentRef::Object(Box::new(AgentRefObject::AgentWithOverrides {
+        id: "model-agent".into(),
+        mcp_servers: None,
+        model: Some(model),
+        skills: None,
+        system: None,
+        tools: None,
+        version: None,
+    }));
+    request
+}
+
 impl ExecutableAgentProfileSource for AgentWithPublishedModel {
     fn session_profile_in(
         &self,
@@ -456,52 +509,242 @@ impl ExecutableAgentProfileSource for AgentWithPublishedModel {
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "model-agent").then(|| ExecutableAgentSessionProfile {
+            source_revision: 7,
             model: Some("gpt-5;provider=openai;api=open_ai_responses;endpoint=edge".into()),
             execution_model_ref: Some("gpt-5-upstream".into()),
+            inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
+                speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
+                ..Default::default()
+            },
             ..empty_agent_view("genai")
+        })
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        (agent_id == "model-agent" && source_revision == 7).then(|| {
+            let mut snapshot =
+                awaken_runtime_contract::ExecutableAgentSnapshot::builder("model-agent")
+                    .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                        "openai-account",
+                        "gpt-5-upstream",
+                        "genai",
+                    ))
+                    .inference_options(awaken_runtime_contract::agent_bindings::InferenceOptions {
+                        speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
+                        ..Default::default()
+                    })
+                    .build();
+            snapshot.metadata.source.revision = 7;
+            snapshot
         })
     }
 }
 
 #[tokio::test]
-async fn session_model_override_cannot_change_a_published_execution_route() {
-    // Causes: C1 published model id; C2 official override absent/equal/different.
-    // Effects: E1 preserve the public id but prepare the exact publication model
-    // coordinate; E2 accept the same immutable route; E3 reject before Session
-    // persistence.
-    let runtime = AcceptingFake::default();
-    let state = ManagedState::new(runtime.clone())
+async fn session_model_override_freezes_one_complete_resolved_route() {
+    // Cause/effect decision table:
+    // | Rule | Override | Resolver | Effect |
+    // | R1 | equal to Agent | absent | reuse Agent execution route |
+    // | R2 | different | complete | freeze complete replacement route |
+    // | R3 | different | absent | unavailable before prepare/persistence |
+    // | R4 | different | invalid | bad request before prepare/persistence |
+    // | R5 | unsupported inference_geo | any | bad request before resolution |
+    // Effects cover the public model echo, execution model/backend, persisted
+    // secret-free publication, resolver inputs, and terminal failure class.
+    let equal_runtime = AcceptingFake::default();
+    let equal_state = ManagedState::new(equal_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
-    let equal = serde_json::from_value(json!({
-        "agent": {
-            "id": "model-agent",
-            "type": "agent_with_overrides",
-            "model": "gpt-5;provider=openai;api=open_ai_responses;endpoint=edge"
-        }
-    }))
-    .unwrap();
-    assert!(state.create_session(equal, None).await.is_ok(), "E2");
+    let equal_created = equal_state
+        .create_session(
+            session_with_model("gpt-5;provider=openai;api=open_ai_responses;endpoint=edge"),
+            None,
+        )
+        .await
+        .expect("R1");
     assert_eq!(
-        runtime.prepared.lock().unwrap()[0].model.as_deref(),
+        equal_runtime.prepared.lock().unwrap()[0].model.as_deref(),
         Some("gpt-5-upstream"),
-        "E1"
+        "R1"
+    );
+    let equal_persisted = equal_state
+        .session_application()
+        .session(&equal_created.id)
+        .await
+        .expect("R1 persisted Session");
+    let equal_override = equal_persisted
+        .frozen_baseline()
+        .and_then(|baseline| baseline.model_override.as_ref())
+        .expect("R1 official override is frozen");
+    assert!(equal_override.publication.is_none(), "R1 route reuse");
+    assert!(
+        equal_override.inference.is_default(),
+        "R1 string resets controls"
+    );
+    let equal_projection = equal_state
+        .session_application()
+        .frozen_session_projection("default".into(), &equal_persisted, true)
+        .await
+        .expect("R1 derived executable snapshot");
+    assert!(
+        equal_projection
+            .agent_publication
+            .expect("R1 Agent publication")
+            .resolved_spec
+            .plugin_config
+            .inference
+            .is_default(),
+        "R1"
     );
 
-    let different = serde_json::from_value(json!({
-        "agent": {
-            "id": "model-agent",
-            "type": "agent_with_overrides",
-            "model": "gpt-5;provider=openai;api=open_ai_responses;endpoint=gateway"
-        }
-    }))
-    .unwrap();
-    let error = state.create_session(different, None).await.unwrap_err();
+    let requested = "claude-sonnet-4-5;provider=anthropic;api=anthropic;endpoint=gateway";
+    let primary = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+        awaken_runtime_contract::ModelBinding {
+            provider_identity_ref: "anthropic-account".into(),
+            model_ref: "claude-sonnet-4-5-20250929".into(),
+            backend_ref: "acp:claude".into(),
+        },
+    );
+    let fallback = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+        awaken_runtime_contract::ModelBinding {
+            provider_identity_ref: "anthropic-fallback".into(),
+            model_ref: "claude-sonnet-4-5-20250929".into(),
+            backend_ref: "genai".into(),
+        },
+    );
+    let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
+    let resolved_runtime = AcceptingFake::default();
+    let resolved_state = ManagedState::new(resolved_runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
+        .with_model_publication_resolver(std::sync::Arc::new(FixedSessionModelResolver {
+            result: Ok(awaken_session_contract::SessionModelPublication {
+                primary: primary.clone(),
+                candidates: vec![fallback.clone()],
+            }),
+            calls: calls.clone(),
+        }));
+    let created = resolved_state
+        .create_session(
+            session_with_model_input(ModelInput::Config(ModelConfigParams {
+                id: requested.into(),
+                speed: Some(ModelSpeed::Fast),
+                effort: Some(ModelEffortInput::Level(ModelEffortLevel::High)),
+                inference_geo: Some(ModelInferenceGeo::Us),
+            })),
+            None,
+        )
+        .await
+        .expect("R2");
+    assert_eq!(created.agent.model.id, requested, "R2 public echo");
+    let prepared = resolved_runtime.prepared.lock().unwrap();
+    assert_eq!(
+        prepared[0].model.as_deref(),
+        Some(primary.binding.model_ref.as_str()),
+        "R2"
+    );
+    assert_eq!(prepared[0].runtime.as_deref(), Some("acp:claude"), "R2");
+    drop(prepared);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[("default".into(), requested.into())],
+        "R2 uses the trusted Workspace and exact official model id"
+    );
+    let persisted = resolved_state
+        .session_application()
+        .session(&created.id)
+        .await
+        .expect("R2 persisted Session");
+    let publication = persisted
+        .frozen_baseline()
+        .and_then(|baseline| baseline.model_override.as_ref())
+        .and_then(|model_override| model_override.publication.as_ref())
+        .expect("R2 frozen override publication");
+    assert_eq!(publication.primary, primary, "R2");
+    assert_eq!(publication.candidates, [fallback], "R2");
+    let model_override = persisted
+        .frozen_baseline()
+        .and_then(|baseline| baseline.model_override.as_ref())
+        .expect("R2 complete model override");
+    assert_eq!(
+        model_override.inference,
+        awaken_runtime_contract::agent_bindings::InferenceOptions {
+            speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
+            effort: Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High),
+            inference_geo: Some(awaken_runtime_contract::agent_bindings::InferenceGeography::Us,),
+        },
+        "R2"
+    );
+    let projection = resolved_state
+        .session_application()
+        .frozen_session_projection("default".into(), &persisted, true)
+        .await
+        .expect("R2 derived executable snapshot");
+    let snapshot = projection.agent_publication.expect("R2 Agent publication");
+    assert_eq!(
+        snapshot.resolved_spec.model_binding, publication.primary,
+        "R2"
+    );
+    assert_eq!(
+        snapshot.resolved_spec.model_candidates, publication.candidates,
+        "R2"
+    );
+    assert_eq!(
+        snapshot.resolved_spec.plugin_config.inference, model_override.inference,
+        "R2"
+    );
+
+    let unavailable_runtime = AcceptingFake::default();
+    let unavailable_state = ManagedState::new(unavailable_runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
+    let error = unavailable_state
+        .create_session(session_with_model(requested), None)
+        .await
+        .expect_err("R3");
+    assert!(error.to_string().contains("not configured"), "R3: {error}");
+    assert!(
+        unavailable_runtime.prepared.lock().unwrap().is_empty(),
+        "R3"
+    );
+
+    let invalid_runtime = AcceptingFake::default();
+    let invalid_state = ManagedState::new(invalid_runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
+        .with_model_publication_resolver(std::sync::Arc::new(FixedSessionModelResolver {
+            result: Err(
+                awaken_session_contract::SessionModelResolutionError::Invalid(
+                    "unsupported model combination".into(),
+                ),
+            ),
+            calls: Default::default(),
+        }));
+    let error = invalid_state
+        .create_session(session_with_model(requested), None)
+        .await
+        .expect_err("R4");
     assert!(
         error
             .to_string()
-            .contains("agent_model_override_unpublished"),
-        "E3: {error}"
+            .contains("invalid Session model reference"),
+        "R4: {error}"
     );
+    assert!(invalid_runtime.prepared.lock().unwrap().is_empty(), "R4");
+
+    // R5 is a wire-boundary rule: because geography is a closed enum, an
+    // unsupported literal cannot be represented by the state-layer type and is
+    // rejected before any resolver or Runtime call can be constructed.
+    let invalid_geo = serde_json::from_value::<SessionCreateParams>(json!({
+        "agent": {
+            "id": "model-agent",
+            "type": "agent_with_overrides",
+            "model": {"id": requested, "inference_geo": "eu"}
+        },
+        "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+    }));
+    assert!(invalid_geo.is_err(), "R5");
 }
 
 #[tokio::test]
@@ -556,10 +799,10 @@ async fn publication_backend_is_the_only_session_backend_authority() {
         } else {
             "unmanaged-agent"
         };
-        let request = serde_json::from_value(json!({
+        let request = serde_json::from_value(with_session_environment(json!({
             "agent": agent,
             "metadata": {"awaken.runtime": metadata}
-        }))
+        })))
         .unwrap();
         let id = state.create_session(request, None).await.unwrap().id;
         let durable = repo.get(&id).await.unwrap();
@@ -616,7 +859,11 @@ async fn agent_default_environment_requires_the_exact_revision() {
             environment_id: environment_id.clone(),
             revision,
         }));
-    let request = serde_json::from_value(json!({"agent": "environment-agent"})).unwrap();
+    let request = serde_json::from_value(json!({
+        "agent": "environment-agent",
+        "environment_id": environment_id
+    }))
+    .unwrap();
     state.create_session(request, None).await.unwrap();
     assert_eq!(
         runtime.prepared.lock().unwrap()[0]
@@ -628,10 +875,14 @@ async fn agent_default_environment_requires_the_exact_revision() {
     let stale = ManagedState::new(AcceptingFake::default())
         .with_environments(environment_execution)
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
-            environment_id,
+            environment_id: environment_id.clone(),
             revision: revision + 1,
         }));
-    let request = serde_json::from_value(json!({"agent": "environment-agent"})).unwrap();
+    let request = serde_json::from_value(json!({
+        "agent": "environment-agent",
+        "environment_id": environment_id
+    }))
+    .unwrap();
     let error = stale.create_session(request, None).await.unwrap_err();
     assert!(error.to_string().contains("unavailable"));
 }
@@ -784,13 +1035,29 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, value)
 }
 
+fn with_session_environment(mut value: Value) -> Value {
+    value
+        .as_object_mut()
+        .expect("Session request fixture is an object")
+        .insert(
+            "environment_id".into(),
+            json!(awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID),
+        );
+    value
+}
+
 async fn call_with_headers(
     app: &Router,
     method: &str,
     uri: &str,
-    body: Option<Value>,
+    mut body: Option<Value>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, axum::http::HeaderMap, Value) {
+    // Resource tests are orthogonal to Environment selection but still exercise
+    // the exact SDK request: every create sends an explicit Environment.
+    if method == "POST" && uri == "/v1/sessions" {
+        body = body.map(with_session_environment);
+    }
     let mut b = Request::builder().method(method).uri(uri);
     for (name, value) in headers {
         b = b.header(*name, *value);
@@ -848,15 +1115,15 @@ async fn session_projects_exact_published_client_tool_contract() {
 #[tokio::test]
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
     // Causal graph:
-    // published Agent bindings + Session MCP override
-    //   -> normalize both sources -> Session wins on equal name without credential
+    // published Agent bindings + no Session MCP override
+    //   -> inherit the exact published MCP set
     //   -> prepare Runtime with exact delegate and credential revision
     //   -> persist one authoritative Resource/MCP realization.
     //
     // Decision table:
     // | Agent binding | Session override | Expected behavior |
     // | exact credential@7 | absent | stage credential@7 with Agent origin |
-    // | public same-name URL | present | use Session URL with Session origin |
+    // | public URL | absent | preserve Agent URL and Agent origin |
     // | Skill + delegate | n/a | persist Skill pin and prepare delegate once |
     // FMECA: projecting the delegate as only its executable id loses its
     // publication-owned name/version/model/tools and makes the Session response
@@ -877,14 +1144,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({
-            "agent": "integrated",
-            "mcp_servers": [{
-                "type": "url",
-                "name": "public-docs",
-                "url": "https://session-public.example.test"
-            }]
-        })),
+        Some(json!({"agent": "integrated"})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{session}");
@@ -894,9 +1154,9 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         json!({
             "name": "public-docs",
             "type": "url",
-            "url": "https://session-public.example.test"
+            "url": "https://public.example.test"
         }),
-        "Session origin wins over an uncredentialed Agent source with the same name"
+        "the immutable Agent publication remains authoritative"
     );
     assert_eq!(
         session["agent"]["skills"][0],
@@ -942,8 +1202,8 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     );
     assert_eq!(
         durable.mcp.attachments[1].origin,
-        awaken_session_contract::McpAttachmentOrigin::Session,
-        "Session precedence is decided after both sources are normalized"
+        awaken_session_contract::McpAttachmentOrigin::Agent,
+        "both inherited declarations retain Agent origin"
     );
     assert_eq!(
         durable
@@ -966,10 +1226,11 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
 }
 
 #[tokio::test]
-async fn create_rejects_different_names_for_one_canonical_mcp_target_before_insert() {
-    // Composed decision-table rule C5 + P4: source collection retains both
-    // candidates, canonical precedence cannot select between different names,
-    // and the create fails before a durable preparation row or Runtime effect.
+async fn session_mcp_override_replaces_the_published_set() {
+    // Official replacement rule: a present `agent_with_overrides.mcp_servers`
+    // replaces the published set before normalization. Therefore an alias of an
+    // inherited target is one effective Agent declaration, not a cross-source
+    // conflict or a merged parallel authority.
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let repo = std::sync::Arc::new(
@@ -979,25 +1240,33 @@ async fn create_rejects_different_names_for_one_canonical_mcp_target_before_inse
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
-    let (status, _) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({
-            "agent": "integrated",
-            "mcp_servers": [{
-                "type": "url",
-                "name": "docs-alias",
-                "url": "HTTPS://MCP.EXAMPLE.TEST:443/"
-            }]
+            "agent": {
+                "id": "integrated",
+                "type": "agent_with_overrides",
+                "mcp_servers": [{
+                    "type": "url",
+                    "name": "docs-alias",
+                    "url": "HTTPS://MCP.EXAMPLE.TEST:443/"
+                }],
+                "tools": [{"type": "mcp_toolset", "mcp_server_name": "docs-alias"}]
+            }
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(prepared.lock().unwrap().is_empty());
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(prepared.lock().unwrap().len(), 1);
+    assert_eq!(session["agent"]["mcp_servers"].as_array().unwrap().len(), 1);
+    assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs-alias");
+    let durable = repo.get(session["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(durable.mcp.attachments.len(), 1);
     assert_eq!(
-        repo.get("sesn_0").await,
-        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        durable.mcp.attachments[0].origin,
+        awaken_session_contract::McpAttachmentOrigin::Agent
     );
 }
 
@@ -1623,13 +1892,13 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     let state = ManagedState::new(AcceptingFake::default())
         .with_resource_catalog(catalog.clone())
         .with_session_repo(repo.clone());
-    let request = serde_json::from_value(json!({
+    let request = serde_json::from_value(with_session_environment(json!({
         "agent": "a",
         "resources": [{
             "type": "github_repository",
             "url": "https://github.com/awaken/example.git"
         }]
-    }))
+    })))
     .unwrap();
     let id = state.create_session(request, None).await.unwrap().id;
     let persisted = repo.get(&id).await.unwrap();
@@ -1688,7 +1957,10 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
     let state = ManagedState::new(AcceptingFake::default())
         .with_resource_catalog(catalog.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPlatformRepository));
-    let request = serde_json::from_value(json!({ "agent": "repo-agent" })).unwrap();
+    let request = serde_json::from_value(with_session_environment(json!({
+        "agent": "repo-agent"
+    })))
+    .unwrap();
     let id = state.create_session(request, None).await.unwrap().id;
     state.archive_session(&id).await.unwrap();
 
@@ -1758,7 +2030,8 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     let state = ManagedState::new(runtime)
         .with_session_repo(repo.clone())
         .with_resource_catalog(resource_catalog());
-    let request = serde_json::from_value(json!({ "agent": "a" })).unwrap();
+    let request =
+        serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
     let id = state.create_session(request, None).await.unwrap().id;
 
     fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1820,7 +2093,10 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     );
     let state = ManagedState::new(runtime).with_session_repo(repo.clone());
     let id = state
-        .create_session(serde_json::from_value(json!({"agent": "a"})).unwrap(), None)
+        .create_session(
+            serde_json::from_value(with_session_environment(json!({"agent": "a"}))).unwrap(),
+            None,
+        )
         .await
         .unwrap()
         .id;
@@ -1935,7 +2211,8 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         let state = ManagedState::new(runtime)
             .with_session_repo(repo.clone())
             .with_resource_catalog(resource_catalog());
-        let request = serde_json::from_value(json!({ "agent": "a" })).unwrap();
+        let request =
+            serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
         let id = state.create_session(request, None).await.unwrap().id;
 
         match rule {

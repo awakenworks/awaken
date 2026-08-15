@@ -71,6 +71,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
                     agent_revision: None,
+                    model_override: None,
                     model: "kimi".into(),
                     runtime: Some("acp:custom".into()),
                     delegate_ids: vec!["researcher".into()],

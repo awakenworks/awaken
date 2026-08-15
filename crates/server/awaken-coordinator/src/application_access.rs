@@ -444,6 +444,7 @@ mod tests {
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
+                    model_override: baseline.model_override,
                     model: baseline.model.clone(),
                     execution_model_ref: baseline.model,
                     runtime: baseline.runtime,

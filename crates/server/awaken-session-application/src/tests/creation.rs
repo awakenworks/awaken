@@ -33,6 +33,24 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Substitu
     }
 }
 
+struct FixedModelPublication {
+    publication: awaken_session_contract::SessionModelPublication,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionModelPublicationResolver for FixedModelPublication {
+    async fn resolve_session_model(
+        &self,
+        _workspace_id: &str,
+        _model_reference: &str,
+    ) -> Result<
+        awaken_session_contract::SessionModelPublication,
+        awaken_session_contract::SessionModelResolutionError,
+    > {
+        Ok(self.publication.clone())
+    }
+}
+
 impl awaken_executable_agent_contract::ExecutableAgentProfileSource for ProfiledAgent {
     fn session_profile_in(
         &self,
@@ -203,6 +221,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
                 agent_revision: None,
+                model_override: None,
                 model: "model".into(),
                 execution_model_ref: "model".into(),
                 runtime: None,
@@ -612,6 +631,70 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             .await
             .is_err(),
         "P2: a Worker effect cannot start without the complete immutable publication"
+    );
+
+    // Override-projection cause/effect table:
+    // | Rule | Agent snapshot | Override publication | Effect |
+    // | O1 | exact revision | complete | replace the whole candidate roster and identity |
+    // | O2 | exact revision | none/equal | preserve the exact Agent snapshot (above) |
+    // O1 also proves the original Agent route cannot leak into the derived
+    // executable snapshot and all three fingerprint fields move together.
+    let primary = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+        awaken_runtime_contract::resolved::ModelBinding::new(
+            "override-account",
+            "override-upstream",
+            "acp:claude",
+        ),
+    );
+    let fallback = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+        awaken_runtime_contract::resolved::ModelBinding::new(
+            "override-fallback",
+            "override-upstream",
+            "genai",
+        ),
+    );
+    let mut override_application = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    override_application.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    override_application.set_model_publication_resolver(Arc::new(FixedModelPublication {
+        publication: awaken_session_contract::SessionModelPublication {
+            primary: primary.clone(),
+            candidates: vec![fallback.clone()],
+        },
+    }));
+    let mut override_command = command("profiled-override", Some("override-public-id"));
+    override_command.source_revision = Some(7);
+    let overridden = override_application
+        .create_profiled_session(override_command)
+        .await
+        .expect("O1 admitted override");
+    let override_projection = override_application
+        .frozen_session_projection("workspace".into(), &overridden, true)
+        .await
+        .expect("O1 frozen projection");
+    let snapshot = override_projection
+        .agent_publication
+        .expect("O1 executable Agent snapshot");
+    assert_eq!(snapshot.resolved_spec.model_binding, primary, "O1");
+    assert_eq!(snapshot.resolved_spec.model_candidates, [fallback], "O1");
+    assert_eq!(
+        snapshot.fingerprint, snapshot.resolved_spec.catalog_fingerprint,
+        "O1"
+    );
+    assert_eq!(
+        snapshot.fingerprint.0, snapshot.metadata.fingerprint.0,
+        "O1"
+    );
+    assert_ne!(snapshot.fingerprint.0, "profiled-revision-7", "O1");
+    assert!(
+        snapshot
+            .resolved_spec
+            .execution_candidates(None)
+            .into_iter()
+            .all(|candidate| candidate
+                .binding
+                .provider_identity_ref
+                .starts_with("override-")),
+        "O1 original Agent route must be absent"
     );
 
     let mismatched = available
