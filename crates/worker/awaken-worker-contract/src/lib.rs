@@ -661,6 +661,11 @@ impl From<&WorkerSnapshot> for WorkerAssignment {
 pub struct RegisteredWorker {
     pub snapshot: WorkerSnapshot,
     pub heartbeat_sequence: u64,
+    /// Sequence of the latest accepted heartbeat that changed dynamic
+    /// credential or ACP evidence. Unlike a content hash, this fence cannot
+    /// return to an older value when evidence changes A -> B -> A.
+    #[serde(default)]
+    pub observation_sequence: u64,
     pub registered_at_ms: u64,
     pub heartbeat_at_ms: u64,
     pub drain_deadline_ms: Option<u64>,

@@ -302,6 +302,7 @@ impl WorkerDirectory for TestWorkerDirectory {
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
+            observation_sequence: 0,
             registered_at_ms: now_ms,
             heartbeat_at_ms: now_ms,
             drain_deadline_ms: None,
@@ -324,6 +325,9 @@ impl WorkerDirectory for TestWorkerDirectory {
         if &record.snapshot.identity != identity {
             return Ok(RegistryMutation::StaleIncarnation);
         }
+        let observations_changed = record.snapshot.credential_observations
+            != heartbeat.credential_observations
+            || record.snapshot.acp_capability_observations != heartbeat.acp_capability_observations;
         record.snapshot.state = if heartbeat.ready {
             WorkerState::Ready
         } else {
@@ -332,6 +336,10 @@ impl WorkerDirectory for TestWorkerDirectory {
         record.snapshot.in_flight = heartbeat.in_flight;
         record.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
         record.snapshot.credential_observations = heartbeat.credential_observations;
+        record.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
+        if observations_changed {
+            record.observation_sequence = heartbeat.sequence;
+        }
         record.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
         record.heartbeat_sequence = heartbeat.sequence;
         record.heartbeat_at_ms = now_ms;

@@ -128,6 +128,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
             expires_at_ms: u64::MAX,
         },
         heartbeat_sequence: 1,
+        observation_sequence: 0,
         registered_at_ms: 0,
         heartbeat_at_ms: 0,
         drain_deadline_ms: None,

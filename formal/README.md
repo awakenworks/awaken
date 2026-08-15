@@ -181,6 +181,12 @@ production logic.
   last-reference teardown, failed-mount atomicity, unknown-release idempotence,
   and fail-closed reference-count exhaustion. `MountCoordinatorProof.tla`
   proves the complete inductive safety invariant for every modeled transition.
+- `ObservationReconcile.tla` covers the concurrent heartbeat and periodic
+  observation-refresh paths sharing one async mutex. It gives every semantic
+  evidence change a monotonic epoch (including A -> B -> A), preserves the
+  epoch for unchanged heartbeats, and proves that failures cannot publish a
+  fence while every skipped epoch was already published or superseded.
+  `ObservationReconcileProof.tla` proves the complete inductive safety invariant.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
@@ -276,6 +282,7 @@ At the current source revision TLAPS discharges all obligations:
 - LiveInbox reorder atomicity: 3/3.
 - Service lifecycle shutdown barriers: 4/4.
 - Shared mount reference safety: 29/29.
+- Observation reconciliation fencing: 69/69.
 
 ## TLC exhaustive finite checks
 
@@ -301,6 +308,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | LiveInbox | 3,025 | 81 | 7 |
 | ServiceLifecycle | 226 | 131 | 9 |
 | MountCoordinator | 361 | 81 | 11 |
+| ObservationReconcile | 10,055 | 2,835 | 16 |
 | CheckpointRecovery | 462 | 141 | 8 |
 | WebhookOutbox | 10 | 6 | 4 |
 | RegistrationIntent | 1,454 | 487 | 17 |
@@ -394,14 +402,14 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 216/233 formalizable obligations proved
-or machine-linked, plus 10 explicitly external obligations, for 92.7%
+this review checkpoint the ledger is 220/237 formalizable obligations proved
+or machine-linked, plus 10 explicitly external obligations, for 92.8%
 formalizable coverage. Seventeen executable-only rows remain explicit proof
 candidates.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
-The denominator (previously 229 and now 233 as new obligations were discovered)
+The denominator (previously 233 and now 237 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -409,8 +417,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 148 are classified, 131
-have at least one proved obligation linked to the production file, and 422 are
+source-oriented inventory finds 570 candidate modules: 149 are classified, 132
+have at least one proved obligation linked to the production file, and 421 are
 not yet classified. This deliberately over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
@@ -455,6 +463,14 @@ It assumes callers pair one release with each successful acquire. Whether the
 kernel actually mounts/unmounts FUSE, drains every file descriptor, and preserves
 filesystem semantics remains part of the explicitly external container/kernel
 boundary and is exercised by Linux kernel-VFS integration tests rather than TLA+.
+
+`ObservationReconcile` proves the in-process fence and mutex protocol assuming
+the Worker directory accepts heartbeats in strictly increasing sequence order
+and returns snapshots produced by those accepted transitions. It does not prove
+eventual heartbeat/network delivery, scheduler fairness, or the correctness of
+the external credential/ACP sources. Those remain explicit environment and
+adapter obligations; a failed source refresh is modeled only as a safe retryable
+failure that cannot advance the published fence.
 
 The `host-executor/v1` capability pins the declared model identity and fails
 closed on a replacement that does not install that identity. Proving that two

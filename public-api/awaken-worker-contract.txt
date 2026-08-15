@@ -103,6 +103,7 @@ pub struct awaken_worker_contract::RegisteredWorker
 pub awaken_worker_contract::RegisteredWorker::drain_deadline_ms: core::option::Option<u64>
 pub awaken_worker_contract::RegisteredWorker::heartbeat_at_ms: u64
 pub awaken_worker_contract::RegisteredWorker::heartbeat_sequence: u64
+pub awaken_worker_contract::RegisteredWorker::observation_sequence: u64
 pub awaken_worker_contract::RegisteredWorker::registered_at_ms: u64
 pub awaken_worker_contract::RegisteredWorker::snapshot: awaken_worker_contract::WorkerSnapshot
 pub struct awaken_worker_contract::VersionRange

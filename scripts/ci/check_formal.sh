@@ -159,6 +159,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/MountCoordinatorProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
 else
   echo "skipped TLAPS: set TLAPM_BIN or install tlapm"
   missing=1
@@ -225,6 +226,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/mount-coordinator" \
     -config formal/tla/MountCoordinator.cfg formal/tla/MountCoordinator.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/observation-reconcile" \
+    -config formal/tla/ObservationReconcile.cfg formal/tla/ObservationReconcile.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/checkpoint-recovery" \
     -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
