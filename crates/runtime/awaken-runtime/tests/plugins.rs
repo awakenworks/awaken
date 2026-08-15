@@ -535,6 +535,45 @@ async fn inactive_plugin_contributes_nothing() {
 }
 
 #[tokio::test]
+async fn unknown_selected_plugin_fails_the_actual_execution_path_closed() {
+    // Inline snapshots need not pass through snapshot-file validation.  The
+    // execution path itself must reject an authority request it cannot realize.
+    let outcome = Runtime::new()
+        .with_llm(Arc::new(TextLlm))
+        .execute(
+            activation(vec!["not-installed".to_string()]),
+            RuntimeRunContext::new(),
+        )
+        .await
+        .expect("configuration failure is a terminal run state");
+    assert_eq!(
+        outcome,
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound))
+    );
+}
+
+#[tokio::test]
+async fn duplicate_selected_plugin_identity_fails_closed_before_resolution() {
+    let resolves = Arc::new(AtomicUsize::new(0));
+    let outcome = Runtime::new()
+        .with_llm(Arc::new(TextLlm))
+        .with_plugin(Arc::new(MarkPlugin {
+            resolves: resolves.clone(),
+        }))
+        .execute(
+            activation(vec!["mark".to_string(), "mark".to_string()]),
+            RuntimeRunContext::new(),
+        )
+        .await
+        .expect("configuration failure is a terminal run state");
+    assert_eq!(
+        outcome,
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound))
+    );
+    assert_eq!(resolves.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn out_of_bound_plugin_fails_the_run_closed() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(TextLlm))

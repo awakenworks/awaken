@@ -8,6 +8,79 @@ pub enum SessionExecutionPlacement {
     RegisteredWorker,
 }
 
+/// Freeze process topology into the only two executable Session placements.
+#[must_use]
+pub const fn runtime_placement_for_topology(
+    topology: SessionExecutionPlacement,
+) -> SessionRuntimePlacement {
+    match topology {
+        SessionExecutionPlacement::LocalWorker => SessionRuntimePlacement::Local,
+        SessionExecutionPlacement::RegisteredWorker => SessionRuntimePlacement::Worker,
+    }
+}
+
+/// Select the one physical Environment-realization owner.  Explicit frozen
+/// placement never consults today's topology; only the retained legacy upgrade
+/// state may do so.
+#[must_use]
+pub const fn environment_requires_external_owner(
+    frozen: SessionRuntimePlacement,
+    current_topology: SessionExecutionPlacement,
+) -> bool {
+    match frozen {
+        SessionRuntimePlacement::LegacyUnspecified => {
+            matches!(
+                current_topology,
+                SessionExecutionPlacement::RegisteredWorker
+            )
+        }
+        SessionRuntimePlacement::Local => false,
+        SessionRuntimePlacement::Worker => true,
+    }
+}
+
+#[cfg(kani)]
+mod environment_owner_kani_proof {
+    use super::{
+        SessionExecutionPlacement, SessionRuntimePlacement, environment_requires_external_owner,
+        runtime_placement_for_topology,
+    };
+
+    #[kani::proof]
+    fn environment_owner_topology_is_exact_and_frozen() {
+        let registered: bool = kani::any();
+        let topology = if registered {
+            SessionExecutionPlacement::RegisteredWorker
+        } else {
+            SessionExecutionPlacement::LocalWorker
+        };
+
+        assert_eq!(
+            runtime_placement_for_topology(topology),
+            if registered {
+                SessionRuntimePlacement::Worker
+            } else {
+                SessionRuntimePlacement::Local
+            }
+        );
+        assert!(!environment_requires_external_owner(
+            SessionRuntimePlacement::Local,
+            topology
+        ));
+        assert!(environment_requires_external_owner(
+            SessionRuntimePlacement::Worker,
+            topology
+        ));
+        assert_eq!(
+            environment_requires_external_owner(
+                SessionRuntimePlacement::LegacyUnspecified,
+                topology,
+            ),
+            registered
+        );
+    }
+}
+
 /// One failed durable Session-to-WorkQueue projection. The durable Session
 /// remains authoritative and a later reconciliation may retry this failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,10 +213,7 @@ impl SessionApplication {
     /// Exact immutable fact written into a newly compiled Session baseline.
     #[must_use]
     pub fn runtime_placement(&self) -> SessionRuntimePlacement {
-        match self.configuration.execution_placement {
-            SessionExecutionPlacement::LocalWorker => SessionRuntimePlacement::Local,
-            SessionExecutionPlacement::RegisteredWorker => SessionRuntimePlacement::Worker,
-        }
+        runtime_placement_for_topology(self.configuration.execution_placement)
     }
 
     /// Resolve the sole physical-realization owner. `LegacyUnspecified` is an
@@ -151,16 +221,12 @@ impl SessionApplication {
     /// process topology; explicit frozen facts remain immutable across restarts.
     #[must_use]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session
-            .frozen_baseline()
-            .is_some_and(|baseline| match baseline.runtime_placement {
-                SessionRuntimePlacement::LegacyUnspecified => {
-                    self.configuration.execution_placement
-                        == SessionExecutionPlacement::RegisteredWorker
-                }
-                SessionRuntimePlacement::Local => false,
-                SessionRuntimePlacement::Worker => true,
-            })
+        session.frozen_baseline().is_some_and(|baseline| {
+            environment_requires_external_owner(
+                baseline.runtime_placement,
+                self.configuration.execution_placement,
+            )
+        })
     }
 
     /// Claim the one lifecycle supervisor for this application instance.

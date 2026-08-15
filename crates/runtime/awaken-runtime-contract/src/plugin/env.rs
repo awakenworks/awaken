@@ -15,6 +15,53 @@ use super::contributions::{Contributions, DynamicTool, PluginConfigError};
 use super::guard::RunEndGuard;
 use super::phase::{PhaseHook, PhaseHookPoint};
 
+/// Representation-free admission result for one plugin identity.  This is the
+/// small decision kernel shared by runtime selection, merge validation, and the
+/// bounded proof harnesses: an unselected plugin is inert; a selected plugin is
+/// active only when its identity is unique, every dependency is active, and all
+/// contributions remain inside its declared capability bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginActivationDecision {
+    Inactive,
+    Active,
+    RejectDuplicate,
+    RejectMissingDependency,
+    RejectCapability,
+}
+
+/// Decide one plugin activation without inspecting or allocating product data.
+/// Failure precedence is stable so production can retain its diagnostic class.
+#[must_use]
+pub const fn plugin_activation_decision(
+    selected: bool,
+    unique: bool,
+    dependencies_present: bool,
+    capability_within_bound: bool,
+) -> PluginActivationDecision {
+    if !selected {
+        PluginActivationDecision::Inactive
+    } else if !unique {
+        PluginActivationDecision::RejectDuplicate
+    } else if !dependencies_present {
+        PluginActivationDecision::RejectMissingDependency
+    } else if !capability_within_bound {
+        PluginActivationDecision::RejectCapability
+    } else {
+        PluginActivationDecision::Active
+    }
+}
+
+/// Exact selection of one installed plugin id.  Repeating an id is rejected,
+/// rather than being silently collapsed by `contains`.
+#[must_use]
+pub fn exact_plugin_selection(plugin_ids: &[String], id: &str) -> PluginActivationDecision {
+    let count = plugin_ids
+        .iter()
+        .filter(|selected| selected.as_str() == id)
+        .count();
+    plugin_activation_decision(count != 0, count <= 1, true, true)
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MergeError {
     #[error("bound violation: {0}")]
@@ -70,20 +117,33 @@ impl ResolvedExecutionEnv {
     pub fn merge(plugins: Vec<(PluginManifest, Contributions)>) -> Result<Self, MergeError> {
         let mut plugin_ids = std::collections::BTreeSet::new();
         for (manifest, _) in &plugins {
-            if !plugin_ids.insert(manifest.id.clone()) {
+            let unique = plugin_ids.insert(manifest.id.clone());
+            if plugin_activation_decision(true, unique, true, true)
+                == PluginActivationDecision::RejectDuplicate
+            {
                 return Err(MergeError::DuplicatePlugin {
                     id: manifest.id.clone(),
                 });
             }
         }
         for (manifest, contributions) in &plugins {
-            enforce_bound(manifest, contributions)?;
+            let bound = enforce_bound(manifest, contributions);
+            if plugin_activation_decision(true, true, true, bound.is_ok())
+                == PluginActivationDecision::RejectCapability
+            {
+                return Err(bound
+                    .expect_err("capability rejection carries its exact axis")
+                    .into());
+            }
         }
 
         let active: Vec<String> = plugins.iter().map(|(m, _)| m.id.clone()).collect();
         for (manifest, _) in &plugins {
             for required in &manifest.requires {
-                if !active.contains(required) {
+                let present = active.contains(required);
+                if plugin_activation_decision(true, true, present, true)
+                    == PluginActivationDecision::RejectMissingDependency
+                {
                     return Err(MergeError::MissingDependency {
                         plugin: manifest.id.clone(),
                         missing: required.clone(),
@@ -236,4 +296,56 @@ fn topological_order(
         }
     }
     Ok(ordered)
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{PluginActivationDecision, plugin_activation_decision};
+
+    #[kani::proof]
+    fn plugin_activation_is_exactly_the_requested_identity() {
+        let selected: bool = kani::any();
+        let decision = plugin_activation_decision(selected, true, true, true);
+        assert_eq!(decision == PluginActivationDecision::Active, selected);
+        assert_eq!(decision == PluginActivationDecision::Inactive, !selected);
+    }
+
+    #[kani::proof]
+    fn plugin_activation_requires_every_declared_dependency() {
+        let dependency_present: bool = kani::any();
+        let decision = plugin_activation_decision(true, true, dependency_present, true);
+        assert_eq!(
+            decision == PluginActivationDecision::Active,
+            dependency_present
+        );
+        assert_eq!(
+            decision == PluginActivationDecision::RejectMissingDependency,
+            !dependency_present
+        );
+    }
+
+    #[kani::proof]
+    fn plugin_activation_never_widens_the_capability_bound() {
+        let capability_within_bound: bool = kani::any();
+        let decision = plugin_activation_decision(true, true, true, capability_within_bound);
+        assert_eq!(
+            decision == PluginActivationDecision::Active,
+            capability_within_bound
+        );
+        assert_eq!(
+            decision == PluginActivationDecision::RejectCapability,
+            !capability_within_bound
+        );
+    }
+
+    #[kani::proof]
+    fn plugin_activation_never_admits_a_duplicate_identity() {
+        let unique: bool = kani::any();
+        let dependencies_present: bool = kani::any();
+        let capability_within_bound: bool = kani::any();
+        let decision =
+            plugin_activation_decision(true, unique, dependencies_present, capability_within_bound);
+        assert!(unique || decision == PluginActivationDecision::RejectDuplicate);
+        assert!(decision != PluginActivationDecision::Active || unique);
+    }
 }

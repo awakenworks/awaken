@@ -23,7 +23,10 @@ mod phase;
 
 pub use capability::{BoundViolation, CapabilityBound, IdBound, PluginManifest, enforce_bound};
 pub use contributions::{Contributions, DynamicTool, Plugin, PluginConfigError};
-pub use env::{MergeError, ResolvedExecutionEnv};
+pub use env::{
+    MergeError, PluginActivationDecision, ResolvedExecutionEnv, exact_plugin_selection,
+    plugin_activation_decision,
+};
 pub use guard::{RunEndContext, RunEndDecision, RunEndGuard};
 pub use phase::{
     AfterToolContext, ContextMessages, ContextWindow, HookReaction, PhaseContext, PhaseHook,

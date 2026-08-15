@@ -11,7 +11,8 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::plugin::{
-    MergeError, Plugin, PluginConfigError, ResolvedExecutionEnv,
+    MergeError, Plugin, PluginActivationDecision, PluginConfigError, ResolvedExecutionEnv,
+    exact_plugin_selection,
 };
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry};
@@ -264,13 +265,47 @@ impl Runtime {
         spec: &awaken_runtime_contract::resolved::ResolvedSpec,
         session_plugins: &[Arc<dyn Plugin>],
     ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
+        // Inline activations do not necessarily pass through snapshot-file
+        // preflight.  Enforce exact presence and uniqueness here, on the actual
+        // execution path, so an unknown or repeated selected id cannot become an
+        // inert, silently ignored authority request.
+        for selected in &spec.plugin_ids {
+            if exact_plugin_selection(&spec.plugin_ids, selected)
+                == PluginActivationDecision::RejectDuplicate
+            {
+                return Err(MergeError::DuplicatePlugin {
+                    id: selected.clone(),
+                });
+            }
+            let installed = self
+                .plugins
+                .iter()
+                .chain(session_plugins.iter())
+                .any(|plugin| plugin.manifest().id == *selected);
+            if !installed {
+                return Err(PluginConfigError::new(
+                    selected,
+                    "selected plugin is not installed in this Runtime",
+                )
+                .into());
+            }
+        }
+
         // Each active plugin resolves against its own config section (by manifest
         // id); a malformed section fails the run closed (G30).
         let mut active = Vec::new();
         for plugin in &self.plugins {
             let manifest = plugin.manifest();
-            if !spec.plugin_ids.contains(&manifest.id) {
-                continue;
+            match exact_plugin_selection(&spec.plugin_ids, &manifest.id) {
+                PluginActivationDecision::Inactive => continue,
+                PluginActivationDecision::Active => {}
+                PluginActivationDecision::RejectDuplicate => {
+                    return Err(MergeError::DuplicatePlugin { id: manifest.id });
+                }
+                PluginActivationDecision::RejectMissingDependency
+                | PluginActivationDecision::RejectCapability => {
+                    unreachable!("selection checks only identity presence and uniqueness")
+                }
             }
             let contributions = plugin.resolve_configured(spec.plugin_config.get(&manifest.id))?;
             active.push((manifest, contributions));
@@ -290,19 +325,6 @@ impl Runtime {
         &self,
         spec: &awaken_runtime_contract::resolved::ResolvedSpec,
     ) -> std::result::Result<(), MergeError> {
-        for selected in &spec.plugin_ids {
-            if !self
-                .plugins
-                .iter()
-                .any(|plugin| plugin.manifest().id == *selected)
-            {
-                return Err(PluginConfigError::new(
-                    selected,
-                    "selected plugin is not installed in this Runtime",
-                )
-                .into());
-            }
-        }
         self.resolve_plugin_env(spec).map(|_| ())
     }
 

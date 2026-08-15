@@ -15,6 +15,68 @@ use serde_json::Value;
 
 use crate::result::{ResultMatcher, ToolResultView, result_matches};
 
+const TOOL_TRIGGER_KIND: u8 = 0;
+const EVENT_TRIGGER_KIND: u8 = 1;
+
+/// Representation-free trigger discriminator.  Unknown numeric kinds are
+/// deliberately representable and match neither tool nor event transitions.
+#[must_use]
+pub const fn transition_trigger_matches(
+    actual_kind: u8,
+    expected_kind: u8,
+    pattern_matches: bool,
+) -> bool {
+    matches!(actual_kind, TOOL_TRIGGER_KIND | EVENT_TRIGGER_KIND)
+        && actual_kind == expected_kind
+        && pattern_matches
+}
+
+/// Exact transition-enablement conjunction used by both tool and event paths.
+#[must_use]
+pub const fn transition_preconditions_met(
+    trigger_matches: bool,
+    source_state_matches: bool,
+    counters_match: bool,
+) -> bool {
+    trigger_matches && source_state_matches && counters_match
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionAdvanceDecision {
+    Reject,
+    Stay,
+    Advance,
+    Fallback,
+}
+
+/// Select the post-result effect.  An unknown result classification rejects;
+/// a known non-match stays put unless and only unless an authored fallback is
+/// present.
+#[must_use]
+pub const fn transition_advance_decision(
+    preconditions_met: bool,
+    result_is_known: bool,
+    result_matches: bool,
+    has_fallback: bool,
+) -> TransitionAdvanceDecision {
+    if !preconditions_met || !result_is_known {
+        TransitionAdvanceDecision::Reject
+    } else if result_matches {
+        TransitionAdvanceDecision::Advance
+    } else if has_fallback {
+        TransitionAdvanceDecision::Fallback
+    } else {
+        TransitionAdvanceDecision::Stay
+    }
+}
+
+/// Terminal membership is exact and unknown states never acquire terminal
+/// authority by default.
+#[must_use]
+pub const fn terminal_state_decision(state_is_known: bool, declared_terminal: bool) -> bool {
+    state_is_known && declared_terminal
+}
+
 /// Lifetime scope of a machine's instance states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MachineScope {
@@ -211,7 +273,7 @@ impl Machine {
     /// Whether `state` is a terminal state of this machine.
     #[must_use]
     pub fn is_terminal(&self, state: &str) -> bool {
-        self.terminal_states.iter().any(|s| s == state)
+        terminal_state_decision(true, self.terminal_states.iter().any(|s| s == state))
     }
 
     /// Transitions whose pattern matches the given tool call.
@@ -221,10 +283,14 @@ impl Machine {
         tool_args: &'a Value,
     ) -> impl Iterator<Item = &'a Transition> + 'a {
         self.transitions.iter().filter(move |t| match &t.trigger {
-            TransitionTrigger::Tool(pattern) => {
-                awaken_tool_pattern::pattern_matches(pattern, tool_name, tool_args).is_match()
+            TransitionTrigger::Tool(pattern) => transition_trigger_matches(
+                TOOL_TRIGGER_KIND,
+                TOOL_TRIGGER_KIND,
+                awaken_tool_pattern::pattern_matches(pattern, tool_name, tool_args).is_match(),
+            ),
+            TransitionTrigger::Event(_) => {
+                transition_trigger_matches(EVENT_TRIGGER_KIND, TOOL_TRIGGER_KIND, false)
             }
-            TransitionTrigger::Event(_) => false,
         })
     }
 
@@ -235,11 +301,104 @@ impl Machine {
         event_data: &'a Value,
     ) -> impl Iterator<Item = &'a Transition> + 'a {
         self.transitions.iter().filter(move |t| match &t.trigger {
-            TransitionTrigger::Event(pattern) => {
-                awaken_tool_pattern::pattern_matches(pattern, event_name, event_data).is_match()
+            TransitionTrigger::Event(pattern) => transition_trigger_matches(
+                EVENT_TRIGGER_KIND,
+                EVENT_TRIGGER_KIND,
+                awaken_tool_pattern::pattern_matches(pattern, event_name, event_data).is_match(),
+            ),
+            TransitionTrigger::Tool(_) => {
+                transition_trigger_matches(TOOL_TRIGGER_KIND, EVENT_TRIGGER_KIND, false)
             }
-            TransitionTrigger::Tool(_) => false,
         })
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        EVENT_TRIGGER_KIND, TOOL_TRIGGER_KIND, TransitionAdvanceDecision, terminal_state_decision,
+        transition_advance_decision, transition_preconditions_met, transition_trigger_matches,
+    };
+
+    #[kani::proof]
+    fn tool_and_event_transitions_never_cross_trigger_kinds() {
+        let pattern_matches: bool = kani::any();
+        assert_eq!(
+            transition_trigger_matches(TOOL_TRIGGER_KIND, TOOL_TRIGGER_KIND, pattern_matches),
+            pattern_matches
+        );
+        assert!(!transition_trigger_matches(
+            TOOL_TRIGGER_KIND,
+            EVENT_TRIGGER_KIND,
+            pattern_matches
+        ));
+        assert_eq!(
+            transition_trigger_matches(EVENT_TRIGGER_KIND, EVENT_TRIGGER_KIND, pattern_matches),
+            pattern_matches
+        );
+        assert!(!transition_trigger_matches(
+            EVENT_TRIGGER_KIND,
+            TOOL_TRIGGER_KIND,
+            pattern_matches
+        ));
+    }
+
+    #[kani::proof]
+    fn state_transition_requires_every_exact_precondition() {
+        let trigger_matches: bool = kani::any();
+        let source_state_matches: bool = kani::any();
+        let counters_match: bool = kani::any();
+        assert_eq!(
+            transition_preconditions_met(trigger_matches, source_state_matches, counters_match),
+            trigger_matches && source_state_matches && counters_match
+        );
+    }
+
+    #[kani::proof]
+    fn result_transition_and_authored_fallback_are_exact() {
+        let preconditions_met: bool = kani::any();
+        let result_matches: bool = kani::any();
+        let has_fallback: bool = kani::any();
+        let decision =
+            transition_advance_decision(preconditions_met, true, result_matches, has_fallback);
+        assert_eq!(
+            decision == TransitionAdvanceDecision::Advance,
+            preconditions_met && result_matches
+        );
+        assert_eq!(
+            decision == TransitionAdvanceDecision::Fallback,
+            preconditions_met && !result_matches && has_fallback
+        );
+        assert!(
+            decision != TransitionAdvanceDecision::Fallback || has_fallback,
+            "an unauthored fallback can never fire"
+        );
+    }
+
+    #[kani::proof]
+    fn terminal_state_classification_is_exact() {
+        let state_is_known: bool = kani::any();
+        let declared_terminal: bool = kani::any();
+        assert_eq!(
+            terminal_state_decision(state_is_known, declared_terminal),
+            state_is_known && declared_terminal
+        );
+    }
+
+    #[kani::proof]
+    fn unknown_transition_trigger_and_result_fail_closed() {
+        let actual_kind: u8 = kani::any();
+        kani::assume(actual_kind != TOOL_TRIGGER_KIND && actual_kind != EVENT_TRIGGER_KIND);
+        let expected_kind: u8 = kani::any();
+        assert!(!transition_trigger_matches(
+            actual_kind,
+            expected_kind,
+            true
+        ));
+        assert_eq!(
+            transition_advance_decision(true, false, true, true),
+            TransitionAdvanceDecision::Reject
+        );
     }
 }
 
