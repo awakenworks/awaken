@@ -97,7 +97,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \
     --harness source_disposal_receipt_requires_exact_binding_and_termination \
     --harness restore_receipt_requires_exact_checkpoint_and_nonempty_binding \
-    --harness terminal_cleanup_receipt_requires_every_identity_and_settlement_axis
+    --harness session_cleanup_completion_requires_every_identity_and_settlement_axis \
+    --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
+    --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
+    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
@@ -347,6 +350,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-ownership" \
     -config formal/tla/SessionOwnership.cfg formal/tla/SessionOwnership.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-deletion" \
+    -config formal/tla/SessionDeletion.cfg formal/tla/SessionDeletion.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/circuit-breaker" \
     -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla

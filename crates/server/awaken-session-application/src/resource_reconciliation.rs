@@ -215,19 +215,12 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
-fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecycleFact {
-    let timestamp = std::time::SystemTime::now()
+fn deletion_timestamp() -> String {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    ManagedLifecycleFact {
-        id: format!("session:{session_id}:deleted"),
-        object_id: session_id.to_string(),
-        workspace_id: Some(owner_scope.to_string()),
-        event_type: "session.deleted".into(),
-        timestamp,
-        runtime_interval: None,
-    }
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+        .to_string()
 }
 
 impl SessionApplication {
@@ -773,11 +766,13 @@ impl SessionApplication {
     }
 
     /// Commit the terminal delete tombstone through the canonical Session CAS.
-    pub async fn tombstone_session_snapshot(
+    /// The `session.deleted` lifecycle fact belongs to the earlier atomic Delete
+    /// fence; emitting it again here could duplicate delivery after an outbox
+    /// consumer acknowledged the first fact.
+    async fn commit_delete_tombstone(
         &self,
         owner_scope: &str,
         session: &PersistedSession,
-        fact: ManagedLifecycleFact,
     ) -> Result<(), SessionMutationError> {
         let deleted_revision =
             SessionRevision(session.revision.0.checked_add(1).ok_or_else(|| {
@@ -786,7 +781,7 @@ impl SessionApplication {
         let payload = SessionMutationPayload::Delete(SessionTombstone {
             session_id: session.session_id.clone(),
             deleted_revision,
-            deleted_at: fact.timestamp.to_string(),
+            deleted_at: deletion_timestamp(),
         });
         let payload_hash = payload.stable_hash();
         let mutation = SessionMutation {
@@ -799,7 +794,7 @@ impl SessionApplication {
                 payload_hash,
             },
             payload,
-            lifecycle_facts: vec![fact],
+            lifecycle_facts: Vec::new(),
         };
         match self.commit_mutation(owner_scope, mutation).await? {
             SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {
@@ -993,15 +988,16 @@ impl SessionApplication {
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
             Err(error) => return Err(repository_preparation(error)),
         };
+        // Work retirement belongs to the recoverable cleanup operation. Doing
+        // it here closes the crash window between a committed Delete fence and
+        // the protocol's best-effort cleanup call: recovery must settle the
+        // queue before it can ever reach the tombstone commit below.
+        self.retire_terminal_work(&session).await?;
         if session.terminal_cleanup.is_completed() {
             if session.is_hidden() {
-                self.tombstone_session_snapshot(
-                    owner_scope,
-                    &session,
-                    deleted_lifecycle_fact(session_id, owner_scope),
-                )
-                .await
-                .map_err(mutation_failure)?;
+                self.commit_delete_tombstone(owner_scope, &session)
+                    .await
+                    .map_err(mutation_failure)?;
                 return Ok(None);
             }
             return Ok(Some(session));
@@ -1069,20 +1065,20 @@ impl SessionApplication {
             let mut teardown_error = None;
             let mut receipts = Vec::with_capacity(threads.len());
             for thread in threads {
-                let intent = session
+                let command = session
                     .terminal_cleanup
-                    .intent_for(session_id, &thread)
-                    .ok_or_else(|| internal("Session terminal cleanup intent disappeared"))?;
+                    .command_for(session_id, &thread)
+                    .ok_or_else(|| internal("Session cleanup command disappeared"))?;
                 match self
                     .runtime()
-                    .execute_terminal_cleanup(intent.clone())
+                    .execute_terminal_cleanup(command.clone())
                     .await
                 {
-                    Ok(receipt) => match receipt.verify(&intent) {
-                        Ok(()) => receipts.push(receipt),
+                    Ok(completion) => match completion.verify(&command) {
+                        Ok(receipt) => receipts.push(receipt),
                         Err(error) => {
                             teardown_error.get_or_insert(RunError::internal(format!(
-                                "Session terminal cleanup receipt mismatch: {error}"
+                                "Session cleanup completion mismatch: {error}"
                             )));
                         }
                     },
@@ -1090,7 +1086,7 @@ impl SessionApplication {
                         tracing::warn!(
                             session = session_id,
                             thread = %thread,
-                            effect_id = %intent.effect_id,
+                            effect_id = %command.effect_id,
                             error = ?error,
                             "Session terminal Runtime teardown remains pending"
                         );
@@ -1134,13 +1130,9 @@ impl SessionApplication {
             .await
             .map_err(mutation_failure)?;
         if session.is_hidden() {
-            self.tombstone_session_snapshot(
-                owner_scope,
-                &session,
-                deleted_lifecycle_fact(session_id, owner_scope),
-            )
-            .await
-            .map_err(mutation_failure)?;
+            self.commit_delete_tombstone(owner_scope, &session)
+                .await
+                .map_err(mutation_failure)?;
             return Ok(None);
         }
         Ok(Some(session))

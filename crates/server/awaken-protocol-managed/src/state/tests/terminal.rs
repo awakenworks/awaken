@@ -707,6 +707,13 @@ impl SessionRuntime for EndSessionFailer {
     async fn end_session(&self, _thread: &str) -> Result<(), RunError> {
         Err(RunError::internal("sandbox dispose blew up"))
     }
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        self.end_session(&command.thread_id).await?;
+        unreachable!("failing test Runtime never reports completion")
+    }
     fn model(&self) -> String {
         "host-default-model".to_string()
     }

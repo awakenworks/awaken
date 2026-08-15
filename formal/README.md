@@ -46,6 +46,13 @@ The named harnesses in the strict gate invoke production pure functions directly
     requires the matching receipt.
   - stopped Session Work is revived only by a claimed nonterminal Run after an
     initial acquisition found no lease; realization renewal remains inert.
+  - Session cleanup advances only through
+    `NotRequested -> Fenced -> Requested -> Completed`, and every identity,
+    settlement, and canonical completion axis is mandatory.
+  - a first Delete request always hides, terminalizes when needed, and requests
+    cleanup together; Deleting/Deleted replays are inert.
+  - a Session tombstone is admitted only for a hidden, terminal aggregate with
+    verified cleanup completion.
 - `awaken-runtime-contract`
   - terminal tool calls never re-enter execution;
   - only a matching approval ticket enters execution;
@@ -348,6 +355,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | RemoteAttempt | 701 | 356 | 16 |
 | AuthzKernel | 180 | 18 | 1 |
 | SessionOwnership | 768 | 169 | 7 |
+| SessionDeletion | 67 | 27 | 8 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |
@@ -459,10 +467,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 295/295 formalizable obligations model-linked or
+checkpoint the ledger is 299/299 formalizable obligations model-linked or
 kernel-proved, plus 10 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 185
-model-checked, 27 model-proved, 136 Kani-kernel-proved, and 6 linked to the
+evidence coverage. The evidence dimensions are reported independently: 186
+model-checked, 27 model-proved, 139 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -474,7 +482,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 276 and now 295 as new obligations were discovered)
+The denominator (previously 295 and now 299 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -483,7 +491,7 @@ authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
 source-oriented inventory finds 576 candidate modules: all 576 are classified,
-322 have checked formal evidence associated with the production file, 192 have
+322 have checked formal evidence associated with the production file, 194 have
 a direct Kani/trace proof link, and 198 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
@@ -491,7 +499,7 @@ is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 190 unique Kani harnesses; repeated
+The source tree and strict CI name the same 193 unique Kani harnesses; repeated
 ledger references are allowed only when one production proof supports more than
 one precisely stated obligation.
 

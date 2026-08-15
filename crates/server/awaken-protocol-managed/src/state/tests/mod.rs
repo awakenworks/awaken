@@ -67,6 +67,19 @@ impl SessionRuntime for EndSessionRecorder {
         self.ended.lock().unwrap().push(thread.to_string());
         Ok(())
     }
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        self.end_session(&command.thread_id).await?;
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+            true,
+            true,
+            true,
+        ))
+    }
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupted.lock().unwrap().push(thread.to_string());
         Ok(())
