@@ -1377,7 +1377,7 @@ impl WorkQueue for PostgresWorkQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "loom")))]
 mod tests {
     use super::LEASE_TTL_MS;
     use super::*;

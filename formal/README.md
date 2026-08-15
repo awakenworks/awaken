@@ -370,7 +370,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 206/223 formalizable obligations proved
+this review checkpoint the ledger is 207/224 formalizable obligations proved
 or machine-linked, plus 10 explicitly external obligations, for 92.4%
 formalizable coverage. Seventeen executable-only rows remain explicit proof
 candidates.
@@ -384,8 +384,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 144 are classified, 127
-have at least one proved obligation linked to the production file, and 426 are
+source-oriented inventory finds 570 candidate modules: 146 are classified, 129
+have at least one proved obligation linked to the production file, and 424 are
 not yet classified. This deliberately over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
@@ -395,13 +395,16 @@ source surfaces and zero executable-only formalizable obligations.
 
 ## Loom concurrency exploration
 
-The strict gate also runs the production `MemoryWorkerDirectory` with Loom's
-instrumented mutex. It exhaustively explores heartbeat-versus-drain and stale
-heartbeat-versus-incarnation-replacement schedules. A heartbeat cannot reopen a
-draining worker, and an old incarnation cannot mutate the generation that
-replaced it. Route/credential/lease interleavings are covered in the larger TLA+
-composition because those stores are async and backend-transactional rather
-than in-process lock algorithms.
+The strict gate runs both the production `MemoryWorkerDirectory` and the
+reference WorkQueue's production `LeaseBook` with Loom's instrumented mutex. It
+exhaustively explores heartbeat-versus-drain,
+stale-heartbeat-versus-incarnation-replacement, concurrent Work reclaim/release,
+and authority observation during a replacement claim. A heartbeat cannot reopen
+a draining worker, an old incarnation cannot mutate its replacement, and a Work
+authority snapshot cannot combine an owner, epoch, or expiry from different
+claims. SQLite/PostgreSQL queue mutations instead use database row transactions;
+their interleavings remain in `WorkQueue.tla` plus backend conformance and
+contention tests.
 
 ## Honest boundary
 

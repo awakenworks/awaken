@@ -13,6 +13,9 @@ authority = "work"
 # Volatile executable specifications and fixtures are opt-in. Product builds have
 # no process-local WorkQueue implementation to select accidentally.
 test-support = []
+# Replace the lease-authority mutex with Loom's scheduler-aware mutex in the
+# dedicated concurrency proof build.
+loom = []
 
 [dependencies]
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
@@ -30,6 +33,7 @@ awaken-scoped-migration-sqlite.workspace = true
 # Property-based verification of the shared lease/reclaim + poll-window algorithm (ADR-0059).
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+loom = "0.7"
 
 [[test]]
 name = "work_queue_conformance"
