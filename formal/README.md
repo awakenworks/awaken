@@ -208,6 +208,18 @@ production logic.
   sequence-fenced credential observations that cannot roll back after rotation.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
+- `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and
+  `SessionRealizationMutex.tla` cover handshake-before-prompt and conservative
+  permission projection, exact-claim materialization/publication, and exclusive
+  Session realization phase driving. The mutex model has an explicit finite
+  completion bound for TLC; the one-driver invariant itself is independent of
+  the chosen bound.
+- `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
+  `ResourceLifecycleWorkflow.tla`, and `SessionRunWorkflow.tla` compose the
+  corresponding already-modeled kernels into product workflows. Their normal
+  configurations check safety; the dedicated reachability configurations
+  witness the credential completion, deployment settlement, and resource
+  reclamation goals without promoting environmental fairness into a theorem.
 - `InferenceAccessPublication.tla` covers immutable access publication and
   dispatch-time pinning across route change, revocation, and fallback.
 - `McpServer.tla` covers request/notification response cardinality,
@@ -342,6 +354,16 @@ graphs with zero invariant violations and zero states left on the queue:
 | McpServer | 15 | 15 | 6 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |
 | RemoteWorkerProtocol | 2,155,183 | 258,524 | 30 |
+| ACP boundary | 5 | 5 | 4 |
+| Credential effect boundary | 11 | 10 | 4 |
+| Session realization mutex | 23 | 20 | 12 |
+| Credential rotation workflow | 1,547 | 548 | 12 |
+| Credential rotation reachability | 6 | 6 | 6 |
+| Deployment execution workflow | 70 | 60 | 8 |
+| Deployment execution reachability | 15 | 15 | 5 |
+| Resource lifecycle workflow | 50 | 22 | 9 |
+| Resource lifecycle reachability | 6 | 6 | 6 |
+| Session run workflow | 98 | 98 | 8 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -411,12 +433,12 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 225/242 formalizable obligations model-linked or
-kernel-proved, plus 10 explicitly external obligations, for 93.0% formal
-evidence coverage. The evidence dimensions are reported independently: 175
-model-checked, 27 model-proved, 71 Kani-kernel-proved, and 6 linked to the
+checkpoint the ledger is 268/268 formalizable obligations model-linked or
+kernel-proved, plus 10 explicitly external obligations, for 100% formal
+evidence coverage. The evidence dimensions are reported independently: 185
+model-checked, 27 model-proved, 109 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
-not be summed. Seventeen executable-only rows remain explicit proof candidates.
+not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as model-linked merely to raise the percentage.
 
@@ -426,7 +448,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 237 and now 242 as new obligations were discovered)
+The denominator (previously 237 and now 268 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -434,15 +456,25 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 153 are classified, 136
-have checked formal evidence associated with the production file, 52 have a
-direct Kani/trace proof link, and 417 are not yet classified. This deliberately
-over-approximating inventory is the work
-queue for expansion; it is not a claim that every signal in every listed file
+source-oriented inventory finds 573 candidate modules: all 573 are classified,
+304 have checked formal evidence associated with the production file, 167 have
+a direct Kani/trace proof link, and 212 are linked to an explicit product
+requirement boundary. This deliberately over-approximating inventory is not a
+claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
-boundary with a concrete reason. The eventual strict target is zero uncovered
-source surfaces and zero executable-only formalizable obligations.
+boundary with a concrete reason. Both strict targets are now enforced: zero
+uncovered source surfaces and zero executable-only formalizable obligations.
+
+`formal/proof-boundaries.json` and `formal/VERIFICATION_BOUNDARIES.md` keep the
+remaining product limits honest. Every requirement-only surface has one exact
+external, semantic, unbounded-input, effect-adapter, or UI/human boundary plus
+an architecture change, target proof method, and acceptance gate. The boundary
+checker currently requires all 40 residual requirements and rejects missing or
+invented rows. This documents how typestate permits, bounded protocol algebras,
+event-sourced reducers, commit receipts, and durable inbox/outbox identities can
+move additional adapter behavior under proof without claiming that networks,
+LLM semantics, database engines, kernels, or humans were verified.
 
 `formal/features.json` supplies the independent product denominator. Every row
 in the canonical functional coverage matrix has exactly one machine-readable

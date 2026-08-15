@@ -16,9 +16,9 @@ trap 'rm -rf "$formal_tmp_root"' EXIT
 rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
-python3 scripts/ci/check_feature_coverage.py
-python3 scripts/ci/check_formal_coverage.py
-python3 scripts/ci/check_formal_surface.py
+python3 scripts/ci/check_feature_coverage.py --require-complete
+python3 scripts/ci/check_formal_coverage.py --require-complete
+python3 scripts/ci/check_formal_surface.py --require-complete
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
@@ -34,7 +34,8 @@ cargo test -p awaken-work-store --features loom --lib lease_book::loom_tests
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
 python3 scripts/ci/render_runtime_refinement_traces.py \
-  "$rust_trace_dir" "$rendered_trace_dir"
+  "$rust_trace_dir" "$rendered_trace_dir" \
+  --require-complete-transition-coverage
 
 if command -v cargo-kani >/dev/null 2>&1; then
   # Kani compiles every selected package once and verifies its named harnesses
@@ -52,7 +53,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_unsettled_relationships_occupy_a_parallel_slot \
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
-    --harness cancellation_delivery_is_enabled_only_by_durable_intent
+    --harness cancellation_delivery_is_enabled_only_by_durable_intent \
+    --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls
   run_kani awaken-authorization-contract \
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
@@ -74,9 +76,15 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness source_disposal_requires_ready_phase_and_checkpoint \
     --harness terminal_execution_never_reopens \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
-    --harness runtime_intervals_open_once_and_never_close_before_start
+    --harness runtime_intervals_open_once_and_never_close_before_start \
+    --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
+    --harness runtime_capability_member_projection_is_total_exact_and_bounded \
+    --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
+    --harness every_skill_execution_pin_axis_is_binding
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
+  run_kani awaken-session-application \
+    --harness environment_owner_topology_is_exact_and_frozen
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
     --harness any_uncovered_selector_fails_closed \
@@ -90,6 +98,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sandbox_admission_never_weakens_the_isolation_floor \
     --harness sandbox_admission_requires_every_requested_capability \
     --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade
+  run_kani awaken-deployment-contract \
+    --harness minute_timestamp_projection_is_exact_and_bounded \
+    --harness minute_timestamp_projection_has_an_exact_input_domain
   run_kani awaken-data-subject-application \
     --harness any_withdrawal_vetoes_full_content_capture \
     --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose \
@@ -121,8 +132,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_duplicated_snapshot_pin_axis_is_binding
   run_kani awaken-file-store --features object-store \
     --harness object_store_configuration_accepts_exactly_the_provider_compatible_shape
-  run_kani awaken-protocol-acp \
-    --harness permission_consensus_is_a_conservative_order_independent_semilattice
+  run_kani awaken-protocol-acp --features real-acp \
+    --harness permission_consensus_is_a_conservative_order_independent_semilattice \
+    --harness acp_permission_projection_is_total_exact_and_non_widening \
+    --harness acp_session_load_preserves_the_exact_mcp_projection \
+    --harness acp_permission_tool_identity_normalization_is_exact
+  run_kani awaken-protocol-managed \
+    --harness organization_bucket_refill_is_exact_and_bounded \
+    --harness organization_bucket_refill_clamp_preserves_capacity_invariant \
+    --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
+    --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening
   run_kani awaken-protocol-a2a \
     --harness a2a_task_state_projection_is_total_exact_and_non_strengthening
   run_kani awaken-ext-mcp \
@@ -154,19 +173,40 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness advisor_never_substitutes_for_primary_model_admission \
     --harness fallback_selection_preserves_the_complete_publication_pin \
     --harness every_route_pin_axis_participates_in_exact_identity \
+    --harness transcript_prefix_is_exact_request_only_context_not_durable_truth \
     --harness capture_meet_is_exact_commutative_and_non_widening \
     --harness capture_projection_admits_content_only_at_full \
     --harness non_full_capture_fails_closed_before_redaction \
     --harness tool_capability_intersection_never_widens_configured_authority \
     --harness permission_verdict_projects_to_exact_non_widening_gate_outcome \
-    --harness every_gate_outcome_has_one_exact_audit_label
+    --harness every_gate_outcome_has_one_exact_audit_label \
+    --harness retry_is_authorized_only_inside_the_exact_bounded_budget \
+    --harness non_retryable_failure_is_immediately_terminal \
+    --harness terminal_retry_state_never_reopens \
+    --harness unknown_retry_state_fails_closed \
+    --harness plugin_activation_is_exactly_the_requested_identity \
+    --harness plugin_activation_requires_every_declared_dependency \
+    --harness plugin_activation_never_widens_the_capability_bound \
+    --harness plugin_activation_never_admits_a_duplicate_identity
   run_kani awaken-ext-permission \
     --harness unmatched_permission_mode_is_exact_and_plan_fails_closed \
     --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority
+  run_kani awaken-ext-state-machine \
+    --harness tool_and_event_transitions_never_cross_trigger_kinds \
+    --harness state_transition_requires_every_exact_precondition \
+    --harness result_transition_and_authored_fallback_are_exact \
+    --harness terminal_state_classification_is_exact \
+    --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-runtime-host \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed
+  run_kani awaken-service-lifecycle \
+    --harness startup_wiring_is_exact_for_every_service_role \
+    --harness startup_wiring_requires_every_role_owned_component \
+    --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+  run_kani awaken-resource-contract \
+    --harness deployment_backing_selects_only_exact_resources_database_and_files_object_roles
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -358,6 +398,33 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-realization-mutex" \
     -config formal/tla/SessionRealizationMutex.cfg \
     formal/tla/SessionRealizationMutex.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/credential-rotation-workflow" \
+    -config formal/tla/CredentialRotationWorkflow.cfg \
+    formal/tla/CredentialRotationWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/credential-rotation-workflow-reachability" \
+    -config formal/tla/CredentialRotationWorkflowReachability.cfg \
+    formal/tla/CredentialRotationWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/deployment-execution-workflow" \
+    -config formal/tla/DeploymentExecutionWorkflow.cfg \
+    formal/tla/DeploymentExecutionWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/deployment-execution-workflow-reachability" \
+    -config formal/tla/DeploymentExecutionWorkflowReachability.cfg \
+    formal/tla/DeploymentExecutionWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/resource-lifecycle-workflow" \
+    -config formal/tla/ResourceLifecycleWorkflow.cfg \
+    formal/tla/ResourceLifecycleWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/resource-lifecycle-workflow-reachability" \
+    -config formal/tla/ResourceLifecycleWorkflowReachability.cfg \
+    formal/tla/ResourceLifecycleWorkflow.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-workflow" \
+    -config formal/tla/SessionRunWorkflow.cfg formal/tla/SessionRunWorkflow.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \
