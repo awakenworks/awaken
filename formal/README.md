@@ -490,8 +490,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 576 candidate modules: all 576 are classified,
-322 have checked formal evidence associated with the production file, 194 have
+source-oriented inventory finds 578 candidate modules: all 578 are classified,
+324 have checked formal evidence associated with the production file, 194 have
 a direct Kani/trace proof link, and 198 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
