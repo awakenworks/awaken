@@ -218,7 +218,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     assert_eq!(replay.session.revision, revision, "L2");
 
     let deleted = app
-        .begin_delete("delete-live", fact("delete-live", "session.deleted"))
+        .commit_delete_intent(SessionDeleteCommand::new("delete-live"))
         .await
         .expect("L3");
     assert!(deleted.transitioned, "L3");
@@ -230,13 +230,13 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         "L3 terminal truth retires its one Work projection"
     );
     let archived_delete = app
-        .begin_delete("archive-race", fact("archive-race", "session.deleted"))
+        .commit_delete_intent(SessionDeleteCommand::new("archive-race"))
         .await
         .expect("L4 archived Session is deletable");
     assert!(archived_delete.transitioned, "L4");
     assert!(archived_delete.session.is_hidden(), "L4");
     let failed_delete = app
-        .begin_delete("delete-failed", fact("delete-failed", "session.deleted"))
+        .commit_delete_intent(SessionDeleteCommand::new("delete-failed"))
         .await
         .expect("L5 failed Session is deletable");
     assert!(failed_delete.transitioned, "L5");
@@ -245,6 +245,39 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         SessionExecutionState::ActivationFailed,
         "L5 execution failure remains audit truth"
     );
+}
+
+#[tokio::test]
+async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombstone() {
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(repo.as_ref(), persisted("delete-fact-once", false, "idle")).await;
+    let app = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let transition = app
+        .commit_delete_intent(SessionDeleteCommand::new("delete-fact-once"))
+        .await
+        .expect("Delete fence");
+    let facts = repo.pending_lifecycle().await.expect("Delete outbox");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].id, "session:delete-fact-once:deleted");
+    repo.complete_lifecycle(&facts[0].id)
+        .await
+        .expect("consumer acknowledged Delete fact");
+
+    app.release_terminal_resources(&transition.owner_scope, "delete-fact-once")
+        .await
+        .expect("verified cleanup and tombstone");
+    assert!(repo.pending_lifecycle().await.unwrap().is_empty());
+    assert!(matches!(
+        repo.get("delete-fact-once").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    ));
 }
 
 #[tokio::test]

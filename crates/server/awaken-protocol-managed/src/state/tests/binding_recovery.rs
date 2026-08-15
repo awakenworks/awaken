@@ -761,6 +761,7 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart() {
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut deleted = sample_persisted("sesn_deleted");
     deleted.disposition = SessionDisposition::Deleting;
+    deleted.execution = awaken_session_contract::SessionExecutionState::Terminated;
     deleted.resources.adopt_legacy_active("sesn_deleted");
     deleted.resources.begin_release().unwrap();
     create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
@@ -816,6 +817,7 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment() {
     }
     let mut deleted = sample_persisted("sesn_deleted_empty");
     deleted.disposition = SessionDisposition::Deleting;
+    deleted.execution = awaken_session_contract::SessionExecutionState::Terminated;
     deleted.resources = Default::default();
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, deleted).await;
 

@@ -6,6 +6,3 @@
 
 /// Session terminated (archived). Anthropic `session.status_terminated`.
 pub const SESSION_TERMINATED: &str = "session.status_terminated";
-/// Session deleted (record dropped, not tombstoned). Matches the SSE terminal
-/// transition name because the delete edge carries no status.
-pub const SESSION_DELETED: &str = "session.deleted";

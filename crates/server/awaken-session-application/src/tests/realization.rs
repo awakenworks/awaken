@@ -753,7 +753,7 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
         .expect("cleanup task")
         .expect("cleanup succeeds")
         .expect("archived Session remains");
-    let awaken_session_contract::SessionTerminalCleanupState::Completed {
+    let awaken_session_contract::SessionCleanupOperation::Completed {
         thread_ids,
         delegation_watermark,
         ..
