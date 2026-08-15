@@ -22,6 +22,10 @@ pub(super) fn requires_claim(plan: &ContainerPlan) -> bool {
     plan.filesystem_continuity == awaken_provisioning_contract::FilesystemContinuity::Retained
 }
 
+pub(super) fn claim_name(id: &str, plan: &ContainerPlan, configured: bool) -> Option<String> {
+    (configured && requires_claim(plan)).then(|| continuation_claim_name(id))
+}
+
 pub(super) fn claim_uid(claim: &PersistentVolumeClaim) -> Result<String, RuntimeError> {
     claim
         .metadata
@@ -206,6 +210,50 @@ mod tests {
         assert!(requires_claim(&retained), "FC1");
         retained.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
         assert!(!requires_claim(&retained), "FC2");
+    }
+
+    #[tokio::test]
+    async fn pod_projection_matches_the_continuation_allocation_decision() {
+        /* Filesystem-continuity cause/effect table at the final Pod projection.
+         * Causes: C1 a continuation policy is configured; C2 the exact neutral
+         * plan is retained/ephemeral. Effects: E1 the Pod references the one
+         * canonical PVC; E2 the Pod has no PVC reference. Rules:
+         * KP1 C1+retained=>E1; KP2 C1+ephemeral=>E2. Testing only claim creation
+         * is insufficient: a stale Pod reference to an intentionally omitted
+         * claim leaves disposable ACP probes Pending and exhausts storage quota.
+         */
+        let rt = super::super::K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+            .with_continuation_volume(crate::K8sContinuationVolume {
+                storage_class_name: Some("retained-rwo".into()),
+                size: "8Gi".into(),
+            });
+        let mut retained = plan();
+        let retained_pod = rt.pod("retained", &retained);
+        assert!(
+            retained_pod
+                .spec
+                .unwrap()
+                .volumes
+                .unwrap()
+                .iter()
+                .any(|volume| {
+                    volume.name == CONTINUATION_VOLUME && volume.persistent_volume_claim.is_some()
+                }),
+            "KP1"
+        );
+
+        retained.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+        let ephemeral_pod = rt.pod("ephemeral", &retained);
+        assert!(
+            ephemeral_pod
+                .spec
+                .unwrap()
+                .volumes
+                .unwrap()
+                .iter()
+                .all(|volume| volume.persistent_volume_claim.is_none()),
+            "KP2"
+        );
     }
 
     #[test]

@@ -307,3 +307,6 @@
   only for disposable probes and child environments.
 - Preserved retained Session environments and `DurableRequest` placement while
   missing dynamic evidence continues to reject only dependent Runs.
+- Unified the final Kubernetes Pod volume projection with the same typed
+  retained/ephemeral decision used by claim creation, removing stale references
+  to deliberately omitted probe claims without adding another storage path.
