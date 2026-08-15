@@ -70,7 +70,8 @@ pub use dream::{
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
     DreamModelSpeed, DreamOutput, DreamPage, DreamPolicy, DreamPolicyApplication,
     DreamPolicyApplicationError, DreamPolicyConfig, DreamPolicyRecord, DreamProcessFailure,
-    DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
+    DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamStatusEvent,
+    DreamUsage,
 };
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,

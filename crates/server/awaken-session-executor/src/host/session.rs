@@ -1063,7 +1063,8 @@ impl SharedHost {
             // compatibility Sessions merely register standard mount bindings.
             self.memory_for_thread(thread).is_some()
         };
-        let recalled_memory = self.memory_for_thread(thread).filter(|memory| {
+        let selected_memory = self.memory_for_thread(thread).filter(|_| memory_selected);
+        let recalled_memory = selected_memory.clone().filter(|memory| {
             memory.recall_enabled() && memory_selected && authored_memory.recall_enabled
         });
         let memory_selector = recalled_memory.as_ref().map(|_| {
@@ -1100,7 +1101,7 @@ impl SharedHost {
                 None => recall,
             }
         });
-        if let Some(mem) = recalled_memory {
+        if let Some(mem) = selected_memory {
             let mut plugin = awaken_ext_memory::MemoryPlugin::from_handle(
                 mem.store(),
                 authored_memory.recall.clone(),

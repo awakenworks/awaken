@@ -16,6 +16,56 @@ This repository therefore keeps three evidence levels separate:
 `proof-boundaries.json` is the machine-readable inventory of every product
 requirement that still has requirement-only production surfaces.
 
+The source denominator is deliberately split. `check_formal_surface.py` scans
+Rust production modules, while `check_formal_web_surface.py` scans product-significant
+TypeScript/TSX authority, route, storage, state, fetch, and mutation surfaces.
+Every Web row is forced to `product_boundary_only`: browser tests and TypeScript
+type checking are valuable executable evidence, but are not formal proofs.
+
+## Architecture slices implemented at this checkpoint
+
+- Dream status writes now consume one closed, exhaustively checked lifecycle
+  table. Terminal states are absorbing and completion/failure require Running;
+  generated-content quality remains an explicitly semantic boundary.
+- Resource Catalog publication consumes an exact non-wrapping version kernel;
+  lifecycle timestamps and Kubernetes claim-deletion fences have exact checked
+  projections. Filesystem, object-store, CSI, and Kubernetes durability remain
+  environmental assumptions.
+- Durable deployment admission and sandbox-support projection consume bounded
+  evidence selectors. Actual PostgreSQL/filesystem persistence, NetworkPolicy,
+  registry, builder, container, and kernel enforcement remain external.
+- Quiescence, checkpoint, source-disposal, restore, and terminal-cleanup
+  receipts require every identity, generation, fence, and settlement axis.
+  Database commit atomicity and remote effect execution remain adapter claims.
+- Worker observations require an exact verified fact and the complete half-open
+  lease interval. This does not prove TLS, DNS, WebPKI, the remote process, or
+  the orchestrator.
+- Settled Runtime steps and scoped tool-catalog membership now consume closed
+  projection kernels: Running cannot cross the settled boundary and only the
+  reserved scope can observe admin tools.
+- HTTP idempotency keys now pass an exact byte/length admission kernel, keeping
+  their original wire identity. Header libraries, proxies, TCP, and TLS remain
+  outside the proof.
+- The in-memory durable-ingress path consumes one claim-fenced reducer for
+  claim, settlement, relinquishment, and cancellation. SQLite/PostgreSQL must
+  still be migrated to this reducer and checked as external transaction adapters.
+- AG-UI and AI-SDK terminal emission consume one fail-closed absorbing kernel;
+  their wire-category mappings are exhaustive. Unbounded tool reconciliation,
+  network delivery, client interpretation, and rendering remain outside proof.
+- A published Memory plugin remains satisfiable when recall is disabled, but
+  the proved selector contributes no recall hook or state authority. Memory
+  store durability and extraction effects remain external adapter boundaries.
+- Session realization failures now consume a closed seven-variant disposition
+  table and one shared Worker-effect kernel: terminal truth is absorbed rather
+  than relinquished, while renewal retires it. Database commits, transport,
+  cross-process cleanup, and remote execution remain adapter/external claims.
+- GenAI transcript replay consumes closed dialect, part-category, row-admission,
+  opaque signed-thinking, and reasoning-fold kernels. Anthropic retains the
+  ordered text/signature pair while other dialects use normalized reasoning;
+  reasoning-only rows are omitted and streaming/non-streaming folds share one
+  exact-once table. SDK capture/serialization, signature authenticity,
+  unbounded payloads, network and provider/LLM behavior are not proved.
+
 ## What remains outside a direct proof
 
 - LLM meaning, quality, usefulness, and truthfulness have no complete decidable
@@ -101,13 +151,14 @@ unbounded collection.
 
 ## Follow-up implementation sequence
 
-1. PR12: canonical protocol algebra and generated adapter tables.
-2. PR13: compiled bounded plugin/tool/workflow manifests.
-3. PR14: generated role/route/startup authority and production typestate.
-4. PR15: `CommitPlan`/`CommitReceipt` effect boundary.
-5. PR16: durable inbox/outbox and stable operation identities.
-6. PR17: linear credential/resource/approval/transport permits.
-7. PR18: event-sourced reducers and backend refinement histories.
+1. Canonical protocol algebra and generated adapter tables.
+2. Rust/WASM browser route-scope selector plus checked browser traces.
+3. Compiled bounded plugin/tool/workflow manifests.
+4. Generated role/route/startup authority and production typestate.
+5. Complete `CommitPlan`/`CommitReceipt` coverage for remaining effects.
+6. Durable inbox/outbox and stable operation identities.
+7. Linear credential/resource/approval/transport permits.
+8. Event-sourced reducers and backend refinement histories.
 
 Each follow-up is complete only when production consumes the proved kernel, the
 harness is named by strict CI, the product requirement links the obligation,

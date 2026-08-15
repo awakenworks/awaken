@@ -154,15 +154,6 @@ fn durable_i64(field: &str, value: u64) -> Result<i64, DispatchError> {
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
-fn next_memory_epoch(previous_epoch: u64, authority: &str) -> Result<u64, DispatchError> {
-    previous_epoch.checked_add(1).ok_or_else(|| {
-        DispatchError::Rejected(format!(
-            "{authority} epoch exhausted; refusing to wrap authority"
-        ))
-    })
-}
-
 #[cfg(test)]
 mod supersession_epoch_tests {
     use super::*;
@@ -205,13 +196,7 @@ mod supersession_epoch_tests {
     }
 
     #[test]
-    fn memory_epochs_fail_closed_at_the_same_boundary_as_sql_backends() {
-        assert_eq!(next_memory_epoch(0, "dispatch claim").unwrap(), 1);
-        assert!(matches!(
-            next_memory_epoch(u64::MAX, "dispatch claim"),
-            Err(DispatchError::Rejected(message))
-                if message.contains("dispatch claim epoch exhausted")
-        ));
+    fn supersession_epochs_fail_closed_at_the_sql_boundary() {
         assert!(matches!(
             next_supersession_epoch(i64::MAX),
             Err(DispatchError::Rejected(message))

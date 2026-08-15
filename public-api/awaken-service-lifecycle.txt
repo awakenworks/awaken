@@ -1,4 +1,15 @@
 pub mod awaken_service_lifecycle
+#[repr(u8)] pub enum awaken_service_lifecycle::StartupComponent
+pub awaken_service_lifecycle::StartupComponent::Control = 0
+pub awaken_service_lifecycle::StartupComponent::Coordinator = 2
+pub awaken_service_lifecycle::StartupComponent::LocalWorker = 3
+pub awaken_service_lifecycle::StartupComponent::Resources = 1
+#[repr(u8)] pub enum awaken_service_lifecycle::StartupRole
+pub awaken_service_lifecycle::StartupRole::AllInOne = 0
+pub awaken_service_lifecycle::StartupRole::Control = 1
+pub awaken_service_lifecycle::StartupRole::Coordinator = 2
+impl awaken_service_lifecycle::StartupRole
+pub const fn awaken_service_lifecycle::StartupRole::from_discriminant(u8) -> core::option::Option<Self>
 pub struct awaken_service_lifecycle::ServiceLifecycle
 impl awaken_service_lifecycle::ServiceLifecycle
 pub fn awaken_service_lifecycle::ServiceLifecycle::is_healthy(&self) -> bool
@@ -16,3 +27,6 @@ pub fn awaken_service_lifecycle::ShutdownError::fmt(&self, &mut core::fmt::Forma
 pub struct awaken_service_lifecycle::TaskFailure
 pub awaken_service_lifecycle::TaskFailure::cause: alloc::string::String
 pub awaken_service_lifecycle::TaskFailure::task: alloc::string::String
+pub const fn awaken_service_lifecycle::required_startup_components(awaken_service_lifecycle::StartupRole) -> u8
+pub const fn awaken_service_lifecycle::startup_requires(awaken_service_lifecycle::StartupRole, awaken_service_lifecycle::StartupComponent) -> bool
+pub const fn awaken_service_lifecycle::startup_wiring_is_exact(u8, u8) -> bool
