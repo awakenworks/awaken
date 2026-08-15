@@ -48,6 +48,11 @@ pub enum ContentBlock {
     /// reasoning-progress marker — the reasoning text is not on any answer wire.
     Thinking {
         text: String,
+        /// Opaque provider proof required to replay signed thinking on a later
+        /// assistant tool-use continuation. The neutral runtime stores but never
+        /// interprets it; providers without signed thinking leave it absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 }
 
@@ -104,7 +109,17 @@ impl ContentBlock {
     }
 
     pub fn thinking(text: impl Into<String>) -> Self {
-        Self::Thinking { text: text.into() }
+        Self::Thinking {
+            text: text.into(),
+            signature: None,
+        }
+    }
+
+    pub fn signed_thinking(text: impl Into<String>, signature: impl Into<Option<String>>) -> Self {
+        Self::Thinking {
+            text: text.into(),
+            signature: signature.into(),
+        }
     }
 }
 
@@ -131,10 +146,17 @@ mod tests {
 
     #[test]
     fn blocks_round_trip_with_a_tagged_shape() {
+        // Cause/effect decision rule T1: signed thinking is committed as neutral
+        // message data (C1) -> preserve text and opaque signature through serde
+        // (E1), while unsigned thinking (C2) -> omit the optional wire field and
+        // deserialize it as None (E2). This keeps the message log as the one
+        // replay authority without forcing provider metadata onto other models.
         let blocks = vec![
             ContentBlock::text("look:"),
             ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
             ContentBlock::image_url("https://example.test/a.jpg"),
+            ContentBlock::signed_thinking("check", Some("proof".to_string())),
+            ContentBlock::thinking("unsigned"),
         ];
         let json = serde_json::to_value(&blocks).expect("serialize");
         assert_eq!(json[0]["type"], "text");
@@ -142,6 +164,8 @@ mod tests {
         assert_eq!(json[1]["source"]["type"], "base64");
         assert_eq!(json[1]["source"]["media_type"], "image/png");
         assert_eq!(json[2]["source"]["type"], "url");
+        assert_eq!(json[3]["signature"], "proof", "T1/E1");
+        assert!(json[4].get("signature").is_none(), "T1/E2");
 
         let back: Vec<ContentBlock> = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, blocks);

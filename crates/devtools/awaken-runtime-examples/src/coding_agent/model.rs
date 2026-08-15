@@ -19,11 +19,17 @@ pub fn build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>> {
     let genai = if let Some(key) = env_nonempty("MINIMAX_API_KEY") {
         let base = std::env::var("MINIMAX_BASE_URL")
             .unwrap_or_else(|_| "https://api.minimaxi.com/anthropic".to_string());
-        GenaiExecutor::with_client(custom_client(key, base, AdapterKind::Anthropic)?)
+        GenaiExecutor::with_client_for_adapter(
+            custom_client(key, base, AdapterKind::Anthropic)?,
+            AdapterKind::Anthropic,
+        )
     } else if let Some(key) = env_nonempty("KIMI_API_KEY") {
         let base = std::env::var("KIMI_BASE_URL")
             .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string());
-        GenaiExecutor::with_client(custom_client(key, base, AdapterKind::OpenAI)?)
+        GenaiExecutor::with_client_for_adapter(
+            custom_client(key, base, AdapterKind::OpenAI)?,
+            AdapterKind::OpenAI,
+        )
     } else if let Some(key) = env_nonempty("OPENAI_API_KEY") {
         GenaiExecutor::from_resolved(AdapterKind::OpenAI, None, key)
     } else if let Some(key) = env_nonempty("ANTHROPIC_API_KEY") {

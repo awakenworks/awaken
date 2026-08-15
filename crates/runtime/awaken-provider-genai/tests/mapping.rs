@@ -6,13 +6,13 @@ use std::time::Duration;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
-    GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
-    to_genai_request,
+    AdapterKind, GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call,
+    map_assistant_output, map_usage, to_genai_request, to_genai_request_for_adapter,
 };
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::chat::{
-    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails,
+    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails, ThinkingBlock,
     ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 
@@ -161,6 +161,10 @@ fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
 
 #[test]
 fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
+    // Cause/effect rule R1: a standalone Thinking-only synthetic history row
+    // has no public answer or tool call -> omit the incomplete assistant turn
+    // rather than send a provider-invalid empty message. Reasoning attached to
+    // a real assistant tool turn is covered separately by R2 below.
     let request = ChatRequest {
         model_binding: binding("deepseek-v4-pro"),
         inference: Default::default(),
@@ -188,6 +192,149 @@ fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
             .messages
             .iter()
             .all(|message| !message.content.parts().is_empty())
+    );
+}
+
+#[test]
+fn assistant_reasoning_is_replayed_with_its_tool_call() {
+    // Cause/effect graph and decision table: C1 assistant reasoning exists; C2
+    // a typed tool call exists in the same committed turn. E1 preserve reasoning
+    // as genai ReasoningContent; E2 preserve the correlated ToolCall. R2=C1&C2
+    // => E1+E2. This is the DeepSeek OpenAI-compatible continuation contract:
+    // dropping E1 makes the tool-result follow-up fail or lose its reasoning
+    // context, while dropping E2 detaches the subsequent tool response.
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::thinking("select the deterministic fixture"),
+                ContentBlock::tool_use(
+                    "call-1",
+                    "read_fixture",
+                    serde_json::json!({"id":"compat"}),
+                ),
+            ],
+        }],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request).unwrap();
+    let parts = genai.messages[0].content.parts();
+    assert!(
+        parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::ReasoningContent(text) if text == "select the deterministic fixture")),
+        "R2/E1"
+    );
+    assert!(
+        parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::ToolCall(call) if call.call_id == "call-1")),
+        "R2/E2"
+    );
+}
+
+#[test]
+fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
+    // Cause/effect graph: C1 an Anthropic assistant turn contains signed thinking;
+    // C2 text, another signed thinking block, and a typed tool call follow it;
+    // C3 genai also supplies its legacy aggregate reasoning scalar. Effects: E1
+    // map exactly one ordered neutral turn with no scalar duplicate; E2 replay
+    // the same ordered Thinking/Text/Thinking/ToolCall parts on the Anthropic
+    // dialect; E3 keep each signature bound to its own thinking text. Constraint:
+    // OpenAI reasoning uses the existing scalar ReasoningContent path and is
+    // covered by the adjacent test.
+    //
+    // | Rule | C1 | C2 | C3 | Dialect   | Effects    |
+    // | R1   | Y  | Y  | Y  | Anthropic | E1+E2+E3 |
+    let provider = MessageContent::from_parts(vec![
+        ContentPart::Thinking(ThinkingBlock {
+            thinking: "select the fixture".into(),
+            signature: Some("opaque-proof".into()),
+        }),
+        ContentPart::Text("checking".into()),
+        ContentPart::Thinking(ThinkingBlock {
+            thinking: "verify arguments".into(),
+            signature: Some("opaque-proof-2".into()),
+        }),
+        ContentPart::ToolCall(GenaiToolCall {
+            call_id: "call-1".into(),
+            fn_name: "read_fixture".into(),
+            fn_arguments: serde_json::json!({"id":"compat"}),
+            thought_signatures: None,
+        }),
+    ]);
+    let model = genai::ModelIden::new(AdapterKind::Anthropic, "deepseek-v4-pro");
+    let neutral = from_genai_response(genai::chat::ChatResponse {
+        content: provider,
+        reasoning_content: Some("select the fixture\nverify arguments".into()),
+        model_iden: model.clone(),
+        provider_model_iden: model,
+        stop_reason: Some(genai::chat::StopReason::ToolCall("tool_use".into())),
+        usage: Usage::default(),
+        captured_raw_body: None,
+        response_id: None,
+    })
+    .output;
+    assert_eq!(neutral.blocks.len(), 4, "R1/E1 no scalar duplicate");
+    assert!(
+        matches!(
+            &neutral.blocks[0],
+            ContentBlock::Thinking { text, signature }
+                if text == "select the fixture" && signature.as_deref() == Some("opaque-proof")
+        ),
+        "R1/E1+E3"
+    );
+    assert_eq!(neutral.blocks[1], ContentBlock::text("checking"), "R1/E1");
+    assert!(
+        matches!(
+            &neutral.blocks[2],
+            ContentBlock::Thinking { text, signature }
+                if text == "verify arguments" && signature.as_deref() == Some("opaque-proof-2")
+        ),
+        "R1/E1+E3"
+    );
+    assert!(
+        matches!(neutral.blocks[3], ContentBlock::ToolUse { .. }),
+        "R1/E1"
+    );
+
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: neutral.blocks,
+        }],
+        tools: Vec::new(),
+    };
+    let replayed = to_genai_request_for_adapter(&request, AdapterKind::Anthropic).unwrap();
+    let parts = replayed.messages[0].content.parts();
+    assert!(
+        matches!(
+            &parts[0],
+            ContentPart::Thinking(ThinkingBlock { thinking, signature })
+                if thinking == "select the fixture" && signature.as_deref() == Some("opaque-proof")
+        ),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[1], ContentPart::Text(text) if text == "checking"),
+        "R1/E2"
+    );
+    assert!(
+        matches!(
+            &parts[2],
+            ContentPart::Thinking(ThinkingBlock { thinking, signature })
+                if thinking == "verify arguments" && signature.as_deref() == Some("opaque-proof-2")
+        ),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[3], ContentPart::ToolCall(call) if call.call_id == "call-1"),
+        "R1/E2"
     );
 }
 
@@ -263,6 +410,39 @@ fn tool_call_content_maps_to_tool_calls_output() {
     let calls = map_assistant_output(&content).tool_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].tool_id, "search");
+}
+
+#[test]
+fn non_streaming_reasoning_precedes_the_public_answer() {
+    // Cause/effect rule R3: a non-streaming SDK response carries private
+    // reasoning separately from public content -> commit one leading Thinking
+    // block and retain the public text. This must match the streaming terminal
+    // shape so execution behavior does not depend on transport selection.
+    let model = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "deepseek-v4-pro");
+    let response = genai::chat::ChatResponse {
+        content: MessageContent::from_text("final answer"),
+        reasoning_content: Some("private reasoning".into()),
+        model_iden: model.clone(),
+        provider_model_iden: model,
+        stop_reason: Some(genai::chat::StopReason::Completed("stop".into())),
+        usage: Usage::default(),
+        captured_raw_body: None,
+        response_id: None,
+    };
+
+    let mapped = from_genai_response(response);
+    assert!(
+        matches!(
+            mapped.output.blocks.first(),
+            Some(ContentBlock::Thinking { text, .. }) if text == "private reasoning"
+        ),
+        "R3/private reasoning"
+    );
+    assert_eq!(
+        mapped.output.text_content(),
+        "final answer",
+        "R3/public text"
+    );
 }
 
 #[test]
