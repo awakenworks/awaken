@@ -4789,6 +4789,111 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
 }
 
+#[tokio::test]
+async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization() {
+    use awaken_credential_contract::{
+        CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
+        ResolvedCredentialMaterial,
+    };
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
+    use awaken_session_contract::McpAttachmentRealizer;
+
+    struct ExactTargetResolver {
+        expected: awaken_credential_contract::CredentialMaterialBinding,
+        holder: PlaintextHolder,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialMaterialResolver for ExactTargetResolver {
+        fn supported_material_sources(
+            &self,
+        ) -> std::collections::BTreeSet<CredentialMaterialSource> {
+            [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect()
+        }
+
+        fn supports_recipient_bound_envelopes(&self) -> bool {
+            true
+        }
+
+        async fn resolve_exact(
+            &self,
+            request: CredentialMaterialRequest<'_>,
+        ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+            if request.binding != &self.expected {
+                return Err(CredentialMaterialError::BindingMismatch);
+            }
+            Ok(ResolvedCredentialMaterial {
+                credential: request.access.credential.clone(),
+                holder: self.holder.clone(),
+                material: awaken_runtime_contract::CredentialMaterial::secret(
+                    awaken_agent_contract::RedactedString::new("mcp-bearer"),
+                ),
+            })
+        }
+    }
+
+    let workspace = "workspace-a";
+    let (mcp_url, _seen) = crate::test_mcp::start(Some("Bearer mcp-bearer")).await;
+    let target =
+        awaken_session_contract::McpTarget::parse_http(&mcp_url).expect("canonical MCP target");
+    let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+    let usage = CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    let access = CredentialAccess::new(
+        CredentialRef {
+            id: "flow-mcp".into(),
+            revision: 1,
+        },
+        CredentialMaterialSource::ControlPlaneReference,
+        usage.clone(),
+        CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
+    );
+    let resolver = Arc::new(ExactTargetResolver {
+        expected: awaken_credential_contract::CredentialMaterialBinding::for_target(
+            workspace, &target, &usage,
+        ),
+        holder: holder.clone(),
+    });
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host).with_credential_materializer(
+        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver),
+    );
+
+    // Cause/effect decision table:
+    // | Rule | authoring binding | runtime server label | runtime target | Effect |
+    // | R1 | exact target | arbitrary display name | same target | stage succeeds |
+    // The display name is not credential authority and must not enter the
+    // recipient-bound payload fingerprint produced during Session authoring.
+    managed
+        .stage_mcp_attachment(awaken_session_contract::StageMcpAttachment {
+            workspace_id: workspace.into(),
+            generation: awaken_session_contract::McpGenerationRef {
+                session_id: "session-a".into(),
+                attachment_id: awaken_session_contract::McpAttachmentId("flow".into()),
+                generation: awaken_session_contract::McpGeneration(1),
+                runtime_incarnation: "runtime-a".into(),
+                lease_epoch: 1,
+                lease_expires_at_unix_ms: u64::MAX,
+            },
+            realization_id: "realize-flow".into(),
+            stage_idempotency_key: "stage-flow".into(),
+            name: "display-name-not-in-binding".into(),
+            target,
+            credential: Some(access),
+            prompts_as_skills: false,
+            selected_plaintext_holder: Some(holder),
+        })
+        .await
+        .expect("R1 exact authoring target binding");
+}
+
 #[test]
 fn dispatch_session_runtime_requires_explicit_installation() {
     // Cause/effect graph: C1 a ManagedHost is only constructed; C2 the fully
