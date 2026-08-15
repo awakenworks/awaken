@@ -165,6 +165,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
         workspace_id: "workspace".into(),
         revision: awaken_session_contract::SessionRevision(2),
         baseline,
+        agent_publication: None,
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),

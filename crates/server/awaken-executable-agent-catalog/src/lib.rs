@@ -535,6 +535,16 @@ impl ExecutableAgentProfileSource for ExecutableAgentCatalog {
             .map(|registration| registration.session_profile)
     }
 
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.at_revision(workspace_id, agent_id, source_revision)
+            .map(|registration| registration.snapshot)
+    }
+
     fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
         self.is_unavailable(workspace_id, agent_id)
     }
@@ -605,6 +615,12 @@ mod tests {
             catalog
                 .session_profile_at_revision_in("workspace-a", "agent-a", 3)
                 .is_none()
+        );
+        assert_eq!(
+            catalog
+                .executable_snapshot_at_revision_in("workspace-a", "agent-a", 1)
+                .map(|snapshot| snapshot.fingerprint.0),
+            Some("fp-1".into())
         );
     }
 

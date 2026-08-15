@@ -289,3 +289,10 @@
 - Classified expired bearer (`401`), exact deny (`403`) and infrastructure
   failure before mounting the product router, preventing both stale-scope
   requests and authentication loops.
+
+## 2026-08-15 — Deliver exact Agent publications through Session realization
+
+- Extended the existing executable Agent profile source and frozen Session
+  projection with the complete exact publication selected by the baseline.
+- Kept Control authoritative and Workers authority-store-free; the Coordinator
+  transports a rebuildable snapshot and conflicting Run claims fail closed.

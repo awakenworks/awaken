@@ -44,7 +44,20 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .session_slots
             .read(session_id, |slot| slot.published_snapshot.clone())
             .flatten();
-        let published_snapshot = match self.published_snapshot {
+        if let (Some(claimed), Some(projected)) = (
+            self.published_snapshot,
+            projection.agent_publication.as_ref(),
+        ) && claimed != projected
+        {
+            return Err(awaken_session_contract::RunError::classified(
+                "session_runtime_publication_conflict",
+                "claimed Run and frozen Session project different Agent publications",
+            ));
+        }
+        let delivered_publication = self
+            .published_snapshot
+            .or(projection.agent_publication.as_ref());
+        let published_snapshot = match delivered_publication {
             Some(snapshot) => Some(snapshot),
             None if retained_publication.is_some() => retained_publication.as_ref(),
             None => {
@@ -700,6 +713,7 @@ mod tests {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
+            agent_publication: None,
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
@@ -787,13 +801,14 @@ mod tests {
         assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
     }
 
-    /// Dynamic-publication cause/effect graph: C1 initial claimed snapshot is
-    /// authoritative; C2 renewal omits a snapshot; C3 a later caller supplies a
-    /// different snapshot. E1 retain the whole immutable snapshot in the slot;
-    /// E2 reuse it on lease-only renewal; E3 reject replacement and preserve E1.
+    /// Dynamic-publication cause/effect graph: C1 the Coordinator projects the
+    /// exact publication before any Run can be claimed; C2 a compatibility
+    /// renewal omits it; C3 a later claimed Run supplies a different snapshot.
+    /// E1 first realization succeeds and retains the immutable snapshot; E2
+    /// renewal reuses it; E3 reject replacement and preserve E1.
     /// Decision rules: P1 C1=>E1, P2 E1+C2=>E2, P3 E1+C3=>E3.
     #[tokio::test]
-    async fn lease_only_renewal_reuses_a_dynamic_claimed_publication() {
+    async fn session_projection_delivers_publication_before_first_run_claim() {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
 
         let thread = "dynamic-publication-renewal";
@@ -803,6 +818,7 @@ mod tests {
         projection.baseline.runtime = Some("acp:claude".into());
         let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
         snapshot.resolved_spec.model_binding.backend_ref = "acp:claude".into();
+        projection.agent_publication = Some(snapshot.clone());
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -812,14 +828,16 @@ mod tests {
         WorkerProjectionSynchronizer {
             host: host.as_ref(),
             claim: None,
-            published_snapshot: Some(&snapshot),
+            published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
         }
         .synchronize_session_projection(thread, &projection, &lease, true)
         .await
-        .expect("initial claimed publication is retained");
+        .expect("projection publication realizes the Session before a Run claim");
 
+        let mut compatibility_renewal = projection.clone();
+        compatibility_renewal.agent_publication = None;
         WorkerProjectionSynchronizer {
             host: host.as_ref(),
             claim: None,
@@ -827,7 +845,7 @@ mod tests {
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
         }
-        .synchronize_session_projection(thread, &projection, &lease, false)
+        .synchronize_session_projection(thread, &compatibility_renewal, &lease, false)
         .await
         .expect("lease renewal reuses the retained immutable publication");
         let retained = host
