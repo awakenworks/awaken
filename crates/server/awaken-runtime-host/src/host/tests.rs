@@ -931,7 +931,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 skills: Some(Vec::new()),
             },
             mcp: Vec::new(),
-            toolsets: Vec::new(),
+            tools: Default::default(),
             request_context: Vec::new(),
         }
     }
@@ -1700,7 +1700,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             workspace_id: host.local_workspace().into(),
             agent_id: agent.into(),
             delegate_ids: Vec::new(),
-            toolsets: None,
+            tools: None,
             resource_revision: 0,
             resources: effective_resources(
                 store
@@ -1863,7 +1863,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         workspace_id: host.local_workspace().into(),
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: resources.clone(),
         model: None,
@@ -2451,7 +2451,7 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "agent".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: desired,
                 model: None,
@@ -2626,7 +2626,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: effective_resources(vec![TestInput {
                     kind: "file".into(),
@@ -2750,7 +2750,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
                     workspace_id: host.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
-                    toolsets: None,
+                    tools: None,
                     resource_revision: 0,
                     resources: Default::default(),
                     model: None,
@@ -2780,7 +2780,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: Default::default(),
         model: None,
@@ -2834,7 +2834,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: Default::default(),
         model: None,
@@ -2884,7 +2884,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -2943,7 +2943,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3096,7 +3096,7 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3153,7 +3153,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "parent".into(),
                 delegate_ids: vec!["child".into()],
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3251,7 +3251,7 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3285,7 +3285,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3330,7 +3330,7 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3448,7 +3448,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             resource_revision: 0,
             resources: Default::default(),
             mcp: Vec::new(),
-            toolsets: Vec::new(),
+            tools: Default::default(),
             request_context: Vec::new(),
         },
         None,
@@ -3741,7 +3741,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3797,7 +3797,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -3846,7 +3846,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: effective_resources(
             (agent == "a")
@@ -4042,7 +4042,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: effective_resources(vec![
                     TestInput {
@@ -5592,7 +5592,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
@@ -5934,7 +5934,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     workspace_id: host.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
-                    toolsets: None,
+                    tools: None,
                     resource_revision: 0,
                     resources,
                     model: None,
@@ -5997,7 +5997,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
@@ -6075,7 +6075,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_session_contract::Sessio
         workspace_id: workspace.into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: Default::default(),
         model: None,
@@ -7946,17 +7946,20 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
     let host =
         SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
     host.session_slots.update("policy-session", |slot| {
-        slot.toolsets = Some(vec![ToolsetPolicy {
-            source: ToolsetSource::Agent,
-            default: ToolExecutionPolicy::default(),
-            overrides: vec![ToolPolicyOverride {
-                name: "write".into(),
-                policy: ToolExecutionPolicy {
-                    enabled: true,
-                    permission: ToolPermissionRequirement::AlwaysAsk,
-                },
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride {
+                    name: "write".into(),
+                    policy: ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                }],
             }],
-        }]);
+            client_tools: Vec::new(),
+        });
     });
 
     let context = host
@@ -7964,6 +7967,110 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .await
         .expect("build Session from immutable publication");
     assert_eq!(context.config, publication);
+}
+
+#[tokio::test]
+async fn session_client_tools_replace_the_published_surface_with_exact_ownership() {
+    // Cause/effect graph: C1 no Session override inherits the immutable
+    // publication; C2 an explicit empty override clears published client tools;
+    // C3 a non-empty override supplies an exact descriptor. Effects: E1 the
+    // publication object remains unchanged; E2 the execution clone exposes only
+    // the Session descriptor with its exact schema; E3 a model call awaits a
+    // client result rather than built-in approval.
+    //
+    // | Rule | Session client tools | execution surface | pending owner |
+    // | R1 | None | published tools | published owner |
+    // | R2 | Some([]) | no client tools | none |
+    // | R3 | Some([lookup]) | exact lookup schema | protocol client |
+    // R1 is covered by ordinary published-Agent tests; this regression owns R2
+    // and R3, including the real classification boundary that Managed events use.
+    let publication = crate::config::server_config(
+        "assistant",
+        "stub",
+        &HashSet::from(["published_lookup".to_string()]),
+        &HashSet::new(),
+        &[],
+        &Default::default(),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
+            .expect("valid publication");
+    let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
+        .with_agent_publications(Arc::new(publications));
+
+    host.session_slots.update("cleared-client-tools", |slot| {
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration::default());
+    });
+    let cleared = host
+        .ctx_for("cleared-client-tools", Some("assistant"))
+        .await
+        .expect("R2 build explicit empty Session tool surface");
+    assert!(
+        cleared
+            .config
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .all(|tool| tool.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted),
+        "R2/E2"
+    );
+
+    let lookup = awaken_agent_contract::ClientToolDescriptor {
+        name: "lookup".into(),
+        description: "Look up the requested city".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": false
+        }),
+    };
+    host.session_slots.update("session-client-tools", |slot| {
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: Vec::new(),
+            client_tools: vec![lookup.clone()],
+        });
+    });
+    let context = host
+        .ctx_for("session-client-tools", Some("assistant"))
+        .await
+        .expect("R3 build exact Session tool surface");
+    let client_tools = context
+        .config
+        .resolved_spec
+        .tool_descriptors
+        .iter()
+        .filter(|tool| tool.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted)
+        .collect::<Vec<_>>();
+    assert_eq!(client_tools.len(), 1, "R3/E2");
+    assert_eq!(client_tools[0].id, lookup.name, "R3/E2");
+    assert_eq!(client_tools[0].description, lookup.description, "R3/E2");
+    assert_eq!(client_tools[0].parameters, lookup.input_schema, "R3/E2");
+    assert!(
+        publication
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|tool| {
+                tool.id == "published_lookup"
+                    && tool.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+            }),
+        "R2+R3/E1"
+    );
+
+    let result = host
+        .run(
+            Some("assistant"),
+            "session-client-tools",
+            user("look it up"),
+        )
+        .await
+        .expect("R3 model calls Session client tool");
+    let pending = result.pending.expect("R3 awaits lookup result");
+    assert_eq!(pending.name, "lookup", "R3/E3");
+    assert!(pending.client_executed, "R3/E3");
 }
 
 #[tokio::test]
@@ -8000,7 +8107,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
                 workspace_id: host.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: Some("stub".into()),
@@ -8083,7 +8190,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: Some("stub".into()),
@@ -8118,7 +8225,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: Some("stub".into()),
@@ -8141,7 +8248,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         workspace_id: host.local_workspace().into(),
         agent_id: "agent-a".into(),
         delegate_ids: Vec::new(),
-        toolsets: None,
+        tools: None,
         resource_revision: 0,
         resources: Default::default(),
         model: Some("stub".into()),

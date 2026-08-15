@@ -59,7 +59,7 @@ mod tests {
 
         let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
             deferred_environment(),
-            Some(Vec::new()),
+            Some(Default::default()),
             Vec::new(),
         )
         .expect("encode runtime projection");
@@ -89,7 +89,9 @@ mod tests {
         assert!(
             host.session_slots
                 .read("cold-deferred", |slot| slot.deferred_executor.is_some()
-                    && slot.toolsets.as_ref().is_some_and(Vec::is_empty))
+                    && slot.tools.as_ref().is_some_and(|tools| {
+                        tools == &awaken_session_contract::SessionToolConfiguration::default()
+                    }))
                 .unwrap_or(false),
             "C2"
         );
@@ -461,7 +463,7 @@ mod tests {
         };
         let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
             deferred_environment(),
-            Some(Vec::new()),
+            Some(Default::default()),
             vec![stage],
         )
         .expect("runtime envelope");
@@ -676,7 +678,7 @@ mod tests {
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
-            toolsets: Vec::new(),
+            tools: Default::default(),
             mcp: Vec::new(),
             request_context: Vec::new(),
         }

@@ -742,7 +742,7 @@ mod tests {
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
-            toolsets: Vec::new(),
+            tools: Default::default(),
             mcp: Vec::new(),
             request_context: Vec::new(),
         }

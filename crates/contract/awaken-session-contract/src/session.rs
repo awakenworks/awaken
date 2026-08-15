@@ -228,9 +228,10 @@ pub struct SessionInit {
     pub agent_id: String,
     /// Exact roster frozen by the published Agent.
     pub delegate_ids: Vec<String>,
-    /// Session-local replacement of the published toolset policy. `None`
-    /// inherits the Agent snapshot; `Some([])` explicitly clears all toolsets.
-    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    /// Complete Session-local replacement of the published tool configuration.
+    /// `None` inherits the Agent snapshot; `Some(default())` explicitly clears
+    /// all toolsets and client-executed tools.
+    pub tools: Option<crate::SessionToolConfiguration>,
     /// Exact generation owned by `SessionResourceState`; zero is reserved for
     /// legacy callers. Runtime must preserve this independently from the Session
     /// root revision when it installs `resources`.
@@ -545,15 +546,16 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Replace the Session-local toolset policy after an idle-session update.
+    /// Replace the complete Session-local tool configuration after an
+    /// idle-session update.
     /// Implementations rebuild the disposable runtime context; durable desired
     /// state has already committed before this projection call.
-    async fn replace_session_toolsets(
+    async fn replace_session_tools(
         &self,
         _thread: &str,
-        _toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+        _tools: crate::SessionToolConfiguration,
     ) -> Result<(), RunError> {
-        Err(RunError::internal("session toolset runtime is unsupported"))
+        Err(RunError::internal("session tool runtime is unsupported"))
     }
 
     /// Adopt a previously persisted environment before reopening a Session.
@@ -1161,7 +1163,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             delegate_ids: Vec::new(),
-            toolsets: None,
+            tools: None,
             resource_revision: 0,
             resources: crate::ResolvedSessionResources::default(),
             model: None,

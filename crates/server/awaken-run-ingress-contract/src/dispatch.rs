@@ -1073,7 +1073,7 @@ mod tests {
                     resource_holder: worker,
                 },
             },
-            Some(Vec::new()),
+            Some(Default::default()),
             vec![awaken_session_contract::StageMcpAttachment {
                 workspace_id: "workspace-a".into(),
                 generation: awaken_session_contract::McpGenerationRef {

@@ -170,7 +170,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
         resource_revision: 0,
         resources: Default::default(),
         mcp: Vec::new(),
-        toolsets: Vec::new(),
+        tools: Default::default(),
         request_context: Vec::new(),
     }
 }

@@ -240,6 +240,18 @@ pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     )
 }
 
+/// Preserve the exact Session-owned client tool contract while lowering it to
+/// the Runtime's canonical execution-ownership descriptor.
+pub(crate) fn session_client_tool_descriptor(
+    tool: &awaken_agent_contract::ClientToolDescriptor,
+) -> ToolDescriptor {
+    ToolDescriptor::client_executed(
+        tool.name.clone(),
+        tool.description.clone(),
+        tool.input_schema.clone(),
+    )
+}
+
 /// The `agent_run` delegation descriptor (advertised only when a roster is set).
 pub(crate) fn delegation_descriptor() -> ToolDescriptor {
     builtin_tools()

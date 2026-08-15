@@ -222,8 +222,8 @@ struct HotRuntimeState {
     mode: HotStageMode,
     fail_publish_next: bool,
     fail_drain_next: bool,
-    fail_replace_toolsets_next: bool,
-    replaced_toolsets: Vec<(String, Vec<awaken_agent_contract::ToolsetPolicy>)>,
+    fail_replace_tools_next: bool,
+    replaced_tools: Vec<(String, awaken_session_contract::SessionToolConfiguration)>,
 }
 
 struct HotRuntime {
@@ -265,15 +265,15 @@ impl SessionRuntime for HotRuntime {
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
-    async fn replace_session_toolsets(
+    async fn replace_session_tools(
         &self,
         thread: &str,
-        toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+        tools: awaken_session_contract::SessionToolConfiguration,
     ) -> Result<(), RunError> {
         let mut state = self.state.lock().unwrap();
-        state.replaced_toolsets.push((thread.to_string(), toolsets));
-        if std::mem::take(&mut state.fail_replace_toolsets_next) {
-            return Err(RunError::internal("hot toolset replacement failed"));
+        state.replaced_tools.push((thread.to_string(), tools));
+        if std::mem::take(&mut state.fail_replace_tools_next) {
+            return Err(RunError::internal("hot tool replacement failed"));
         }
         Ok(())
     }
@@ -1847,26 +1847,39 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
 
     let current_etag = later_headers["etag"].to_str().unwrap();
-    // Cause graph: Session toolset update -> durable exact projection -> runtime
-    // policy replacement -> disposable runtime rebuild on the next turn.
+    // Cause graph: complete Session tool update -> durable exact projection ->
+    // runtime policy/typed-client replacement -> disposable runtime rebuild on
+    // the next turn.
     //
     // Decision table:
     // | update field | durable revision | runtime replacement |
     // | omitted      | unchanged        | none                |
-    // | exact value  | incremented      | exact policy once   |
+    // | exact value  | incremented      | full config once    |
     // | replay       | original receipt | none duplicated     |
-    let tools = json!([{
-        "type": "agent_toolset_20260401",
-        "configs": [{
-            "name": "write",
-            "enabled": false,
-            "permission_policy": { "type": "always_allow" }
-        }],
-        "default_config": {
-            "enabled": true,
-            "permission_policy": { "type": "always_ask" }
+    let tools = json!([
+        {
+            "type": "agent_toolset_20260401",
+            "configs": [{
+                "name": "write",
+                "enabled": false,
+                "permission_policy": { "type": "always_allow" }
+            }],
+            "default_config": {
+                "enabled": true,
+                "permission_policy": { "type": "always_ask" }
+            }
+        },
+        {
+            "type": "custom",
+            "name": "review_plan",
+            "description": "Review the exact plan revision",
+            "input_schema": {
+                "type": "object",
+                "properties": { "revision": { "type": "integer" } },
+                "required": ["revision"]
+            }
         }
-    }]);
+    ]);
     let (status, _, updated) = call_with_headers(
         &h.app,
         "POST",
@@ -1883,10 +1896,14 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         "I6"
     );
     let state = h.state.lock().unwrap();
-    assert_eq!(state.replaced_toolsets.len(), 1, "I6 runtime effect");
-    assert_eq!(state.replaced_toolsets[0].0, id, "I6 exact Session");
-    let write = state.replaced_toolsets[0].1[0].policy_for("write");
+    assert_eq!(state.replaced_tools.len(), 1, "I6 runtime effect");
+    assert_eq!(state.replaced_tools[0].0, id, "I6 exact Session");
+    let write = state.replaced_tools[0].1.toolsets[0].policy_for("write");
     assert!(!write.enabled, "I6 exact disabled policy reaches runtime");
+    assert_eq!(
+        state.replaced_tools[0].1.client_tools[0].name,
+        "review_plan"
+    );
 }
 
 /// Post-commit Runtime projection FMECA. C1 durable tool policy commits; C2 the
@@ -1922,7 +1939,7 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
             "permission_policy": { "type": "always_ask" }
         }
     }]);
-    h.state.lock().unwrap().fail_replace_toolsets_next = true;
+    h.state.lock().unwrap().fail_replace_tools_next = true;
 
     let (failed_status, _, _) = call_with_headers(
         &h.app,
@@ -1933,7 +1950,7 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     )
     .await;
     assert_eq!(failed_status, StatusCode::INTERNAL_SERVER_ERROR, "T1");
-    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 1, "T1");
+    assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 1, "T1");
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
         serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools.clone()).unwrap(),
@@ -1950,7 +1967,7 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     .await;
     assert_eq!(retry_status, StatusCode::OK, "T2");
     assert_eq!(retry["agent"]["tools"], tools, "T2");
-    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 2, "T2");
+    assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 2, "T2");
 
     let (events_status, events) =
         call(&h.app, "GET", &format!("/v1/sessions/{id}/events"), None).await;
@@ -1975,7 +1992,7 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     )
     .await;
     assert_eq!(mismatch_status, StatusCode::CONFLICT, "T3");
-    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 2, "T3");
+    assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 2, "T3");
 }
 
 /// CAS retry decisions are generated from `conflict × explicit precondition`:

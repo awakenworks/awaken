@@ -31,7 +31,7 @@ pub struct FrozenSessionProjection {
     pub resource_revision: u64,
     pub resources: crate::ResolvedSessionResources,
     #[serde(default)]
-    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    pub tools: crate::SessionToolConfiguration,
     pub mcp: Vec<crate::SessionMcpAttachment>,
     /// Materialized, rebuildable view of `baseline.transcript_prefix`. It is
     /// populated only on a projection-preparation Stage, crosses the Worker
@@ -47,7 +47,7 @@ impl FrozenSessionProjection {
             workspace_id: self.workspace_id.clone(),
             agent_id: self.baseline.agent_id.clone(),
             delegate_ids: self.baseline.delegate_ids.clone(),
-            toolsets: Some(self.toolsets.clone()),
+            tools: Some(self.tools.clone()),
             resource_revision: self.resource_revision,
             resources: self.resources.clone(),
             model: Some(self.baseline.execution_model_ref.clone()),

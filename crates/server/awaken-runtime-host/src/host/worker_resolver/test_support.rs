@@ -86,7 +86,7 @@ pub(super) async fn prepare_deferred_session(
                 workspace_id: host.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
-                toolsets: None,
+                tools: None,
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,

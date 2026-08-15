@@ -305,7 +305,7 @@ impl SharedHost {
                         })
                         .map(|projection| projection.request.clone())
                         .collect();
-                    (environment, slot.toolsets.clone(), mcp_stages)
+                    (environment, slot.tools.clone(), mcp_stages)
                 })
             })
             .flatten();
@@ -357,7 +357,7 @@ impl SharedHost {
                 ))
                 .with_session_resources(envelope);
         }
-        if let Some((environment, toolsets, mcp_stages)) = runtime_projection {
+        if let Some((environment, tools, mcp_stages)) = runtime_projection {
             // Remote warm capacity is container-backed and therefore preserves
             // the frozen network policy. Derive the preference from the same
             // canonical SandboxSpec identity used by Worker pool receipts.
@@ -365,7 +365,7 @@ impl SharedHost {
                 crate::provisioning::environment_capacity_projection(&environment, true).shape_id;
             let envelope = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
                 environment,
-                toolsets,
+                tools,
                 mcp_stages,
             )
             .map_err(|error| {
