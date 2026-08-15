@@ -48,6 +48,7 @@ struct Inner {
     failure_tx: mpsc::UnboundedSender<TaskFailure>,
     failure_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<TaskFailure>>,
     registry: Mutex<TaskRegistry>,
+    shutdown_guard: tokio::sync::Mutex<()>,
 }
 
 struct TaskRegistry {
@@ -94,6 +95,7 @@ impl ServiceLifecycle {
                     accepting: true,
                     tasks: Vec::new(),
                 }),
+                shutdown_guard: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -187,6 +189,12 @@ impl ServiceLifecycle {
     /// Broadcast cancellation, join every registered task until one shared
     /// deadline, then abort only the tasks that ignored cooperative shutdown.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), ShutdownError> {
+        // Clones may initiate shutdown concurrently. Only one caller may own
+        // the transferred task set; followers wait for that complete drain
+        // before observing the already-empty registry. Without this barrier a
+        // follower returned Ok while the leader still had live tasks and could
+        // later report a timeout.
+        let _shutdown_guard = self.inner.shutdown_guard.lock().await;
         let tasks = {
             let mut registry = self
                 .inner

@@ -171,6 +171,11 @@ production logic.
   crash-safe streaming watermark/checkpoint behavior. `LiveInboxProof.tla`
   proves that reorder has no partially applied outcome and every invalid
   request is a stuttering transition.
+- `ServiceLifecycle.tla` covers the process-wide recurring-task registry:
+  atomic registration fencing, one active drain owner, concurrent shutdown
+  followers that cannot return early, cooperative completion, deadline abort,
+  and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
+  proves the shutdown admission and return barriers directly.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
@@ -264,6 +269,7 @@ At the current source revision TLAPS discharges all obligations:
 - Rust commit projection safety: 49/49.
 - Managed WorkQueue safety: 35/35.
 - LiveInbox reorder atomicity: 3/3.
+- Service lifecycle shutdown barriers: 4/4.
 
 ## TLC exhaustive finite checks
 
@@ -287,6 +293,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | AggregateCAS | 1,669 | 417 | 11 |
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |
 | LiveInbox | 3,025 | 81 | 7 |
+| ServiceLifecycle | 226 | 131 | 9 |
 | CheckpointRecovery | 462 | 141 | 8 |
 | WebhookOutbox | 10 | 6 | 4 |
 | RegistrationIntent | 1,454 | 487 | 17 |
@@ -380,14 +387,14 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 209/226 formalizable obligations proved
-or machine-linked, plus 10 explicitly external obligations, for 92.5%
+this review checkpoint the ledger is 212/229 formalizable obligations proved
+or machine-linked, plus 10 explicitly external obligations, for 92.6%
 formalizable coverage. Seventeen executable-only rows remain explicit proof
 candidates.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
-The denominator (previously 223 and now 226 as new obligations were discovered)
+The denominator (previously 223 and now 229 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -395,8 +402,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 146 are classified, 129
-have at least one proved obligation linked to the production file, and 424 are
+source-oriented inventory finds 570 candidate modules: 147 are classified, 130
+have at least one proved obligation linked to the production file, and 423 are
 not yet classified. This deliberately over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
