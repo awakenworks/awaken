@@ -238,6 +238,18 @@ pub struct ResolvedSpec {
 }
 
 impl ResolvedSpec {
+    /// Return one complete publication-pinned route by stable primary/fallback
+    /// ordinal. The selector returns the original candidate by reference, so no
+    /// binding or provisioning axis can be reconstructed from a different route.
+    #[must_use]
+    pub fn pinned_model_candidate_at(&self, ordinal: usize) -> Option<&ResolvedModelCandidate> {
+        crate::model_routing::pinned_candidate_at(
+            &self.model_binding,
+            &self.model_candidates,
+            ordinal,
+        )
+    }
+
     /// Ordered published candidates eligible for one execution request. A
     /// nonblank override scopes by model while retaining every published route
     /// for that model; absent/blank retains primary plus all fallbacks.
@@ -247,8 +259,8 @@ impl ResolvedSpec {
         model_ref_override: Option<&str>,
     ) -> Vec<&ResolvedModelCandidate> {
         let selected = model_ref_override.filter(|model| !model.is_empty());
-        std::iter::once(&self.model_binding)
-            .chain(self.model_candidates.iter())
+        (0..=self.model_candidates.len())
+            .filter_map(|ordinal| self.pinned_model_candidate_at(ordinal))
             .filter(|candidate| selected.is_none_or(|model| candidate.binding.model_ref == model))
             .collect()
     }
@@ -292,12 +304,9 @@ impl ResolvedSpec {
     /// on a clean pre-commit failure of the current one (never mid-stream).
     #[must_use]
     pub fn candidate_bindings(&self) -> Vec<&ModelBinding> {
-        std::iter::once(&self.model_binding.binding)
-            .chain(
-                self.model_candidates
-                    .iter()
-                    .map(|candidate| &candidate.binding),
-            )
+        (0..=self.model_candidates.len())
+            .filter_map(|ordinal| self.pinned_model_candidate_at(ordinal))
+            .map(|candidate| &candidate.binding)
             .collect()
     }
 

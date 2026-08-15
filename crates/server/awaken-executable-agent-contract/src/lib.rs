@@ -9,11 +9,16 @@ pub use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 mod session_profile;
+mod snapshot_pin;
 
 pub use session_profile::{
     ExecutableAgentDelegate, ExecutableAgentEnvironment, ExecutableAgentMcpServer,
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
     requested_profile_revision_matches,
+};
+pub use snapshot_pin::{
+    ExecutableSnapshotIdentity, PublishedSnapshotPin, SnapshotPinError,
+    SnapshotRegistrationIdentity, published_snapshot_pin,
 };
 
 /// One immutable Control publication made available for future Coordinator
@@ -33,39 +38,27 @@ impl ExecutableAgentRegistration {
     /// Reject a command whose boundary identity does not match the immutable
     /// publication identity it carries.
     pub fn validate(&self) -> Result<(), ExecutableAgentRegistrationError> {
-        let invalid = |message: &str| {
-            Err(ExecutableAgentRegistrationError::Invalid(
-                message.to_owned(),
-            ))
-        };
-        if self.workspace_id.trim().is_empty() {
-            return invalid("workspace_id must not be empty");
+        fn nonblank(value: &str) -> Option<&str> {
+            (!value.trim().is_empty()).then_some(value)
         }
-        if self.agent_id.trim().is_empty() {
-            return invalid("agent_id must not be empty");
-        }
-        if self.source_revision == 0 {
-            return invalid("source_revision must be non-zero");
-        }
-        if self.snapshot.root_agent_id.0 != self.agent_id {
-            return invalid("snapshot root Agent does not match agent_id");
-        }
-        if self.snapshot.metadata.is_legacy_default() {
-            return invalid("registered publication must carry source metadata");
-        }
-        if self.snapshot.metadata.source.agent_id.0 != self.agent_id
-            || self.snapshot.metadata.source.revision != self.source_revision
-        {
-            return invalid("snapshot source identity does not match registration identity");
-        }
-        let fingerprint = self.snapshot.fingerprint.0.trim();
-        if fingerprint.is_empty()
-            || self.snapshot.resolved_spec.catalog_fingerprint.0 != fingerprint
-            || self.snapshot.metadata.fingerprint.0 != fingerprint
-        {
-            return invalid("snapshot fingerprints must be non-empty and identical");
-        }
-        Ok(())
+        published_snapshot_pin(
+            SnapshotRegistrationIdentity {
+                workspace: nonblank(&self.workspace_id),
+                agent: nonblank(&self.agent_id),
+                source_revision: self.source_revision,
+            },
+            ExecutableSnapshotIdentity {
+                root_agent: self.snapshot.root_agent_id.0.as_str(),
+                published_metadata: !self.snapshot.metadata.is_legacy_default(),
+                source_agent: self.snapshot.metadata.source.agent_id.0.as_str(),
+                source_revision: self.snapshot.metadata.source.revision,
+                envelope_fingerprint: nonblank(&self.snapshot.fingerprint.0),
+                resolved_fingerprint: nonblank(&self.snapshot.resolved_spec.catalog_fingerprint.0),
+                metadata_fingerprint: nonblank(&self.snapshot.metadata.fingerprint.0),
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| ExecutableAgentRegistrationError::Invalid(error.to_string()))
     }
 }
 
