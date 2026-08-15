@@ -77,23 +77,20 @@ impl WorkerObservationReconcileGate {
 async fn current_worker_observation_fingerprint(
     source: &dyn awaken_coordinator::WorkerObservationSource,
 ) -> Result<String, String> {
-    let mut workers = source.list().await.map_err(|error| error.to_string())?;
-    workers.sort_by(|left, right| {
-        (
-            &left.snapshot.identity.worker_id,
-            &left.snapshot.identity.incarnation_id,
-        )
-            .cmp(&(
-                &right.snapshot.identity.worker_id,
-                &right.snapshot.identity.incarnation_id,
-            ))
-    });
+    let workers = source.list().await.map_err(|error| error.to_string())?;
+    worker_observation_fingerprint(workers)
+}
+
+fn worker_observation_fingerprint(
+    mut workers: Vec<awaken_worker_contract::RegisteredWorker>,
+) -> Result<String, String> {
+    workers.sort_by(|left, right| left.snapshot.identity.cmp(&right.snapshot.identity));
     let observations: Vec<_> = workers
         .into_iter()
         .map(|worker| {
             (
-                worker.snapshot.identity.worker_id,
-                worker.snapshot.identity.incarnation_id,
+                worker.snapshot.identity,
+                worker.observation_sequence,
                 worker.snapshot.credential_observations,
                 worker.snapshot.acp_capability_observations,
             )
@@ -106,6 +103,12 @@ async fn current_worker_observation_fingerprint(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use awaken_coordinator::WorkerDirectory as _;
+    use awaken_worker_contract::{
+        RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision, WorkerHeartbeat,
+        WorkerManifest, WorkerRegistration,
+    };
 
     struct FlakySource(AtomicBool);
 
@@ -219,5 +222,92 @@ mod tests {
         assert_eq!(gate.reconcile(&reconciler).await.unwrap(), 2, "P2");
         assert_eq!(gate.reconcile(&reconciler).await.unwrap(), 0, "P3");
         assert_eq!(reconciler.calls.load(Ordering::SeqCst), 1, "P2+P3");
+    }
+
+    #[tokio::test]
+    async fn reverted_evidence_gets_a_new_fingerprint_but_unchanged_heartbeats_coalesce() {
+        // The old content-only fingerprint admitted an ABA: evidence A -> B -> A
+        // returned to A's hash, so the gate could mistake the final A for an
+        // already-reconciled snapshot. The observation sequence advances on both
+        // semantic changes, while an ordinary unchanged heartbeat preserves it.
+        let directory = awaken_coordinator::test_worker_directory();
+        let registered = directory
+            .register(
+                WorkerRegistration {
+                    worker_id: "worker-aba".into(),
+                    incarnation_id: "boot-a".into(),
+                    manifest: WorkerManifest::default(),
+                },
+                1,
+                100,
+            )
+            .await
+            .unwrap();
+        let identity = registered.snapshot.identity;
+        let evidence = |revision| {
+            [WorkerCredentialObservation::available(
+                WorkerCredentialRevision {
+                    id: "credential-a".into(),
+                    revision,
+                },
+                10,
+                100,
+            )]
+            .into_iter()
+            .collect()
+        };
+        let heartbeat = |sequence, credential_observations| WorkerHeartbeat {
+            sequence,
+            ready: true,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations,
+            acp_capability_observations: Default::default(),
+        };
+
+        assert_eq!(
+            directory
+                .heartbeat(&identity, heartbeat(1, evidence(1)), 10, 100)
+                .await
+                .unwrap(),
+            RegistryMutation::Applied
+        );
+        let first = current_worker_observation_fingerprint(directory.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(
+            directory
+                .heartbeat(&identity, heartbeat(2, evidence(2)), 11, 100)
+                .await
+                .unwrap(),
+            RegistryMutation::Applied
+        );
+        let middle = current_worker_observation_fingerprint(directory.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(
+            directory
+                .heartbeat(&identity, heartbeat(3, evidence(1)), 12, 100)
+                .await
+                .unwrap(),
+            RegistryMutation::Applied
+        );
+        let reverted = current_worker_observation_fingerprint(directory.as_ref())
+            .await
+            .unwrap();
+        assert_ne!(first, middle);
+        assert_ne!(first, reverted, "A -> B -> A must not reuse A's fence");
+
+        assert_eq!(
+            directory
+                .heartbeat(&identity, heartbeat(4, evidence(1)), 13, 100)
+                .await
+                .unwrap(),
+            RegistryMutation::Applied
+        );
+        let unchanged = current_worker_observation_fingerprint(directory.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(reverted, unchanged, "unchanged evidence still coalesces");
     }
 }
