@@ -7,6 +7,12 @@ use super::*;
 use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RehydrationPurpose {
+    Interactive,
+    TerminalCleanup,
+}
+
 impl ManagedState {
     fn resolved_session_multiagent(
         &self,
@@ -865,6 +871,16 @@ impl ManagedState {
         owner_scope: &str,
         persisted: Option<PersistedSession>,
     ) -> Result<Session, StateError> {
+        self.rehydrated_session_for(id, owner_scope, persisted, RehydrationPurpose::Interactive)
+    }
+
+    fn rehydrated_session_for(
+        &self,
+        id: &str,
+        owner_scope: &str,
+        persisted: Option<PersistedSession>,
+        purpose: RehydrationPurpose,
+    ) -> Result<Session, StateError> {
         let caps = self.application.capabilities_for(id);
         let projected_budget = persisted
             .as_ref()
@@ -942,14 +958,19 @@ impl ManagedState {
                     .then(|| self.application.session_profile(owner_scope, &agent_id))
                     .flatten()
             });
-        if let Some(revision) = agent_revision
+        if purpose == RehydrationPurpose::Interactive
+            && let Some(revision) = agent_revision
             && profile.is_none()
         {
             return Err(StateError::Run(RunError::unavailable(format!(
                 "Agent `{agent_id}` publication revision {revision} is unavailable during Session recovery"
             ))));
         }
-        let multiagent = self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?;
+        let multiagent = if purpose == RehydrationPurpose::TerminalCleanup && profile.is_none() {
+            None
+        } else {
+            self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?
+        };
         Ok(Session {
             id: id.to_string(),
             kind: "session",
@@ -959,6 +980,7 @@ impl ManagedState {
                 version: profile
                     .as_ref()
                     .map(|profile| profile.source_revision)
+                    .or(agent_revision)
                     .unwrap_or(1)
                     .max(1),
                 model: ModelConfig::new(model),
@@ -1021,7 +1043,12 @@ impl ManagedState {
         let delegation_transcripts = self.delegation_transcripts(&delegated_runs).await?;
         let mut record = SessionRecord::new(
             persisted.agent_id().unwrap_or("assistant").to_string(),
-            self.rehydrated_session(id, &owner_scope, Some(persisted.clone()))?,
+            self.rehydrated_session_for(
+                id,
+                &owner_scope,
+                Some(persisted.clone()),
+                RehydrationPurpose::TerminalCleanup,
+            )?,
             persisted.resources,
             Vec::new(),
             Default::default(),
