@@ -252,7 +252,6 @@ pub(crate) fn spawn_heartbeat(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        interval.tick().await;
         loop {
             interval.tick().await;
             let mutation = lifecycle

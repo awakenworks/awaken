@@ -1043,6 +1043,7 @@ mod shred_tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: ResourceLimits::default(),
+            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             extra: None,
         }
@@ -1386,6 +1387,7 @@ mod workdir_helper_tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: ResourceLimits::default(),
+            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             extra: deny_egress.then(|| json!({ "deny_egress": true })),
         }

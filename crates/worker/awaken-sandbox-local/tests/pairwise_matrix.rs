@@ -271,6 +271,7 @@ async fn build(
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: None,
     };

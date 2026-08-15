@@ -65,6 +65,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
             pids: Some(256),
             disk_bytes: None,
         },
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: Some(60),
         // Process-as-container: the agent is the container's main command.
         extra: Some(serde_json::json!({ "command": ["claude", "--acp"] })),
@@ -1770,6 +1771,7 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({"command": ["agent"]})),
     };
@@ -1935,6 +1937,7 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
         outputs_path: "/out".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: None,
     }

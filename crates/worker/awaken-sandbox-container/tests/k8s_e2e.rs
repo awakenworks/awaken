@@ -98,6 +98,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(session_argv(), fixture_image())),
     }
@@ -136,6 +137,7 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(session_argv(), fixture_image())),
     }
@@ -161,6 +163,7 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(session_argv(), fixture_image())),
     }
@@ -189,6 +192,7 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(session_argv(), fixture_image())),
     }
@@ -277,6 +281,7 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(session_argv(), fixture_image())),
     }
@@ -303,6 +308,7 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(container_extra(
             vec![

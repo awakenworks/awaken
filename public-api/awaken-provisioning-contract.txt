@@ -37,6 +37,9 @@ pub awaken_provisioning_contract::EnvironmentKind::LocalDir
 pub awaken_provisioning_contract::EnvironmentKind::LocalDir::path_template: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentKind::Sandbox
 pub awaken_provisioning_contract::EnvironmentKind::Scope
+pub enum awaken_provisioning_contract::FilesystemContinuity
+pub awaken_provisioning_contract::FilesystemContinuity::Ephemeral
+pub awaken_provisioning_contract::FilesystemContinuity::Retained
 pub enum awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationClass::Container
 pub awaken_provisioning_contract::IsolationClass::Namespace
@@ -364,6 +367,7 @@ pub fn awaken_provisioning_contract::SandboxRequirements::from_spec(&awaken_prov
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::SandboxSpec::extra: core::option::Option<serde_json::value::Value>
+pub awaken_provisioning_contract::SandboxSpec::filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity
 pub awaken_provisioning_contract::SandboxSpec::isolation: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::SandboxSpec::lease_ttl_secs: core::option::Option<u64>
 pub awaken_provisioning_contract::SandboxSpec::limits: awaken_provisioning_contract::ResourceLimits

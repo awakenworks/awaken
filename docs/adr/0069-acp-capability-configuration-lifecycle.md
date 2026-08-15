@@ -1020,3 +1020,20 @@ realization authority. The earlier execution-plane `memoryd` sidecar argv and
 ambient-reader statements are historical and no longer describe a runnable
 role. FUSE and copy/CAS selection remain typed behavior of the mounter installed
 by the composition root; no Pod-local SQLite configuration is accepted.
+
+## 2026-08-15 amendment: observation is not Worker liveness
+
+The Worker publishes process readiness before probing dynamic credential/ACP
+evidence or warming optional capacity. Those operations start immediately on
+the existing background reconciliation loops; until they succeed, the existing
+claim kernel sees no evidence and rejects only Runs that require it. Sandbox or
+storage unavailability therefore cannot strand the Worker in `Starting`, and it
+cannot create a fail-open placement path.
+
+The neutral `SandboxSpec` now carries typed `FilesystemContinuity`. Canonical
+Session environments request `Retained`, preserving the `DurableRequest`
+contract, while prompt-free capability probes and deliberately fresh child
+environments request `Ephemeral`. The existing Kubernetes realization remains
+the sole Pod/PVC owner and omits its configured continuation claim only for the
+typed ephemeral case. No probe-specific Kubernetes client, provider, PVC owner,
+or environment store is introduced.

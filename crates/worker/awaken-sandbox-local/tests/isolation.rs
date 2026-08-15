@@ -22,6 +22,7 @@ fn spec(scope: &str, deny: bool) -> pc::SandboxSpec {
         outputs_path: "/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: deny.then(|| serde_json::json!({ "deny_egress": true })),
     }
