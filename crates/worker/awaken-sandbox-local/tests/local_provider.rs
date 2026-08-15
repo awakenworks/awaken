@@ -208,6 +208,56 @@ async fn file_mount_is_realized_and_readable_by_a_process() {
 }
 
 #[tokio::test]
+async fn structured_workdir_tools_preserve_managed_absolute_mount_paths() {
+    /*
+     * Workdir path-projection decision table. C1=a read-write File is realized
+     * at the Managed logical path /mnt/session/uploads/file-1; C2=the structured
+     * read tool receives that exact absolute path; C3=an opaque process requests
+     * the same host-absolute path. E1=C1+C2 resolves below the Session root and
+     * returns the bytes without exposing the host projection; E2=C1+C3 is not
+     * promised because Workdir reports process path_fidelity=false. Rules:
+     * W1 C1+C2=>E1; W2 C1+C3=>capability admission, not path rewriting.
+     */
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path()).with_blob("file-1", b"workdir-token".to_vec());
+    let mut input = spec("t-managed-logical-path");
+    input.mounts.push(pc::MountRequirement {
+        mount_id: "managed-file".into(),
+        source: pc::MountSource::File {
+            file_id: "file-1".into(),
+            content_hash: None,
+        },
+        mount_path: "/mnt/session/uploads/file-1".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let sandbox = provider.create_sandbox(&input).await.unwrap();
+    let read = sandbox
+        .rooted_tools()
+        .into_iter()
+        .find(|tool| tool.id() == "read")
+        .unwrap();
+    let output = read
+        .invoke(ToolCall {
+            call_id: "workdir-managed-read".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({
+                "path": "/mnt/session/uploads/file-1"
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(output.text().contains("workdir-token"), "W1/E1");
+    assert!(
+        !output
+            .text()
+            .contains(tmp.path().to_string_lossy().as_ref()),
+        "W1/E1 host path leak"
+    );
+}
+
+#[tokio::test]
 async fn inline_mount_realizes_ephemeral_content_without_a_store() {
     // ADR-0057: inline ephemeral content (a projected config.toml) ships in the spec
     // — no store, no id, self-contained — and is readable inside the sandbox. It is

@@ -500,6 +500,10 @@ fn host_live_input_projection_has_one_stable_read_only_bind_and_atomic_generatio
 
 #[tokio::test]
 async fn memory_store_realizes_as_copy_on_the_container_tier() {
+    // Managed-memory path decision rule M1: a Memory requirement names the
+    // protocol path /mnt/memory/notes. The container binds the canonical mounter
+    // copy at that exact path; it must not add /workspace or a hidden `.mnt`
+    // carrier. This matches Namespace and Workdir structured-tool projection.
     let rt = Arc::new(FakeRuntime::default());
     let mut s = spec("mem-real");
     s.mounts.push(pc::MountRequirement {
@@ -509,7 +513,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
             materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
-        mount_path: "/workspace/.mnt/notes".into(),
+        mount_path: "/mnt/memory/notes".into(),
         access: pc::MountAccess::ReadWrite,
         lifetime: pc::MountLifetime::Session,
         required: true,
@@ -532,7 +536,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
         let state = p.runtime.st.lock().unwrap();
         let bind = state.created_binds["cid-mem-real"]
             .iter()
-            .find(|bind| bind.mount_path == "/workspace/.mnt/notes")
+            .find(|bind| bind.mount_path == "/mnt/memory/notes")
             .expect("portable memory copy is bound into the container");
         assert!(!bind.read_only);
         assert_eq!(

@@ -10,16 +10,20 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
-use awaken_sandbox_local::{DiscoveredSkillFile, LocalSandbox, NamespaceSandbox};
+use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
 
 mod agent_sandbox;
 mod container_files;
 mod container_repositories;
 mod container_skills;
 mod provider;
+mod session_files;
+mod session_hand;
 pub(crate) use agent_sandbox::AgentSandbox;
-use container_skills::{ContainerSkillCache, RefreshingHandExecutor};
+use container_skills::ContainerSkillCache;
 pub(crate) use provider::SessionEnvironmentProvider;
+use session_hand::HandProjectionUpdate;
+use session_hand::SessionHandExecutor;
 
 /// Session environment service that binds a live hand channel to the runtime's tool
 /// executor. The framing implementation belongs to an outer startup crate;
@@ -33,13 +37,31 @@ pub trait HandExecutorFactory: Send + Sync {
     ) -> Arc<dyn ToolExecutor>;
 }
 
+#[cfg(test)]
+pub(crate) struct UnusedHandExecutorFactory;
+
+#[cfg(test)]
+impl HandExecutorFactory for UnusedHandExecutorFactory {
+    fn bind(
+        &self,
+        _channel: Box<dyn AgentChannelType>,
+        _operation_scope: &str,
+        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    ) -> Arc<dyn ToolExecutor> {
+        panic!("this test does not dispatch a Session Hand tool")
+    }
+}
+
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
     Workdir(Arc<LocalSandbox>),
-    Namespace(Arc<NamespaceSandbox>),
+    Namespace {
+        sandbox: Arc<NamespaceSandbox>,
+        hand: Arc<SessionHandExecutor>,
+    },
     Container {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        hand: Arc<RefreshingHandExecutor>,
+        hand: Arc<SessionHandExecutor>,
         skills: Arc<ContainerSkillCache>,
         capabilities: pc::SandboxCapabilities,
     },
@@ -49,7 +71,7 @@ impl SessionEnvironment {
     fn sandbox(&self) -> &dyn pc::Sandbox {
         match self {
             Self::Workdir(sandbox) => sandbox.as_ref(),
-            Self::Namespace(sandbox) => sandbox.as_ref(),
+            Self::Namespace { sandbox, .. } => sandbox.as_ref(),
             Self::Container { sandbox, .. } => sandbox.as_ref(),
         }
     }
@@ -65,7 +87,10 @@ impl SessionEnvironment {
     pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
+            Self::Namespace { sandbox, hand } => {
+                hand.stop().await;
+                pc::Sandbox::dispose(sandbox.as_ref()).await
+            }
             Self::Container { sandbox, hand, .. } => {
                 hand.stop().await;
                 sandbox.dispose().await
@@ -91,8 +116,20 @@ impl SessionEnvironment {
     }
 
     #[must_use]
-    pub(crate) fn namespace(sandbox: NamespaceSandbox) -> Self {
-        Self::Namespace(Arc::new(sandbox))
+    pub(crate) fn namespace(
+        sandbox: NamespaceSandbox,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
+    ) -> Self {
+        let sandbox = Arc::new(sandbox);
+        let hand = Arc::new(SessionHandExecutor::namespace(
+            sandbox.clone(),
+            hand_factory,
+            hand_bin,
+            hand_idle_after,
+        ));
+        Self::Namespace { sandbox, hand }
     }
 
     async fn container(
@@ -105,7 +142,7 @@ impl SessionEnvironment {
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
         let hand = Arc::new(
-            RefreshingHandExecutor::new(
+            SessionHandExecutor::container(
                 sandbox.clone(),
                 skills.clone(),
                 hand_factory,
@@ -129,7 +166,7 @@ impl SessionEnvironment {
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
             Self::Workdir(_) => awaken_sandbox_local::LocalProvider::capabilities(),
-            Self::Namespace(_) => awaken_sandbox_local::NamespaceProvider::capabilities(),
+            Self::Namespace { .. } => awaken_sandbox_local::NamespaceProvider::capabilities(),
             Self::Container { capabilities, .. } => capabilities.clone(),
         }
     }
@@ -154,204 +191,37 @@ impl SessionEnvironment {
         Ok(())
     }
 
-    /// Executable Hand for this realized environment. Container environments
-    /// already own a channel-backed executor; local/namespace environments use
-    /// their rooted tool implementations behind the same neutral port.
+    /// Fence tool dispatch and hibernate the current sandbox-resident Hand before
+    /// changing the live resource projection. Workdir has no process-level path
+    /// fidelity and retains its existing host-side structured-tool behavior.
+    pub(crate) async fn begin_live_projection_update(
+        &self,
+    ) -> Result<Option<HandProjectionUpdate<'_>>, pc::SandboxError> {
+        match self {
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
+                hand.begin_projection_update().await.map(Some)
+            }
+            Self::Workdir(_) => Ok(None),
+        }
+    }
+
+    /// Executable Hand for this realized environment. Namespace and Container
+    /// execute through one sandbox-resident channel; only the explicitly weaker
+    /// Workdir tier uses host-side rooted tools.
     pub(crate) fn tool_executor(&self) -> Arc<dyn ToolExecutor> {
         match self {
-            Self::Container { hand, .. } => hand.clone(),
-            Self::Workdir(_) | Self::Namespace(_) => {
-                Arc::new(RawToolRegistry::new(self.rooted_tools()))
-            }
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => hand.clone(),
+            Self::Workdir(_) => Arc::new(RawToolRegistry::new(self.rooted_tools())),
         }
     }
 
     pub(crate) fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
         match self {
             Self::Workdir(sandbox) => sandbox.rooted_tools(),
-            Self::Namespace(sandbox) => sandbox.rooted_tools(),
             // Descriptors remain the canonical built-in set; execution is forced
-            // through this environment's bound remote hand in `SessionCtx`.
-            Self::Container { .. } => awaken_ext_builtin_tools::all_hand_tools(),
-        }
-    }
-
-    /// Enumerate Agent-authored outputs through the provisioning contract's
-    /// canonical Artifact port. Container backends expose the same contract over
-    /// their output-file transport instead of creating a second host-side scanner.
-    pub(crate) async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
-            Self::Container { sandbox, .. } => sandbox
-                .read_files(sandbox.outputs_path())
-                .await
-                .map(|files| {
-                    files
-                        .into_iter()
-                        .map(|file| {
-                            let id = awaken_resource_contract::content_id(&file.bytes);
-                            pc::Artifact {
-                                id: id.clone(),
-                                path: file.path,
-                                size_bytes: file.bytes.len() as u64,
-                                content_hash: id,
-                            }
-                        })
-                        .collect()
-                }),
-        }
-    }
-
-    pub(crate) async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
-            Self::Namespace(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
-            Self::Container { sandbox, .. } => sandbox
-                .read_files(sandbox.outputs_path())
-                .await?
-                .into_iter()
-                .find_map(|file| {
-                    (awaken_resource_contract::content_id(&file.bytes) == id).then_some(file.bytes)
-                })
-                .ok_or_else(|| pc::SandboxError::new(format!("artifact `{id}` not found"))),
-        }
-    }
-
-    pub(crate) async fn list_files(
-        &self,
-        subdir: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => Ok(sandbox.list_files(subdir)),
-            Self::Namespace(sandbox) => Ok(sandbox.list_files(subdir)),
-            Self::Container { sandbox, .. } => {
-                let root = if subdir.starts_with('/') {
-                    subdir.to_string()
-                } else {
-                    container_files::read_root(subdir, sandbox.outputs_path())?
-                };
-                sandbox.read_files(&root).await.map(|files| {
-                    files
-                        .into_iter()
-                        .map(|file| (file.path, file.bytes))
-                        .collect()
-                })
-            }
-        }
-    }
-
-    pub(crate) fn needs_recovered_memory_reconciliation(&self) -> bool {
-        matches!(self, Self::Container { sandbox, .. } if sandbox.is_recovered())
-    }
-
-    pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
-            Self::Namespace(sandbox) => sandbox.scan_skill_dir(subdir),
-            Self::Container { skills, .. } => skills.get(subdir),
-        }
-    }
-
-    pub(crate) fn register_skill_dir(&self, subdir: &str) {
-        if let Self::Container { skills, .. } = self {
-            skills.register(subdir);
-        }
-    }
-
-    pub(crate) async fn refresh_skills(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Container {
-                sandbox, skills, ..
-            } => skills.refresh(sandbox.as_ref()).await,
-            Self::Workdir(_) | Self::Namespace(_) => Ok(()),
-        }
-    }
-
-    pub(crate) async fn materialize_inline(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
-            Self::Namespace(sandbox) => sandbox.materialize_inline(logical, contents),
-            Self::Container { sandbox, .. } => {
-                container_files::write(sandbox.as_ref(), logical, contents).await
-            }
-        }
-    }
-
-    pub(crate) async fn materialize_read_only_tree(
-        &self,
-        subdir: &str,
-        files: &[(String, Vec<u8>, bool)],
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
-            Self::Namespace(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
-            Self::Container { sandbox, .. } => {
-                container_files::materialize_read_only_tree(sandbox.as_ref(), subdir, files).await
-            }
-        }
-    }
-
-    /// Attach a governed mount through the backend's canonical live-injection
-    /// port. Unsupported tiers fail closed instead of receiving a writable copy.
-    pub(crate) async fn attach_mount(
-        &self,
-        requirement: pc::MountRequirement,
-    ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        self.sandbox().attach(requirement).await
-    }
-
-    /// Rebuild the dynamic bind layout of an adopted Namespace from the frozen
-    /// Session manifest. Workdir paths survive directly and container runtimes
-    /// retain their own mount namespace across process ownership changes.
-    pub(crate) async fn reconcile_adopted_mounts(
-        &self,
-        requirements: &[pc::MountRequirement],
-    ) -> Result<(), pc::SandboxError> {
-        if let Self::Namespace(sandbox) = self {
-            for requirement in requirements {
-                pc::Sandbox::attach(sandbox.as_ref(), requirement.clone()).await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Write an ordinary runtime-owned workspace file. This is intentionally
-    /// distinct from [`Self::attach_mount`], which carries access guarantees.
-    pub(crate) async fn write_workspace_file(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
-            Self::Namespace(sandbox) => sandbox.materialize_inline(logical, contents),
-            Self::Container { sandbox, .. } => {
-                let path = container_files::logical_path(logical)?;
-                container_files::write(sandbox.as_ref(), &path, contents).await
-            }
-        }
-    }
-
-    /// Remove one path from the live resource projection. Every backend applies
-    /// the same lexical jail and treats an absent path as an idempotent success.
-    pub(crate) async fn remove_workspace_path(
-        &self,
-        logical: &str,
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.remove_inline(logical),
-            Self::Namespace(sandbox) => sandbox.remove_mount(logical),
-            Self::Container { sandbox, .. } => {
-                if awaken_sandbox_container::live_input_relative_path(logical).is_some() {
-                    sandbox.remove_live_input_path(logical).await
-                } else {
-                    container_files::remove(sandbox.as_ref(), logical).await
-                }
+            // through this environment's bound Hand in `SessionCtx`.
+            Self::Namespace { .. } | Self::Container { .. } => {
+                awaken_ext_builtin_tools::all_hand_tools()
             }
         }
     }
@@ -360,8 +230,9 @@ impl SessionEnvironment {
     /// Used when an adoption races a resident environment with the same handle;
     /// disposing here would incorrectly destroy the shared underlying container.
     pub(crate) async fn stop_bound_processes(&self) {
-        if let Self::Container { hand, .. } = self {
-            hand.stop().await;
+        match self {
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => hand.stop().await,
+            Self::Workdir(_) => {}
         }
     }
 
@@ -371,11 +242,9 @@ impl SessionEnvironment {
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannelType>), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.spawn_agent(command).await,
-            Self::Namespace(sandbox) => sandbox.spawn_agent(command).await,
-            Self::Container { sandbox, .. } => sandbox
-                .spawn_agent_process(command)
-                .await
-                .map(|process| (process.process, process.channel)),
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
+                hand.launcher().spawn_agent(command).await
+            }
         }
     }
 }
@@ -391,7 +260,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
             Self::Workdir(sandbox) => {
                 pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
             }
-            Self::Namespace(sandbox) => sandbox.provision_repo(
+            Self::Namespace { sandbox, .. } => sandbox.provision_repo(
                 &plan.mount_path,
                 &plan.remote_url,
                 plan.initial_branch.as_deref(),
@@ -421,7 +290,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
             Self::Workdir(sandbox) => {
                 pc::RepositoryRealizer::publish_repository(sandbox.as_ref(), plan, credential).await
             }
-            Self::Namespace(sandbox) => sandbox.push_repo(&plan.mount_path, credential),
+            Self::Namespace { sandbox, .. } => sandbox.push_repo(&plan.mount_path, credential),
             Self::Container { sandbox, .. } => {
                 container_repositories::push(
                     sandbox.as_ref(),
@@ -863,7 +732,12 @@ mod tests {
             return;
         }
         let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
-        let environment = SessionEnvironment::namespace(namespace);
+        let environment = SessionEnvironment::namespace(
+            namespace,
+            Arc::new(FakeHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
         #[cfg(target_os = "macos")]
         assert_eq!(environment.handle().provider_kind, "seatbelt");
         #[cfg(not(target_os = "macos"))]
@@ -884,7 +758,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(hand_output.text().contains("namespace-state"), "N1");
+        assert_eq!(hand_output.text(), "bound-hand-ok", "N1 Hand binding");
 
         let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
         agent_command.cwd = "/workspace".into();
@@ -1473,6 +1347,100 @@ mod tests {
         environment.dispose().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn live_projection_update_hibernates_and_fences_the_session_hand() {
+        /*
+         * Projection/Hand cause-effect graph and decision table.
+         * Causes: C1=a bound Hand exists; C2=projection update begins; C3=the
+         * update commits; C4=the update guard drops without commit; C5=a tool
+         * arrives during/after the update. Effects: E1=wait for the in-flight
+         * binding and reap it once; E2=reject C5 before dispatch while fenced;
+         * E3=after C3 lazily launch exactly one Hand over the new projection;
+         * E4=after C4 remain fenced until the authoritative retry commits.
+         * Rules: U1 C1+C2=>E1+E2; U2 U1+C3+C5=>E3;
+         * U3 U1+C4+C5=>E2+E4.
+         */
+        let provider = Arc::new(FakeContainerProvider::default());
+        let factory = ScriptedHandFactory::new([
+            ScriptedHandOutcome::Success,
+            ScriptedHandOutcome::Success,
+            ScriptedHandOutcome::Success,
+        ]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            factory,
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let hand = environment.tool_executor();
+
+        let committed = environment
+            .begin_live_projection_update()
+            .await
+            .unwrap()
+            .expect("container Hand update");
+        assert!(
+            matches!(
+                hand.invoke(&ToolCall {
+                    call_id: "during-update".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({}),
+                })
+                .await,
+                Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            ),
+            "U1/E2"
+        );
+        committed.commit();
+        hand.invoke(&ToolCall {
+            call_id: "after-commit".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "U2/E3");
+
+        let uncommitted = environment
+            .begin_live_projection_update()
+            .await
+            .unwrap()
+            .expect("container Hand update");
+        drop(uncommitted);
+        assert!(
+            matches!(
+                hand.invoke(&ToolCall {
+                    call_id: "after-failed-update".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({}),
+                })
+                .await,
+                Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            ),
+            "U3/E2,E4"
+        );
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "U3/E4");
+
+        environment
+            .begin_live_projection_update()
+            .await
+            .unwrap()
+            .expect("retry update")
+            .commit();
+        hand.invoke(&ToolCall {
+            call_id: "after-retry".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 3, "U3 retry");
+        environment.dispose().await.unwrap();
+    }
+
     /// Worker-local Hand inactivity cause/effect decision table.
     /// C1=idle policy enabled; C2=deadline reached; C3=a newer invocation touches
     /// the generation; C4=policy is zero; C5=invocation follows hibernation.
@@ -1763,11 +1731,17 @@ mod tests {
         let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
         assert!(matches!(workdir, SessionEnvironmentProvider::Workdir(_)));
 
-        let namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(first.path(), true)
-            .at_root(second.path());
+        let namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(
+            first.path(),
+            true,
+            Arc::new(FakeHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        )
+        .at_root(second.path());
         assert!(matches!(
             &namespace,
-            SessionEnvironmentProvider::Namespace(provider)
+            SessionEnvironmentProvider::Namespace { provider, .. }
                 if provider.inherits_agent_stderr()
         ));
         let mut namespace_spec = spec();

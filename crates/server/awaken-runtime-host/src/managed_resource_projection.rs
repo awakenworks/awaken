@@ -16,7 +16,7 @@ pub(super) fn resolved_resource_prompt(input: &awaken_session_contract::Resolved
             format!("A file is mounted read-only at `{carried_path}`.")
         }
         ResolvedInputSource::MemoryStore { .. } => {
-            let carried_path = format!(".mnt/{}", input.mount_path.trim_start_matches('/'));
+            let carried_path = managed_resource_mount_path(&input.mount_path);
             format!("A persistent memory store is mounted {access} at `{carried_path}`.")
         }
         ResolvedInputSource::Repository { .. } => format!(
@@ -36,6 +36,15 @@ pub(super) fn managed_file_mount_path(requested: &str) -> String {
         format!("/{logical}")
     } else {
         format!("/mnt/session/uploads/{logical}")
+    }
+}
+
+pub(super) fn managed_resource_mount_path(requested: &str) -> String {
+    let logical = requested.trim_start_matches('/');
+    if logical.starts_with("mnt/") {
+        format!("/{logical}")
+    } else {
+        format!("/mnt/{logical}")
     }
 }
 
@@ -178,7 +187,7 @@ impl crate::ManagedHost {
                         write_consistency:
                             awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault,
                     },
-                    mount_path: format!(".mnt/{logical}"),
+                    mount_path: managed_resource_mount_path(&logical),
                     access: mount_access,
                     lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                     required: true,

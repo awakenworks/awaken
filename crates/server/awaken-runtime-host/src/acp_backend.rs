@@ -249,11 +249,24 @@ impl crate::host::SharedHost {
         .await
         .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
         let mut host = self;
+        // Namespace runs the same Hand binary as Container, but from the local
+        // installation rather than from the image filesystem. Production bundles
+        // install both executables as siblings; keeping this resolution at the
+        // composition root prevents provider-specific host paths crossing inward.
+        let namespace_hand_bin = std::env::current_exe()
+            .ok()
+            .map(|path| path.with_file_name("awaken-sandbox"))
+            .unwrap_or_else(|| std::path::PathBuf::from("awaken-sandbox"))
+            .to_string_lossy()
+            .into_owned();
         host.session_provider = if let Some(provider) =
             crate::session_environment::SessionEnvironmentProvider::for_host_tier(
                 tier,
                 base,
                 deployment.sandbox.inherit_agent_stderr,
+                hand_factory.clone(),
+                namespace_hand_bin,
+                std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
             ) {
             provider
         } else {
@@ -529,6 +542,9 @@ mod tests {
             crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
                 std::env::temp_dir().join("awaken-managed-environment"),
                 false,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                "/bin/sh",
+                std::time::Duration::ZERO,
             );
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_runtime_contract::CredentialRef {

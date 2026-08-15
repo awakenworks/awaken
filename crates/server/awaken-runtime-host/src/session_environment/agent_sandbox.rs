@@ -63,7 +63,7 @@ impl AgentSandbox for SessionEnvironment {
             // Session-owned workspace rather than the creation-time /acp-config
             // mount used by the legacy one-shot source.
             Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
+            Self::Namespace { .. } => "/workspace/.acp-config".to_string(),
             Self::Workdir(sandbox) => sandbox
                 .workspace_path()
                 .join(".acp-config")
@@ -75,7 +75,7 @@ impl AgentSandbox for SessionEnvironment {
     fn config_home_logical(&self) -> String {
         match self {
             Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
+            Self::Namespace { .. } => "/workspace/.acp-config".to_string(),
             Self::Workdir(_) => ".acp-config".to_string(),
         }
     }
@@ -83,7 +83,7 @@ impl AgentSandbox for SessionEnvironment {
     fn workspace_cwd(&self) -> String {
         match self {
             Self::Workdir(sandbox) => sandbox.workspace_path().to_string_lossy().into_owned(),
-            Self::Namespace(_) | Self::Container { .. } => "/workspace".to_string(),
+            Self::Namespace { .. } | Self::Container { .. } => "/workspace".to_string(),
         }
     }
 

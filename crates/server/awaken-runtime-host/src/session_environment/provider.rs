@@ -11,7 +11,12 @@ use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 /// may continue using their deliberately-fresh LocalProvider.
 pub(crate) enum SessionEnvironmentProvider {
     Workdir(LocalProvider),
-    Namespace(NamespaceProvider),
+    Namespace {
+        provider: NamespaceProvider,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: String,
+        hand_idle_after: std::time::Duration,
+    },
     Container {
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
@@ -31,16 +36,27 @@ impl SessionEnvironmentProvider {
         tier: crate::SandboxTier,
         base: impl Into<std::path::PathBuf>,
         inherit_agent_stderr: bool,
+        hand_factory: Option<Arc<dyn HandExecutorFactory>>,
+        namespace_hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
     ) -> Option<Self> {
         let base = base.into();
         match tier {
             crate::SandboxTier::Local => {
                 Some(Self::workdir_with_agent_stderr(base, inherit_agent_stderr))
             }
-            crate::SandboxTier::Namespace => Some(Self::namespace_with_agent_stderr(
-                base,
-                inherit_agent_stderr,
-            )),
+            crate::SandboxTier::Namespace => {
+                let hand_factory = hand_factory.unwrap_or_else(|| {
+                    panic!("namespace Session environments require a hand executor factory")
+                });
+                Some(Self::namespace_with_agent_stderr(
+                    base,
+                    inherit_agent_stderr,
+                    hand_factory,
+                    namespace_hand_bin,
+                    hand_idle_after,
+                ))
+            }
             crate::SandboxTier::Docker | crate::SandboxTier::Podman | crate::SandboxTier::K8s => {
                 None
             }
@@ -55,7 +71,7 @@ impl SessionEnvironmentProvider {
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
             Self::Workdir(provider) => pc::SandboxProvider::capabilities(provider),
-            Self::Namespace(provider) => pc::SandboxProvider::capabilities(provider),
+            Self::Namespace { provider, .. } => pc::SandboxProvider::capabilities(provider),
             Self::Container { provider, .. } => provider.sandbox_capabilities(),
         }
     }
@@ -74,8 +90,16 @@ impl SessionEnvironmentProvider {
     pub(crate) fn namespace_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
     ) -> Self {
-        Self::Namespace(NamespaceProvider::new(base).with_agent_stderr(inherit))
+        Self::Namespace {
+            provider: NamespaceProvider::new(base).with_agent_stderr(inherit),
+            hand_factory,
+            hand_bin: hand_bin.into(),
+            hand_idle_after,
+        }
     }
 
     #[cfg(test)]
@@ -142,9 +166,18 @@ impl SessionEnvironmentProvider {
             Self::Workdir(provider) => {
                 Self::workdir_with_agent_stderr(base, provider.inherits_agent_stderr())
             }
-            Self::Namespace(provider) => {
-                Self::namespace_with_agent_stderr(base, provider.inherits_agent_stderr())
-            }
+            Self::Namespace {
+                provider,
+                hand_factory,
+                hand_bin,
+                hand_idle_after,
+            } => Self::namespace_with_agent_stderr(
+                base,
+                provider.inherits_agent_stderr(),
+                hand_factory.clone(),
+                hand_bin.clone(),
+                *hand_idle_after,
+            ),
             Self::Container {
                 provider,
                 capacity,
@@ -168,7 +201,7 @@ impl SessionEnvironmentProvider {
     pub(crate) fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         match self {
             Self::Workdir(provider) => provider.install_memory_mounter(mounter),
-            Self::Namespace(provider) => provider.install_memory_mounter(mounter),
+            Self::Namespace { provider, .. } => provider.install_memory_mounter(mounter),
             Self::Container { provider, .. } => provider.install_memory_mounter(mounter),
         }
     }
@@ -176,7 +209,7 @@ impl SessionEnvironmentProvider {
     pub(crate) fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
         match self {
             Self::Workdir(provider) => provider.install_secret_broker(broker),
-            Self::Namespace(provider) => provider.install_secret_broker(broker),
+            Self::Namespace { provider, .. } => provider.install_secret_broker(broker),
             Self::Container { provider, .. } => provider.install_secret_broker(broker),
         }
     }
@@ -190,13 +223,22 @@ impl SessionEnvironmentProvider {
                 .create_sandbox(spec)
                 .await
                 .map(SessionEnvironment::workdir),
-            Self::Namespace(provider) => {
+            Self::Namespace {
+                provider,
+                hand_factory,
+                hand_bin,
+                hand_idle_after,
+            } => {
                 let mut spec = spec.clone();
                 spec.isolation = pc::IsolationClass::Namespace;
-                provider
-                    .create_sandbox(&spec)
-                    .await
-                    .map(SessionEnvironment::namespace)
+                provider.create_sandbox(&spec).await.map(|sandbox| {
+                    SessionEnvironment::namespace(
+                        sandbox,
+                        hand_factory.clone(),
+                        hand_bin,
+                        *hand_idle_after,
+                    )
+                })
             }
             Self::Container {
                 provider,
@@ -290,10 +332,19 @@ impl SessionEnvironmentProvider {
                 .adopt_sandbox(handle)
                 .await
                 .map(SessionEnvironment::workdir),
-            Self::Namespace(provider) => provider
-                .adopt_sandbox(handle)
-                .await
-                .map(SessionEnvironment::namespace),
+            Self::Namespace {
+                provider,
+                hand_factory,
+                hand_bin,
+                hand_idle_after,
+            } => provider.adopt_sandbox(handle).await.map(|sandbox| {
+                SessionEnvironment::namespace(
+                    sandbox,
+                    hand_factory.clone(),
+                    hand_bin,
+                    *hand_idle_after,
+                )
+            }),
             Self::Container {
                 provider,
                 hand_factory,
@@ -329,7 +380,7 @@ impl SessionEnvironmentProvider {
                 .restore_sandbox(spec, checkpoint, store)
                 .await
                 .map(SessionEnvironment::workdir),
-            Self::Namespace(_) => Err(pc::SandboxError::new(
+            Self::Namespace { .. } => Err(pc::SandboxError::new(
                 "namespace provider does not implement checkpoint restore",
             )),
             Self::Container {
