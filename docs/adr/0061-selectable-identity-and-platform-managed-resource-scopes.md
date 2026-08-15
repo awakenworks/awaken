@@ -624,3 +624,31 @@ concrete Workspace instance.
 This extends the 2026-07-29 runtime profile with the read-only human role. It
 does not merge the Runtime and Workspace PEP/profile boundaries or change
 self-hosted role behavior.
+
+## Amendment (2026-08-16): legacy Workspace authorization has a terminal cut
+
+The one-Workspace-language migration is complete only when request processing
+cannot reinterpret a retired token or role namespace. Embedded startup now
+performs one fail-closed release migration before live-PDP hydration:
+
+1. It inventories every binding in the two retired profile namespaces without
+   writing.
+2. A complete authority-equivalent pair is replaced by one canonical
+   `awaken.workspace` binding. If a prior attempt already committed that exact
+   canonical binding, remaining legacy rows are cleanup remnants and may be
+   removed idempotently.
+3. An incomplete pair or unknown legacy role refuses startup with the exact
+   principal and scope for operator repair. It is never hydrated through a
+   request-time alias and is never widened to the canonical role.
+4. After the binding inventory is empty, both retired profile heads are retired
+   and live hydration accepts only canonical role identifiers.
+
+Management API-token authentication likewise admits only the Awaken-owned
+`sk-awaken-` format. The upstream IAM parser may retain broader decoding for
+other relying parties, but Awaken Control does not expose `sk-ant-` as a second
+management credential format. New minting was already canonical; this amendment
+removes the final read-side compatibility authority.
+
+This adds no profile, PDP, token repository, or migration database. It closes
+the bounded migration in the existing embedded-IAM composition root and keeps
+immutable legacy profile revisions as audit evidence only.
