@@ -206,9 +206,10 @@ fn load_migration_deployment(
 }
 
 fn role_seal_key(deployment: &ResolvedDeployment) -> Result<Option<[u8; 32]>, String> {
-    match deployment.role {
-        Role::AllInOne | Role::Control => deployment.seal_key.load_or_create().map(Some),
-        Role::Coordinator | Role::Worker => Ok(None),
+    if crate::role_owns_control_component(deployment.role) {
+        deployment.seal_key.load_or_create().map(Some)
+    } else {
+        Ok(None)
     }
 }
 

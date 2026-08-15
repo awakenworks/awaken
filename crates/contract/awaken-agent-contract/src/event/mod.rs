@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod classify;
 pub mod fold;
+pub mod stream_terminal;
 
 pub use agent::{AgentEvent, Delta, Fact, ToolDisposition};
 pub use classify::{Routing, Tier, classify};
@@ -15,3 +16,4 @@ pub use fold::{
     HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages, fold_step, terminal,
     terminal_awaiting,
 };
+pub use stream_terminal::{StreamTerminalDecision, StreamTerminalKind, decide_stream_terminal};

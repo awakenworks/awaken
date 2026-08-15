@@ -5,6 +5,10 @@ pub enum awaken_worker_contract::AssignmentRejection
 pub awaken_worker_contract::AssignmentRejection::Ineligible
 pub awaken_worker_contract::AssignmentRejection::ReplacementForbidden
 pub awaken_worker_contract::AssignmentRejection::SandboxContinuityUnavailable
+pub enum awaken_worker_contract::DynamicEvidenceProbeState
+pub awaken_worker_contract::DynamicEvidenceProbeState::Failed
+pub awaken_worker_contract::DynamicEvidenceProbeState::Pending
+pub awaken_worker_contract::DynamicEvidenceProbeState::Succeeded
 pub enum awaken_worker_contract::ExecutionLocation
 pub awaken_worker_contract::ExecutionLocation::LocalOnly
 pub awaken_worker_contract::ExecutionLocation::RemotePreferred
@@ -219,5 +223,9 @@ pub const fn awaken_worker_contract::assignment_recovery_rejection(bool, awaken_
 pub fn awaken_worker_contract::can_assign(&awaken_worker_contract::WorkerSnapshot, &awaken_worker_contract::PlacementRequirements, core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<(), awaken_worker_contract::AssignmentRejection>
 pub fn awaken_worker_contract::can_claim(&awaken_worker_contract::WorkerManifest, &awaken_worker_contract::PlacementRequirements) -> core::result::Result<(), awaken_worker_contract::Incompatibility>
 pub fn awaken_worker_contract::can_claim_locally(&awaken_worker_contract::PlacementRequirements) -> bool
+pub const fn awaken_worker_contract::dynamic_evidence_admits(bool, bool, bool) -> bool
+pub fn awaken_worker_contract::manifest_recovery_matches_installed(awaken_runtime_contract::tool::ToolRecoveryCapability, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
 pub fn awaken_worker_contract::place(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
 pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
+pub const fn awaken_worker_contract::process_ready_after_startup(awaken_worker_contract::DynamicEvidenceProbeState) -> bool
+pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_runtime_contract::tool::ToolRecoveryMode, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool

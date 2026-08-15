@@ -48,6 +48,20 @@ pub const PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE: &str = "environment_shape";
 /// grants no access.
 pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
 
+/// Closed lease rule for any dynamic Worker observation. Identity, state and
+/// coherence are supplied as one exact-match axis by the typed observation;
+/// time validity is a half-open interval so old evidence loses authority at
+/// `valid_until_ms` and future evidence never becomes prematurely selectable.
+#[must_use]
+pub(crate) const fn dynamic_observation_admitted(
+    exact_verified_fact: bool,
+    observed_at_ms: u64,
+    now_ms: u64,
+    valid_until_ms: u64,
+) -> bool {
+    exact_verified_fact && observed_at_ms <= now_ms && now_ms < valid_until_ms
+}
+
 /// Point-in-time, non-secret credential evidence published by one Worker.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WorkerCredentialObservation {
@@ -81,10 +95,12 @@ impl WorkerCredentialObservation {
 
     #[must_use]
     pub fn is_selectable_at(&self, credential: &WorkerCredentialRevision, now_ms: u64) -> bool {
-        self.state == WorkerCredentialState::Available
-            && &self.credential == credential
-            && self.observed_at_ms <= now_ms
-            && now_ms < self.valid_until_ms
+        dynamic_observation_admitted(
+            self.state == WorkerCredentialState::Available && &self.credential == credential,
+            self.observed_at_ms,
+            now_ms,
+            self.valid_until_ms,
+        )
     }
 }
 
@@ -104,12 +120,16 @@ impl WorkerAcpCapabilityObservation {
         requirement: &WorkerAcpCapabilityRequirement,
         now_ms: u64,
     ) -> bool {
-        self.observation.is_coherent()
-            && self.observation.state == AcpCapabilityObservationState::Verified
-            && self.observation.backend_ref == requirement.backend_ref
-            && self.observation.fingerprint.as_deref() == Some(requirement.fingerprint.as_str())
-            && self.observation.observed_at_ms <= now_ms
-            && now_ms < self.valid_until_ms
+        dynamic_observation_admitted(
+            self.observation.is_coherent()
+                && self.observation.state == AcpCapabilityObservationState::Verified
+                && self.observation.backend_ref == requirement.backend_ref
+                && self.observation.fingerprint.as_deref()
+                    == Some(requirement.fingerprint.as_str()),
+            self.observation.observed_at_ms,
+            now_ms,
+            self.valid_until_ms,
+        )
     }
 }
 
@@ -1154,6 +1174,29 @@ mod verification {
     }
 
     #[kani::proof]
+    fn worker_dynamic_observation_requires_exact_fact_and_half_open_lease() {
+        let exact_verified_fact = kani::any::<bool>();
+        let observed_at_ms = kani::any::<u64>();
+        let now_ms = kani::any::<u64>();
+        let valid_until_ms = kani::any::<u64>();
+        let admitted = dynamic_observation_admitted(
+            exact_verified_fact,
+            observed_at_ms,
+            now_ms,
+            valid_until_ms,
+        );
+        assert_eq!(
+            admitted,
+            exact_verified_fact && observed_at_ms <= now_ms && now_ms < valid_until_ms
+        );
+        if admitted {
+            assert!(exact_verified_fact);
+            assert!(observed_at_ms <= now_ms);
+            assert!(now_ms < valid_until_ms);
+        }
+    }
+
+    #[kani::proof]
     fn never_replace_rejects_every_replacement() {
         let sandbox_bound = kani::any::<bool>();
         assert!(matches!(
@@ -1500,6 +1543,16 @@ mod tests {
             !worker.accepts(&requirements, 200),
             "valid-until is an exclusive upper bound"
         );
+    }
+
+    #[test]
+    fn dynamic_observation_admission_is_exact_and_half_open() {
+        assert!(!dynamic_observation_admitted(false, 100, 100, 200));
+        assert!(!dynamic_observation_admitted(true, 100, 99, 200));
+        assert!(dynamic_observation_admitted(true, 100, 100, 200));
+        assert!(dynamic_observation_admitted(true, 100, 199, 200));
+        assert!(!dynamic_observation_admitted(true, 100, 200, 200));
+        assert!(!dynamic_observation_admitted(true, 100, 100, 100));
     }
 
     // Cause/effect decision table for publication-pinned ACP capability:

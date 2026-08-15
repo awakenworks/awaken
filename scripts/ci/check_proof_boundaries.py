@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require an architecture plan for every requirement-only source surface."""
+"""Require an architecture plan for every Rust or Web product-only surface."""
 
 import json
 from pathlib import Path
@@ -16,9 +16,25 @@ def read(path: str):
     return json.loads((ROOT / path).read_text())
 
 
+def declared_residual_requirements() -> set[str]:
+    result = set()
+    for feature in read("formal/features.json")["features"]:
+        for requirement in feature["requirements"]:
+            if requirement.get("residual_boundary", False):
+                result.add(f'{feature["id"]}.{requirement["id"]}')
+    return result
+
+
 def main() -> None:
     surfaces = read("formal/surface-classifications.json")["classifications"]
+    web_surfaces = read("formal/web-surface-classifications.json")["classifications"]
     expected = {row["requirement_id"] for row in surfaces if "requirement_id" in row}
+    expected.update(row["requirement_id"] for row in web_surfaces)
+    # A production source may consume a proved kernel while its transport or
+    # environmental tail remains outside the repository theorem. Such a
+    # boundary no longer has a requirement-only source row, so it is declared
+    # explicitly in the canonical feature inventory instead of being dropped.
+    expected.update(declared_residual_requirements())
     rows = read("formal/proof-boundaries.json")["boundaries"]
     actual = set()
     errors = []

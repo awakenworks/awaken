@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
-    Delta, Fact, HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages,
+    Delta, Fact, HistorySink, StreamTerminalDecision, StreamTerminalKind, ToolUseRef, Transcoder,
+    decide_stream_terminal, fold_history, fold_messages,
 };
 use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
@@ -27,6 +28,8 @@ pub struct AgUiEncoder {
     tool_result_seq: u64,
     /// `RUN_STARTED` already emitted (idempotent on a repeated `RunStarted`).
     started: bool,
+    /// A terminal wire frame was emitted. Terminal state is absorbing.
+    terminal_emitted: bool,
     /// Assistant text has actually been projected live. Non-visible reasoning
     /// deltas do not set this flag and therefore cannot suppress committed text.
     streamed_text: bool,
@@ -45,6 +48,7 @@ impl AgUiEncoder {
             run_id: run_id.into(),
             tool_result_seq: 0,
             started: false,
+            terminal_emitted: false,
             streamed_text: false,
             open_text: None,
             text_seq: 0,
@@ -59,11 +63,49 @@ impl AgUiEncoder {
         }
     }
 
+    fn project_terminal(
+        &mut self,
+        requested: StreamTerminalKind,
+        reconciliation_exact: bool,
+        failure: Option<(String, String)>,
+    ) -> Vec<AgUiEvent> {
+        let StreamTerminalDecision::Emit(kind) = decide_stream_terminal(
+            self.started,
+            self.terminal_emitted,
+            reconciliation_exact,
+            requested,
+        ) else {
+            return Vec::new();
+        };
+        self.terminal_emitted = true;
+        match ag_ui_terminal_class(kind) {
+            AgUiTerminalClass::Finished => vec![AgUiEvent::RunFinished {
+                thread_id: self.thread_id.clone(),
+                run_id: self.run_id.clone(),
+            }],
+            AgUiTerminalClass::Error => {
+                let (code, message) = failure.unwrap_or_else(|| {
+                    (
+                        "stream_reconciliation_failed".to_string(),
+                        "live stream does not match the committed outcome".to_string(),
+                    )
+                });
+                vec![AgUiEvent::RunError {
+                    message,
+                    code: Some(code),
+                }]
+            }
+        }
+    }
+
     /// Reconcile the live prefix with the authoritative committed outcome using
     /// this same encoder state. This is the only completion path: a committed
     /// tool absent from the prefix gets a full bracket, a live tool gets only its
     /// missing args suffix plus END, and a live-only tool is still closed.
     pub fn complete(&mut self, outcome: &StepOutcome) -> Vec<AgUiEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         let pending = outcome
             .pending()
             .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
@@ -106,13 +148,13 @@ impl AgUiEncoder {
         for (tool_call_id, _) in std::mem::take(&mut self.tools) {
             output.push(AgUiEvent::ToolCallEnd { tool_call_id });
         }
-        output.extend(self.fact(&match mismatch {
-            Some(message) => Fact::RunFailed {
-                code: "stream_reconciliation_failed".to_string(),
-                message,
-            },
-            None => outcome.terminal_event(),
-        }));
+        let terminal = outcome.terminal_event();
+        let requested = terminal_kind(&terminal);
+        let reconciliation_exact = mismatch.is_none();
+        let failure = mismatch
+            .map(|message| ("stream_reconciliation_failed".to_string(), message))
+            .or_else(|| terminal_failure(&terminal));
+        output.extend(self.project_terminal(requested, reconciliation_exact, failure));
         output
     }
 
@@ -128,15 +170,19 @@ impl AgUiEncoder {
         code: impl Into<String>,
         message: impl Into<String>,
     ) -> Vec<AgUiEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         let mut output = self.fact(&Fact::RunStarted);
         output.extend(self.close_text());
         for (tool_call_id, _) in std::mem::take(&mut self.tools) {
             output.push(AgUiEvent::ToolCallEnd { tool_call_id });
         }
-        output.extend(self.fact(&Fact::RunFailed {
-            code: code.into(),
-            message: message.into(),
-        }));
+        output.extend(self.project_terminal(
+            StreamTerminalKind::Failed,
+            true,
+            Some((code.into(), message.into())),
+        ));
         output
     }
 }
@@ -145,6 +191,14 @@ impl Transcoder for AgUiEncoder {
     type Output = AgUiEvent;
 
     fn fact(&mut self, event: &Fact) -> Vec<AgUiEvent> {
+        if self.terminal_emitted
+            && !matches!(
+                event,
+                Fact::Awaiting { .. } | Fact::RunFinished { .. } | Fact::RunFailed { .. }
+            )
+        {
+            return Vec::new();
+        }
         match event {
             Fact::RunStarted => {
                 if self.started {
@@ -201,18 +255,19 @@ impl Transcoder for AgUiEncoder {
                     content: blocks_text(content),
                 }]
             }
-            Fact::Awaiting { .. } | Fact::RunFinished { .. } => {
-                vec![AgUiEvent::RunFinished {
-                    thread_id: self.thread_id.clone(),
-                    run_id: self.run_id.clone(),
-                }]
+            Fact::Awaiting { .. } => {
+                self.project_terminal(StreamTerminalKind::Awaiting, true, None)
+            }
+            Fact::RunFinished { .. } => {
+                self.project_terminal(StreamTerminalKind::Finished, true, None)
             }
             // AG-UI runs end with either RUN_FINISHED or RUN_ERROR; preserve
             // the machine classification separately from its human message.
-            Fact::RunFailed { code, message } => vec![AgUiEvent::RunError {
-                message: message.clone(),
-                code: Some(code.clone()),
-            }],
+            Fact::RunFailed { code, message } => self.project_terminal(
+                StreamTerminalKind::Failed,
+                true,
+                Some((code.clone(), message.clone())),
+            ),
             // An internal continuation-guard round is not an AG-UI wire frame; the
             // committed fold never emits it into this stream.
             // Reasoning is not in the AG-UI vocabulary; drop the marker.
@@ -221,6 +276,9 @@ impl Transcoder for AgUiEncoder {
     }
 
     fn delta(&mut self, delta: &Delta) -> Vec<AgUiEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         match delta {
             Delta::TextDelta { delta } => {
                 self.streamed_text = true;
@@ -270,6 +328,59 @@ impl Transcoder for AgUiEncoder {
             }
             // Reasoning is not projected to the AG-UI live prefix (opt-in tier).
             Delta::ReasoningDelta { .. } => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgUiTerminalClass {
+    Finished,
+    Error,
+}
+
+const fn ag_ui_terminal_class(kind: StreamTerminalKind) -> AgUiTerminalClass {
+    match kind {
+        StreamTerminalKind::Awaiting | StreamTerminalKind::Finished => AgUiTerminalClass::Finished,
+        StreamTerminalKind::Failed => AgUiTerminalClass::Error,
+    }
+}
+
+fn terminal_kind(fact: &Fact) -> StreamTerminalKind {
+    match fact {
+        Fact::Awaiting { .. } => StreamTerminalKind::Awaiting,
+        Fact::RunFinished { .. } => StreamTerminalKind::Finished,
+        Fact::RunFailed { .. } => StreamTerminalKind::Failed,
+        _ => unreachable!("only terminal facts reach terminal projection"),
+    }
+}
+
+fn terminal_failure(fact: &Fact) -> Option<(String, String)> {
+    match fact {
+        Fact::RunFailed { code, message } => Some((code.clone(), message.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn ag_ui_terminal_category_mapping_is_total_and_exact() {
+        let tag: u8 = kani::any();
+        kani::assume(tag <= 2);
+        let kind = match tag {
+            0 => StreamTerminalKind::Awaiting,
+            1 => StreamTerminalKind::Finished,
+            _ => StreamTerminalKind::Failed,
+        };
+        let projected = ag_ui_terminal_class(kind);
+        match projected {
+            AgUiTerminalClass::Finished => assert!(matches!(
+                kind,
+                StreamTerminalKind::Awaiting | StreamTerminalKind::Finished
+            )),
+            AgUiTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
         }
     }
 }
@@ -575,6 +686,7 @@ mod tests {
     #[test]
     fn run_failed_transcodes_to_a_run_error() {
         let mut enc = AgUiEncoder::new("t1", "r1");
+        enc.fact(&Fact::RunStarted);
         let events = enc.fact(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
@@ -591,6 +703,7 @@ mod tests {
         // Documents the current shape: an awaiting built-in tool surfaces as a plain
         // RUN_FINISHED (no dedicated RUN_INTERRUPTED event exists in this adapter).
         let mut enc = AgUiEncoder::new("t1", "r1");
+        enc.fact(&Fact::RunStarted);
         let events = enc.fact(&Fact::Awaiting {
             pending_tool_use_id: Some("c1".into()),
         });
@@ -598,6 +711,35 @@ mod tests {
             events
                 .iter()
                 .any(|e| matches!(e, AgUiEvent::RunFinished { .. }))
+        );
+    }
+
+    #[test]
+    fn terminal_requires_start_and_is_absorbing() {
+        let terminal = Fact::RunFinished { exhausted: false };
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        assert!(
+            enc.fact(&terminal).is_empty(),
+            "an unstarted stream cannot finish"
+        );
+        assert_eq!(
+            enc.fact(&Fact::RunStarted),
+            vec![AgUiEvent::RunStarted {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+            }]
+        );
+        assert!(matches!(
+            enc.fact(&terminal).as_slice(),
+            [AgUiEvent::RunFinished { .. }]
+        ));
+        assert!(enc.fact(&terminal).is_empty(), "terminal must not repeat");
+        assert!(
+            enc.delta(&Delta::TextDelta {
+                delta: "late".into()
+            })
+            .is_empty(),
+            "terminal state must not be strengthened by later content"
         );
     }
 

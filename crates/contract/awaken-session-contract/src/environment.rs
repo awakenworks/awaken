@@ -66,6 +66,59 @@ pub const fn checkpoint_source_disposal_authorized(
     matches!(phase, SuspendPhase::ReadyToDispose) && has_checkpoint
 }
 
+/// Closed admission rule for evidence that every live Environment effect has
+/// quiesced for the exact suspend operation. String identity comparisons stay
+/// at the typed receipt boundary; this heap-free kernel owns their conjunction.
+#[must_use]
+pub(crate) const fn quiescence_receipt_admitted(
+    effect_matches: bool,
+    generation_matches: bool,
+    activity_epoch_matches: bool,
+    live_environment_effects: u32,
+) -> bool {
+    effect_matches && generation_matches && activity_epoch_matches && live_environment_effects == 0
+}
+
+/// Closed admission rule for a checkpoint created by the exact operation over
+/// the exact immutable Environment and base-image generation.
+#[must_use]
+pub(crate) const fn checkpoint_receipt_admitted(
+    effect_matches: bool,
+    generation_matches: bool,
+    checkpoint_effect_matches: bool,
+    environment_fingerprint_matches: bool,
+    base_image_fingerprint_matches: bool,
+) -> bool {
+    effect_matches
+        && generation_matches
+        && checkpoint_effect_matches
+        && environment_fingerprint_matches
+        && base_image_fingerprint_matches
+}
+
+/// Closed admission rule for the irreversible source-disposal receipt.
+#[must_use]
+pub(crate) const fn source_disposal_receipt_admitted(
+    effect_matches: bool,
+    generation_matches: bool,
+    source_binding_matches: bool,
+    terminated: bool,
+) -> bool {
+    effect_matches && generation_matches && source_binding_matches && terminated
+}
+
+/// Closed admission rule for restoring the exact live generation and
+/// checkpoint to a non-empty substrate binding.
+#[must_use]
+pub(crate) const fn restore_receipt_admitted(
+    effect_matches: bool,
+    generation_matches: bool,
+    checkpoint_matches: bool,
+    binding_present: bool,
+) -> bool {
+    effect_matches && generation_matches && checkpoint_matches && binding_present
+}
+
 /// Stable effect identity. Recovery always reuses this value rather than
 /// creating another checkpoint or restore authority.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -554,11 +607,12 @@ impl QuiescenceReceipt {
         operation: &SessionEnvironmentOperation,
         generation: &SandboxGeneration,
     ) -> Result<(), SessionEnvironmentTransitionError> {
-        if self.effect_id == operation.effect_id
-            && self.generation_id == generation.id
-            && self.activity_epoch == operation.activity_epoch
-            && self.live_environment_effects == 0
-        {
+        if quiescence_receipt_admitted(
+            self.effect_id == operation.effect_id,
+            self.generation_id == generation.id,
+            self.activity_epoch == operation.activity_epoch,
+            self.live_environment_effects,
+        ) {
             Ok(())
         } else {
             Err(SessionEnvironmentTransitionError::ReceiptMismatch)
@@ -579,12 +633,13 @@ impl CheckpointReceipt {
         operation: &SessionEnvironmentOperation,
         generation: &SandboxGeneration,
     ) -> Result<(), SessionEnvironmentTransitionError> {
-        if self.effect_id == operation.effect_id
-            && self.generation_id == generation.id
-            && self.checkpoint.suspend_effect_id == operation.effect_id
-            && self.checkpoint.environment_fingerprint == generation.environment_fingerprint
-            && self.checkpoint.base_image_fingerprint == generation.base_image_fingerprint
-        {
+        if checkpoint_receipt_admitted(
+            self.effect_id == operation.effect_id,
+            self.generation_id == generation.id,
+            self.checkpoint.suspend_effect_id == operation.effect_id,
+            self.checkpoint.environment_fingerprint == generation.environment_fingerprint,
+            self.checkpoint.base_image_fingerprint == generation.base_image_fingerprint,
+        ) {
             Ok(())
         } else {
             Err(SessionEnvironmentTransitionError::ReceiptMismatch)
@@ -607,11 +662,12 @@ impl SourceDisposedReceipt {
         generation: &SandboxGeneration,
         source_binding: &str,
     ) -> Result<(), SessionEnvironmentTransitionError> {
-        if self.effect_id == operation.effect_id
-            && self.generation_id == generation.id
-            && self.source_binding == source_binding
-            && self.terminated
-        {
+        if source_disposal_receipt_admitted(
+            self.effect_id == operation.effect_id,
+            self.generation_id == generation.id,
+            self.source_binding == source_binding,
+            self.terminated,
+        ) {
             Ok(())
         } else {
             Err(SessionEnvironmentTransitionError::ReceiptMismatch)
@@ -634,11 +690,12 @@ impl RestoreReceipt {
         generation: &SandboxGeneration,
         checkpoint: &SandboxCheckpointRef,
     ) -> Result<(), SessionEnvironmentTransitionError> {
-        if self.effect_id == operation.effect_id
-            && self.generation_id == generation.id
-            && self.checkpoint_id == checkpoint.id
-            && !self.binding.is_empty()
-        {
+        if restore_receipt_admitted(
+            self.effect_id == operation.effect_id,
+            self.generation_id == generation.id,
+            self.checkpoint_id == checkpoint.id,
+            !self.binding.is_empty(),
+        ) {
             Ok(())
         } else {
             Err(SessionEnvironmentTransitionError::ReceiptMismatch)
@@ -833,6 +890,48 @@ mod tests {
         assert!(matches!(state, SessionEnvironmentState::Hibernated { .. }));
     }
 
+    #[test]
+    fn every_environment_effect_receipt_axis_fails_closed() {
+        // Each row disables exactly one cause in the production admission
+        // kernels. The external adapter may fabricate bytes, but no individual
+        // identity/fence/completion axis is optional at durable settlement.
+        for missing in 0..4 {
+            let mut axes = [true; 4];
+            axes[missing] = false;
+            assert!(
+                !quiescence_receipt_admitted(
+                    axes[0],
+                    axes[1],
+                    axes[2],
+                    if axes[3] { 0 } else { 1 },
+                ),
+                "quiescence axis {missing}"
+            );
+            assert!(
+                !source_disposal_receipt_admitted(axes[0], axes[1], axes[2], axes[3]),
+                "source-disposal axis {missing}"
+            );
+            assert!(
+                !restore_receipt_admitted(axes[0], axes[1], axes[2], axes[3]),
+                "restore axis {missing}"
+            );
+        }
+
+        for missing in 0..5 {
+            let mut axes = [true; 5];
+            axes[missing] = false;
+            assert!(
+                !checkpoint_receipt_admitted(axes[0], axes[1], axes[2], axes[3], axes[4]),
+                "checkpoint axis {missing}"
+            );
+        }
+
+        assert!(quiescence_receipt_admitted(true, true, true, 0));
+        assert!(checkpoint_receipt_admitted(true, true, true, true, true));
+        assert!(source_disposal_receipt_admitted(true, true, true, true));
+        assert!(restore_receipt_admitted(true, true, true, true));
+    }
+
     proptest! {
         // Cause/effect design: C4 varies stale epoch/effect/generation evidence;
         // constraint: any one mismatch is sufficient. Receipt rule => E6 and the
@@ -876,5 +975,86 @@ mod verification {
             assert!(matches!(phase, SuspendPhase::ReadyToDispose));
             assert!(has_checkpoint);
         }
+    }
+
+    #[kani::proof]
+    fn quiescence_receipt_requires_exact_operation_epoch_and_zero_live_effects() {
+        let effect_matches = kani::any::<bool>();
+        let generation_matches = kani::any::<bool>();
+        let activity_epoch_matches = kani::any::<bool>();
+        let live_environment_effects = kani::any::<u32>();
+        let admitted = quiescence_receipt_admitted(
+            effect_matches,
+            generation_matches,
+            activity_epoch_matches,
+            live_environment_effects,
+        );
+        assert_eq!(
+            admitted,
+            effect_matches
+                && generation_matches
+                && activity_epoch_matches
+                && live_environment_effects == 0
+        );
+    }
+
+    #[kani::proof]
+    fn checkpoint_receipt_requires_every_immutable_generation_axis() {
+        let effect_matches = kani::any::<bool>();
+        let generation_matches = kani::any::<bool>();
+        let checkpoint_effect_matches = kani::any::<bool>();
+        let environment_fingerprint_matches = kani::any::<bool>();
+        let base_image_fingerprint_matches = kani::any::<bool>();
+        let admitted = checkpoint_receipt_admitted(
+            effect_matches,
+            generation_matches,
+            checkpoint_effect_matches,
+            environment_fingerprint_matches,
+            base_image_fingerprint_matches,
+        );
+        assert_eq!(
+            admitted,
+            effect_matches
+                && generation_matches
+                && checkpoint_effect_matches
+                && environment_fingerprint_matches
+                && base_image_fingerprint_matches
+        );
+    }
+
+    #[kani::proof]
+    fn source_disposal_receipt_requires_exact_binding_and_termination() {
+        let effect_matches = kani::any::<bool>();
+        let generation_matches = kani::any::<bool>();
+        let source_binding_matches = kani::any::<bool>();
+        let terminated = kani::any::<bool>();
+        let admitted = source_disposal_receipt_admitted(
+            effect_matches,
+            generation_matches,
+            source_binding_matches,
+            terminated,
+        );
+        assert_eq!(
+            admitted,
+            effect_matches && generation_matches && source_binding_matches && terminated
+        );
+    }
+
+    #[kani::proof]
+    fn restore_receipt_requires_exact_checkpoint_and_nonempty_binding() {
+        let effect_matches = kani::any::<bool>();
+        let generation_matches = kani::any::<bool>();
+        let checkpoint_matches = kani::any::<bool>();
+        let binding_present = kani::any::<bool>();
+        let admitted = restore_receipt_admitted(
+            effect_matches,
+            generation_matches,
+            checkpoint_matches,
+            binding_present,
+        );
+        assert_eq!(
+            admitted,
+            effect_matches && generation_matches && checkpoint_matches && binding_present
+        );
     }
 }

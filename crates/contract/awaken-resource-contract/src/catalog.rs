@@ -167,6 +167,30 @@ pub enum ResourceCatalogError {
 /// These rules contain no authentication or authorization concepts.
 pub struct ResourceCatalogRules;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigPublicationDecision {
+    Accept,
+    StaleExpected,
+    VersionExhausted,
+    NonSuccessor,
+}
+
+const fn config_publication_decision(
+    current: ConfigVersion,
+    expected: ConfigVersion,
+    next: ConfigVersion,
+) -> ConfigPublicationDecision {
+    if current.0 != expected.0 {
+        ConfigPublicationDecision::StaleExpected
+    } else if current.0 == u64::MAX {
+        ConfigPublicationDecision::VersionExhausted
+    } else if next.0 != current.0 + 1 {
+        ConfigPublicationDecision::NonSuccessor
+    } else {
+        ConfigPublicationDecision::Accept
+    }
+}
+
 impl ResourceCatalogRules {
     fn validate_definition_identity(
         row_id: &str,
@@ -324,23 +348,78 @@ impl ResourceCatalogRules {
         expected: ConfigVersion,
         next: ConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        if current != expected {
-            return Err(ResourceCatalogError::ConfigConflict {
+        match config_publication_decision(current, expected, next) {
+            ConfigPublicationDecision::Accept => Ok(()),
+            ConfigPublicationDecision::StaleExpected => Err(ResourceCatalogError::ConfigConflict {
                 id: id.into(),
                 expected,
                 current,
-            });
-        }
-        let required = current.checked_next().ok_or_else(|| {
-            ResourceCatalogError::Invalid(format!("resource `{id}` exhausted config versions"))
-        })?;
-        if next != required {
-            return Err(ResourceCatalogError::Invalid(format!(
+            }),
+            ConfigPublicationDecision::VersionExhausted => Err(ResourceCatalogError::Invalid(
+                format!("resource `{id}` exhausted config versions"),
+            )),
+            ConfigPublicationDecision::NonSuccessor => Err(ResourceCatalogError::Invalid(format!(
                 "resource `{id}` config version must advance from {} to {}",
-                current.0, required.0
-            )));
+                current.0,
+                current.0 + 1
+            ))),
         }
-        Ok(())
+    }
+}
+
+#[cfg(kani)]
+mod catalog_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn resource_config_publication_is_exact_and_never_wraps() {
+        let current = ConfigVersion(kani::any());
+        let expected = ConfigVersion(kani::any());
+        let next = ConfigVersion(kani::any());
+        let decision = config_publication_decision(current, expected, next);
+
+        assert_eq!(
+            decision == ConfigPublicationDecision::Accept,
+            current == expected && current.0 < u64::MAX && next.0 == current.0 + 1
+        );
+        if decision == ConfigPublicationDecision::Accept {
+            assert!(next.0 > current.0);
+        }
+    }
+
+    #[kani::proof]
+    fn exhausted_resource_config_versions_fail_closed() {
+        let next = ConfigVersion(kani::any());
+        assert_eq!(
+            config_publication_decision(ConfigVersion(u64::MAX), ConfigVersion(u64::MAX), next,),
+            ConfigPublicationDecision::VersionExhausted
+        );
+    }
+
+    #[kani::proof]
+    fn resource_lifecycle_timestamps_project_the_exact_transition() {
+        let state_code: u8 = kani::any();
+        let at: u64 = kani::any();
+        let mut timestamps = ResourceTimestamps {
+            created_unix_nanos: kani::any(),
+            updated_unix_nanos: kani::any(),
+            archived_unix_nanos: if kani::any() { Some(kani::any()) } else { None },
+        };
+        kani::assume(state_code <= 3);
+        let state = match state_code {
+            0 => ResourceState::Active,
+            1 => ResourceState::Suspended,
+            2 => ResourceState::Archived,
+            _ => ResourceState::Deleted,
+        };
+
+        timestamps.transition_to(state, at);
+
+        assert_eq!(timestamps.updated_unix_nanos, at);
+        assert_eq!(
+            timestamps.archived_unix_nanos,
+            matches!(state, ResourceState::Archived | ResourceState::Deleted).then_some(at)
+        );
     }
 }
 

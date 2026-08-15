@@ -8,6 +8,31 @@ use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Heap-free admission kernel for one terminal cleanup effect receipt. The
+/// typed boundary performs the exact identity and canonical-fingerprint
+/// comparisons; this closed rule makes every required axis explicit and is
+/// shared by production verification and exhaustive checking.
+#[must_use]
+pub(crate) const fn terminal_cleanup_receipt_admitted(
+    artifact_effects_unique: bool,
+    repositories_settled: bool,
+    skills_settled: bool,
+    environment_disposed: bool,
+    session_matches: bool,
+    thread_matches: bool,
+    effect_matches: bool,
+    canonical_receipt_matches: bool,
+) -> bool {
+    artifact_effects_unique
+        && repositories_settled
+        && skills_settled
+        && environment_disposed
+        && session_matches
+        && thread_matches
+        && effect_matches
+        && canonical_receipt_matches
+}
+
 /// The one terminal cleanup lifecycle stored by the Session aggregate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -301,22 +326,23 @@ impl SessionTerminalCleanupReceipt {
             .artifact_receipts
             .windows(2)
             .any(|pair| pair[0].effect_id == pair[1].effect_id);
-        if duplicate_artifact
-            || !self.repositories_settled
-            || !self.skills_settled
-            || !self.environment_disposed
-            || self.session_id != intent.session_id
-            || self.thread_id != intent.thread_id
-            || self.effect_id != intent.effect_id
-            || *self
-                != Self::new(
-                    intent,
-                    self.artifact_receipts.clone(),
-                    self.repositories_settled,
-                    self.skills_settled,
-                    self.environment_disposed,
-                )
-        {
+        let canonical = Self::new(
+            intent,
+            self.artifact_receipts.clone(),
+            self.repositories_settled,
+            self.skills_settled,
+            self.environment_disposed,
+        );
+        if !terminal_cleanup_receipt_admitted(
+            !duplicate_artifact,
+            self.repositories_settled,
+            self.skills_settled,
+            self.environment_disposed,
+            self.session_id == intent.session_id,
+            self.thread_id == intent.thread_id,
+            self.effect_id == intent.effect_id,
+            *self == canonical,
+        ) {
             return Err(SessionTerminalCleanupError::ReceiptMismatch);
         }
         Ok(())
@@ -554,6 +580,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_terminal_cleanup_receipt_axis_is_mandatory() {
+        for missing in 0..8 {
+            let mut axes = [true; 8];
+            axes[missing] = false;
+            assert!(
+                !terminal_cleanup_receipt_admitted(
+                    axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6], axes[7],
+                ),
+                "receipt axis {missing}"
+            );
+        }
+        assert!(terminal_cleanup_receipt_admitted(
+            true, true, true, true, true, true, true, true,
+        ));
+    }
+
     proptest! {
         #[test]
         fn random_cleanup_command_sequences_refine_the_monotonic_state_model(
@@ -644,5 +687,43 @@ mod tests {
             SessionTerminalCleanupState::Requested { .. } => 2,
             SessionTerminalCleanupState::Completed { .. } => 3,
         }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn terminal_cleanup_receipt_requires_every_identity_and_settlement_axis() {
+        let artifact_effects_unique = kani::any::<bool>();
+        let repositories_settled = kani::any::<bool>();
+        let skills_settled = kani::any::<bool>();
+        let environment_disposed = kani::any::<bool>();
+        let session_matches = kani::any::<bool>();
+        let thread_matches = kani::any::<bool>();
+        let effect_matches = kani::any::<bool>();
+        let canonical_receipt_matches = kani::any::<bool>();
+        let admitted = terminal_cleanup_receipt_admitted(
+            artifact_effects_unique,
+            repositories_settled,
+            skills_settled,
+            environment_disposed,
+            session_matches,
+            thread_matches,
+            effect_matches,
+            canonical_receipt_matches,
+        );
+        assert_eq!(
+            admitted,
+            artifact_effects_unique
+                && repositories_settled
+                && skills_settled
+                && environment_disposed
+                && session_matches
+                && thread_matches
+                && effect_matches
+                && canonical_receipt_matches
+        );
     }
 }

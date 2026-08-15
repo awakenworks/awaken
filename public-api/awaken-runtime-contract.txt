@@ -625,6 +625,10 @@ pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_recovered
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
+pub mod awaken_runtime_contract::model_routing
+pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
+pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a>(&'a awaken_runtime_contract::resolved::ResolvedModelCandidate, &'a [awaken_runtime_contract::resolved::ResolvedModelCandidate], usize) -> core::option::Option<&'a awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub const fn awaken_runtime_contract::model_routing::route_pin_axes_are_exact(bool, bool, bool, bool) -> bool
 pub mod awaken_runtime_contract::pause
 pub struct awaken_runtime_contract::pause::PauseSignal(_)
 impl awaken_runtime_contract::pause::PauseSignal
@@ -632,6 +636,14 @@ pub fn awaken_runtime_contract::pause::PauseSignal::new() -> Self
 pub fn awaken_runtime_contract::pause::PauseSignal::request(&self)
 pub fn awaken_runtime_contract::pause::PauseSignal::requested(&self) -> bool
 pub mod awaken_runtime_contract::permission
+pub enum awaken_runtime_contract::permission::GateAuditDecision
+pub awaken_runtime_contract::permission::GateAuditDecision::Allow
+pub awaken_runtime_contract::permission::GateAuditDecision::Ask
+pub awaken_runtime_contract::permission::GateAuditDecision::Deny
+pub awaken_runtime_contract::permission::GateAuditDecision::Schedule
+pub awaken_runtime_contract::permission::GateAuditDecision::SetResult
+impl awaken_runtime_contract::permission::GateAuditDecision
+pub const fn awaken_runtime_contract::permission::GateAuditDecision::as_str(self) -> &'static str
 pub enum awaken_runtime_contract::permission::GateOutcome
 pub awaken_runtime_contract::permission::GateOutcome::Allow
 pub awaken_runtime_contract::permission::GateOutcome::Block
@@ -644,10 +656,20 @@ pub awaken_runtime_contract::permission::GateOutcome::Schedule::correlation_id: 
 pub awaken_runtime_contract::permission::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 impl awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
+pub const fn awaken_runtime_contract::permission::GateOutcome::kind(&self) -> awaken_runtime_contract::permission::GateOutcomeKind
+pub enum awaken_runtime_contract::permission::GateOutcomeKind
+pub awaken_runtime_contract::permission::GateOutcomeKind::Allow
+pub awaken_runtime_contract::permission::GateOutcomeKind::Block
+pub awaken_runtime_contract::permission::GateOutcomeKind::RequireConfirmation
+pub awaken_runtime_contract::permission::GateOutcomeKind::Schedule
+pub awaken_runtime_contract::permission::GateOutcomeKind::SetResult
+impl awaken_runtime_contract::permission::GateOutcomeKind
+pub const fn awaken_runtime_contract::permission::GateOutcomeKind::audit_decision(self) -> awaken_runtime_contract::permission::GateAuditDecision
 pub enum awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
 impl awaken_runtime_contract::permission::ToolCapabilityNarrowing
+pub const fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::intersect(self, Self) -> Self
 pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::is_configured(&self) -> bool
 pub enum awaken_runtime_contract::permission::ToolPermissionVerdict
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::Allow
@@ -655,6 +677,15 @@ pub awaken_runtime_contract::permission::ToolPermissionVerdict::Deny
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::Deny::reason: alloc::string::String
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation::correlation_id: alloc::string::String
+impl awaken_runtime_contract::permission::ToolPermissionVerdict
+pub fn awaken_runtime_contract::permission::ToolPermissionVerdict::into_gate_outcome(self) -> awaken_runtime_contract::permission::GateOutcome
+pub const fn awaken_runtime_contract::permission::ToolPermissionVerdict::kind(&self) -> awaken_runtime_contract::permission::ToolPermissionVerdictKind
+pub enum awaken_runtime_contract::permission::ToolPermissionVerdictKind
+pub awaken_runtime_contract::permission::ToolPermissionVerdictKind::Allow
+pub awaken_runtime_contract::permission::ToolPermissionVerdictKind::Deny
+pub awaken_runtime_contract::permission::ToolPermissionVerdictKind::RequireConfirmation
+impl awaken_runtime_contract::permission::ToolPermissionVerdictKind
+pub const fn awaken_runtime_contract::permission::ToolPermissionVerdictKind::gate_outcome_kind(self) -> awaken_runtime_contract::permission::GateOutcomeKind
 pub struct awaken_runtime_contract::permission::DenyAllTools
 impl awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -735,6 +766,12 @@ pub awaken_runtime_contract::plugin::PhaseKind::StepEnd
 pub awaken_runtime_contract::plugin::PhaseKind::StepStart
 impl awaken_runtime_contract::plugin::PhaseKind
 pub fn awaken_runtime_contract::plugin::PhaseKind::point(&self) -> awaken_runtime_contract::PhaseHookPoint
+pub enum awaken_runtime_contract::plugin::PluginActivationDecision
+pub awaken_runtime_contract::plugin::PluginActivationDecision::Active
+pub awaken_runtime_contract::plugin::PluginActivationDecision::Inactive
+pub awaken_runtime_contract::plugin::PluginActivationDecision::RejectCapability
+pub awaken_runtime_contract::plugin::PluginActivationDecision::RejectDuplicate
+pub awaken_runtime_contract::plugin::PluginActivationDecision::RejectMissingDependency
 pub enum awaken_runtime_contract::plugin::RunEndDecision
 pub awaken_runtime_contract::plugin::RunEndDecision::Complete
 pub awaken_runtime_contract::plugin::RunEndDecision::Complete::detail: serde_json::value::Value
@@ -837,6 +874,8 @@ pub trait awaken_runtime_contract::plugin::RunEndGuard: core::marker::Send + cor
 pub fn awaken_runtime_contract::plugin::RunEndGuard::evaluate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::RunEndContext<'life2>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::RunEndDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::plugin::RunEndGuard::id(&self) -> &str
 pub fn awaken_runtime_contract::plugin::enforce_bound(&awaken_runtime_contract::PluginManifest, &awaken_runtime_contract::Contributions) -> core::result::Result<(), awaken_runtime_contract::plugin::BoundViolation>
+pub fn awaken_runtime_contract::plugin::exact_plugin_selection(&[alloc::string::String], &str) -> awaken_runtime_contract::plugin::PluginActivationDecision
+pub const fn awaken_runtime_contract::plugin::plugin_activation_decision(bool, bool, bool, bool) -> awaken_runtime_contract::plugin::PluginActivationDecision
 pub mod awaken_runtime_contract::resilience
 pub enum awaken_runtime_contract::resilience::Disposition
 pub awaken_runtime_contract::resilience::Disposition::Permanent
@@ -847,10 +886,16 @@ impl awaken_runtime_contract::resilience::Disposition
 pub fn awaken_runtime_contract::resilience::Disposition::is_retryable(self) -> bool
 pub fn awaken_runtime_contract::resilience::Disposition::prefers_failover(self) -> bool
 pub fn awaken_runtime_contract::resilience::Disposition::retry_after(self) -> core::option::Option<core::time::Duration>
+pub enum awaken_runtime_contract::resilience::RetryDecision
+pub awaken_runtime_contract::resilience::RetryDecision::Retry
+pub awaken_runtime_contract::resilience::RetryDecision::Terminal
+pub const awaken_runtime_contract::resilience::RETRY_ACTIVE_STATE: u8
+pub const awaken_runtime_contract::resilience::RETRY_TERMINAL_STATE: u8
 pub trait awaken_runtime_contract::resilience::Classify
 pub fn awaken_runtime_contract::resilience::Classify::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+pub const fn awaken_runtime_contract::resilience::bounded_retry_decision(u8, bool, u32, u32) -> awaken_runtime_contract::resilience::RetryDecision
 pub mod awaken_runtime_contract::resolution
 pub enum awaken_runtime_contract::resolution::ResolutionManifestError
 pub awaken_runtime_contract::resolution::ResolutionManifestError::Duplicate
@@ -996,6 +1041,7 @@ pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::execution_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::pinned_model_candidate_at(&self, usize) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::select_execution_model(&mut self, &str) -> bool
 pub struct awaken_runtime_contract::resolved::ToolDescriptor
 pub awaken_runtime_contract::resolved::ToolDescriptor::content_hash: alloc::string::String
@@ -1091,6 +1137,9 @@ pub mod awaken_runtime_contract::runtime_context
 pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
 pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Lost
 pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Unavailable(alloc::string::String)
+pub enum awaken_runtime_contract::runtime_context::TranscriptContextDestination
+pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::DurableThreadTruth
+pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::ModelRequest
 pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
@@ -1143,6 +1192,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_ou
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub trait awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub const fn awaken_runtime_contract::runtime_context::transcript_prefix_projects_to(awaken_runtime_contract::runtime_context::TranscriptContextDestination) -> bool
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId)
@@ -1425,6 +1475,7 @@ pub awaken_runtime_contract::GateOutcome::Schedule::correlation_id: alloc::strin
 pub awaken_runtime_contract::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 impl awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
+pub const fn awaken_runtime_contract::permission::GateOutcome::kind(&self) -> awaken_runtime_contract::permission::GateOutcomeKind
 pub enum awaken_runtime_contract::IdBound
 pub awaken_runtime_contract::IdBound::Any
 pub awaken_runtime_contract::IdBound::Exact(alloc::vec::Vec<alloc::string::String>)
@@ -1505,6 +1556,9 @@ pub awaken_runtime_contract::ToolPermissionVerdict::Deny
 pub awaken_runtime_contract::ToolPermissionVerdict::Deny::reason: alloc::string::String
 pub awaken_runtime_contract::ToolPermissionVerdict::RequireConfirmation
 pub awaken_runtime_contract::ToolPermissionVerdict::RequireConfirmation::correlation_id: alloc::string::String
+impl awaken_runtime_contract::permission::ToolPermissionVerdict
+pub fn awaken_runtime_contract::permission::ToolPermissionVerdict::into_gate_outcome(self) -> awaken_runtime_contract::permission::GateOutcome
+pub const fn awaken_runtime_contract::permission::ToolPermissionVerdict::kind(&self) -> awaken_runtime_contract::permission::ToolPermissionVerdictKind
 pub enum awaken_runtime_contract::ToolRecoveryCapability
 pub awaken_runtime_contract::ToolRecoveryCapability::DurableRequest
 pub awaken_runtime_contract::ToolRecoveryCapability::Idempotent
@@ -1824,6 +1878,7 @@ pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::execution_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::pinned_model_candidate_at(&self, usize) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::select_execution_model(&mut self, &str) -> bool
 pub struct awaken_runtime_contract::ResumeCommand
 pub awaken_runtime_contract::ResumeCommand::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint

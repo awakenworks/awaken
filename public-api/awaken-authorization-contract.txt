@@ -6,6 +6,15 @@ pub awaken_authorization_contract::AuthorizationAction::WorkspaceRead
 pub awaken_authorization_contract::AuthorizationAction::WorkspaceWrite
 impl awaken_authorization_contract::AuthorizationAction
 pub const fn awaken_authorization_contract::AuthorizationAction::as_str(self) -> &'static str
+pub enum awaken_authorization_contract::HostedRuntimeAuthority
+pub awaken_authorization_contract::HostedRuntimeAuthority::RunAll
+pub awaken_authorization_contract::HostedRuntimeAuthority::RunRead
+impl awaken_authorization_contract::HostedRuntimeAuthority
+pub const fn awaken_authorization_contract::HostedRuntimeAuthority::action_pattern(self) -> &'static str
+pub enum awaken_authorization_contract::HostedRuntimeRole
+pub awaken_authorization_contract::HostedRuntimeRole::AgentExecutor
+pub awaken_authorization_contract::HostedRuntimeRole::WorkspaceAdmin
+pub awaken_authorization_contract::HostedRuntimeRole::WorkspaceMember
 pub enum awaken_authorization_contract::RouteAccess
 pub awaken_authorization_contract::RouteAccess::Read
 pub awaken_authorization_contract::RouteAccess::Write
@@ -14,6 +23,45 @@ pub awaken_authorization_contract::RouteGuardSelection::Application
 pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime
 pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime::action: awaken_authorization_contract::AuthorizationAction
 pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime::embedded_action: awaken_authorization_contract::AuthorizationAction
+pub enum awaken_authorization_contract::WorkspaceBindingMigrationState
+pub awaken_authorization_contract::WorkspaceBindingMigrationState::Canonical(awaken_authorization_contract::WorkspaceBindingRole)
+pub awaken_authorization_contract::WorkspaceBindingMigrationState::Legacy
+pub awaken_authorization_contract::WorkspaceBindingMigrationState::Legacy::has_management_binding: bool
+pub awaken_authorization_contract::WorkspaceBindingMigrationState::Legacy::has_resource_binding: bool
+pub awaken_authorization_contract::WorkspaceBindingMigrationState::Legacy::role: awaken_authorization_contract::WorkspaceBindingRole
+pub enum awaken_authorization_contract::WorkspaceBindingRole
+pub awaken_authorization_contract::WorkspaceBindingRole::Admin
+pub awaken_authorization_contract::WorkspaceBindingRole::AgentPublisher
+pub awaken_authorization_contract::WorkspaceBindingRole::Billing
+pub awaken_authorization_contract::WorkspaceBindingRole::ClaudeCodeUser
+pub awaken_authorization_contract::WorkspaceBindingRole::CredentialIngress
+pub awaken_authorization_contract::WorkspaceBindingRole::Developer
+pub awaken_authorization_contract::WorkspaceBindingRole::HostedWorkspaceAdmin
+pub awaken_authorization_contract::WorkspaceBindingRole::User
+pub awaken_authorization_contract::WorkspaceBindingRole::WorkspaceAdmin
+pub awaken_authorization_contract::WorkspaceBindingRole::WorkspaceBilling
+pub awaken_authorization_contract::WorkspaceBindingRole::WorkspaceDeveloper
+pub awaken_authorization_contract::WorkspaceBindingRole::WorkspaceRestrictedDeveloper
+pub awaken_authorization_contract::WorkspaceBindingRole::WorkspaceUser
+impl awaken_authorization_contract::WorkspaceBindingRole
+pub const fn awaken_authorization_contract::WorkspaceBindingRole::canonical_local_name(self) -> &'static str
+#[repr(u8)] pub enum awaken_authorization_contract::WorkspaceProfileAuthority
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ApiKeyAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ApiKeyRead
+pub awaken_authorization_contract::WorkspaceProfileAuthority::FileAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::FileRead
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyRead
+pub awaken_authorization_contract::WorkspaceProfileAuthority::SkillAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::SkillRead
+pub awaken_authorization_contract::WorkspaceProfileAuthority::WorkspaceAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::WorkspaceRead
+impl awaken_authorization_contract::WorkspaceProfileAuthority
+pub const fn awaken_authorization_contract::WorkspaceProfileAuthority::action_pattern(self) -> &'static str
+pub enum awaken_authorization_contract::WorkspaceProfileRole
+pub awaken_authorization_contract::WorkspaceProfileRole::HostedAdmin
+pub awaken_authorization_contract::WorkspaceProfileRole::LegacyHostedAdmin
+pub awaken_authorization_contract::WorkspaceProfileRole::WorkspaceMember
 pub enum awaken_authorization_contract::WorkspaceRoleAuthority
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceApiKeyAll
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceConfigurationAll
@@ -27,4 +75,10 @@ pub const awaken_authorization_contract::CREDENTIAL_INGRESS_AUTHORITIES: &[awake
 pub fn awaken_authorization_contract::agent_publisher_role_contains(awaken_authorization_contract::WorkspaceRoleAuthority) -> bool
 pub const fn awaken_authorization_contract::application_route_policy(awaken_authorization_contract::RouteAccess) -> awaken_authorization_contract::RouteGuardSelection
 pub fn awaken_authorization_contract::credential_ingress_role_contains(awaken_authorization_contract::WorkspaceRoleAuthority) -> bool
+pub const fn awaken_authorization_contract::hosted_runtime_role_authorities(awaken_authorization_contract::HostedRuntimeRole) -> &'static [awaken_authorization_contract::HostedRuntimeAuthority]
+pub fn awaken_authorization_contract::hosted_runtime_role_contains(awaken_authorization_contract::HostedRuntimeRole, awaken_authorization_contract::HostedRuntimeAuthority) -> bool
+pub const fn awaken_authorization_contract::legacy_workspace_binding_migration_target(awaken_authorization_contract::WorkspaceBindingRole, bool, bool) -> core::option::Option<awaken_authorization_contract::WorkspaceBindingRole>
+pub const fn awaken_authorization_contract::migrate_workspace_binding_state(awaken_authorization_contract::WorkspaceBindingMigrationState) -> awaken_authorization_contract::WorkspaceBindingMigrationState
 pub const fn awaken_authorization_contract::run_backed_route_policy(awaken_authorization_contract::RouteAccess) -> awaken_authorization_contract::RouteGuardSelection
+pub const fn awaken_authorization_contract::workspace_profile_role_authorities(awaken_authorization_contract::WorkspaceProfileRole) -> &'static [awaken_authorization_contract::WorkspaceProfileAuthority]
+pub fn awaken_authorization_contract::workspace_profile_role_contains(awaken_authorization_contract::WorkspaceProfileRole, awaken_authorization_contract::WorkspaceProfileAuthority) -> bool

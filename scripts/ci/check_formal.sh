@@ -19,6 +19,7 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
 python3 scripts/ci/check_formal_surface.py --require-complete
+python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
@@ -54,7 +55,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent \
-    --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls
+    --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls \
+    --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing
   run_kani awaken-authorization-contract \
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
@@ -67,6 +69,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
+    --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
     --harness only_queued_work_is_claimable \
@@ -85,7 +88,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
     --harness every_skill_execution_pin_axis_is_binding \
-    --harness frozen_worker_agent_publication_is_exact_or_fails_closed
+    --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
+    --harness terminal_dream_statuses_are_absorbing \
+    --harness dream_success_and_failure_require_a_running_process \
+    --harness dream_recovery_and_cancel_never_widen_terminal_authority \
+    --harness dream_transition_table_is_total_exact_and_closed \
+    --harness quiescence_receipt_requires_exact_operation_epoch_and_zero_live_effects \
+    --harness checkpoint_receipt_requires_every_immutable_generation_axis \
+    --harness source_disposal_receipt_requires_exact_binding_and_termination \
+    --harness restore_receipt_requires_exact_checkpoint_and_nonempty_binding \
+    --harness terminal_cleanup_receipt_requires_every_identity_and_settlement_axis
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
@@ -127,7 +139,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness http_effect_material_shape_is_exact_and_non_widening \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-ingress-contract \
-    --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation
+    --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation \
+    --harness stale_dispatch_claim_cannot_modify_authoritative_state \
+    --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
+    --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \
+    --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
     --harness platform_relay_local_gate_admits_only_exact_platform_relay
@@ -149,9 +165,19 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_refill_clamp_preserves_capacity_invariant \
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
-    --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup
+    --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup \
+    --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \
+    --harness idempotency_key_length_and_summary_policy_is_exact \
+    --harness idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte
   run_kani awaken-protocol-a2a \
     --harness a2a_task_state_projection_is_total_exact_and_non_strengthening
+  run_kani awaken-protocol-ag-ui \
+    --harness ag_ui_terminal_category_mapping_is_total_and_exact
+  run_kani awaken-protocol-ai-sdk \
+    --harness ai_sdk_terminal_category_mapping_is_total_and_exact
+  run_kani awaken-provider-genai \
+    --harness reasoning_replay_projection_preserves_reasoning_and_complete_turns \
+    --harness reasoning_fold_prepends_exactly_once_and_is_transport_independent
   run_kani awaken-ext-mcp \
     --harness sensitive_marker_never_projects_payload_publicly \
     --harness sensitivity_markers_can_never_widen_a_redacted_projection \
@@ -159,7 +185,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-sandbox-container \
     --harness continuation_writable_roots_share_one_claim_without_aliasing
   run_kani awaken-sandbox-container --features k8s --solver kissat \
-    --harness continuation_claim_selection_is_total_exact_and_non_widening
+    --harness continuation_claim_selection_is_total_exact_and_non_widening \
+    --harness continuation_claim_deletion_requires_exact_uid_and_resource_version
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \
     --harness migration_step_never_rolls_back_or_skips_a_version \
@@ -167,6 +194,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-compact \
     --harness fold_point_preserves_the_requested_suffix \
     --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix
+  run_kani awaken-ext-memory \
+    --harness memory_recall_contribution_is_exact_and_disabled_is_inert
   run_kani awaken-ext-goal \
     --harness applying_a_grade_obeys_decision_and_budget \
     --harness terminal_outcomes_are_absorbing
@@ -208,17 +237,29 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-runtime-host \
+    --harness session_realization_control_disposition_projects_exact_worker_effect \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
     --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
-    --harness mcp_credential_realization_preserves_the_request_target_exactly
+    --harness mcp_credential_realization_preserves_the_request_target_exactly \
+    --harness durable_dispatch_admission_is_exact_and_commit_store_independent \
+    --harness durable_dispatch_admission_is_monotonic_in_persistence_evidence \
+    --harness sandbox_support_projection_is_total_exact_and_evidence_bound \
+    --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
+    --harness settled_step_projection_cannot_invent_pending_or_observation_flags
+  run_kani awaken-config-service \
+    --harness only_the_reserved_scope_selects_admin_catalog_membership \
+    --harness every_non_reserved_scope_selects_strictly_global_membership
   run_kani awaken-service-lifecycle \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \
     --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
   run_kani awaken-resource-contract \
-    --harness deployment_backing_selects_only_exact_resources_database_and_files_object_roles
+    --harness deployment_backing_selects_only_exact_resources_database_and_files_object_roles \
+    --harness resource_config_publication_is_exact_and_never_wraps \
+    --harness exhausted_resource_config_versions_fail_closed \
+    --harness resource_lifecycle_timestamps_project_the_exact_transition
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -234,7 +275,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sandbox_tool_recovery_claim_axis_is_exact_and_non_widening \
     --harness manifest_recovery_mapping_accepts_only_the_exact_installed_capability \
     --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
-    --harness process_readiness_after_startup_is_probe_independent
+    --harness process_readiness_after_startup_is_probe_independent \
+    --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
   run_kani awaken-worker-transport-security \
     --harness worker_transport_selector_admits_only_three_exact_postures \
     --harness remote_transport_never_downgrades_or_widens_identity

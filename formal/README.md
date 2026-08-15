@@ -33,6 +33,10 @@ The named harnesses in the strict gate invoke production pure functions directly
   - cancellation delivery is enabled only by a durable cancellation-requested
     relationship.
 - `awaken-session-contract`
+  - all seven Session realization Control failures map to the exact closed
+    disposition table; Runtime Worker effects map NotReady to defer, Retryable
+    to relinquish, and Terminal to absorbing settlement, while renewal retires
+    exactly terminal truth.
   - awaiting outcomes cannot be terminal or failed;
   - ended outcomes carry the only failure authority and no pending tool.
   - only queued WorkQueue items are claimable;
@@ -121,6 +125,15 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-protocol-managed` / `awaken-runtime-host`
   - only terminal cleanup bypasses a retired Agent publication, and MCP
     credential realization preserves the authored target exactly.
+- `awaken-provider-genai`
+  - neutral content categories project exactly per provider dialect: Anthropic
+    retains each opaque thinking text/signature pair in order while other
+    dialects use normalized reasoning. A reasoning-like-only row is not
+    replayable, reasoning plus a complete tool/public part remains one turn,
+    and scalar reasoning is prepended exactly once by the same streaming and
+    non-streaming table. SDK serialization, signature authenticity, transport
+    completeness, payload meaning, and provider acceptance remain outside this
+    proof.
 - `awaken-store-schema`
   - migration versions are dense and strictly increasing;
   - each step advances at most one version and never rolls back;
@@ -446,10 +459,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 276/276 formalizable obligations model-linked or
+checkpoint the ledger is 295/295 formalizable obligations model-linked or
 kernel-proved, plus 10 explicitly external obligations, for 100% formal
 evidence coverage. The evidence dimensions are reported independently: 185
-model-checked, 27 model-proved, 117 Kani-kernel-proved, and 6 linked to the
+model-checked, 27 model-proved, 136 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -461,7 +474,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 237 and now 276 as new obligations were discovered)
+The denominator (previously 276 and now 295 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -469,21 +482,31 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 574 candidate modules: all 574 are classified,
-307 have checked formal evidence associated with the production file, 172 have
-a direct Kani/trace proof link, and 211 are linked to an explicit product
+source-oriented inventory finds 576 candidate modules: all 576 are classified,
+322 have checked formal evidence associated with the production file, 192 have
+a direct Kani/trace proof link, and 198 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
+The source tree and strict CI name the same 190 unique Kani harnesses; repeated
+ledger references are allowed only when one production proof supports more than
+one precisely stated obligation.
+
+The Web inventory is a separate denominator: 79/79 signal-detected TypeScript
+or TSX candidate files are classified, with zero uncovered, across 26 product
+requirements. All 79 are deliberately marked `product_boundary_only`; this is
+an ownership and residual-risk inventory, not a claim that any browser module
+has been formally proved.
 
 `formal/proof-boundaries.json` and `formal/VERIFICATION_BOUNDARIES.md` keep the
-remaining product limits honest. Every requirement-only surface has one exact
+remaining product limits honest. Every requirement-only surface, plus any
+feature explicitly marked as retaining an external tail after its kernel proof, has one exact
 external, semantic, unbounded-input, effect-adapter, or UI/human boundary plus
 an architecture change, target proof method, and acceptance gate. The boundary
-checker currently requires all 40 residual requirements and rejects missing or
+checker currently requires all 42 residual requirements and rejects missing or
 invented rows. This documents how typestate permits, bounded protocol algebras,
 event-sourced reducers, commit receipts, and durable inbox/outbox identities can
 move additional adapter behavior under proof without claiming that networks,

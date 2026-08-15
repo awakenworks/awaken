@@ -8,7 +8,8 @@ use std::collections::BTreeSet;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
-    Delta, Fact, HistorySink, ToolDisposition, ToolUseRef, Transcoder, fold_history, fold_messages,
+    Delta, Fact, HistorySink, StreamTerminalDecision, StreamTerminalKind, ToolDisposition,
+    ToolUseRef, Transcoder, decide_stream_terminal, fold_history, fold_messages,
 };
 use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::Value;
@@ -26,6 +27,8 @@ use crate::types::{UIStreamEvent, history_message, text_parts};
 pub struct AiSdkEncoder {
     /// `start`/`start-step` already emitted (idempotent on a repeated `RunStarted`).
     started: bool,
+    /// A terminal wire frame was emitted. Terminal state is absorbing.
+    terminal_emitted: bool,
     /// Assistant text actually projected live. A dropped reasoning delta must
     /// not suppress the authoritative committed assistant message.
     streamed_text: bool,
@@ -59,10 +62,52 @@ impl AiSdkEncoder {
         }
     }
 
+    fn project_terminal(
+        &mut self,
+        requested: StreamTerminalKind,
+        reconciliation_exact: bool,
+        failure: Option<(String, String)>,
+    ) -> Vec<UIStreamEvent> {
+        let StreamTerminalDecision::Emit(kind) = decide_stream_terminal(
+            self.started,
+            self.terminal_emitted,
+            reconciliation_exact,
+            requested,
+        ) else {
+            return Vec::new();
+        };
+        self.terminal_emitted = true;
+        match ai_sdk_terminal_class(kind) {
+            AiSdkTerminalClass::ToolCalls => vec![
+                UIStreamEvent::FinishStep,
+                UIStreamEvent::finish("tool-calls"),
+            ],
+            AiSdkTerminalClass::Stop => {
+                vec![UIStreamEvent::FinishStep, UIStreamEvent::finish("stop")]
+            }
+            AiSdkTerminalClass::Error => {
+                let (code, message) = failure.unwrap_or_else(|| {
+                    (
+                        "stream_reconciliation_failed".to_string(),
+                        "live stream does not match the committed outcome".to_string(),
+                    )
+                });
+                vec![
+                    UIStreamEvent::error(format!("{code}: {message}")),
+                    UIStreamEvent::FinishStep,
+                    UIStreamEvent::finish("error"),
+                ]
+            }
+        }
+    }
+
     /// Complete one stream through the same stateful encoder that projected its
     /// live prefix. Committed tool availability/output remains authoritative;
     /// assistant text is omitted only when text was actually projected live.
     pub fn complete(&mut self, outcome: &StepOutcome) -> Vec<UIStreamEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         let pending = outcome
             .pending()
             .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
@@ -90,29 +135,40 @@ impl AiSdkEncoder {
             output.extend(self.fact(event));
         }
         self.tools.clear();
-        output.extend(self.fact(&if live_only.is_empty() {
-            outcome.terminal_event()
+        let terminal = outcome.terminal_event();
+        let reconciliation_exact = live_only.is_empty();
+        let failure = if reconciliation_exact {
+            terminal_failure(&terminal)
         } else {
-            Fact::RunFailed {
-                code: "stream_reconciliation_failed".to_string(),
-                message: format!(
+            Some((
+                "stream_reconciliation_failed".to_string(),
+                format!(
                     "live tool inputs missing from committed outcome: {}",
                     live_only.join(", ")
                 ),
-            }
-        }));
+            ))
+        };
+        output.extend(self.project_terminal(
+            terminal_kind(&terminal),
+            reconciliation_exact,
+            failure,
+        ));
         output
     }
 
     pub fn fail(&mut self, message: impl Into<String>) -> Vec<UIStreamEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         let mut output = self.fact(&Fact::RunStarted);
         output.extend(self.close_reasoning());
         output.extend(self.close_text());
         self.tools.clear();
-        output.extend(self.fact(&Fact::RunFailed {
-            code: "stream_failed".to_string(),
-            message: message.into(),
-        }));
+        output.extend(self.project_terminal(
+            StreamTerminalKind::Failed,
+            true,
+            Some(("stream_failed".to_string(), message.into())),
+        ));
         output
     }
 }
@@ -121,6 +177,14 @@ impl Transcoder for AiSdkEncoder {
     type Output = UIStreamEvent;
 
     fn fact(&mut self, event: &Fact) -> Vec<UIStreamEvent> {
+        if self.terminal_emitted
+            && !matches!(
+                event,
+                Fact::Awaiting { .. } | Fact::RunFinished { .. } | Fact::RunFailed { .. }
+            )
+        {
+            return Vec::new();
+        }
         match event {
             Fact::RunStarted => {
                 if self.started {
@@ -185,19 +249,16 @@ impl Transcoder for AiSdkEncoder {
                 }
             }
             Fact::Awaiting { .. } => {
-                vec![
-                    UIStreamEvent::FinishStep,
-                    UIStreamEvent::finish("tool-calls"),
-                ]
+                self.project_terminal(StreamTerminalKind::Awaiting, true, None)
             }
             Fact::RunFinished { .. } => {
-                vec![UIStreamEvent::FinishStep, UIStreamEvent::finish("stop")]
+                self.project_terminal(StreamTerminalKind::Finished, true, None)
             }
-            Fact::RunFailed { code, message } => vec![
-                UIStreamEvent::error(format!("{code}: {message}")),
-                UIStreamEvent::FinishStep,
-                UIStreamEvent::finish("error"),
-            ],
+            Fact::RunFailed { code, message } => self.project_terminal(
+                StreamTerminalKind::Failed,
+                true,
+                Some((code.clone(), message.clone())),
+            ),
             // An internal continuation-guard round is not an AI-SDK wire part; the
             // committed fold never emits it into this stream.
             // The committed thinking fact has no content and the live delta path
@@ -207,6 +268,9 @@ impl Transcoder for AiSdkEncoder {
     }
 
     fn delta(&mut self, delta: &Delta) -> Vec<UIStreamEvent> {
+        if self.terminal_emitted {
+            return Vec::new();
+        }
         match delta {
             Delta::TextDelta { delta } => {
                 self.streamed_text = true;
@@ -262,6 +326,59 @@ impl Transcoder for AiSdkEncoder {
                 }
                 out
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiSdkTerminalClass {
+    ToolCalls,
+    Stop,
+    Error,
+}
+
+const fn ai_sdk_terminal_class(kind: StreamTerminalKind) -> AiSdkTerminalClass {
+    match kind {
+        StreamTerminalKind::Awaiting => AiSdkTerminalClass::ToolCalls,
+        StreamTerminalKind::Finished => AiSdkTerminalClass::Stop,
+        StreamTerminalKind::Failed => AiSdkTerminalClass::Error,
+    }
+}
+
+fn terminal_kind(fact: &Fact) -> StreamTerminalKind {
+    match fact {
+        Fact::Awaiting { .. } => StreamTerminalKind::Awaiting,
+        Fact::RunFinished { .. } => StreamTerminalKind::Finished,
+        Fact::RunFailed { .. } => StreamTerminalKind::Failed,
+        _ => unreachable!("only terminal facts reach terminal projection"),
+    }
+}
+
+fn terminal_failure(fact: &Fact) -> Option<(String, String)> {
+    match fact {
+        Fact::RunFailed { code, message } => Some((code.clone(), message.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn ai_sdk_terminal_category_mapping_is_total_and_exact() {
+        let tag: u8 = kani::any();
+        kani::assume(tag <= 2);
+        let kind = match tag {
+            0 => StreamTerminalKind::Awaiting,
+            1 => StreamTerminalKind::Finished,
+            _ => StreamTerminalKind::Failed,
+        };
+        let projected = ai_sdk_terminal_class(kind);
+        match projected {
+            AiSdkTerminalClass::ToolCalls => assert_eq!(kind, StreamTerminalKind::Awaiting),
+            AiSdkTerminalClass::Stop => assert_eq!(kind, StreamTerminalKind::Finished),
+            AiSdkTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
         }
     }
 }
@@ -886,7 +1003,9 @@ mod tests {
 
     #[test]
     fn run_failed_maps_to_error_then_finish_error() {
-        let events = AiSdkEncoder::new().fact(&Fact::RunFailed {
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        let events = encoder.fact(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -911,7 +1030,9 @@ mod tests {
 
     #[test]
     fn awaiting_transcodes_to_finish_step_then_tool_calls_finish() {
-        let events = AiSdkEncoder::new().fact(&Fact::Awaiting {
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        let events = encoder.fact(&Fact::Awaiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(matches!(events[0], UIStreamEvent::FinishStep));
@@ -919,6 +1040,36 @@ mod tests {
             &events[1],
             UIStreamEvent::Finish { finish_reason: Some(r), .. } if r == "tool-calls"
         ));
+    }
+
+    #[test]
+    fn terminal_requires_start_and_is_absorbing() {
+        let terminal = Fact::RunFinished { exhausted: false };
+        let mut encoder = AiSdkEncoder::new();
+        assert!(
+            encoder.fact(&terminal).is_empty(),
+            "an unstarted stream cannot finish"
+        );
+        assert_eq!(
+            encoder.fact(&Fact::RunStarted),
+            vec![UIStreamEvent::Start, UIStreamEvent::StartStep]
+        );
+        assert!(matches!(
+            encoder.fact(&terminal).as_slice(),
+            [UIStreamEvent::FinishStep, UIStreamEvent::Finish { .. }]
+        ));
+        assert!(
+            encoder.fact(&terminal).is_empty(),
+            "terminal must not repeat"
+        );
+        assert!(
+            encoder
+                .delta(&Delta::TextDelta {
+                    delta: "late".into()
+                })
+                .is_empty(),
+            "terminal state must not be strengthened by later content"
+        );
     }
 
     #[test]

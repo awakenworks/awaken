@@ -241,16 +241,16 @@ impl HostWorkerResolver {
                 Self::execution_error(error.to_string())
             }
             awaken_session_contract::SessionRealizationDriveError::Control(control) => {
-                match control.disposition() {
-                    awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+                match session_realization_worker_effect(control.disposition()) {
+                    SessionRealizationWorkerEffect::Defer => {
                         awaken_run_ingress::Error::ResolutionNotReady(
                             "Session realization is not ready".into(),
                         )
                     }
-                    awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+                    SessionRealizationWorkerEffect::Relinquish => {
                         Self::execution_error(control.to_string())
                     }
-                    awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+                    SessionRealizationWorkerEffect::Absorb => {
                         Self::terminal_resolution_error(control.to_string())
                     }
                 }

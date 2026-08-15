@@ -270,7 +270,7 @@ impl DreamModelInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DreamStatus {
     Pending,
@@ -280,10 +280,151 @@ pub enum DreamStatus {
     Canceled,
 }
 
+/// Closed process events accepted by the durable Dream lifecycle kernel.
+///
+/// External execution decides which event occurred, but only this table may
+/// change durable status. In particular, terminal states have no outgoing
+/// transition and therefore cannot be reopened by retries or cancellation
+/// races.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DreamStatusEvent {
+    Recover,
+    Start,
+    Complete,
+    Fail,
+    Cancel,
+}
+
 impl DreamStatus {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
+    }
+
+    /// Return the exact next durable state, or reject an invalid transition.
+    #[must_use]
+    pub const fn transition(self, event: DreamStatusEvent) -> Option<Self> {
+        match (self, event) {
+            (Self::Pending | Self::Running, DreamStatusEvent::Recover) => Some(Self::Pending),
+            (Self::Pending, DreamStatusEvent::Start) => Some(Self::Running),
+            (Self::Running, DreamStatusEvent::Complete) => Some(Self::Completed),
+            (Self::Running, DreamStatusEvent::Fail) => Some(Self::Failed),
+            (Self::Pending | Self::Running, DreamStatusEvent::Cancel) => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(kani)]
+mod dream_status_proofs {
+    use super::{DreamStatus, DreamStatusEvent};
+
+    fn status(code: u8) -> DreamStatus {
+        match code {
+            0 => DreamStatus::Pending,
+            1 => DreamStatus::Running,
+            2 => DreamStatus::Completed,
+            3 => DreamStatus::Failed,
+            _ => DreamStatus::Canceled,
+        }
+    }
+
+    fn event(code: u8) -> DreamStatusEvent {
+        match code {
+            0 => DreamStatusEvent::Recover,
+            1 => DreamStatusEvent::Start,
+            2 => DreamStatusEvent::Complete,
+            3 => DreamStatusEvent::Fail,
+            _ => DreamStatusEvent::Cancel,
+        }
+    }
+
+    #[kani::proof]
+    fn terminal_dream_statuses_are_absorbing() {
+        let status_code: u8 = kani::any();
+        let event_code: u8 = kani::any();
+        kani::assume(status_code <= 4);
+        kani::assume(event_code <= 4);
+        let current = status(status_code);
+        if current.is_terminal() {
+            assert_eq!(current.transition(event(event_code)), None);
+        }
+    }
+
+    #[kani::proof]
+    fn dream_success_and_failure_require_a_running_process() {
+        let status_code: u8 = kani::any();
+        kani::assume(status_code <= 4);
+        let current = status(status_code);
+        for event in [DreamStatusEvent::Complete, DreamStatusEvent::Fail] {
+            assert_eq!(
+                current.transition(event).is_some(),
+                current == DreamStatus::Running
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn dream_recovery_and_cancel_never_widen_terminal_authority() {
+        let status_code: u8 = kani::any();
+        kani::assume(status_code <= 4);
+        let current = status(status_code);
+        for event in [DreamStatusEvent::Recover, DreamStatusEvent::Cancel] {
+            if let Some(next) = current.transition(event) {
+                assert!(!current.is_terminal());
+                assert!(matches!(next, DreamStatus::Pending | DreamStatus::Canceled));
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn dream_transition_table_is_total_exact_and_closed() {
+        let status_code: u8 = kani::any();
+        let event_code: u8 = kani::any();
+        kani::assume(status_code <= 4);
+        kani::assume(event_code <= 4);
+        let current = status(status_code);
+        let event = event(event_code);
+        let next = current.transition(event);
+
+        match (event, next) {
+            (DreamStatusEvent::Recover, Some(next)) => {
+                assert!(matches!(
+                    current,
+                    DreamStatus::Pending | DreamStatus::Running
+                ));
+                assert_eq!(next, DreamStatus::Pending);
+            }
+            (DreamStatusEvent::Start, Some(next)) => {
+                assert_eq!(current, DreamStatus::Pending);
+                assert_eq!(next, DreamStatus::Running);
+            }
+            (DreamStatusEvent::Complete, Some(next)) => {
+                assert_eq!(current, DreamStatus::Running);
+                assert_eq!(next, DreamStatus::Completed);
+            }
+            (DreamStatusEvent::Fail, Some(next)) => {
+                assert_eq!(current, DreamStatus::Running);
+                assert_eq!(next, DreamStatus::Failed);
+            }
+            (DreamStatusEvent::Cancel, Some(next)) => {
+                assert!(matches!(
+                    current,
+                    DreamStatus::Pending | DreamStatus::Running
+                ));
+                assert_eq!(next, DreamStatus::Canceled);
+            }
+            (_, None) => assert!(
+                current.is_terminal()
+                    || matches!(
+                        (current, event),
+                        (
+                            DreamStatus::Pending,
+                            DreamStatusEvent::Complete | DreamStatusEvent::Fail
+                        ) | (DreamStatus::Running, DreamStatusEvent::Start)
+                    )
+            ),
+        }
     }
 }
 
@@ -405,5 +546,49 @@ mod tests {
             serde_json::from_value::<DreamProcessRecord>(invalid).is_err(),
             "R3"
         );
+    }
+
+    #[test]
+    fn dream_status_transition_table_is_closed_and_terminal_absorbing() {
+        use DreamStatusEvent::{Cancel, Complete, Fail, Recover, Start};
+
+        assert_eq!(
+            DreamStatus::Pending.transition(Recover),
+            Some(DreamStatus::Pending)
+        );
+        assert_eq!(
+            DreamStatus::Running.transition(Recover),
+            Some(DreamStatus::Pending)
+        );
+        assert_eq!(
+            DreamStatus::Pending.transition(Start),
+            Some(DreamStatus::Running)
+        );
+        assert_eq!(
+            DreamStatus::Running.transition(Complete),
+            Some(DreamStatus::Completed)
+        );
+        assert_eq!(
+            DreamStatus::Running.transition(Fail),
+            Some(DreamStatus::Failed)
+        );
+        assert_eq!(
+            DreamStatus::Pending.transition(Cancel),
+            Some(DreamStatus::Canceled)
+        );
+        assert_eq!(
+            DreamStatus::Running.transition(Cancel),
+            Some(DreamStatus::Canceled)
+        );
+
+        for terminal in [
+            DreamStatus::Completed,
+            DreamStatus::Failed,
+            DreamStatus::Canceled,
+        ] {
+            for event in [Recover, Start, Complete, Fail, Cancel] {
+                assert_eq!(terminal.transition(event), None);
+            }
+        }
     }
 }

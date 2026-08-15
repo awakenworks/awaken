@@ -27,6 +27,13 @@ pub use genai::adapter::AdapterKind;
 
 mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
+mod transcript_projection;
+
+use transcript_projection::{
+    NeutralPartKind, ProviderPartKind, ReasoningFoldAction, ReplayRowState, ResponseTransport,
+    ThinkingProjection, TranscriptDialect, decide_reasoning_fold, project_part_kind,
+    project_thinking,
+};
 
 /// Failure to obtain a complete provider model listing. Callers must not
 /// reconcile a partial response because doing so could falsely mark offerings
@@ -568,7 +575,7 @@ impl LlmExecutor for GenaiExecutor {
         };
         // Fold the turn's reasoning through the same canonical response mapper
         // used by non-streaming inference so both paths commit an identical turn.
-        let output = with_reasoning(output, Some(&reasoning));
+        let output = with_reasoning(output, Some(&reasoning), ResponseTransport::Streaming);
         require_usable_response(ChatResponse {
             output,
             usage,
@@ -798,26 +805,26 @@ fn to_genai_request_with_adapter(
     adapter: Option<AdapterKind>,
 ) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
+    let dialect = transcript_dialect(adapter);
     for message in &request.messages {
+        let row_state = message
+            .content
+            .iter()
+            .fold(ReplayRowState::Empty, |state, block| {
+                state.absorb(project_part_kind(dialect, neutral_part_kind(block)))
+            });
+        if !row_state.should_replay() {
+            continue;
+        }
         let parts: Vec<ContentPart> = message
             .content
             .iter()
-            .map(|block| to_genai_part(block, adapter))
+            .map(|block| to_genai_part(block, dialect))
             .collect();
         // A standalone reasoning-only history row is not a complete assistant
         // turn and some provider protocols reject it. Reasoning that accompanies
         // text or a tool call remains attached and is replayed by adapters that
         // require it (notably DeepSeek's OpenAI-compatible tool loop).
-        if parts.is_empty()
-            || parts.iter().all(|part| {
-                matches!(
-                    part,
-                    ContentPart::ReasoningContent(_) | ContentPart::Thinking(_)
-                )
-            })
-        {
-            continue;
-        }
         // The neutral transcript commits one Tool message per completed call.
         // Anthropic Messages instead requires every result for one assistant
         // tool-use turn to appear together in the immediately following user
@@ -865,28 +872,60 @@ fn to_genai_request_with_adapter(
 
 /// Map one neutral content block onto a `genai` content part. Text maps to text;
 /// an image maps to a `Binary` (base64 inline or a URL the provider fetches).
-fn to_genai_part(block: &ContentBlock, adapter: Option<AdapterKind>) -> ContentPart {
-    match block {
-        ContentBlock::Text { text } => ContentPart::Text(text.clone()),
-        ContentBlock::Image { source } => ContentPart::Binary(to_genai_binary(source)),
-        ContentBlock::ToolUse { id, name, input } => ContentPart::ToolCall(GenaiToolCall {
-            call_id: id.clone(),
-            fn_name: name.clone(),
-            fn_arguments: input.clone(),
-            thought_signatures: None,
-        }),
-        ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            ..
-        } => ContentPart::ToolResponse(ToolResponse::new(
+fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> ContentPart {
+    match (project_part_kind(dialect, neutral_part_kind(block)), block) {
+        (ProviderPartKind::Text, ContentBlock::Text { text }) => ContentPart::Text(text.clone()),
+        (ProviderPartKind::Binary, ContentBlock::Image { source }) => {
+            ContentPart::Binary(to_genai_binary(source))
+        }
+        (ProviderPartKind::ToolCall, ContentBlock::ToolUse { id, name, input }) => {
+            ContentPart::ToolCall(GenaiToolCall {
+                call_id: id.clone(),
+                fn_name: name.clone(),
+                fn_arguments: input.clone(),
+                thought_signatures: None,
+            })
+        }
+        (
+            ProviderPartKind::ToolResponse,
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            },
+        ) => ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
             extract_text(content),
         )),
-        ContentBlock::Thinking { text, signature } if adapter == Some(AdapterKind::Anthropic) => {
-            ContentPart::Thinking(ThinkingBlock::new(text.clone(), signature.clone()))
-        }
-        ContentBlock::Thinking { text, .. } => ContentPart::ReasoningContent(text.clone()),
+        (
+            ProviderPartKind::Reasoning | ProviderPartKind::SignedThinking,
+            ContentBlock::Thinking { text, signature },
+        ) => match project_thinking(dialect, text.clone(), signature.clone()) {
+            ThinkingProjection::Signed {
+                thinking,
+                signature,
+            } => ContentPart::Thinking(ThinkingBlock::new(thinking, signature)),
+            ThinkingProjection::Reasoning(reasoning) => ContentPart::ReasoningContent(reasoning),
+        },
+        _ => unreachable!("closed transcript projection returned a mismatched part kind"),
+    }
+}
+
+fn transcript_dialect(adapter: Option<AdapterKind>) -> TranscriptDialect {
+    if adapter == Some(AdapterKind::Anthropic) {
+        TranscriptDialect::Anthropic
+    } else {
+        TranscriptDialect::Other
+    }
+}
+
+const fn neutral_part_kind(block: &ContentBlock) -> NeutralPartKind {
+    match block {
+        ContentBlock::Text { .. } => NeutralPartKind::Text,
+        ContentBlock::Image { .. } => NeutralPartKind::Image,
+        ContentBlock::ToolUse { .. } => NeutralPartKind::ToolUse,
+        ContentBlock::ToolResult { .. } => NeutralPartKind::ToolResult,
+        ContentBlock::Thinking { .. } => NeutralPartKind::Thinking,
     }
 }
 
@@ -931,6 +970,7 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse 
     let output = with_reasoning(
         map_assistant_output(&response.content),
         response.reasoning_content.as_deref(),
+        ResponseTransport::NonStreaming,
     );
     ChatResponse {
         output,
@@ -1069,18 +1109,116 @@ pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
 /// Add provider-normalized scalar reasoning only when ordered content did not
 /// already carry a Thinking block. Ordered blocks are the replay authority;
 /// the scalar is a compatibility projection and must never duplicate them.
-fn with_reasoning(mut output: AssistantOutput, reasoning: Option<&str>) -> AssistantOutput {
-    let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.trim().is_empty()) else {
-        return output;
-    };
-    if !output
+fn with_reasoning(
+    mut output: AssistantOutput,
+    reasoning: Option<&str>,
+    transport: ResponseTransport,
+) -> AssistantOutput {
+    let reasoning = reasoning.filter(|reasoning| !reasoning.trim().is_empty());
+    let has_ordered_thinking = output
         .blocks
         .iter()
-        .any(|block| matches!(block, ContentBlock::Thinking { .. }))
-    {
-        output.blocks.insert(0, ContentBlock::thinking(reasoning));
+        .any(|block| matches!(block, ContentBlock::Thinking { .. }));
+    if matches!(
+        decide_reasoning_fold(transport, reasoning.is_some(), has_ordered_thinking),
+        ReasoningFoldAction::Prepend
+    ) {
+        output.blocks.insert(
+            0,
+            ContentBlock::thinking(reasoning.expect("prepend requires non-blank reasoning")),
+        );
     }
     output
+}
+
+#[cfg(test)]
+mod reasoning_projection_tests {
+    use super::*;
+
+    fn public_turn() -> AssistantOutput {
+        AssistantOutput::from_blocks(vec![
+            ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({"id": 1})),
+            ContentBlock::text("public answer"),
+        ])
+    }
+
+    #[test]
+    fn streaming_and_non_streaming_commit_the_same_reasoning_shape() {
+        let streaming = with_reasoning(
+            public_turn(),
+            Some("private reasoning"),
+            ResponseTransport::Streaming,
+        );
+        let non_streaming = with_reasoning(
+            public_turn(),
+            Some("private reasoning"),
+            ResponseTransport::NonStreaming,
+        );
+
+        assert_eq!(streaming.blocks, non_streaming.blocks);
+        assert!(matches!(
+            streaming.blocks.first(),
+            Some(ContentBlock::Thinking { text, .. }) if text == "private reasoning"
+        ));
+        assert_eq!(streaming.tool_calls().len(), 1);
+        assert_eq!(streaming.text_content(), "public answer");
+    }
+
+    #[test]
+    fn exact_embedded_reasoning_is_not_duplicated_or_reordered() {
+        let output = AssistantOutput::from_blocks(vec![
+            ContentBlock::thinking("private reasoning"),
+            ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({"id": 1})),
+        ]);
+        let folded = with_reasoning(
+            output,
+            Some("private reasoning"),
+            ResponseTransport::NonStreaming,
+        );
+
+        assert_eq!(
+            folded
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Thinking { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            folded.blocks.first(),
+            Some(ContentBlock::Thinking { text, .. }) if text == "private reasoning"
+        ));
+        assert_eq!(folded.tool_calls().len(), 1);
+    }
+
+    #[test]
+    fn ordered_signed_thinking_blocks_a_different_scalar_without_losing_order() {
+        let output = AssistantOutput::from_blocks(vec![
+            ContentBlock::signed_thinking("first", Some("opaque-signature-1".into())),
+            ContentBlock::text("public"),
+            ContentBlock::signed_thinking("second", Some("opaque-signature-2".into())),
+            ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({"id": 1})),
+        ]);
+        let expected = output.blocks.clone();
+
+        let folded = with_reasoning(
+            output,
+            Some("different aggregate scalar"),
+            ResponseTransport::Streaming,
+        );
+
+        assert_eq!(folded.blocks, expected);
+        assert!(matches!(
+            &folded.blocks[0],
+            ContentBlock::Thinking { text, signature }
+                if text == "first" && signature.as_deref() == Some("opaque-signature-1")
+        ));
+        assert!(matches!(
+            &folded.blocks[2],
+            ContentBlock::Thinking { text, signature }
+                if text == "second" && signature.as_deref() == Some("opaque-signature-2")
+        ));
+    }
 }
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {

@@ -29,7 +29,10 @@ use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
 };
-use awaken_run_ingress_contract::RunDispatch;
+use awaken_run_ingress_contract::{
+    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError,
+    GuardedTransition, RunDispatch,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowState {
@@ -48,6 +51,26 @@ impl RowState {
             RowState::Awaiting => DispatchState::Awaiting,
             RowState::DeadLetter => DispatchState::DeadLetter,
             RowState::Superseded => DispatchState::Superseded,
+        }
+    }
+
+    fn transition_phase(self) -> DispatchPhase {
+        match self {
+            RowState::Pending => DispatchPhase::Pending,
+            RowState::Leased => DispatchPhase::Leased,
+            RowState::Awaiting => DispatchPhase::Awaiting,
+            RowState::DeadLetter => DispatchPhase::DeadLetter,
+            RowState::Superseded => DispatchPhase::Superseded,
+        }
+    }
+
+    fn from_transition_phase(phase: DispatchPhase) -> Self {
+        match phase {
+            DispatchPhase::Pending => RowState::Pending,
+            DispatchPhase::Leased => RowState::Leased,
+            DispatchPhase::Awaiting => RowState::Awaiting,
+            DispatchPhase::DeadLetter => RowState::DeadLetter,
+            DispatchPhase::Superseded => RowState::Superseded,
         }
     }
 }
@@ -78,6 +101,30 @@ struct Row {
     credential_bindings: Vec<AttemptCredentialBinding>,
     /// Idempotent effect evidence written under the same owner/epoch fence.
     credential_receipts: Vec<CredentialRealizationReceipt>,
+}
+
+impl Row {
+    fn transition(&self) -> DispatchTransition {
+        DispatchTransition {
+            phase: self.state.transition_phase(),
+            lease_epoch: self.lease_epoch,
+            cancellation_requested: self.cancellation_requested,
+        }
+    }
+
+    fn apply_transition(&mut self, transition: DispatchTransition) {
+        self.state = RowState::from_transition_phase(transition.phase);
+        self.lease_epoch = transition.lease_epoch;
+        self.cancellation_requested = transition.cancellation_requested;
+    }
+}
+
+fn transition_error(error: DispatchTransitionError) -> DispatchError {
+    match error {
+        DispatchTransitionError::LeaseEpochExhausted => {
+            DispatchError::Rejected("dispatch claim epoch exhausted".to_string())
+        }
+    }
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -379,10 +426,10 @@ fn claim_exact_with_mode(
     }
     let previous =
         was_recovery.then(|| row.lease.clone().expect("a recovery has an expired lease"));
-    let claim_epoch = row
-        .lease_epoch
-        .checked_add(1)
-        .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
+    let Some(claim_transition) = row.transition().claim().map_err(transition_error)? else {
+        return Ok(None);
+    };
+    let claim_epoch = claim_transition.lease_epoch;
     let credential_bindings = if terminal_recovery || row.cancellation_requested {
         Vec::new()
     } else {
@@ -396,14 +443,13 @@ fn claim_exact_with_mode(
         .flatten();
     let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
-        row.lease_epoch = claim_epoch;
+        row.apply_transition(claim_transition);
         let lease = Lease {
             run_id: run_id.clone(),
             owner: owner.to_string(),
             expires_ms: crate::clock::deadline_millis(now_ms, lease_ms),
             epoch: row.lease_epoch,
         };
-        row.state = RowState::Leased;
         row.lease = Some(lease.clone());
         row.assignment = assignment.clone();
         row.credential_bindings.clone_from(&credential_bindings);
@@ -1063,17 +1109,22 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let current = state
+        let transition = state
             .rows
             .get(&claim.run_id)
-            .filter(|row| row.state == RowState::Leased && row.lease_epoch == claim.epoch)
-            .and_then(|row| row.lease.as_ref())
-            .is_some_and(|lease| lease.owner == claim.owner);
-        if !current {
+            .map_or(GuardedTransition::Fenced, |row| {
+                row.transition().relinquish(
+                    claim.epoch,
+                    row.lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.owner == claim.owner),
+                )
+            });
+        let GuardedTransition::Applied(next) = transition else {
             return Ok(SettleOutcome::Fenced);
-        }
+        };
         if let Some(row) = state.rows.get_mut(&claim.run_id) {
-            row.state = RowState::Pending;
+            row.apply_transition(next);
             row.lease = None;
         }
         // Re-enter at the tail of its priority cohort. Otherwise one
@@ -1103,20 +1154,24 @@ impl DispatchQueue for MemoryDispatchStore {
         // Fence: apply only while the caller still holds the current epoch. A stale
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
         // in-flight state is inviolate.
-        let current = state
-            .rows
-            .get(run_id)
-            .filter(|row| row.state == RowState::Leased && row.lease_epoch == epoch)
-            .and_then(|row| row.lease.clone());
-        let Some(lease) = current else {
+        let Some((transition, lease)) = state.rows.get(run_id).and_then(|row| {
+            let transition = row
+                .transition()
+                .settle(epoch, outcome == DispatchOutcome::Done);
+            row.lease.clone().map(|lease| (transition, lease))
+        }) else {
             return Ok(SettleOutcome::Fenced);
         };
+        if transition == GuardedTransition::Fenced {
+            return Ok(SettleOutcome::Fenced);
+        }
         let operation = DispatchOperation::Settled {
             claim: RunClaim::from(&lease),
             outcome,
         };
         match outcome {
             DispatchOutcome::Done => {
+                debug_assert_eq!(transition, GuardedTransition::Removed);
                 let sequence = state.completions.len() as u64 + 1;
                 state.completions.push(DispatchCompletion {
                     sequence,
@@ -1131,8 +1186,11 @@ impl DispatchQueue for MemoryDispatchStore {
                 });
             }
             DispatchOutcome::Awaiting => {
+                let GuardedTransition::Applied(next) = transition else {
+                    unreachable!("the transition kernel maps exact awaiting settlement")
+                };
                 if let Some(row) = state.rows.get_mut(run_id) {
-                    row.state = RowState::Awaiting;
+                    row.apply_transition(next);
                     row.lease = None;
                     // Reaching a checkpoint refreshes the crash-retry budget.
                     row.attempt_count = 0;
@@ -1260,28 +1318,29 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let cancellable = matches!(
-            state.rows.get(run_id).map(|r| r.state),
-            Some(RowState::Pending | RowState::Awaiting | RowState::Leased)
-        );
-        if !cancellable {
+        let Some(row) = state.rows.get(run_id) else {
             return Ok(None);
-        }
+        };
+        let transition = row.transition().cancel().map_err(transition_error)?;
+        let CancelTransition::Applied {
+            state: next,
+            revoked_lease,
+        } = transition
+        else {
+            return Ok(None);
+        };
         let (thread, lost) = {
             let row = state.rows.get_mut(run_id).expect("cancellable row exists");
             let thread = row.request.thread_id().clone();
-            row.cancellation_requested = true;
-            let lost = if row.state == RowState::Leased {
+            let lost = if revoked_lease {
                 // Revoke the in-flight authority immediately. The stale owner keeps
                 // its local cancellation token, but every later commit/settle under
                 // its old epoch is fenced while cancellation becomes claimable now.
-                let lease = row.lease.take();
-                row.state = RowState::Pending;
-                row.lease_epoch = crate::next_memory_epoch(row.lease_epoch, "dispatch claim")?;
-                lease
+                row.lease.take()
             } else {
                 None
             };
+            row.apply_transition(next);
             (thread, lost)
         };
         if let Some(lease) = lost {

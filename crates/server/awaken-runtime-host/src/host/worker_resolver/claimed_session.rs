@@ -16,22 +16,16 @@ fn map_claimed_session_control_error(
     run_id: &str,
     error: awaken_run_ingress_contract::ClaimedSessionControlError,
 ) -> awaken_run_ingress::Error {
-    match error.disposition() {
-        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
-            awaken_run_ingress::Error::ResolutionNotReady(format!(
-                "run {run_id} is waiting for its Session Environment Work slot"
-            ))
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
-            HostWorkerResolver::execution_error(format!(
-                "run {run_id} frozen Session resume failed: {error}"
-            ))
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
-            HostWorkerResolver::terminal_resolution_error(format!(
-                "run {run_id} frozen Session cannot resume: {error}"
-            ))
-        }
+    match session_realization_worker_effect(error.disposition()) {
+        SessionRealizationWorkerEffect::Defer => awaken_run_ingress::Error::ResolutionNotReady(
+            format!("run {run_id} is waiting for its Session Environment Work slot"),
+        ),
+        SessionRealizationWorkerEffect::Relinquish => HostWorkerResolver::execution_error(format!(
+            "run {run_id} frozen Session resume failed: {error}"
+        )),
+        SessionRealizationWorkerEffect::Absorb => HostWorkerResolver::terminal_resolution_error(
+            format!("run {run_id} frozen Session cannot resume: {error}"),
+        ),
     }
 }
 
@@ -134,9 +128,8 @@ mod tests {
         //
         // | Rule | Control cause | RunIngress effect |
         // | R1 | NotReady | ResolutionNotReady |
-        // | R2 | Unavailable | Execution |
-        // | R3 | Terminal | TerminalResolution |
-        // | R4 | Retired | TerminalResolution |
+        // | R2 | stale/conflict/unavailable | Execution |
+        // | R3 | not-found/retired/terminal/invalid | TerminalResolution |
         let cases = [
             (
                 "R1",
@@ -144,20 +137,42 @@ mod tests {
                 "resolution_not_ready",
             ),
             (
-                "R2",
+                "R2 stale",
+                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+                "execution",
+            ),
+            (
+                "R2 conflict",
+                awaken_session_contract::SessionRealizationControlFailure::Conflict,
+                "execution",
+            ),
+            (
+                "R2 unavailable",
                 awaken_session_contract::SessionRealizationControlFailure::Unavailable(
                     "dependency".into(),
                 ),
                 "execution",
             ),
             (
-                "R3",
+                "R3 not found",
+                awaken_session_contract::SessionRealizationControlFailure::NotFound,
+                "terminal_resolution",
+            ),
+            (
+                "R3 terminal",
                 awaken_session_contract::SessionRealizationControlFailure::Terminal,
                 "terminal_resolution",
             ),
             (
-                "R4",
+                "R3 retired",
                 awaken_session_contract::SessionRealizationControlFailure::Retired,
+                "terminal_resolution",
+            ),
+            (
+                "R3 invalid",
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                    "invalid phase".into(),
+                ),
                 "terminal_resolution",
             ),
         ];
