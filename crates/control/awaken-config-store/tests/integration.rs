@@ -449,6 +449,18 @@ async fn scoped_migration_captures_immutable_agent_revisions() {
     assert_eq!(revisions[0].config.instructions, "v1");
     assert_eq!(revisions[1].revision, 2);
     assert_eq!(revisions[1].config.instructions, "v2");
+    // Cause/effect rules: every durable row exposes one first-write time and one
+    // exact-revision time; all revisions share the former and revision time is
+    // monotonic. SQLite timestamps have one-second precision, so equality is valid.
+    assert!(revisions[0].created_at_unix_ms.is_some());
+    assert_eq!(
+        revisions[0].created_at_unix_ms,
+        revisions[1].created_at_unix_ms
+    );
+    assert!(
+        revisions[1].updated_at_unix_ms >= revisions[0].updated_at_unix_ms,
+        "revision write time is monotonic"
+    );
     assert!(
         store
             .list_config_revisions_scoped(&ScopeId::from("ws_b"), "x")

@@ -128,10 +128,11 @@ impl ManagedState {
             },
             |profile| profile.delegates.clone(),
         );
-        if delegates.is_empty() {
+        let advisor_model = profile.and_then(|profile| profile.advisor_model.clone());
+        if delegates.is_empty() && advisor_model.is_none() {
             return Ok(None);
         }
-        let mut agents = Vec::with_capacity(delegates.len());
+        let mut agents = Vec::with_capacity(delegates.len() + usize::from(advisor_model.is_some()));
         for delegate in delegates {
             let resolved = delegate
                 .source_revision
@@ -158,7 +159,15 @@ impl ManagedState {
                     ))));
                 }
             };
-            agents.push(child);
+            agents.push(crate::types::SessionMultiagentRosterEntry::Agent(child));
+        }
+        if let Some(model) = advisor_model {
+            agents.push(crate::types::SessionMultiagentRosterEntry::Advisor(
+                crate::types::agent::AdvisorRosterEntry {
+                    model,
+                    kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
+                },
+            ));
         }
         Ok(Some(crate::types::SessionMultiagentCoordinator {
             kind: "coordinator",
@@ -339,6 +348,8 @@ impl ManagedState {
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
+        req.validate_common()
+            .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         // Initial-event admission is atomic with Session creation: validate the
         // complete batch before bind checks, identity allocation, persistence, or
         // Runtime preparation. The shared validator is also used by Deployments.

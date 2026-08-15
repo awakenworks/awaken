@@ -33,7 +33,6 @@ mod model_controls;
 use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
 use model_controls::{inference_from_wire, model_config};
 
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
@@ -554,6 +553,15 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
 
 fn project(revision: AgentConfigRevision) -> Agent {
     let revision_number = revision.revision;
+    let fallback_timestamp = lifecycle_timestamp();
+    let created_at = revision
+        .created_at_unix_ms
+        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .unwrap_or_else(|| fallback_timestamp.clone());
+    let updated_at = revision
+        .updated_at_unix_ms
+        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .unwrap_or(fallback_timestamp);
     let config = revision.config;
     let id = config.id.clone();
     let model = render_managed_model_id(&config.model_binding).unwrap_or_default();
@@ -562,8 +570,8 @@ fn project(revision: AgentConfigRevision) -> Agent {
         id: id.clone(),
         object_type: "agent",
         archived_at: config.archived_at,
-        created_at: OBJECT_AT.to_string(),
-        updated_at: OBJECT_AT.to_string(),
+        created_at,
+        updated_at,
         name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
         model: model_config(model, config.inference),
@@ -907,7 +915,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .withdraw(workspace_id, id, revision)
                     .await
                     .map_err(ManagedAgentError::Storage)?;
-                Ok(project(AgentConfigRevision { config, revision }))
+                self.plane
+                    .get_versioned(&scope, id)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?
+                    .map(project)
+                    .ok_or_else(|| {
+                        ManagedAgentError::Storage("archived Agent is not readable".into())
+                    })
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -1198,6 +1213,8 @@ mod tests {
         let projected = project(AgentConfigRevision {
             config,
             revision: 1,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
         });
         assert!(projected.tools.is_empty());
     }
@@ -1551,8 +1568,14 @@ mod tests {
         let projected = serde_json::to_value(project(AgentConfigRevision {
             revision: 1,
             config: config.clone(),
+            created_at_unix_ms: Some(1_000),
+            updated_at_unix_ms: Some(2_000),
         }))
         .unwrap();
+        // T1: durable first-write time owns created_at; T2: this exact revision's
+        // write time owns updated_at. Neither value is a protocol constant.
+        assert_eq!(projected["created_at"], "1970-01-01T00:00:01Z", "T1");
+        assert_eq!(projected["updated_at"], "1970-01-01T00:00:02Z", "T2");
         assert!(projected.get("max_steps").is_none(), "S2/E2");
         assert!(projected.get("state_machine").is_none(), "S2/E2");
         assert_eq!(projected["mcp_servers"].as_array().unwrap().len(), 1, "S3");

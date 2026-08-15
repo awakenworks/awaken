@@ -724,6 +724,8 @@ async fn create_session(
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+    req.validate_public()
+        .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.

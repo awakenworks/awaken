@@ -85,7 +85,9 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         .multiagent
         .as_ref()
         .expect("coordinator roster")
-        .agents[0];
+        .agents[0]
+        .as_agent()
+        .expect("first roster entry is a child agent");
     assert_eq!(child.name, "researcher-v7", "R3/E2-E3");
     assert_eq!(child.version, 7, "R3/E2-E3");
 }

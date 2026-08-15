@@ -248,6 +248,32 @@ impl AgentRef {
             _ => None,
         }
     }
+
+    fn validate_sdk_limits(&self) -> Result<(), String> {
+        if self.version() == Some(0) {
+            return Err("agent version must be greater than or equal to 1".into());
+        }
+        if self
+            .system_override()
+            .flatten()
+            .is_some_and(|system| system.chars().count() > 100_000)
+        {
+            return Err("agent system override supports at most 100000 characters".into());
+        }
+        if self
+            .mcp_servers_override()
+            .is_some_and(|items| items.len() > 20)
+        {
+            return Err("agent mcp_servers override supports at most 20 entries".into());
+        }
+        if self.skills_override().is_some_and(|items| items.len() > 20) {
+            return Err("agent skills override supports at most 20 entries".into());
+        }
+        if self.tools_override().is_some_and(|items| items.len() > 128) {
+            return Err("agent tools override supports at most 128 entries".into());
+        }
+        Ok(())
+    }
 }
 
 /// `POST /v1/sessions` request body. The boundary is deliberately closed: an
@@ -276,6 +302,37 @@ pub struct SessionCreateParams {
     /// state layer lowers them into neutral input bindings.
     #[serde(default)]
     pub resources: Vec<ResourceInput>,
+}
+
+impl SessionCreateParams {
+    pub fn validate_common(&self) -> Result<(), String> {
+        self.agent.validate_sdk_limits()?;
+        if self.metadata.len() > 16
+            || self
+                .metadata
+                .iter()
+                .any(|(key, value)| key.chars().count() > 64 || value.chars().count() > 512)
+        {
+            return Err(
+                "metadata supports at most 16 pairs with 64-character keys and 512-character values"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_public(&self) -> Result<(), String> {
+        self.validate_common()?;
+        if self.initial_events.iter().any(|event| {
+            !matches!(
+                event,
+                InboundEvent::UserMessage { .. } | InboundEvent::UserDefineOutcome { .. }
+            )
+        }) {
+            return Err("initial_events accepts only user.message and user.define_outcome".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -479,7 +536,25 @@ pub struct SessionAgent {
 pub struct SessionMultiagentCoordinator {
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub agents: Vec<SessionThreadAgent>,
+    pub agents: Vec<SessionMultiagentRosterEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum SessionMultiagentRosterEntry {
+    Agent(SessionThreadAgent),
+    Advisor(super::agent::AdvisorRosterEntry),
+}
+
+impl SessionMultiagentRosterEntry {
+    /// Returns an executable child Agent. An advisor is deliberately not a
+    /// thread target and therefore cannot be lowered to `SessionThreadAgent`.
+    pub(crate) const fn as_agent(&self) -> Option<&SessionThreadAgent> {
+        match self {
+            Self::Agent(agent) => Some(agent),
+            Self::Advisor(_) => None,
+        }
+    }
 }
 
 /// `BetaManagedAgentsSessionThreadAgent` — the agent snapshot frozen for one
@@ -1547,6 +1622,64 @@ mod tests {
     }
 
     #[test]
+    fn session_create_validation_enforces_sdk_boundaries_before_state_mutation() {
+        // Cause/effect graph: C1 version is zero; C2 an override exceeds an SDK
+        // collection/string limit; C3 metadata exceeds its pair/key/value limit;
+        // C4 a create-only event uses a non-create event variant. Each cause must
+        // produce E1 invalid-request admission and E2 no state-layer mutation.
+        //
+        // Decision table: R1 !C1..!C4 -> accept; R2 C1 -> E1+E2; R3 C2 -> E1+E2;
+        // R4 C3 -> E1+E2; R5 C4 -> E1+E2. The shared initial-event validator owns
+        // the independent 50-event/outcome-cardinality rules.
+        let valid: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent": {"id":"assistant", "type":"agent", "version":1},
+            "environment_id":"environment_1",
+            "metadata":{"key":"value"},
+            "initial_events":[{
+                "type":"user.message", "content":[{"type":"text", "text":"hello"}]
+            }]
+        }))
+        .unwrap();
+        assert!(valid.validate_public().is_ok(), "R1");
+
+        let zero_version: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":{"id":"assistant", "type":"agent", "version":0},
+            "environment_id":"environment_1"
+        }))
+        .unwrap();
+        assert!(zero_version.validate_public().is_err(), "R2");
+
+        let too_many_tools: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":{
+                "id":"assistant", "type":"agent_with_overrides",
+                "tools": (0..129).map(|index| serde_json::json!({
+                    "type":"custom", "name":format!("tool_{index}"),
+                    "description":"tool", "input_schema":{"type":"object"}
+                })).collect::<Vec<_>>()
+            },
+            "environment_id":"environment_1"
+        }))
+        .unwrap();
+        assert!(too_many_tools.validate_public().is_err(), "R3");
+
+        let too_many_metadata: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":"assistant", "environment_id":"environment_1",
+            "metadata": (0..17).map(|index| (format!("key_{index}"), "value"))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        }))
+        .unwrap();
+        assert!(too_many_metadata.validate_public().is_err(), "R4");
+
+        let unsupported_initial_event: SessionCreateParams =
+            serde_json::from_value(serde_json::json!({
+                "agent":"assistant", "environment_id":"environment_1",
+                "initial_events":[{"type":"user.interrupt"}]
+            }))
+            .unwrap();
+        assert!(unsupported_initial_event.validate_public().is_err(), "R5");
+    }
+
+    #[test]
     fn user_message_rejects_non_sdk_routing_fields() {
         // Cause/effect decision table: the SDK content-only message is admitted;
         // historical per-event `model` and `session_thread_id` fields are rejected
@@ -1689,7 +1822,7 @@ mod tests {
             skills: Vec::new(),
             multiagent: Some(SessionMultiagentCoordinator {
                 kind: "coordinator",
-                agents: vec![SessionThreadAgent {
+                agents: vec![SessionMultiagentRosterEntry::Agent(SessionThreadAgent {
                     id: "researcher".into(),
                     kind: "agent",
                     version: 3,
@@ -1700,7 +1833,7 @@ mod tests {
                     tools: Vec::new(),
                     mcp_servers: Vec::new(),
                     skills: Vec::new(),
-                }],
+                })],
             }),
         };
         let projected = serde_json::to_value(SessionThreadAgent::from(&session_agent)).unwrap();

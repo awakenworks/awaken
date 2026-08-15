@@ -376,6 +376,7 @@ impl ManagedState {
                     coordinator
                         .agents
                         .iter()
+                        .filter_map(crate::types::SessionMultiagentRosterEntry::as_agent)
                         .find(|agent| agent.id == d.agent_id)
                         .cloned()
                 })

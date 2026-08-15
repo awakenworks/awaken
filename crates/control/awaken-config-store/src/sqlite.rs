@@ -526,20 +526,30 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let id = id.to_string();
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
-            let row: Option<(String, u64)> = conn
+            let row: Option<(String, u64, u64, u64)> = conn
                 .query_row(
                     &format!(
-                        "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+                        "SELECT a.data, a.generation, \
+                         CAST(strftime('%s', first.created_at) AS INTEGER) * 1000, \
+                         CAST(strftime('%s', current.created_at) AS INTEGER) * 1000 \
+                         FROM {p}_agent a \
+                         JOIN {p}_agent_revision first ON first.scope_id = a.scope_id \
+                           AND first.id = a.id AND first.generation = 1 \
+                         JOIN {p}_agent_revision current ON current.scope_id = a.scope_id \
+                           AND current.id = a.id AND current.generation = a.generation \
+                         WHERE a.id = ?1 AND a.scope_id = ?2"
                     ),
                     params![id, scope],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
                 .map_err(reject)?;
-            row.map(|(data, revision)| {
+            row.map(|(data, revision, created_at_unix_ms, updated_at_unix_ms)| {
                 Ok(AgentConfigRevision {
                     config: serde_json::from_str(&data).map_err(reject)?,
                     revision,
+                    created_at_unix_ms: Some(created_at_unix_ms),
+                    updated_at_unix_ms: Some(updated_at_unix_ms),
                 })
             })
             .transpose()
@@ -557,21 +567,34 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         self.with_conn(move |conn, p| {
             let mut statement = conn
                 .prepare(&format!(
-                    "SELECT data, generation FROM {p}_agent_revision \
+                    "SELECT data, generation, \
+                     CAST(strftime('%s', (SELECT MIN(first.created_at) \
+                       FROM {p}_agent_revision first WHERE first.scope_id = ?1 AND first.id = ?2)) \
+                       AS INTEGER) * 1000, \
+                     CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
+                     FROM {p}_agent_revision \
                      WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC"
                 ))
                 .map_err(reject)?;
             let rows = statement
                 .query_map(params![scope, id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, u64>(3)?,
+                    ))
                 })
                 .map_err(reject)?;
             let mut revisions = Vec::new();
             for row in rows {
-                let (data, revision) = row.map_err(reject)?;
+                let (data, revision, created_at_unix_ms, updated_at_unix_ms) =
+                    row.map_err(reject)?;
                 revisions.push(AgentConfigRevision {
                     config: serde_json::from_str(&data).map_err(reject)?,
                     revision,
+                    created_at_unix_ms: Some(created_at_unix_ms),
+                    updated_at_unix_ms: Some(updated_at_unix_ms),
                 });
             }
             Ok(revisions)
