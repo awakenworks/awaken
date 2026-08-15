@@ -103,6 +103,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use awaken_authorization_contract::{
+    RouteAccess, RouteGuardSelection, application_route_policy, run_backed_route_policy,
+};
 use awaken_iam_contract::{
     ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
     AuthorizationRequest, CreateAuthorizationProfile, OrgId, PolicySnapshot, PrincipalRef,
@@ -189,7 +192,9 @@ const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
+#[cfg(test)]
 const RUN_CREATE: &str = "run.create";
+#[cfg(test)]
 const RUN_READ: &str = "run.read";
 
 fn persisted_role(role: &str) -> RoleId {
@@ -885,21 +890,11 @@ enum RouteFamilyPolicy {
         read: &'static str,
         write: &'static str,
     },
-    HostedRuntime {
-        read: &'static str,
-        write: &'static str,
-        embedded_read: &'static str,
-        embedded_write: &'static str,
-    },
+    RunBacked,
     TokenAdmin,
 }
 
-const HOSTED_RUN_POLICY: RouteFamilyPolicy = RouteFamilyPolicy::HostedRuntime {
-    read: RUN_READ,
-    write: RUN_CREATE,
-    embedded_read: WORKSPACE_READ,
-    embedded_write: WORKSPACE_WRITE,
-};
+const HOSTED_RUN_POLICY: RouteFamilyPolicy = RouteFamilyPolicy::RunBacked;
 
 const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor::hosted_runtime("/v1/sessions", HOSTED_RUN_POLICY),
@@ -1389,6 +1384,11 @@ fn query_workspace_id(query: Option<&str>) -> Option<String> {
 /// family's read/write rule and an unknown family still fails closed.
 fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
     let is_read = matches!(*method, Method::GET | Method::HEAD);
+    let access = if is_read {
+        RouteAccess::Read
+    } else {
+        RouteAccess::Write
+    };
 
     // The management guard is installed only over the composed management
     // Router. Its concrete route table is therefore the membership declaration;
@@ -1407,7 +1407,9 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         && in_family(path, "/v1/config")
     {
         return match descriptor.policy {
-            RouteFamilyPolicy::Application => Some(RouteAuthz::Application),
+            RouteFamilyPolicy::Application => {
+                Some(route_from_contract(application_route_policy(access)))
+            }
             RouteFamilyPolicy::Scoped { read, .. } => Some(RouteAuthz::Scoped {
                 action: read,
                 scope: ScopeClass::Workspace,
@@ -1416,20 +1418,14 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
                 action: read,
                 scope: ScopeClass::Workspace,
             }),
-            RouteFamilyPolicy::HostedRuntime {
-                read,
-                embedded_read,
-                ..
-            } => Some(RouteAuthz::HostedRuntime {
-                action: read,
-                embedded_action: embedded_read,
-                scope: ScopeClass::Workspace,
-            }),
+            RouteFamilyPolicy::RunBacked => Some(route_from_contract(run_backed_route_policy(
+                RouteAccess::Read,
+            ))),
             RouteFamilyPolicy::TokenAdmin => Some(RouteAuthz::TokenAdmin),
         };
     }
     Some(match descriptor.policy {
-        RouteFamilyPolicy::Application => RouteAuthz::Application,
+        RouteFamilyPolicy::Application => route_from_contract(application_route_policy(access)),
         RouteFamilyPolicy::Scoped { read, write } => RouteAuthz::Scoped {
             action: if is_read { read } else { write },
             scope: ScopeClass::Workspace,
@@ -1438,22 +1434,23 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             action: if is_read { read } else { write },
             scope: ScopeClass::Workspace,
         },
-        RouteFamilyPolicy::HostedRuntime {
-            read,
-            write,
-            embedded_read,
-            embedded_write,
-        } => RouteAuthz::HostedRuntime {
-            action: if is_read { read } else { write },
-            embedded_action: if is_read {
-                embedded_read
-            } else {
-                embedded_write
-            },
-            scope: ScopeClass::Workspace,
-        },
+        RouteFamilyPolicy::RunBacked => route_from_contract(run_backed_route_policy(access)),
         RouteFamilyPolicy::TokenAdmin => RouteAuthz::TokenAdmin,
     })
+}
+
+fn route_from_contract(selection: RouteGuardSelection) -> RouteAuthz {
+    match selection {
+        RouteGuardSelection::Application => RouteAuthz::Application,
+        RouteGuardSelection::HostedRuntime {
+            action,
+            embedded_action,
+        } => RouteAuthz::HostedRuntime {
+            action: action.as_str(),
+            embedded_action: embedded_action.as_str(),
+            scope: ScopeClass::Workspace,
+        },
+    }
 }
 
 fn in_family(path: &str, prefix: &str) -> bool {

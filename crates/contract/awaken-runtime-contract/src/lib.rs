@@ -14,6 +14,7 @@ pub mod inference;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
+pub mod model_routing;
 pub mod pause;
 pub mod permission;
 pub mod plugin;

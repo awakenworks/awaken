@@ -15,6 +15,37 @@ use std::time::Duration;
 
 use crate::llm::Error;
 
+/// The only non-terminal retry lifecycle state.  Numeric input is intentional:
+/// persisted or protocol-produced unknown states must be representable and fail
+/// closed instead of being coerced into another retry.
+pub const RETRY_ACTIVE_STATE: u8 = 0;
+/// Absorbing state after the caller has decided not to make another attempt.
+pub const RETRY_TERMINAL_STATE: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryDecision {
+    Retry,
+    Terminal,
+}
+
+/// Exact bounded-retry kernel shared by the asynchronous inference loop and
+/// Kani.  Only a known active state, a retryable classification, and remaining
+/// budget authorize another provider effect.  Terminal and unknown states are
+/// absorbing/fail-closed.
+#[must_use]
+pub const fn bounded_retry_decision(
+    state: u8,
+    retryable: bool,
+    failed_attempt: u32,
+    max_retries: u32,
+) -> RetryDecision {
+    if state == RETRY_ACTIVE_STATE && retryable && failed_attempt < max_retries {
+        RetryDecision::Retry
+    } else {
+        RetryDecision::Terminal
+    }
+}
+
 /// The failover disposition of an inference failure.
 ///
 /// Three states, collapsing the finer [`Error`] taxonomy onto the only distinction
@@ -101,6 +132,63 @@ impl Classify for Error {
             | Error::ModelNotFound(_)
             | Error::ContentFiltered(_) => Disposition::Permanent,
         }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{RETRY_ACTIVE_STATE, RETRY_TERMINAL_STATE, RetryDecision, bounded_retry_decision};
+
+    #[kani::proof]
+    fn retry_is_authorized_only_inside_the_exact_bounded_budget() {
+        let retryable: bool = kani::any();
+        let failed_attempt: u32 = kani::any();
+        let max_retries: u32 = kani::any();
+        let decision =
+            bounded_retry_decision(RETRY_ACTIVE_STATE, retryable, failed_attempt, max_retries);
+        assert_eq!(
+            decision == RetryDecision::Retry,
+            retryable && failed_attempt < max_retries
+        );
+        if decision == RetryDecision::Retry {
+            assert!(failed_attempt.checked_add(1).is_some());
+            assert!(failed_attempt + 1 <= max_retries);
+        }
+    }
+
+    #[kani::proof]
+    fn non_retryable_failure_is_immediately_terminal() {
+        let failed_attempt: u32 = kani::any();
+        let max_retries: u32 = kani::any();
+        assert_eq!(
+            bounded_retry_decision(RETRY_ACTIVE_STATE, false, failed_attempt, max_retries,),
+            RetryDecision::Terminal
+        );
+    }
+
+    #[kani::proof]
+    fn terminal_retry_state_never_reopens() {
+        let retryable: bool = kani::any();
+        let failed_attempt: u32 = kani::any();
+        let max_retries: u32 = kani::any();
+        let first =
+            bounded_retry_decision(RETRY_TERMINAL_STATE, retryable, failed_attempt, max_retries);
+        assert_eq!(first, RetryDecision::Terminal);
+        let second = bounded_retry_decision(RETRY_TERMINAL_STATE, true, failed_attempt, u32::MAX);
+        assert_eq!(second, RetryDecision::Terminal);
+    }
+
+    #[kani::proof]
+    fn unknown_retry_state_fails_closed() {
+        let state: u8 = kani::any();
+        kani::assume(state != RETRY_ACTIVE_STATE && state != RETRY_TERMINAL_STATE);
+        let retryable: bool = kani::any();
+        let failed_attempt: u32 = kani::any();
+        let max_retries: u32 = kani::any();
+        assert_eq!(
+            bounded_retry_decision(state, retryable, failed_attempt, max_retries),
+            RetryDecision::Terminal
+        );
     }
 }
 

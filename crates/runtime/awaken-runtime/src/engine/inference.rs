@@ -6,7 +6,9 @@
 //! `use super::*` (same-crate privates included).
 
 use super::*;
-use awaken_runtime_contract::resilience::Classify;
+use awaken_runtime_contract::resilience::{
+    Classify, RETRY_ACTIVE_STATE, RetryDecision, bounded_retry_decision,
+};
 
 /// Rebuild a request that carries the confirmed partial as an assistant prefix
 /// followed by a continuation prompt, so the model continues rather than
@@ -285,7 +287,13 @@ async fn infer_with_retry_inner(
                     }
                 }
 
-                if retryable && attempt < policy.max_retries {
+                let retry_decision = bounded_retry_decision(
+                    RETRY_ACTIVE_STATE,
+                    retryable,
+                    u32::try_from(attempt).unwrap_or(u32::MAX),
+                    u32::try_from(policy.max_retries).unwrap_or(u32::MAX),
+                );
+                if retry_decision == RetryDecision::Retry {
                     // R1/R3/R4 collapse: continue from the combined text (empty ⇒
                     // clean restart); any still-open tool call is dropped.
                     prefix = combined_text;

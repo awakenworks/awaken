@@ -16,8 +16,11 @@ trap 'rm -rf "$formal_tmp_root"' EXIT
 rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
+python3 scripts/ci/check_feature_coverage.py
 python3 scripts/ci/check_formal_coverage.py
 python3 scripts/ci/check_formal_surface.py
+python3 scripts/ci/check_proof_boundaries.py
+python3 scripts/ci/check_formal_mutations.py
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
@@ -50,6 +53,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent
+  run_kani awaken-authorization-contract \
+    --harness run_backed_route_policy_uses_exact_run_actions \
+    --harness application_route_policy_never_enters_the_service_guard \
+    --harness credential_ingress_role_contains_only_workspace_apikey_authority \
+    --harness agent_publisher_role_contains_only_workspace_model_read_and_skill_authority
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
@@ -67,6 +75,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_execution_never_reopens \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness runtime_intervals_open_once_and_never_close_before_start
+  run_kani awaken-service-auth-contract \
+    --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
     --harness any_uncovered_selector_fails_closed \
@@ -91,22 +101,34 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness exhausted_credentials_are_unavailable_at_every_time \
     --harness a_pool_with_no_enabled_available_member_fails_closed
   run_kani awaken-config-resolver \
-    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence
+    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
+    --harness provider_scope_never_widens_endpoint_scope
   run_kani awaken-agent-config \
     --harness processing_geography_requires_exact_evidence_from_every_candidate
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
-    --harness environment_credential_custody_selects_exactly_one_authorized_profile
+    --harness environment_credential_custody_selects_exactly_one_authorized_profile \
+    --harness http_effect_material_shape_is_exact_and_non_widening \
+    --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-dispatch-contract \
     --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation
   run_kani awaken-credential-materializer \
-    --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source
+    --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
+    --harness platform_relay_local_gate_admits_only_exact_platform_relay
   run_kani awaken-executable-agent-contract \
-    --harness requested_agent_profile_accepts_only_the_same_positive_revision
+    --harness requested_agent_profile_accepts_only_the_same_positive_revision \
+    --harness executable_snapshot_pin_is_complete_exact_and_non_mixing \
+    --harness every_duplicated_snapshot_pin_axis_is_binding
   run_kani awaken-file-store --features object-store \
     --harness object_store_configuration_accepts_exactly_the_provider_compatible_shape
   run_kani awaken-protocol-acp \
     --harness permission_consensus_is_a_conservative_order_independent_semilattice
+  run_kani awaken-protocol-a2a \
+    --harness a2a_task_state_projection_is_total_exact_and_non_strengthening
+  run_kani awaken-ext-mcp \
+    --harness sensitive_marker_never_projects_payload_publicly \
+    --harness sensitivity_markers_can_never_widen_a_redacted_projection \
+    --harness notification_admission_is_exact_and_unknown_fails_closed
   run_kani awaken-sandbox-container \
     --harness continuation_writable_roots_share_one_claim_without_aliasing
   run_kani awaken-store-schema \
@@ -129,7 +151,22 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_delivery_phases_never_reopen \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
     --harness live_inbox_identity_advances_strictly_or_exhausts \
-    --harness advisor_never_substitutes_for_primary_model_admission
+    --harness advisor_never_substitutes_for_primary_model_admission \
+    --harness fallback_selection_preserves_the_complete_publication_pin \
+    --harness every_route_pin_axis_participates_in_exact_identity \
+    --harness capture_meet_is_exact_commutative_and_non_widening \
+    --harness capture_projection_admits_content_only_at_full \
+    --harness non_full_capture_fails_closed_before_redaction \
+    --harness tool_capability_intersection_never_widens_configured_authority \
+    --harness permission_verdict_projects_to_exact_non_widening_gate_outcome \
+    --harness every_gate_outcome_has_one_exact_audit_label
+  run_kani awaken-ext-permission \
+    --harness unmatched_permission_mode_is_exact_and_plan_fails_closed \
+    --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority
+  run_kani awaken-session-executor \
+    --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
+    --harness configured_capture_redactor_selection_is_total_and_exact \
+    --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -142,6 +179,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness never_replace_rejects_every_replacement \
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
     --harness same_incarnation_never_spends_replacement_authority
+  run_kani awaken-worker-transport-security \
+    --harness worker_transport_selector_admits_only_three_exact_postures \
+    --harness remote_transport_never_downgrades_or_widens_identity
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
   missing=1
@@ -160,6 +200,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/MountCoordinatorProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/ExecutableProjectionRefreshProof.tla
 else
   echo "skipped TLAPS: set TLAPM_BIN or install tlapm"
   missing=1
@@ -229,6 +270,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/observation-reconcile" \
     -config formal/tla/ObservationReconcile.cfg formal/tla/ObservationReconcile.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/executable-projection-refresh" \
+    -config formal/tla/ExecutableProjectionRefresh.cfg \
+    formal/tla/ExecutableProjectionRefresh.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/checkpoint-recovery" \
     -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
@@ -302,6 +347,17 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-replacement" \
     -config formal/tla/WorkerReplacement.cfg formal/tla/WorkerReplacement.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/acp-boundary" \
+    -config formal/tla/AcpBoundary.cfg formal/tla/AcpBoundary.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/credential-effect-boundary" \
+    -config formal/tla/CredentialEffectBoundary.cfg \
+    formal/tla/CredentialEffectBoundary.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-realization-mutex" \
+    -config formal/tla/SessionRealizationMutex.cfg \
+    formal/tla/SessionRealizationMutex.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \

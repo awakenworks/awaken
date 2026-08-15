@@ -12,9 +12,12 @@ use std::path::{Path, PathBuf};
 
 use awaken_runtime_contract::{
     CredentialEnvelope, CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
-    CredentialMaterialResolver, CredentialMaterialSource, CredentialUsage, PlaintextBoundary,
-    PlaintextHolder, RedactedString, ResolvedCredentialMaterial, StructuredCredentialMaterial,
+    CredentialMaterialResolver, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
+    RedactedString, ResolvedCredentialMaterial, StructuredCredentialMaterial,
 };
+
+#[path = "worker_projection.rs"]
+mod worker_projection;
 
 const MAX_PROJECTED_FIELD_BYTES: u64 = 1024 * 1024;
 
@@ -45,7 +48,7 @@ impl WorkerCredentialFileResolver {
     pub fn new(root: impl Into<PathBuf>, trust_domain: impl Into<String>) -> Self {
         Self {
             root: root.into(),
-            holder: PlaintextHolder::new(PlaintextBoundary::Worker, trust_domain),
+            holder: worker_projection::exact_worker_holder(trust_domain),
         }
     }
 
@@ -204,7 +207,8 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialRef, ModelExposurePolicy, SealedCredentialEnvelopeRef, TrustDomainRef,
+        CredentialRef, ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef,
+        TrustDomainRef,
     };
 
     fn temp_root(tag: &str) -> PathBuf {

@@ -141,9 +141,10 @@ mod tests {
     fn refresh_scope_covers_every_runtime_write_and_excludes_reads() {
         // Causes: C1 Session create, C2 existing-Session POST that can realize or
         // resume work, C3 Deployment create/run, C4 read-only Session request,
-        // C5 unrelated POST. Effects: E1 refresh both installed executable
-        // projections before continuing; E2 perform no projection database read.
-        // Decision rules R1-R3 map C1-C3 to E1; R4-R5 map C4-C5 to E2.
+        // C5 live-inbox edit of an already-active attempt, C6 unrelated POST.
+        // Effects: E1 refresh both installed executable projections before
+        // continuing; E2 perform no projection database read. Decision rules
+        // R1-R3 map C1-C3 to E1; R4-R6 map C4-C6 to E2.
         assert!(
             requires_projection_refresh(&Method::POST, "/v1/sessions"),
             "R1"
@@ -161,8 +162,12 @@ mod tests {
             "R4"
         );
         assert!(
-            !requires_projection_refresh(&Method::POST, "/v1/agents"),
+            !requires_projection_refresh(&Method::POST, "/v1/awaken/sessions/sesn_1/live-inbox"),
             "R5"
+        );
+        assert!(
+            !requires_projection_refresh(&Method::POST, "/v1/agents"),
+            "R6"
         );
     }
 

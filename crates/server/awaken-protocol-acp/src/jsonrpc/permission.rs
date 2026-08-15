@@ -1,6 +1,7 @@
 //! Agent-to-client permission request handling for the ACP JSON-RPC driver.
 
 use super::*;
+use crate::{PermissionConsensus, permission_consensus_class};
 
 #[derive(Clone)]
 struct ObservedToolCall {
@@ -28,6 +29,39 @@ impl PermissionContext {
                     input: input.clone(),
                 },
             );
+        }
+    }
+
+    fn matching_observed_tool(&self, call_id: &str) -> Option<&ObservedToolCall> {
+        let candidate = self.observed_tools.get_key_value(call_id);
+        let requested_id = (!call_id.is_empty()).then_some(call_id);
+        let observed_id = candidate.map(|(observed_id, _)| observed_id.as_str());
+        match normalize_tool_identity_source(requested_id, observed_id) {
+            ToolIdentitySource::Observed => candidate.map(|(_, observed)| observed),
+            ToolIdentitySource::Raw => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolIdentitySource {
+    Raw,
+    Observed,
+}
+
+/// Select the more precise observed identity only for one exact, non-empty ACP
+/// `toolCallId`. Absence, an empty request id, and any unequal id all retain the
+/// request's raw identity, so an unrelated call can never lend its name/input.
+fn normalize_tool_identity_source<Id: PartialEq>(
+    requested_id: Option<Id>,
+    observed_id: Option<Id>,
+) -> ToolIdentitySource {
+    match (requested_id, observed_id) {
+        (Some(requested_id), Some(observed_id)) if requested_id == observed_id => {
+            ToolIdentitySource::Observed
+        }
+        (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) | (None, None) => {
+            ToolIdentitySource::Raw
         }
     }
 }
@@ -117,11 +151,34 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
         call_id,
         arguments,
     };
-    if let Some(observed) = context.observed_tools.get(&ask.call_id) {
+    if let Some(observed) = context.matching_observed_tool(&ask.call_id) {
         ask.tool.clone_from(&observed.name);
         ask.arguments.clone_from(&observed.input);
     }
     ask
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_permission_tool_identity_normalization_is_exact() {
+    let requested_value: u16 = kani::any();
+    let observed_value: u16 = kani::any();
+    let requested_nonempty: bool = kani::any();
+    let observed_present: bool = kani::any();
+
+    let requested_id = requested_nonempty.then_some(requested_value);
+    let observed_id = observed_present.then_some(observed_value);
+    let selected = normalize_tool_identity_source(requested_id, observed_id);
+    let exact_nonempty_match =
+        requested_nonempty && observed_present && requested_value == observed_value;
+
+    assert_eq!(
+        selected == ToolIdentitySource::Observed,
+        exact_nonempty_match
+    );
+    if !requested_nonempty || !observed_present || requested_value != observed_value {
+        assert_eq!(selected, ToolIdentitySource::Raw);
+    }
 }
 
 /// Project a [`PermissionVerdict`] onto the agent's own offered option: an
@@ -132,29 +189,105 @@ fn select_outcome(
     req: &RequestPermissionRequest,
     verdict: PermissionVerdict,
 ) -> RequestPermissionOutcome {
-    let (once, always) = match verdict {
-        PermissionVerdict::Allow => (
-            PermissionOptionKind::AllowOnce,
-            PermissionOptionKind::AllowAlways,
-        ),
-        PermissionVerdict::Deny => (
-            PermissionOptionKind::RejectOnce,
-            PermissionOptionKind::RejectAlways,
-        ),
-        PermissionVerdict::Await { .. } => {
-            unreachable!("await is handled before immediate outcome selection")
-        }
-    };
-    let chosen = req
-        .options
-        .iter()
-        .find(|o| o.kind == once)
-        .or_else(|| req.options.iter().find(|o| o.kind == always));
+    let offered = |kind| req.options.iter().any(|option| option.kind == kind);
+    let selected_kind = project_permission_option(
+        permission_consensus_class(&verdict),
+        offered(PermissionOptionKind::AllowOnce),
+        offered(PermissionOptionKind::AllowAlways),
+        offered(PermissionOptionKind::RejectOnce),
+        offered(PermissionOptionKind::RejectAlways),
+    );
+    let chosen = selected_kind
+        .permission_kind()
+        .and_then(|kind| req.options.iter().find(|option| option.kind == kind));
     match chosen {
         Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         )),
         None => RequestPermissionOutcome::Cancelled,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpPermissionProjection {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+    Cancelled,
+}
+
+impl AcpPermissionProjection {
+    const fn permission_kind(self) -> Option<PermissionOptionKind> {
+        match self {
+            Self::AllowOnce => Some(PermissionOptionKind::AllowOnce),
+            Self::AllowAlways => Some(PermissionOptionKind::AllowAlways),
+            Self::RejectOnce => Some(PermissionOptionKind::RejectOnce),
+            Self::RejectAlways => Some(PermissionOptionKind::RejectAlways),
+            Self::Cancelled => None,
+        }
+    }
+}
+
+/// Total, allocation-free projection from a neutral verdict and the exact ACP
+/// offer set. `Await` and a missing same-polarity option both fail closed to
+/// cancellation; an opposite-polarity option can never satisfy the verdict.
+const fn project_permission_option(
+    verdict: PermissionConsensus,
+    allow_once: bool,
+    allow_always: bool,
+    reject_once: bool,
+    reject_always: bool,
+) -> AcpPermissionProjection {
+    match verdict {
+        PermissionConsensus::Allow if allow_once => AcpPermissionProjection::AllowOnce,
+        PermissionConsensus::Allow if allow_always => AcpPermissionProjection::AllowAlways,
+        PermissionConsensus::Deny if reject_once => AcpPermissionProjection::RejectOnce,
+        PermissionConsensus::Deny if reject_always => AcpPermissionProjection::RejectAlways,
+        PermissionConsensus::Allow | PermissionConsensus::Await | PermissionConsensus::Deny => {
+            AcpPermissionProjection::Cancelled
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_permission_projection_is_total_exact_and_non_widening() {
+    let verdict = crate::arbitrary_permission_consensus(kani::any(), kani::any());
+    let allow_once: bool = kani::any();
+    let allow_always: bool = kani::any();
+    let reject_once: bool = kani::any();
+    let reject_always: bool = kani::any();
+    let projected = project_permission_option(
+        verdict,
+        allow_once,
+        allow_always,
+        reject_once,
+        reject_always,
+    );
+
+    let expected = match verdict {
+        PermissionConsensus::Allow if allow_once => AcpPermissionProjection::AllowOnce,
+        PermissionConsensus::Allow if allow_always => AcpPermissionProjection::AllowAlways,
+        PermissionConsensus::Deny if reject_once => AcpPermissionProjection::RejectOnce,
+        PermissionConsensus::Deny if reject_always => AcpPermissionProjection::RejectAlways,
+        PermissionConsensus::Allow | PermissionConsensus::Await | PermissionConsensus::Deny => {
+            AcpPermissionProjection::Cancelled
+        }
+    };
+    assert_eq!(projected, expected);
+    match verdict {
+        PermissionConsensus::Allow => assert!(!matches!(
+            projected,
+            AcpPermissionProjection::RejectOnce | AcpPermissionProjection::RejectAlways
+        )),
+        PermissionConsensus::Await => {
+            assert_eq!(projected, AcpPermissionProjection::Cancelled)
+        }
+        PermissionConsensus::Deny => assert!(!matches!(
+            projected,
+            AcpPermissionProjection::AllowOnce | AcpPermissionProjection::AllowAlways
+        )),
     }
 }
 
@@ -191,6 +324,10 @@ mod tests {
         let unrelated = permission_ask(&raw("other"), &context);
         assert_eq!(unrelated.tool, "execute", "R2");
         assert!(unrelated.arguments.is_null(), "R2");
+
+        let empty = permission_ask(&raw(""), &context);
+        assert_eq!(empty.tool, "execute", "empty ids fail closed");
+        assert!(empty.arguments.is_null(), "empty ids fail closed");
     }
 
     fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {

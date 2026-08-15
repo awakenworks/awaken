@@ -38,8 +38,8 @@ pub mod resource_plane {
 
 pub use agent_config::{
     AGENT_TOOLSET_TOOL_IDS, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
-    AgentToolPermissionPolicy, CustomToolInputSchema, ObjectSchemaKind, is_agent_toolset_member,
-    resolved_toolsets, toolset_policies,
+    AgentToolPermissionPolicy, AgentToolsetMember, CustomToolInputSchema, ObjectSchemaKind,
+    agent_toolset_members, is_agent_toolset_member, resolved_toolsets, toolset_policies,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
@@ -127,7 +127,8 @@ pub use session_repo::{
     SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{
-    SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, validate_skill_bundle,
+    SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,
+    validate_skill_bundle,
 };
 pub use terminal_cleanup::{
     SessionTerminalCleanupError, SessionTerminalCleanupIntent, SessionTerminalCleanupReceipt,

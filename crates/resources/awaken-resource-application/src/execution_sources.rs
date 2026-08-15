@@ -267,7 +267,7 @@ impl<C: Sync> SkillBundleSource<C> for StoreSkillBundleSource {
             .version(workspace_id, &binding.skill_id, binding.version)
             .await
             .map_err(|error| SkillBundleSourceError::new(error.to_string()))?
-            .map(|version| validate_skill_bundle(binding, version))
+            .map(|version| validate_skill_bundle(workspace_id, workspace_id, binding, version))
             .transpose()
     }
 }

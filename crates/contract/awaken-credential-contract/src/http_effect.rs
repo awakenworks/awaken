@@ -2,6 +2,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::CredentialUsage;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HttpEffectMaterialShape {
+    Secret,
+    Structured,
+}
+
+/// Exact material-shape kernel shared by the concrete material validator and
+/// its bounded proof. A scalar secret can bind one and only one declared field;
+/// structured material must have the complete, equal key set. Empty effects are
+/// rejected here as well as by [`CredentialUsage::validate`], keeping the kernel
+/// fail closed when reused independently.
+#[must_use]
+pub(crate) const fn http_effect_material_shape_is_exact(
+    shape: HttpEffectMaterialShape,
+    declared_fields: usize,
+    structured_keys_exact: bool,
+) -> bool {
+    declared_fields != 0
+        && match shape {
+            HttpEffectMaterialShape::Secret => declared_fields == 1,
+            HttpEffectMaterialShape::Structured => structured_keys_exact,
+        }
+}
+
 /// One exact destination at which a hosted HTTP effect may render a material
 /// field. JSON pointers are rooted at the effect's `json` or `body` value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -129,6 +153,39 @@ pub enum CredentialUsageError {
     InvalidQueryName,
     #[error("HTTP-effect credential usage has an invalid RFC 6901 JSON pointer")]
     InvalidJsonPointer,
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::{HttpEffectMaterialShape, http_effect_material_shape_is_exact};
+
+    /// Exhaustively proves the HTTP effect material shape cannot silently drop,
+    /// add, or merge fields: scalar material binds exactly one declared field,
+    /// while structured material requires non-empty exact key equality.
+    #[kani::proof]
+    fn http_effect_material_shape_is_exact_and_non_widening() {
+        let declared_fields = kani::any::<usize>();
+        let structured_keys_exact = kani::any::<bool>();
+        let shape = if kani::any::<bool>() {
+            HttpEffectMaterialShape::Secret
+        } else {
+            HttpEffectMaterialShape::Structured
+        };
+        let admitted =
+            http_effect_material_shape_is_exact(shape, declared_fields, structured_keys_exact);
+
+        match shape {
+            HttpEffectMaterialShape::Secret => {
+                assert_eq!(admitted, declared_fields == 1);
+            }
+            HttpEffectMaterialShape::Structured => {
+                assert_eq!(admitted, declared_fields != 0 && structured_keys_exact);
+            }
+        }
+        if admitted {
+            assert_ne!(declared_fields, 0);
+        }
+    }
 }
 
 #[cfg(test)]

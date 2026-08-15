@@ -29,6 +29,24 @@ pub(crate) fn working_task(task_id: &str, thread: &str) -> Task {
     }
 }
 
+/// Total projection from the authoritative runtime lifecycle to A2A state.
+///
+/// `Running` and an indeterminate terminal observation remain non-terminal on
+/// the wire. Only exact successful, failed, or cancelled causes can strengthen
+/// the projection into the corresponding terminal A2A state.
+#[must_use]
+pub(crate) fn task_state_for_run_state(state: &RunState) -> TaskState {
+    match state {
+        RunState::Running | RunState::Ended(EndCause::Indeterminate) => TaskState::Working,
+        RunState::Awaiting => TaskState::InputRequired,
+        RunState::Ended(EndCause::Error(_) | EndCause::MaxSteps | EndCause::Stopped(_)) => {
+            TaskState::Failed
+        }
+        RunState::Ended(EndCause::Cancelled) => TaskState::Canceled,
+        RunState::Ended(EndCause::NaturalEnd) => TaskState::Completed,
+    }
+}
+
 /// Build the `Task` returned for a step on `thread`. `history` is the thread's full
 /// committed transcript (post-step); `outcome` classifies the terminal state.
 pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome) -> Task {
@@ -37,16 +55,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         .filter_map(|m| to_a2a_message(thread, m))
         .collect();
 
-    let state = match outcome.state() {
-        RunState::Awaiting => TaskState::InputRequired,
-        RunState::Ended(EndCause::Error(_) | EndCause::MaxSteps | EndCause::Stopped(_)) => {
-            TaskState::Failed
-        }
-        RunState::Ended(EndCause::Cancelled) => TaskState::Canceled,
-        RunState::Ended(EndCause::Indeterminate) => TaskState::Working,
-        RunState::Ended(EndCause::NaturalEnd) => TaskState::Completed,
-        RunState::Running => unreachable!("StepOutcome cannot contain Running"),
-    };
+    let state = task_state_for_run_state(outcome.state());
 
     // The status message is what the agent last said. A terminal fault carries its
     // message so the task explains why it failed; when awaiting on a tool, it is the
@@ -90,6 +99,51 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         history: messages,
         artifacts: Vec::new(),
         metadata: None,
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use awaken_agent_contract::agent::run::Failure;
+
+    #[kani::proof]
+    fn a2a_task_state_projection_is_total_exact_and_non_strengthening() {
+        let tag: u8 = kani::any();
+        kani::assume(tag <= 7);
+        let state = match tag {
+            0 => RunState::Running,
+            1 => RunState::Awaiting,
+            2 => RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+            3 => RunState::Ended(EndCause::MaxSteps),
+            4 => RunState::Ended(EndCause::Stopped(String::new())),
+            5 => RunState::Ended(EndCause::Cancelled),
+            6 => RunState::Ended(EndCause::Indeterminate),
+            _ => RunState::Ended(EndCause::NaturalEnd),
+        };
+
+        let projected = task_state_for_run_state(&state);
+        match projected {
+            TaskState::Working => assert!(matches!(
+                state,
+                RunState::Running | RunState::Ended(EndCause::Indeterminate)
+            )),
+            TaskState::InputRequired => assert_eq!(state, RunState::Awaiting),
+            TaskState::Failed => assert!(matches!(
+                state,
+                RunState::Ended(EndCause::Error(_) | EndCause::MaxSteps | EndCause::Stopped(_))
+            )),
+            TaskState::Canceled => {
+                assert_eq!(state, RunState::Ended(EndCause::Cancelled))
+            }
+            TaskState::Completed => {
+                assert_eq!(state, RunState::Ended(EndCause::NaturalEnd))
+            }
+            TaskState::Submitted
+            | TaskState::AuthRequired
+            | TaskState::Rejected
+            | TaskState::Unknown => unreachable!("runtime projection cannot invent this state"),
+        }
     }
 }
 

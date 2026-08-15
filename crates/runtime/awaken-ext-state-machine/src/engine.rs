@@ -10,7 +10,10 @@
 use awaken_agent_contract::agent::message::Role;
 use serde_json::Value;
 
-use crate::machine::{Emit, EmitTarget, Machine, MachineScope, Transition, ViolationAction};
+use crate::machine::{
+    Emit, EmitTarget, Machine, MachineScope, Transition, TransitionAdvanceDecision,
+    ViolationAction, transition_advance_decision, transition_preconditions_met,
+};
 use crate::result::ToolResultView;
 use crate::state::{FsmStore, MachineInstance};
 
@@ -260,12 +263,19 @@ pub fn advance_evaluate(
         let from_ok: Vec<&Transition> = machine
             .matching_transitions(tool_name, tool_args)
             .filter(|t| {
-                t.allows_from(current) && counters_match(t, store.instance(&machine.name, &key))
+                transition_preconditions_met(
+                    true,
+                    t.allows_from(current),
+                    counters_match(t, store.instance(&machine.name, &key)),
+                )
             })
             .collect();
 
         if !from_ok.is_empty() {
-            let fired = from_ok.iter().copied().find(|t| t.result_matches(result));
+            let fired = from_ok.iter().copied().find(|t| {
+                transition_advance_decision(true, true, t.result_matches(result), false)
+                    == TransitionAdvanceDecision::Advance
+            });
             match fired {
                 Some(t) => {
                     if t.to != current || store.instance(&machine.name, &key).is_none() {
@@ -282,7 +292,14 @@ pub fn advance_evaluate(
                     }
                 }
                 None => {
-                    if let Some(to) = &machine.on_unmatched
+                    let fallback = transition_advance_decision(
+                        true,
+                        true,
+                        false,
+                        machine.on_unmatched.is_some(),
+                    );
+                    if fallback == TransitionAdvanceDecision::Fallback
+                        && let Some(to) = &machine.on_unmatched
                         && to.as_str() != current
                     {
                         out.push(AdvanceOp::Transition {
@@ -340,8 +357,11 @@ pub fn event_evaluate(
         let Some(transition) = machine
             .matching_event_transitions(event.name, event.data)
             .find(|transition| {
-                transition.allows_from(current)
-                    && counters_match(transition, store.instance(&machine.name, &key))
+                transition_preconditions_met(
+                    true,
+                    transition.allows_from(current),
+                    counters_match(transition, store.instance(&machine.name, &key)),
+                )
             })
         else {
             continue;

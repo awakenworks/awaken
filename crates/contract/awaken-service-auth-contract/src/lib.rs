@@ -205,7 +205,20 @@ pub fn service_bearer_token_rotated(
     source: &dyn ServiceBearerTokenSource,
     attempted: &str,
 ) -> Result<bool, String> {
-    Ok(resolve_service_bearer_token(source)?.as_ref() != attempted)
+    let current = resolve_service_bearer_token(source)?;
+    Ok(service_token_retry_enabled(
+        attempted.as_bytes(),
+        current.as_bytes(),
+    ))
+}
+
+/// Enable the single bounded authentication retry only when re-reading the
+/// credential yields different token bytes. An unchanged rejected credential
+/// is terminal; HTTP status, elapsed time, or retry count cannot widen this
+/// gate.
+#[must_use]
+fn service_token_retry_enabled(attempted: &[u8], current: &[u8]) -> bool {
+    attempted != current
 }
 
 pub fn static_token_source(
@@ -358,5 +371,20 @@ mod tests {
         assert!(source.current_token().is_err(), "R2 empty");
         std::fs::write(&path, "second").unwrap();
         assert_eq!(&*source.current_token().unwrap(), "second", "R3");
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::service_token_retry_enabled;
+
+    #[kani::proof]
+    fn service_token_retry_is_enabled_only_for_an_exact_changed_token() {
+        let attempted: [u8; 32] = kani::any();
+        let current: [u8; 32] = kani::any();
+        assert_eq!(
+            service_token_retry_enabled(&attempted, &current),
+            attempted != current
+        );
     }
 }

@@ -30,6 +30,41 @@ use crate::terminal::RunTerminalObserver;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use thiserror::Error;
 
+/// The only two destinations involved when an attempt is assembled. A
+/// transcript prefix is execution input for the current model request; it is
+/// never a candidate for the durable Thread append owned by the commit path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptContextDestination {
+    ModelRequest,
+    DurableThreadTruth,
+}
+
+/// Canonical request-context projection selector shared by every Runtime path.
+/// Keeping this as a closed, allocation-free kernel makes the non-persistence
+/// rule directly provable rather than relying on a comment at each caller.
+#[must_use]
+pub const fn transcript_prefix_projects_to(destination: TranscriptContextDestination) -> bool {
+    matches!(destination, TranscriptContextDestination::ModelRequest)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn transcript_prefix_is_exact_request_only_context_not_durable_truth() {
+    let destination = if kani::any() {
+        TranscriptContextDestination::ModelRequest
+    } else {
+        TranscriptContextDestination::DurableThreadTruth
+    };
+    let projected = transcript_prefix_projects_to(destination);
+    assert_eq!(
+        projected,
+        destination == TranscriptContextDestination::ModelRequest
+    );
+    if destination == TranscriptContextDestination::DurableThreadTruth {
+        assert!(!projected);
+    }
+}
+
 /// Why a live attempt may no longer proceed under its dispatch ownership.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum AttemptOwnershipError {
