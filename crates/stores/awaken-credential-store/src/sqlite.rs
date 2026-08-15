@@ -18,6 +18,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::schema::credential_bundle;
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_vault::catalog::{ManagedVault, ManagedVaultCredential, ManagedVaultRepo};
 use awaken_credential_vault::repo::{CredentialMutationIntent, CredentialRepo};
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -126,8 +127,161 @@ fn list_rows<T: serde::de::DeserializeOwned>(
 
 /// A SQLite-backed [`CredentialRepo`] (secret-free rows only; the sealed
 /// material goes through [`SqliteSealedBlobStore`]).
+#[derive(Clone)]
 pub struct SqliteCredentialRepo {
     conn: Arc<Mutex<Connection>>,
+}
+
+#[async_trait::async_trait]
+impl ManagedVaultRepo for SqliteCredentialRepo {
+    async fn put_vault(&self, vault: ManagedVault) -> Result<(), CredentialError> {
+        let id = vault.id.clone();
+        let workspace_id = vault.workspace_id.clone();
+        let data = serde_json::to_string(&vault).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(&format!("INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"), params![id, workspace_id, data]).map_err(storage)?;
+            Ok(())
+        }).await
+    }
+
+    async fn get_vault(&self, id: &str) -> Result<Option<ManagedVault>, CredentialError> {
+        let id = id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            let data: Option<String> = conn
+                .query_row(
+                    &format!("SELECT data FROM {p}_managed_vault WHERE id = ?1"),
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            data.map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn list_vaults(&self, workspace_id: &str) -> Result<Vec<ManagedVault>, CredentialError> {
+        let workspace_id = workspace_id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            list_rows(
+                conn,
+                &format!("SELECT data FROM {p}_managed_vault WHERE workspace_id = ?1 ORDER BY id"),
+                &workspace_id,
+            )
+        })
+        .await
+    }
+
+    async fn delete_vault(&self, id: &str) -> Result<bool, CredentialError> {
+        let id = id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            tx.execute(
+                &format!("DELETE FROM {p}_managed_vault_credential WHERE vault_id = ?1"),
+                params![id],
+            )
+            .map_err(storage)?;
+            let removed = tx
+                .execute(
+                    &format!("DELETE FROM {p}_managed_vault WHERE id = ?1"),
+                    params![id],
+                )
+                .map_err(storage)?
+                > 0;
+            tx.commit().map_err(storage)?;
+            Ok(removed)
+        })
+        .await
+    }
+
+    async fn put_vault_credential(
+        &self,
+        credential: ManagedVaultCredential,
+    ) -> Result<(), CredentialError> {
+        let id = credential.id.clone();
+        let vault_id = credential.vault_id.clone();
+        let workspace_id = credential.workspace_id.clone();
+        let source_id = credential.source_id.0.clone();
+        let data = serde_json::to_string(&credential).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(&format!("INSERT INTO {p}_managed_vault_credential (id, vault_id, workspace_id, source_id, data) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET vault_id = excluded.vault_id, workspace_id = excluded.workspace_id, source_id = excluded.source_id, data = excluded.data"), params![id, vault_id, workspace_id, source_id, data]).map_err(storage)?;
+            Ok(())
+        }).await
+    }
+
+    async fn get_vault_credential(
+        &self,
+        id: &str,
+    ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
+        let id = id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            let data: Option<String> = conn
+                .query_row(
+                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            data.map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn get_vault_credential_by_source(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
+        let source_id = source_id.0.clone();
+        with_conn(&self.conn, move |conn, p| {
+            let data: Option<String> = conn
+                .query_row(
+                    &format!("SELECT data FROM {p}_managed_vault_credential WHERE source_id = ?1"),
+                    params![source_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            data.map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn list_vault_credentials(
+        &self,
+        vault_id: &str,
+    ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
+        let vault_id = vault_id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            list_rows(
+                conn,
+                &format!(
+                    "SELECT data FROM {p}_managed_vault_credential WHERE vault_id = ?1 ORDER BY id"
+                ),
+                &vault_id,
+            )
+        })
+        .await
+    }
+
+    async fn delete_vault_credential(&self, id: &str) -> Result<bool, CredentialError> {
+        let id = id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            Ok(conn
+                .execute(
+                    &format!("DELETE FROM {p}_managed_vault_credential WHERE id = ?1"),
+                    params![id],
+                )
+                .map_err(storage)?
+                > 0)
+        })
+        .await
+    }
 }
 
 impl SqliteCredentialRepo {
@@ -728,5 +882,95 @@ mod tests {
             "cred:paired"
         );
         assert_eq!(blobs.get_blob(&reference).await.unwrap(), b"sealed");
+    }
+
+    #[tokio::test]
+    async fn managed_vault_catalog_survives_restart_and_cascades_without_secret_duplication() {
+        // Cause/effect decision table for the new durable catalog boundary:
+        // | Rule | prior schema/data | operation | Effect |
+        // | R1 | released v4 DB with a source | start v6 code | v5/v6 append without losing the source |
+        // | R2 | R1 migrated | put vault + credential, then restart | both rows and exact source pin survive |
+        // | R3 | R2 | delete credential | vault remains and exact source lookup disappears |
+        // | R4 | credential re-added | delete vault | catalog projection cascades, source remains lifecycle-owned |
+        // Constraints: catalog rows are secret-free; `credential_source` and
+        // `credential_secret` remain the only metadata/material authorities.
+        use awaken_credential_vault::catalog::{
+            ManagedCredentialAuth, ManagedVault, ManagedVaultCredential, ManagedVaultRepo,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential.db");
+        let path = path.to_string_lossy().into_owned();
+        let source = source("cred:managed");
+        {
+            let connection = open_file_connection(&path).unwrap();
+            let previous = crate::schema::credential_bundle_before_managed_vaults().unwrap();
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+                .unwrap()
+                .run_bundle(&connection, &previous)
+                .unwrap();
+            let previous_repo = SqliteCredentialRepo::over(connection);
+            previous_repo.put(source.clone()).await.unwrap();
+        }
+        let credential = ManagedVaultCredential {
+            id: "crd-managed".into(),
+            vault_id: "vlt-managed".into(),
+            workspace_id: "ws".into(),
+            source_id: source.id.clone(),
+            auth: ManagedCredentialAuth::StaticBearer {
+                mcp_server_url: "https://mcp.example.com/mcp".into(),
+            },
+            metadata: Default::default(),
+            display_name: None,
+            archived_at: None,
+        };
+        {
+            let (repo, _) = open_migrated_pair(&path).unwrap();
+            assert_eq!(repo.get(&source.id).await.unwrap(), source, "R1");
+            repo.put_vault(ManagedVault {
+                id: "vlt-managed".into(),
+                workspace_id: "ws".into(),
+                display_name: "Managed".into(),
+                metadata: Default::default(),
+                archived_at: None,
+            })
+            .await
+            .unwrap();
+            repo.put_vault_credential(credential.clone()).await.unwrap();
+        }
+
+        let (repo, _) = open_migrated_pair(&path).unwrap();
+        assert_eq!(repo.list_vaults("ws").await.unwrap().len(), 1, "R2");
+        assert_eq!(
+            repo.get_vault_credential_by_source(&source.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            "crd-managed",
+            "R2"
+        );
+        assert!(
+            repo.delete_vault_credential(&credential.id).await.unwrap(),
+            "R3"
+        );
+        assert!(repo.get_vault("vlt-managed").await.unwrap().is_some(), "R3");
+        assert!(
+            repo.get_vault_credential_by_source(&source.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "R3"
+        );
+        repo.put_vault_credential(credential).await.unwrap();
+        assert!(repo.delete_vault("vlt-managed").await.unwrap(), "R4");
+        assert!(
+            repo.list_vault_credentials("vlt-managed")
+                .await
+                .unwrap()
+                .is_empty(),
+            "R4"
+        );
+        assert_eq!(repo.get(&source.id).await.unwrap(), source, "R4");
     }
 }

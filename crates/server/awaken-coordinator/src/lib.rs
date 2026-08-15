@@ -347,6 +347,7 @@ fn local_managed_state_over(
     let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
         secrets.clone(),
         credentials.clone(),
+        credentials.clone(),
     ));
     // Keep the Session aggregate and its extraction intents in the same concrete
     // repository. The two application SPIs remain separate, while their local

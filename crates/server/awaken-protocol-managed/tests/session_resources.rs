@@ -1271,9 +1271,12 @@ async fn session_mcp_override_replaces_the_published_set() {
 }
 
 async fn app_with_session() -> (Router, String) {
+    let credential_repo =
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        credential_repo.clone(),
+        credential_repo,
     ));
     let app = router(std::sync::Arc::new(
         ManagedState::new(AcceptingFake::default())
@@ -1842,7 +1845,8 @@ async fn repository_access_compiler_follows_the_decision_table() {
             &("repository-a", 1_u64),
             &usage,
         );
-        let vaults = awaken_protocol_managed::VaultState::new(secrets, credentials);
+        let vaults =
+            awaken_protocol_managed::VaultState::new(secrets, credentials.clone(), credentials);
         let actual = vaults
             .credential_access_for_source(
                 &source_id,
@@ -2508,9 +2512,12 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     // FMECA: reconfiguring retained entries would either demand plaintext again
     // or silently clear authentication (S9/O5/D6); semantic reuse keeps the
     // existing secret-free pin under the Session aggregate.
+    let credential_repo =
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        credential_repo.clone(),
+        credential_repo,
     ));
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
@@ -2671,6 +2678,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         secrets,
+        credentials.clone(),
         credentials,
     ));
     let sessions = std::sync::Arc::new(

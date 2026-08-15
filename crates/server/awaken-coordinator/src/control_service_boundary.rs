@@ -602,9 +602,12 @@ mod tests {
             awaken_config_store::SqliteConfigStore::open_in_memory()
                 .expect("open audit test store"),
         ));
+        let credential_repo =
+            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let credentials = Arc::new(awaken_protocol_managed::VaultState::new(
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+            credential_repo.clone(),
+            credential_repo,
         ));
         let delivery = Arc::new(RecordingDelivery::default());
         let token_source = Arc::new(RotatingTokenSource(RwLock::new(Arc::from("correct-token"))));

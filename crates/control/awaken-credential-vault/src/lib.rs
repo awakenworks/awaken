@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod availability;
+pub mod catalog;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
 pub mod repo;

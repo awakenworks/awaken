@@ -17,6 +17,7 @@ use sqlx::types::Json;
 
 use crate::schema::credential_bundle;
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_vault::catalog::{ManagedVault, ManagedVaultCredential, ManagedVaultRepo};
 use awaken_credential_vault::repo::{CredentialMutationIntent, CredentialRepo};
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -98,8 +99,157 @@ fn storage(err: impl std::fmt::Display) -> CredentialError {
 
 /// A Postgres-backed [`CredentialRepo`] (secret-free rows only; the sealed
 /// material goes through [`PostgresSealedBlobStore`]).
+#[derive(Clone)]
 pub struct PostgresCredentialRepo {
     pool: PgPool,
+}
+
+#[async_trait::async_trait]
+impl ManagedVaultRepo for PostgresCredentialRepo {
+    async fn put_vault(&self, vault: ManagedVault) -> Result<(), CredentialError> {
+        let p = NS;
+        sqlx::query(&format!("INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"))
+            .bind(&vault.id).bind(&vault.workspace_id).bind(Json(&vault)).execute(&self.pool).await.map_err(storage)?;
+        Ok(())
+    }
+
+    async fn get_vault(&self, id: &str) -> Result<Option<ManagedVault>, CredentialError> {
+        let p = NS;
+        let row = sqlx::query(&format!("SELECT data FROM {p}_managed_vault WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?;
+        row.map(|row| {
+            row.try_get::<Json<ManagedVault>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .transpose()
+    }
+
+    async fn list_vaults(&self, workspace_id: &str) -> Result<Vec<ManagedVault>, CredentialError> {
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 ORDER BY id"
+        ))
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<Json<ManagedVault>, _>("data")
+                    .map(|Json(value)| value)
+                    .map_err(storage)
+            })
+            .collect()
+    }
+
+    async fn delete_vault(&self, id: &str) -> Result<bool, CredentialError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_managed_vault_credential WHERE vault_id = $1"
+        ))
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let removed = sqlx::query(&format!("DELETE FROM {p}_managed_vault WHERE id = $1"))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected()
+            > 0;
+        tx.commit().await.map_err(storage)?;
+        Ok(removed)
+    }
+
+    async fn put_vault_credential(
+        &self,
+        credential: ManagedVaultCredential,
+    ) -> Result<(), CredentialError> {
+        let p = NS;
+        sqlx::query(&format!("INSERT INTO {p}_managed_vault_credential (id, vault_id, workspace_id, source_id, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET vault_id = excluded.vault_id, workspace_id = excluded.workspace_id, source_id = excluded.source_id, data = excluded.data"))
+            .bind(&credential.id).bind(&credential.vault_id).bind(&credential.workspace_id).bind(&credential.source_id.0).bind(Json(&credential)).execute(&self.pool).await.map_err(storage)?;
+        Ok(())
+    }
+
+    async fn get_vault_credential(
+        &self,
+        id: &str,
+    ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault_credential WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            row.try_get::<Json<ManagedVaultCredential>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .transpose()
+    }
+
+    async fn get_vault_credential_by_source(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault_credential WHERE source_id = $1"
+        ))
+        .bind(&source_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            row.try_get::<Json<ManagedVaultCredential>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .transpose()
+    }
+
+    async fn list_vault_credentials(
+        &self,
+        vault_id: &str,
+    ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault_credential WHERE vault_id = $1 ORDER BY id"
+        ))
+        .bind(vault_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<Json<ManagedVaultCredential>, _>("data")
+                    .map(|Json(value)| value)
+                    .map_err(storage)
+            })
+            .collect()
+    }
+
+    async fn delete_vault_credential(&self, id: &str) -> Result<bool, CredentialError> {
+        let p = NS;
+        Ok(sqlx::query(&format!(
+            "DELETE FROM {p}_managed_vault_credential WHERE id = $1"
+        ))
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?
+        .rows_affected()
+            > 0)
+    }
 }
 
 impl PostgresCredentialRepo {

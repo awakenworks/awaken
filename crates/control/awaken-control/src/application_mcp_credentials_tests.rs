@@ -53,9 +53,11 @@ async fn call(
 /// | H5 | C3 false | - | - | 400/no source |
 #[tokio::test]
 async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
     let state = Arc::new(VaultState::new(
         Arc::new(InMemorySecretStore::new()),
-        Arc::new(InMemoryCredentialRepo::new()),
+        credentials.clone(),
+        credentials,
     ));
     let app = application_mcp_credentials_router(state);
     let body = |url: &str, token: &str| {

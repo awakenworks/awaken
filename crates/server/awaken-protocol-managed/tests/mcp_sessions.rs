@@ -367,7 +367,7 @@ fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness 
 fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials));
+    let vaults = Arc::new(VaultState::new(secrets, credentials.clone(), credentials));
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
@@ -403,7 +403,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
 async fn check_bind_is_fail_closed_on_unknown_vault() {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials));
+    let vaults = Arc::new(VaultState::new(secrets, credentials.clone(), credentials));
     let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
@@ -591,6 +591,7 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
     let expected = h
         .vaults
         .credential_source_id(&vault_id, &cred_id)
+        .await
         .expect("wire credential maps to a domain source");
     {
         let captured = h.captured.lock().unwrap();
@@ -706,6 +707,7 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
     let expected = h
         .vaults
         .credential_source_id(&vault_id, &credential_id)
+        .await
         .unwrap();
     let staged = h.staged.lock().unwrap();
     assert_eq!(
@@ -743,6 +745,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         sources.push(
             h.vaults
                 .credential_source_id(&vault_id, &credential_id)
+                .await
                 .unwrap(),
         );
         vaults.push(vault_id);
@@ -872,7 +875,11 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     assert_eq!(refresh.client_id, "cli_pub");
     assert_eq!(refresh.scope.as_deref(), Some("mcp:read"));
     assert_eq!(refresh.resource, None);
-    let source_id = h.vaults.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .vaults
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     assert_eq!(
         refresh.refresh_token_ref,
         format!(
