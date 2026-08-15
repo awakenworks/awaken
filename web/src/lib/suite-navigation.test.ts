@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hostedSessionEntry, suiteHubUrl } from "./suite-navigation";
+import {
+  hostedAccessFailure,
+  hostedBootstrapDecision,
+  hostedSessionEntry,
+  suiteHubUrl,
+} from "./suite-navigation";
 
 describe("suite navigation projection", () => {
   /**
@@ -41,5 +46,45 @@ describe("suite navigation projection", () => {
     expect(hostedSessionEntry(hosted, "product-token", "https://agents.example/w/workspace")).toEqual({ kind: "continue" });
     expect(hostedSessionEntry(standalone, "", "http://localhost/w/workspace")).toEqual({ kind: "continue" });
     expect(hostedSessionEntry(standalone, "product-token", "http://localhost/w/workspace")).toEqual({ kind: "continue" });
+  });
+
+  it("verifies an exact hosted route before mounting and classifies failures", () => {
+    /**
+     * Hosted bootstrap decision table:
+     * | rule | hub | route | bearer | effect |
+     * | B1 | exact | absent | any | Cloud entry (stale bearer is not authority) |
+     * | B2 | exact | exact | absent | Cloud entry with continuation |
+     * | B3 | exact | exact | present | verify exact Workspace context |
+     * | B4 | null | any | any | standalone local-session path |
+     * Probe effects: 401 restarts Cloud login, 403 is terminal deny, all other
+     * failures remain retryable/unavailable.
+     */
+    const hosted = { hub_url: "https://cloud.example/entry" };
+    expect(hostedBootstrapDecision(
+      hosted,
+      "stale-token",
+      "https://agents.example/",
+      "/",
+    )).toEqual({
+      kind: "redirect",
+      url: "https://cloud.example/entry?continue=https%3A%2F%2Fagents.example%2F",
+    });
+    expect(hostedBootstrapDecision(
+      hosted,
+      "product-token",
+      "https://agents.example/w/awaken%3Atenant/overview",
+      "/w/awaken%3Atenant/overview",
+    )).toEqual({ kind: "verify" });
+    expect(hostedBootstrapDecision(
+      { hub_url: null },
+      "",
+      "http://localhost/",
+      "/",
+    )).toEqual({ kind: "standalone" });
+    expect([401, 403, 503].map(hostedAccessFailure)).toEqual([
+      "restart",
+      "denied",
+      "unavailable",
+    ]);
   });
 });

@@ -1321,6 +1321,10 @@ pub async fn cloud_management_guard(
     let Some(target_scope) = target_scope(scope_class, &workspace, req.uri().path()) else {
         return forbidden("the route has no resolvable authorization target");
     };
+    let denial_detail = remote::cloud_authorization_denial_detail(
+        &qualified_action(action_namespace, action),
+        &workspace,
+    );
     let authz_for_pdp = authz.clone();
     let principal_for_pdp = principal.clone();
     let decision = match tokio::task::spawn_blocking(move || {
@@ -1339,9 +1343,9 @@ pub async fn cloud_management_guard(
             next.run(req).await
         }
         AuthorizationDecision::RequireApproval => {
-            forbidden("this action requires approval and was not executed")
+            forbidden(&format!("{denial_detail}; approval is required"))
         }
-        AuthorizationDecision::Deny => forbidden("cloud IAM denied this action"),
+        AuthorizationDecision::Deny => forbidden(&denial_detail),
     }
 }
 

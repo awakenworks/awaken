@@ -414,6 +414,31 @@ Workspace path equal the authenticated tenant's current Awaken coordinates,
 then returns through IAM's existing browser PKCE adapter. Invalid or foreign
 continuations stop at Products.
 
+### Amendment (2026-08-15): the route owns hosted bootstrap scope
+
+The presence of a product bearer is not proof that it is current or authorized
+for the browser route. In hosted mode, an exact `/w/{workspace}` route is parsed
+before the first management request and is the only browser-selected Workspace
+input. Persisted presentation preferences never address an authorization
+request. The existing Workspace-context endpoint verifies that exact route
+through the existing authentication, tenancy fence, action mapping and PDP.
+
+An absent route returns through the opaque Cloud `/entry` coordinate even when
+session storage contains a bearer, allowing Cloud to select the current Org and
+issue an exact product launch. A `401` removes only the product-origin bearer
+and returns through the same entry. A `403` is terminal for that exact route and
+shows the existing correlation id; it does not start an authentication loop.
+Standalone mode retains the canonical local browser-session bootstrap.
+
+| Hosted route | Bearer | Context probe | Result |
+|---|---|---|---|
+| absent | any | not sent | Cloud entry selects exact product Workspace |
+| exact | absent | not sent | Cloud entry preserves exact continuation |
+| exact | present | exact `2xx` | mount product router |
+| exact | present | `401` | clear product bearer; Cloud entry |
+| exact | present | `403` | bounded access-denied presentation with request id |
+| exact | present | other failure | fail closed with explicit retry |
+
 ### Amendment (2026-08-12): hosted publication does not impersonate a user
 
 A hosted Control process authenticates PDP calls with its projected workload

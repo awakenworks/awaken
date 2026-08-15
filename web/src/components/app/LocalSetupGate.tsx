@@ -3,17 +3,20 @@ import { FormEvent, ReactNode, useEffect, useState } from "react";
 import {
   ApiClientError,
   api,
+  clearProductSessionBearer,
   getToken,
   resolveWorkspaceContext,
 } from "../../lib/api/client";
 import {
+  hostedAccessFailure,
+  hostedBootstrapDecision,
   hostedSessionEntry,
   suiteNavigationQuery,
 } from "../../lib/suite-navigation";
 import { Button, Card } from "../ui";
 import { useApp } from "../../lib/app-state";
 
-type State = "checking" | "ready" | "setup" | "unavailable";
+type State = "checking" | "ready" | "setup" | "denied" | "unavailable";
 
 export default function LocalSetupGate({ children }: { children: ReactNode }) {
   const app = useApp();
@@ -21,6 +24,8 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>("checking");
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
+  const [requestId, setRequestId] = useState("");
+  const [cloudEntryUrl, setCloudEntryUrl] = useState("");
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -33,9 +38,40 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
         if (active) setState("unavailable");
         return;
       }
-      const entry = hostedSessionEntry(navigation, getToken(), window.location.href);
-      if (entry.kind === "redirect") {
-        window.location.replace(entry.url);
+      const bootstrap = hostedBootstrapDecision(
+        navigation,
+        getToken(),
+        window.location.href,
+        window.location.pathname,
+      );
+      if (bootstrap.kind === "redirect") {
+        window.location.replace(bootstrap.url);
+        return;
+      }
+      if (bootstrap.kind === "verify") {
+        try {
+          await resolveWorkspaceContext();
+          if (active) setState("ready");
+        } catch (cause: unknown) {
+          if (!active) return;
+          const failure = cause instanceof ApiClientError
+            ? hostedAccessFailure(cause.status)
+            : "unavailable";
+          if (failure === "restart") {
+            clearProductSessionBearer();
+            const restart = hostedSessionEntry(navigation, "", window.location.href);
+            if (restart.kind === "redirect") window.location.replace(restart.url);
+            return;
+          }
+          if (failure === "denied" && cause instanceof ApiClientError) {
+            const restart = hostedSessionEntry(navigation, "", window.location.href);
+            setCloudEntryUrl(restart.kind === "redirect" ? restart.url : navigation.hub_url ?? "");
+            setRequestId(cause.requestId ?? "");
+            setState("denied");
+            return;
+          }
+          setState("unavailable");
+        }
         return;
       }
       try {
@@ -95,6 +131,22 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
           setState("checking");
           setAttempt((current) => current + 1);
         }}>{app.t("Try again", "重试")}</Button>
+      </Card>
+    </main>
+  );
+  if (state === "denied") return (
+    <main className="local-setup-page">
+      <Card>
+        <p className="eyebrow">{app.t("ACCESS DENIED", "访问被拒绝")}</p>
+        <h1>{app.t("This Workspace is not available to your account", "当前账户无权访问此 Workspace")}</h1>
+        <p className="hint">{app.t(
+          "Choose another organization or ask an administrator to assign this Awaken Workspace role.",
+          "请选择其他组织，或请管理员分配此 Awaken Workspace 角色。",
+        )}</p>
+        {requestId && <p className="hint">{app.t("Request ID", "请求 ID")}: <code>{requestId}</code></p>}
+        <Button variant="primary" onClick={() => window.location.replace(cloudEntryUrl)}>
+          {app.t("Choose organization", "选择组织")}
+        </Button>
       </Card>
     </main>
   );
