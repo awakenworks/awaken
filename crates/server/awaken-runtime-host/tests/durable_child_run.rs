@@ -90,11 +90,8 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // child ticket resumes and both Runs terminate; D3 reading only the parent
     // recovery snapshot cannot satisfy D1 and must never fall back to a stale
     // process-local ticket projection.
-    // Dedicated integration-test process: set deployment before constructing the
-    // host and inject its one shared queue.
-    unsafe {
-        std::env::set_var("SESSION_DEPLOYMENT_INGRESS", "durable");
-    }
+    // The injected shared queue is the typed durable-ingress authority; the
+    // builder enables its pool without mutating process-global configuration.
     let storage = tempfile::tempdir().expect("storage");
     let memory = Arc::new(MemoryDispatchStore::new());
     let dispatch = Arc::new(AnyDispatchStore::from_dispatch(

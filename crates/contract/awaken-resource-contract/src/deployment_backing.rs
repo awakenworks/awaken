@@ -21,13 +21,13 @@ pub enum DeploymentBackingRole {
 #[must_use]
 pub fn select_deployment_backing_role(
     kind: DeploymentBackingAllocationKind,
-    role: &[u8],
+    allocation_name: &[u8],
 ) -> Option<DeploymentBackingRole> {
     match kind {
-        DeploymentBackingAllocationKind::Database if role == b"resources" => {
+        DeploymentBackingAllocationKind::Database if allocation_name == b"resources" => {
             Some(DeploymentBackingRole::ResourcesDatabase)
         }
-        DeploymentBackingAllocationKind::Object if role == b"files" => {
+        DeploymentBackingAllocationKind::Object if allocation_name == b"files" => {
             Some(DeploymentBackingRole::FilesObject)
         }
         DeploymentBackingAllocationKind::Database

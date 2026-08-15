@@ -18,6 +18,25 @@ use chrono::{Datelike, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 
 const MS_PER_MIN: u64 = 60_000;
+const MAX_CHRONO_TIMESTAMP_MS: u64 = i64::MAX as u64;
+
+/// Project an epoch-millisecond instant onto the first whole-minute index that
+/// is strictly later and still representable by chrono's signed timestamp.
+/// Keeping this arithmetic in a small, total kernel makes the scheduler's
+/// boundary behavior independently verifiable.
+fn next_minute_index(after_ms: u64) -> Option<u64> {
+    if after_ms > MAX_CHRONO_TIMESTAMP_MS {
+        return None;
+    }
+    let minute = after_ms / MS_PER_MIN;
+    let next = minute.checked_add(1)?;
+    (next <= MAX_CHRONO_TIMESTAMP_MS / MS_PER_MIN).then_some(next)
+}
+
+fn minute_timestamp(minute: u64) -> Option<u64> {
+    let timestamp = minute.checked_mul(MS_PER_MIN)?;
+    (timestamp <= MAX_CHRONO_TIMESTAMP_MS).then_some(timestamp)
+}
 
 /// A parsed 5-field cron expression.
 #[derive(Debug, Clone)]
@@ -104,16 +123,42 @@ impl Cron {
     /// timestamps that never occur.
     pub fn next_after_in(&self, after_ms: u64, timezone: Tz) -> Option<u64> {
         // Start at the next whole minute boundary strictly after `after_ms`.
-        let mut minute = after_ms / MS_PER_MIN + 1;
-        let limit = minute + 366 * 24 * 60;
+        let mut minute = next_minute_index(after_ms)?;
+        let limit = minute.saturating_add(366 * 24 * 60);
         while minute < limit {
-            let ts = minute * MS_PER_MIN;
+            let ts = minute_timestamp(minute)?;
             if self.matches_in(ts, timezone) {
                 return Some(ts);
             }
-            minute += 1;
+            minute = minute.checked_add(1)?;
         }
         None
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn minute_timestamp_projection_is_exact_and_bounded() {
+    let minute: u64 = kani::any();
+    kani::assume(minute <= MAX_CHRONO_TIMESTAMP_MS / MS_PER_MIN);
+
+    let timestamp = minute_timestamp(minute).expect("supported minute is in-domain");
+    assert_eq!(timestamp, minute * MS_PER_MIN);
+    assert!(timestamp <= MAX_CHRONO_TIMESTAMP_MS);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn minute_timestamp_projection_has_an_exact_input_domain() {
+    let minute: u64 = kani::any();
+    let projected = minute_timestamp(minute);
+
+    assert_eq!(
+        projected.is_some(),
+        minute <= MAX_CHRONO_TIMESTAMP_MS / MS_PER_MIN
+    );
+    if let Some(timestamp) = projected {
+        assert!(timestamp <= i64::MAX as u64);
     }
 }
 

@@ -186,23 +186,27 @@ mod tests {
         assert!(
             policy
                 .policy_for_registered_call(
-                    Some("read"),
-                    "read",
+                    Some("client_lookup"),
+                    "client_lookup",
                     ToolPermissionRequirement::AlwaysAsk,
                 )
                 .is_some()
         );
         assert!(
             policy
-                .policy_for_registered_call(None, "read", ToolPermissionRequirement::AlwaysAsk,)
+                .policy_for_registered_call(
+                    None,
+                    "client_lookup",
+                    ToolPermissionRequirement::AlwaysAsk,
+                )
                 .is_none(),
             "unregistered"
         );
         assert!(
             policy
                 .policy_for_registered_call(
-                    Some("write"),
-                    "read",
+                    Some("client_update"),
+                    "client_lookup",
                     ToolPermissionRequirement::AlwaysAsk,
                 )
                 .is_none(),
@@ -211,8 +215,8 @@ mod tests {
         assert!(
             policy
                 .policy_for_registered_call(
-                    Some("read"),
-                    "read",
+                    Some("client_lookup"),
+                    "client_lookup",
                     ToolPermissionRequirement::AlwaysAllow,
                 )
                 .is_none(),
