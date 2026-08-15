@@ -1,6 +1,6 @@
 use super::{
     CredentialRealizationSelection, credential_realization_selection,
-    validate_credential_envelope_issuance_claim,
+    project_worker_plaintext_holder, validate_credential_envelope_issuance_claim,
 };
 
 #[kani::proof]
@@ -43,4 +43,17 @@ fn credential_envelope_issuance_accepts_exactly_the_complete_claim() {
         accepted,
         reference_nonempty && payload_fingerprint_matches && recipient_matches && boundary_matches
     );
+}
+
+/// The file-backed Worker resolver preserves the exact opaque trust-domain
+/// identity and can project it to no plaintext boundary except Worker.
+#[kani::proof]
+fn worker_plaintext_holder_projection_is_exact_and_non_widening() {
+    let trust_domain_identity = kani::any::<u64>();
+    let projected = project_worker_plaintext_holder(trust_domain_identity);
+
+    assert_eq!(projected.boundary, super::PlaintextBoundary::Worker);
+    assert_eq!(projected.trust_domain, trust_domain_identity);
+    assert_ne!(projected.boundary, super::PlaintextBoundary::Workload);
+    assert_ne!(projected.boundary, super::PlaintextBoundary::Platform);
 }
