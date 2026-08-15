@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "assumptions": [
+    {"id":"external.eventual_network_delivery","obligation":"external.eventual_network_delivery","kind":"liveness","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.exactly_once_side_effects","obligation":"external.exactly_once_side_effects","kind":"external_effect","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.database_engine_correctness","obligation":"external.database_engine_correctness","kind":"infrastructure","integration_evidence":["crates/stores/awaken-store-conformance/src/lib.rs"],"runtime_evidence":[],"status":"evidenced"},
+    {"id":"external.llm_semantics","obligation":"external.llm_semantics","kind":"semantic","integration_evidence":["crates/devtools/awaken-eval/README.md"],"runtime_evidence":[],"status":"evidenced"},
+    {"id":"external.provider_revocation_propagation","obligation":"external.provider_revocation_propagation","kind":"liveness","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.container_and_kernel_isolation","obligation":"external.container_and_kernel_isolation","kind":"infrastructure","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.orchestrator_correctness","obligation":"external.orchestrator_correctness","kind":"infrastructure","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.performance_and_long_run_stability","obligation":"external.performance_and_long_run_stability","kind":"operational","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.telemetry_delivery_and_retention","obligation":"external.telemetry_delivery_and_retention","kind":"operational","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"},
+    {"id":"external.worker_host_executor_equivalence","obligation":"external.worker_host_executor_equivalence","kind":"supply_chain","integration_evidence":["formal/README.md"],"runtime_evidence":[],"status":"open"}
+  ]
+}

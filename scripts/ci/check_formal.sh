@@ -16,6 +16,7 @@ trap 'rm -rf "$formal_tmp_root"' EXIT
 rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
+python3 scripts/ci/check_feature_coverage.py
 python3 scripts/ci/check_formal_coverage.py
 python3 scripts/ci/check_formal_surface.py
 

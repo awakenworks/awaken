@@ -435,6 +435,17 @@ only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. The eventual strict target is zero uncovered
 source surfaces and zero executable-only formalizable obligations.
 
+`formal/features.json` supplies the independent product denominator. Every row
+in the canonical functional coverage matrix has exactly one machine-readable
+feature, entrypoint list, criticality, and requirement classification. The
+feature gate rejects orphaned formal obligations and external assumptions, so a
+high claim-oriented ratio cannot hide a product area that was omitted from the
+denominator. `formal/assumptions.json` records the environmental contracts that
+repository-owned proofs consume, including their integration and runtime
+evidence. Run `scripts/ci/check_feature_coverage.py --require-complete` to make
+unverified product requirements or open external assumptions fatal; the normal
+formal gate always validates the inventory and reports those remaining gaps.
+
 ## Loom concurrency exploration
 
 The strict gate runs both the production `MemoryWorkerDirectory` and the
