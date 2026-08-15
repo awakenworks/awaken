@@ -38,7 +38,7 @@ pub mod deployment;
 pub mod environment;
 pub(crate) mod initial_event;
 pub mod page;
-mod presence;
+pub(crate) mod presence;
 pub mod resource;
 pub mod session;
 pub mod tunnel;

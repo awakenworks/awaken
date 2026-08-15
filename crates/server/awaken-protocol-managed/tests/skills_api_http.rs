@@ -1,13 +1,12 @@
 //! The Skills API (`/v1/skills`, ADR-0036) end-to-end through its real axum router.
-//! Two create paths coexist: the SDK multipart upload (a `SKILL.md` + supporting
-//! files) and the legacy JSON `{id, content}` delivery. Both feed the runtime's
-//! single durable Skill repository; definitions, versions, and binary bundles share
-//! that one source of truth.
+//! The SDK multipart upload (a `SKILL.md` + supporting files) feeds the runtime's
+//! single durable Skill repository; definitions, versions, and binary bundles
+//! share that one source of truth. Non-SDK JSON create bodies fail at the boundary.
 //!
 //! The in-module unit test already covers the durable-only catalog-id fallback; this
 //! binary drives the untested SDK surface: multipart create, list, retrieve, the
-//! `versions` subresource (create / list / retrieve / content / delete), the legacy
-//! JSON path's fail-closed 409 when no durable store is wired, and the error arms.
+//! `versions` subresource (create / list / retrieve / content / delete), strict
+//! create content types, and the error arms.
 
 use awaken_protocol_managed::skills_router;
 use awaken_tenancy::WorkspaceScope;
@@ -22,7 +21,11 @@ mod support;
 
 /// A router over the canonical Resources component backed by a durable Skill store, so the
 /// SDK delivery (`store_put`) actually persists.
-fn router_with_store() -> (Router, std::path::PathBuf) {
+fn router_with_store() -> (
+    Router,
+    std::sync::Arc<dyn awaken_resource_contract::SkillStore>,
+    std::path::PathBuf,
+) {
     let dir = std::env::temp_dir().join(format!(
         "awaken-skillsapi-http-{}-{}",
         std::process::id(),
@@ -30,7 +33,11 @@ fn router_with_store() -> (Router, std::path::PathBuf) {
     ));
     let store = support::resources::filesystem_skill_store(dir.join("store"));
     let resources = support::resources::resources(store.clone());
-    (skills_router(Some(store), resources.purge_scheduler()), dir)
+    (
+        skills_router(Some(store.clone()), resources.purge_scheduler()),
+        store,
+        dir,
+    )
 }
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -188,7 +195,7 @@ const SKILL_V2: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay HELLO
 // instead of becoming parallel content models.
 #[tokio::test]
 async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
-    let (router, dir) = router_with_store();
+    let (router, store, dir) = router_with_store();
     let zip_skill = b"---\nname: Zip Skill\ndescription: imported\n---\nUse scripts/run.sh";
     let zip = skill_zip(
         "zip-skill",
@@ -223,21 +230,26 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
     .await;
     assert_eq!(status, StatusCode::OK, "{version}");
     assert_eq!(version["directory"], "zip-skill");
-    let paths = version["files"].as_array().unwrap();
-    assert!(paths.contains(&json!("SKILL.md")));
-    assert!(paths.contains(&json!("references/api.md")));
     assert!(
-        !paths
-            .iter()
-            .any(|path| path.as_str().unwrap().starts_with("zip-skill/"))
+        version.get("files").is_none(),
+        "bundle internals stay off wire"
     );
-    let executable = version["file_entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["path"] == "scripts/run.sh")
-        .unwrap();
-    assert_eq!(executable["executable"], true);
+    let stored_versions = store.list_versions("test", zip_id).await.unwrap();
+    let stored = stored_versions.last().unwrap();
+    assert!(stored.files.iter().any(|file| file.path == "SKILL.md"));
+    assert!(
+        stored
+            .files
+            .iter()
+            .any(|file| file.path == "references/api.md")
+    );
+    assert!(
+        stored
+            .files
+            .iter()
+            .find(|file| file.path == "scripts/run.sh")
+            .is_some_and(|file| file.executable)
+    );
     let (status, bytes) = get_bytes(
         &router,
         &format!("/v1/skills/{zip_id}/versions/latest/files/assets/data.bin"),
@@ -261,13 +273,17 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{edited_version}");
-    let helper = edited_version["file_entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["path"] == "tools/helper")
-        .unwrap();
-    assert_eq!(helper["executable"], true);
+    assert!(edited_version.get("file_entries").is_none());
+    let stored_versions = store.list_versions("test", zip_id).await.unwrap();
+    assert!(
+        stored_versions
+            .last()
+            .unwrap()
+            .files
+            .iter()
+            .find(|file| file.path == "tools/helper")
+            .is_some_and(|file| file.executable)
+    );
 
     let directory_skill =
         b"---\nname: Directory Skill\ndescription: imported\n---\nRead references/api.md";
@@ -296,7 +312,7 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
 // validator boundary; the final empty listing observes the no-write effect.
 #[tokio::test]
 async fn invalid_import_shapes_fail_before_the_skill_store_write() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
     let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
     let oversized_zip = skill_zip(
         "large",
@@ -343,7 +359,7 @@ async fn invalid_import_shapes_fail_before_the_skill_store_write() {
 // remains covered by the ordinary lifecycle test below.
 #[tokio::test]
 async fn browser_publish_rejects_a_stale_base_version_without_appending() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let id = created["id"].as_str().unwrap();
@@ -371,7 +387,7 @@ async fn browser_publish_rejects_a_stale_base_version_without_appending() {
 
 #[tokio::test]
 async fn multipart_bundle_preserves_binary_support_files() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
     let binary = vec![0, 159, 146, 150, 255];
     let mut body = multipart_skill(SKILL_V1);
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
@@ -414,7 +430,7 @@ async fn multipart_bundle_preserves_binary_support_files() {
 
 #[tokio::test]
 async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
 
     // Multipart create (SDK path) registers a v1 and returns the tagged catalog id.
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
@@ -506,9 +522,10 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
 }
 
 #[tokio::test]
-async fn legacy_json_create_fails_closed_without_a_durable_store() {
-    // No SkillStore port: the adapter has no durable skill catalog, so the legacy
-    // `{id, content}` delivery has nowhere to land → 409 (fail closed, no silent drop).
+async fn non_sdk_json_create_is_rejected_before_store_selection() {
+    // Cause/effect rule: JSON content type is not the SDK multipart contract, so
+    // admission returns 400 whether or not a durable store is configured. Store
+    // availability must not revive a removed parallel create path.
     let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
     let (status, v) = post_json(
@@ -517,60 +534,45 @@ async fn legacy_json_create_fails_closed_without_a_durable_store() {
         json!({ "id": "greeter", "content": SKILL_V1 }),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
 }
 
 #[tokio::test]
-async fn legacy_json_create_delivers_with_a_durable_store() {
-    let (router, dir) = router_with_store();
+async fn non_sdk_json_create_cannot_mutate_the_durable_store() {
+    // Decision rule: valid-looking legacy payload + durable store -> 400 and an
+    // empty official list. This proves deletion of the duplicate ingress rather
+    // than merely hiding its response fields.
+    let (router, _store, dir) = router_with_store();
     let (status, v) = post_json(
         &router,
         "/v1/skills",
         json!({ "id": "greeter", "content": SKILL_V1 }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["type"], "skill");
-    // The delivered id retrieves.
-    let stored_id = v["id"].as_str().unwrap().to_string();
-    let (status, _) = get(&router, &format!("/v1/skills/{stored_id}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (status, list) = get(&router, "/v1/skills").await;
     assert_eq!(status, StatusCode::OK);
+    assert!(!list.contains("greeter"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Both `POST /v1/skills` create paths now agree on the no-durable-store case: they
-// FAIL CLOSED (409). The SDK multipart path checks `store_put`'s `None` just like
-// the legacy JSON path, so a store-less host never reports success for a skill it
-// neither delivered on a thread nor persisted across a restart — upholding the
-// module's "BOTH feed the durable catalog … survives a restart" contract.
+// The one SDK create path fails closed when its durable owner is unavailable.
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
-    // Multipart fails closed (409) when nothing durable backs it…
+    // Multipart fails closed (409) when nothing durable backs it.
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
         "SDK create must fail closed with no durable store: {created}"
     );
-    // …matching the legacy JSON path, which 409s on the very same host.
-    let (json_status, _) = post_json(
-        &router,
-        "/v1/skills",
-        json!({ "id": "greeter", "content": SKILL_V1 }),
-    )
-    .await;
-    assert_eq!(
-        json_status,
-        StatusCode::CONFLICT,
-        "the sibling JSON path fails CLOSED on the same store-less host"
-    );
 }
 
 #[tokio::test]
 async fn error_arms_are_fail_closed() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
 
     // Retrieve / delete an unknown skill → 404.
     let (status, _) = get(&router, "/v1/skills/skill_missing").await;
@@ -614,7 +616,7 @@ async fn error_arms_are_fail_closed() {
 
 #[tokio::test]
 async fn skill_routes_require_a_preselected_workspace() {
-    let (router, dir) = router_with_store();
+    let (router, _store, dir) = router_with_store();
     for request in [
         Request::builder()
             .uri("/v1/skills")

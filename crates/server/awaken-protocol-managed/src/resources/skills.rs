@@ -3,13 +3,10 @@
 //! multipart create, retrieve, list, delete, and the `versions` subresource
 //! (create / retrieve / list / delete / get-content).
 //!
-//! Two create paths coexist so nothing regresses: a JSON body `{id, content}`
-//! keeps the original delivery contract (used by the resource-mount e2e), while a
-//! multipart upload is the SDK path. BOTH feed the runtime's delivered-skill
-//! catalog ([`awaken_resource_contract::SkillStore`]) so a skill created either way is
-//! offered on selected threads and survives a restart. The SDK object, immutable
-//! versions, and binary bundle share that one Workspace-scoped repository; the
-//! former API-local registry is migration input only.
+//! The SDK multipart upload feeds the runtime's delivered-skill catalog
+//! ([`awaken_resource_contract::SkillStore`]), so an uploaded skill is offered on
+//! selected threads and survives a restart. The SDK object, immutable versions,
+//! and binary bundle share that one Workspace-scoped repository.
 
 use std::sync::Arc;
 
@@ -21,12 +18,12 @@ use awaken_resource_contract::{
     ResourceKind, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
     skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
-use axum::extract::{FromRequest, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::types::{ErrorResponse, PageCursor};
@@ -42,36 +39,61 @@ fn timestamp(nanos: u64) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(nanos / 1_000_000)
 }
 
-fn project_definition(definition: &SkillDefinition) -> Value {
-    json!({
-        "id": definition.id,
-        "type": "skill",
-        "created_at": timestamp(definition.timestamps.created_unix_nanos),
-        "updated_at": timestamp(definition.timestamps.updated_unix_nanos),
-        "display_title": definition.display_title,
-        "latest_version": definition.latest_version.to_string(),
-        "source": "custom",
-    })
+#[derive(Debug, Serialize)]
+struct SkillObject<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    created_at: String,
+    updated_at: String,
+    display_title: Option<&'a str>,
+    latest_version: Option<String>,
+    source: &'static str,
 }
 
-fn project_version(version: &SkillVersion) -> Value {
-    json!({
-        "id": version.id,
-        "type": "skill_version",
-        "created_at": timestamp(version.created_unix_nanos),
-        "description": version.description,
-        "directory": version.directory,
-        "name": version.name,
-        "skill_id": version.skill_id,
-        "version": version.version.to_string(),
-        "files": version.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
-        "file_entries": version.files.iter().map(|file| json!({
-            "path": file.path,
-            "size_bytes": file.content.len(),
-            "executable": file.executable,
-        })).collect::<Vec<_>>(),
-        "bundle_sha256": version.bundle_sha256,
-    })
+#[derive(Debug, Serialize)]
+struct SkillVersionObject {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    created_at: String,
+    description: String,
+    directory: String,
+    name: String,
+    skill_id: String,
+    version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeletedSkill {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+fn project_definition(definition: &SkillDefinition) -> SkillObject<'_> {
+    SkillObject {
+        id: definition.id.as_str(),
+        kind: "skill",
+        created_at: timestamp(definition.timestamps.created_unix_nanos),
+        updated_at: timestamp(definition.timestamps.updated_unix_nanos),
+        display_title: definition.display_title.as_deref(),
+        latest_version: Some(definition.latest_version.to_string()),
+        source: "custom",
+    }
+}
+
+fn project_version(version: &SkillVersion) -> SkillVersionObject {
+    SkillVersionObject {
+        id: version.id.to_string(),
+        kind: "skill_version",
+        created_at: timestamp(version.created_unix_nanos),
+        description: version.description.clone(),
+        directory: version.directory.clone(),
+        name: version.name.clone(),
+        skill_id: version.skill_id.to_string(),
+        version: version.version.to_string(),
+    }
 }
 
 /// Skills API state. The durable repository is the only resource truth; there is
@@ -309,114 +331,45 @@ fn store_error(error: SkillStoreError) -> axum::response::Response {
 
 // ---- Skill routes ----------------------------------------------------------
 
-/// `POST /v1/skills` — create a skill. Multipart (SDK) uploads a SKILL.md (+
-/// supporting files); a JSON body `{id, content}` keeps the legacy delivery
-/// contract. Both register a v1 and feed the runtime catalog.
+/// `POST /v1/skills` — the SDK multipart upload of SKILL.md plus support files.
 async fn create_skill(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    headers: HeaderMap,
-    body: axum::body::Body,
+    multipart: Multipart,
 ) -> axum::response::Response {
-    let content_type = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if content_type.starts_with("multipart/form-data") {
-        // SDK path: rebuild a request carrying the multipart headers + body so the
-        // `Multipart` extractor can parse the boundary.
-        let mut builder = axum::http::Request::builder();
-        if let Some(h) = builder.headers_mut() {
-            *h = headers;
-        }
-        let req = match builder.body(body) {
-            Ok(r) => r,
-            Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
-        };
-        let multipart = match Multipart::from_request(req, &()).await {
-            Ok(m) => m,
-            Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
-        };
-        let (display_title, files) = match read_multipart(multipart).await {
-            Ok(upload) => upload,
-            Err(error) => return err(StatusCode::BAD_REQUEST, error),
-        };
-        let bundle = match canonicalize_skill_bundle(files) {
-            Ok(bundle) => bundle,
-            Err(error) => return err(StatusCode::BAD_REQUEST, error),
-        };
-        let content = match bundle_skill_md(&bundle) {
-            Ok(content) => content.to_string(),
-            Err(error) => return err(StatusCode::BAD_REQUEST, error),
-        };
-        let parsed = awaken_ext_skills::parse_skill_md("skill", &content);
-        let id = skill_catalog_id(&parsed.name);
-        let version = build_version(&id, &content, 1, bundle);
-        let definition = SkillDefinition {
-            id: id.clone().into(),
-            workspace_id: workspace.clone(),
-            display_title,
-            latest_version: 1,
-            last_version: 1,
-            timestamps: awaken_resource_contract::ResourceTimestamps::created(
-                version.created_unix_nanos,
-            ),
-        };
-        let Some(result) = state.create(definition.clone(), version).await else {
-            return err(
-                StatusCode::CONFLICT,
-                "this server has no durable skill store",
-            );
-        };
-        return match result {
-            Ok(()) => (StatusCode::OK, Json(project_definition(&definition))).into_response(),
-            Err(error) => store_error(error),
-        };
-    }
-
-    // Legacy JSON path: `{id, content}` → durable delivery + a registry entry so
-    // the SDK list/retrieve/delete stay consistent.
-    let bytes = match axum::body::to_bytes(body, 2 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
+    let (display_title, files) = match read_multipart(multipart).await {
+        Ok(upload) => upload,
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    let (Some(id), Some(content)) = (
-        json.get("id").and_then(Value::as_str),
-        json.get("content").and_then(Value::as_str),
-    ) else {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "skill needs a string `id` and `content`",
-        );
+    let bundle = match canonicalize_skill_bundle(files) {
+        Ok(bundle) => bundle,
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let id = skill_stem(id);
-    let bundle = canonicalize_skill_bundle(vec![UploadedSkillBundleFile {
-        path: "SKILL.md".to_owned(),
-        content: content.as_bytes().to_vec(),
-        executable: false,
-    }])
-    .expect("one validated legacy SKILL.md");
-    let version = build_version(&id, content, 1, bundle);
+    let content = match bundle_skill_md(&bundle) {
+        Ok(content) => content.to_string(),
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
+    };
+    let parsed = awaken_ext_skills::parse_skill_md("skill", &content);
+    let id = skill_catalog_id(&parsed.name);
+    let version = build_version(&id, &content, 1, bundle);
     let definition = SkillDefinition {
         id: id.clone().into(),
         workspace_id: workspace,
-        display_title: None,
+        display_title,
         latest_version: 1,
         last_version: 1,
         timestamps: awaken_resource_contract::ResourceTimestamps::created(
             version.created_unix_nanos,
         ),
     };
-    let Some(result) = state.create(definition, version).await else {
+    let Some(result) = state.create(definition.clone(), version).await else {
         return err(
             StatusCode::CONFLICT,
             "this server has no durable skill store",
         );
     };
     match result {
-        Ok(()) => (StatusCode::OK, Json(json!({ "id": id, "type": "skill" }))).into_response(),
+        Ok(()) => (StatusCode::OK, Json(project_definition(&definition))).into_response(),
         Err(error) => store_error(error),
     }
 }
@@ -486,7 +439,10 @@ async fn delete_skill(
     match state.delete(&workspace, &id).await {
         Some(Ok(true)) => (
             StatusCode::OK,
-            Json(json!({ "id": id, "type": "skill_deleted" })),
+            Json(DeletedSkill {
+                id,
+                kind: "skill_deleted",
+            }),
         )
             .into_response(),
         Some(Ok(false)) | None => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),
@@ -555,7 +511,7 @@ async fn list_versions(
 ) -> axum::response::Response {
     match state.versions(&workspace, &id).await {
         Some(Ok(versions)) if !versions.is_empty() => {
-            let data: Vec<Value> = versions.iter().map(project_version).collect();
+            let data: Vec<_> = versions.iter().map(project_version).collect();
             (StatusCode::OK, Json(PageCursor::single(data))).into_response()
         }
         Some(Err(error)) => store_error(error),
@@ -606,7 +562,10 @@ async fn delete_version(
     match state.delete_version(&workspace, &id, found.version).await {
         Some(Ok(true)) => (
             StatusCode::OK,
-            Json(json!({ "id": found.id, "type": "skill_version_deleted" })),
+            Json(DeletedSkill {
+                id: found.id.to_string(),
+                kind: "skill_version_deleted",
+            }),
         )
             .into_response(),
         Some(Ok(false)) | None => err(StatusCode::NOT_FOUND, "skill version not found"),
@@ -659,6 +618,44 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn skill_and_version_dtos_emit_only_official_response_fields() {
+        // Cause/effect decision table: S1 Skill projection -> seven official
+        // fields; S2 Version projection -> eight official fields; S3 deletion ->
+        // id/type only. Durable bundle hashes, file manifests, and executable
+        // flags remain repository facts and do not become a parallel wire API.
+        let definition = SkillDefinition {
+            id: "skill_1".into(),
+            workspace_id: "workspace".into(),
+            display_title: Some("Skill".into()),
+            latest_version: 2,
+            last_version: 2,
+            timestamps: awaken_resource_contract::ResourceTimestamps::created(1_000_000),
+        };
+        let skill = serde_json::to_value(project_definition(&definition)).unwrap();
+        assert_eq!(skill.as_object().unwrap().len(), 7, "S1");
+        let version = SkillVersion {
+            id: "skver_1".into(),
+            skill_id: "skill_1".into(),
+            version: 2,
+            name: "skill".into(),
+            description: "description".into(),
+            directory: "skill".into(),
+            bundle_sha256: "sha256:test".into(),
+            files: Vec::new(),
+            created_unix_nanos: 1_000_000,
+        };
+        let version = serde_json::to_value(project_version(&version)).unwrap();
+        assert_eq!(version.as_object().unwrap().len(), 8, "S2");
+        assert!(version.get("files").is_none(), "S2 no extension fields");
+        let deleted = serde_json::to_value(DeletedSkill {
+            id: "skill_1".into(),
+            kind: "skill_deleted",
+        })
+        .unwrap();
+        assert_eq!(deleted.as_object().unwrap().len(), 2, "S3");
+    }
 
     fn purge_scheduler() -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
         Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(

@@ -384,7 +384,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
-        Some(json!({ "content": "new", "precondition": { "content_sha256": "0".repeat(64) } })),
+        Some(json!({ "content": "new", "precondition": { "type":"content_sha256", "content_sha256": "0".repeat(64) } })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
@@ -398,7 +398,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
-        Some(json!({ "content": "world", "precondition": { "content_sha256": sha } })),
+        Some(json!({ "content": "world", "precondition": { "type":"content_sha256", "content_sha256": sha } })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
@@ -414,7 +414,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         Some(json!({
             "content": "world",
-            "precondition": { "content_sha256": updated["content_sha256"] }
+            "precondition": { "type":"content_sha256", "content_sha256": updated["content_sha256"] }
         })),
     )
     .await;

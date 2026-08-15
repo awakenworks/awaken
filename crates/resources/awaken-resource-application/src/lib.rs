@@ -223,6 +223,9 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
                 .memory_store(&command.workspace_id, command.id.as_ref())?,
             command.id.as_ref(),
         )?;
+        if let Some(name) = command.name {
+            definition.name = name;
+        }
         if let Some(description) = command.description {
             definition.description = description;
         }
@@ -411,12 +414,14 @@ mod tests {
             .update(UpdateMemoryStoreCommand {
                 workspace_id: "workspace".into(),
                 id: id.clone(),
+                name: Some("renamed-memory".into()),
                 description: Some("curated".into()),
                 metadata_patch: [("source".into(), Some("dream".into()))].into(),
             })
             .await
             .expect("R3");
         assert_eq!(updated.description, "curated", "R3");
+        assert_eq!(updated.name, "renamed-memory", "R3");
         assert_eq!(
             updated.metadata.get("source").map(String::as_str),
             Some("dream"),

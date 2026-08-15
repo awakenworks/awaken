@@ -19,15 +19,15 @@ use awaken_resource_contract::{
     MemoryStoreApplicationService, MemoryStoreDefinition, MemoryVersion, MemoryVersionOperation,
     ResourceCatalogError, ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
 };
-use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::routes::sessions::ManagedJson;
 use crate::types::{ErrorResponse, PageCursor};
 
 fn timestamp(nanos: u128) -> String {
@@ -60,29 +60,178 @@ impl MemoryView {
     }
 }
 
-fn project_version(version: &MemoryVersion, store_id: &str, view: MemoryView) -> Value {
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryVersionOperationObject {
+    Created,
+    Modified,
+    Deleted,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MemoryVersionObject {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    created_at: String,
+    memory_id: String,
+    memory_store_id: String,
+    operation: MemoryVersionOperationObject,
+    content: Option<String>,
+    content_sha256: Option<String>,
+    content_size_bytes: Option<u64>,
+    path: Option<String>,
+    redacted_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MemoryObject {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    created_at: String,
+    updated_at: String,
+    memory_store_id: String,
+    memory_version_id: String,
+    path: String,
+    content: Option<String>,
+    content_sha256: String,
+    content_size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MemoryPrefix {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+enum MemoryListItem {
+    Memory(MemoryObject),
+    Prefix(MemoryPrefix),
+}
+
+impl MemoryListItem {
+    fn path(&self) -> &str {
+        match self {
+            Self::Memory(memory) => &memory.path,
+            Self::Prefix(prefix) => &prefix.path,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryStoreObject<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    created_at: String,
+    updated_at: String,
+    name: &'a str,
+    description: &'a str,
+    metadata: &'a std::collections::BTreeMap<String, String>,
+    archived_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeletedMemoryResource {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryStoreCreateParams {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    metadata: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryStoreUpdateParams {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+struct NullableString(Option<String>);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryCreateParams {
+    content: NullableString,
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum MemoryPrecondition {
+    ContentSha256 {
+        #[serde(default)]
+        content_sha256: Option<String>,
+    },
+}
+
+impl MemoryPrecondition {
+    fn content_sha256(&self) -> Option<&str> {
+        match self {
+            Self::ContentSha256 { content_sha256 } => content_sha256.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryUpdateParams {
+    #[serde(default, deserialize_with = "crate::types::presence::double_option")]
+    content: Option<Option<String>>,
+    #[serde(default, deserialize_with = "crate::types::presence::double_option")]
+    path: Option<Option<String>>,
+    #[serde(default)]
+    precondition: Option<MemoryPrecondition>,
+}
+
+fn project_version(
+    version: &MemoryVersion,
+    store_id: &str,
+    view: MemoryView,
+) -> MemoryVersionObject {
     let (sha, size) = match &version.content {
         Some(content) => (Some(memory_sha256_hex(content)), Some(content.len())),
         None => (None, None),
     };
     let operation = match version.operation {
-        MemoryVersionOperation::Created => "created",
-        MemoryVersionOperation::Modified => "modified",
-        MemoryVersionOperation::Deleted => "deleted",
+        MemoryVersionOperation::Created => MemoryVersionOperationObject::Created,
+        MemoryVersionOperation::Modified => MemoryVersionOperationObject::Modified,
+        MemoryVersionOperation::Deleted => MemoryVersionOperationObject::Deleted,
     };
-    json!({
-        "id": version.id,
-        "type": "memory_version",
-        "created_at": timestamp(version.created_unix_nanos),
-        "memory_id": version.memory_id,
-        "memory_store_id": store_id,
-        "operation": operation,
-        "content": view.includes_content().then(|| version.content.clone()).flatten(),
-        "content_sha256": sha,
-        "content_size_bytes": size,
-        "path": version.path,
-        "redacted_at": version.redacted_unix_nanos.map(timestamp),
-    })
+    MemoryVersionObject {
+        id: version.id.clone(),
+        kind: "memory_version",
+        created_at: timestamp(version.created_unix_nanos),
+        memory_id: version.memory_id.clone(),
+        memory_store_id: store_id.to_string(),
+        operation,
+        content: view
+            .includes_content()
+            .then(|| version.content.clone())
+            .flatten(),
+        content_sha256: sha,
+        content_size_bytes: size.map(|size| size as u64),
+        path: Some(version.path.clone()),
+        redacted_at: version.redacted_unix_nanos.map(timestamp),
+    }
 }
 
 /// Project a durable [`Memory`] (the path-addressed head, the
@@ -92,22 +241,22 @@ fn project_memory(
     store_id: &str,
     memory_version_id: &str,
     view: MemoryView,
-) -> Value {
+) -> MemoryObject {
     let content = view
         .includes_content()
         .then(|| mem.content.clone().unwrap_or_default());
-    json!({
-        "id": mem.id,
-        "type": "memory",
-        "created_at": timestamp(mem.created_unix_nanos),
-        "updated_at": timestamp(mem.updated_unix_nanos),
-        "memory_store_id": store_id,
-        "memory_version_id": memory_version_id,
-        "path": mem.path,
-        "content": content,
-        "content_sha256": mem.content_sha256,
-        "content_size_bytes": mem.content_size,
-    })
+    MemoryObject {
+        id: mem.id.clone(),
+        kind: "memory",
+        created_at: timestamp(mem.created_unix_nanos),
+        updated_at: timestamp(mem.updated_unix_nanos),
+        memory_store_id: store_id.to_string(),
+        memory_version_id: memory_version_id.to_string(),
+        path: mem.path.clone(),
+        content,
+        content_sha256: mem.content_sha256.clone(),
+        content_size_bytes: mem.content_size,
+    }
 }
 
 fn current_version_id<'a>(versions: &'a [MemoryVersion], memory_id: &str) -> Option<&'a str> {
@@ -123,7 +272,7 @@ async fn project_current_memory(
     memory: &Memory,
     store_id: &str,
     view: MemoryView,
-) -> Result<Value, MemErr> {
+) -> Result<MemoryObject, MemErr> {
     let versions = state.memories.list_versions(store_id).await?;
     let version_id = current_version_id(&versions, &memory.id).ok_or_else(|| {
         MemErr::Storage(format!(
@@ -136,21 +285,23 @@ async fn project_current_memory(
 
 /// Project a durable [`MemoryStoreDefinition`] (the identity aggregate, source of truth for a
 /// store's name/description/metadata) onto the SDK memory-store object. The
-fn project_def(def: &MemoryStoreDefinition) -> Value {
-    json!({
-        "id": def.id,
-        "type": "memory_store",
-        "created_at": timestamp(def.timestamps.created_unix_nanos.into()),
-        "updated_at": timestamp(def.timestamps.updated_unix_nanos.into()),
-        "name": def.name,
-        "description": def.description,
-        "metadata": def.metadata,
-        "archived_at": if matches!(def.state, ResourceState::Archived | ResourceState::Deleted) {
-            def.timestamps.archived_unix_nanos.map(|value| timestamp(value.into()))
+fn project_def(def: &MemoryStoreDefinition) -> MemoryStoreObject<'_> {
+    MemoryStoreObject {
+        id: def.id.as_str(),
+        kind: "memory_store",
+        created_at: timestamp(def.timestamps.created_unix_nanos.into()),
+        updated_at: timestamp(def.timestamps.updated_unix_nanos.into()),
+        name: &def.name,
+        description: &def.description,
+        metadata: &def.metadata,
+        archived_at: if matches!(def.state, ResourceState::Archived | ResourceState::Deleted) {
+            def.timestamps
+                .archived_unix_nanos
+                .map(|value| timestamp(value.into()))
         } else {
             None
         },
-    })
+    }
 }
 
 struct MemoryStoreApi {
@@ -244,43 +395,21 @@ async fn active_store_exists(
 
 // ---- Store routes ----------------------------------------------------------
 
-/// `POST /v1/memory_stores` — create a store. The SDK sends `{name, description?,
-/// metadata?}`; an empty body keeps the name empty. The Resource Catalog owns
+/// `POST /v1/memory_stores` — create a store. The Resource Catalog owns
 /// identity/existence while MemoryRepository owns only path-addressed content.
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    body: Bytes,
+    ManagedJson(body): ManagedJson<MemoryStoreCreateParams>,
 ) -> impl IntoResponse {
-    let parsed: Value = if body.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&body).unwrap_or(Value::Null)
-    };
     let definition = match state
         .stores
         .create(CreateMemoryStoreCommand {
             workspace_id: workspace,
             id: None,
-            name: parsed
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            description: parsed
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            metadata: parsed
-                .get("metadata")
-                .and_then(Value::as_object)
-                .map(|o| {
-                    o.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            name: body.name,
+            description: body.description.unwrap_or_default(),
+            metadata: body.metadata,
             initial_state: ResourceState::Active,
             retention_policy: Default::default(),
         })
@@ -315,7 +444,7 @@ async fn list_stores(
         Ok(definitions) => definitions,
         Err(error) => return application_error(error),
     };
-    let data: Vec<Value> = definitions.iter().map(project_def).collect();
+    let data: Vec<_> = definitions.iter().map(project_def).collect();
     (StatusCode::OK, Json(PageCursor::single(data))).into_response()
 }
 
@@ -323,31 +452,16 @@ async fn update_store(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ManagedJson(body): ManagedJson<MemoryStoreUpdateParams>,
 ) -> axum::response::Response {
-    let metadata_patch = body
-        .get("metadata")
-        .and_then(Value::as_object)
-        .map(|patch| {
-            patch
-                .iter()
-                .filter_map(|(key, value)| match value {
-                    Value::Null => Some((key.clone(), None)),
-                    Value::String(value) => Some((key.clone(), Some(value.clone()))),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     match state
         .stores
         .update(UpdateMemoryStoreCommand {
             workspace_id: workspace,
             id: id.into(),
-            description: body
-                .get("description")
-                .map(|value| value.as_str().unwrap_or_default().to_string()),
-            metadata_patch,
+            name: body.name,
+            description: body.description,
+            metadata_patch: body.metadata.unwrap_or_default(),
         })
         .await
     {
@@ -370,7 +484,10 @@ async fn delete_store(
     }
     (
         StatusCode::OK,
-        Json(json!({ "id": id, "type": "memory_store_deleted" })),
+        Json(DeletedMemoryResource {
+            id,
+            kind: "memory_store_deleted",
+        }),
     )
         .into_response()
 }
@@ -421,26 +538,20 @@ async fn create_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
-    Json(body): Json<Value>,
+    ManagedJson(body): ManagedJson<MemoryCreateParams>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
-    let Some(path) = body.get("path").and_then(Value::as_str) else {
-        return err(StatusCode::BAD_REQUEST, "memory needs a `path`");
-    };
-    let content = body
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let content = body.content.0.unwrap_or_default();
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
     // The durable path-addressed store is the source of truth for the head.
-    match state.memories.create(&id, path, content).await {
+    match state.memories.create(&id, &body.path, &content).await {
         Ok(mem) => match project_current_memory(&state, &mem, &id, view).await {
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -535,30 +646,31 @@ async fn list_memories(
                 format!("memory `{}` has no atomic current version", entry.id),
             );
         };
-        data.push(json!({
-            "id": entry.id,
-            "type": "memory",
-            "created_at": timestamp(entry.updated_unix_nanos),
-            "updated_at": timestamp(entry.updated_unix_nanos),
-            "memory_store_id": id,
-            "memory_version_id": memory_version_id,
-            "path": entry.path,
-            "content": content,
-            "content_sha256": entry.content_sha256,
-            "content_size_bytes": entry.content_size,
+        data.push(MemoryListItem::Memory(MemoryObject {
+            id: entry.id,
+            kind: "memory",
+            created_at: timestamp(entry.updated_unix_nanos),
+            updated_at: timestamp(entry.updated_unix_nanos),
+            memory_store_id: id.clone(),
+            memory_version_id: memory_version_id.to_string(),
+            path: entry.path,
+            content,
+            content_sha256: entry.content_sha256,
+            content_size_bytes: entry.content_size,
         }));
     }
-    data.extend(
-        rolled_up
-            .into_iter()
-            .map(|path| json!({ "type": "memory_prefix", "path": path })),
-    );
-    data.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    data.extend(rolled_up.into_iter().map(|path| {
+        MemoryListItem::Prefix(MemoryPrefix {
+            kind: "memory_prefix",
+            path,
+        })
+    }));
+    data.sort_by(|left, right| left.path().cmp(right.path()));
     let page = match awaken_agent_contract::page::paginate_by_key(
         &data,
         q.get("page").map(String::as_str),
         Some(limit),
-        |item| item["path"].as_str().unwrap_or_default().to_string(),
+        |item| item.path().to_string(),
     ) {
         Ok(page) => page,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid memory pagination cursor"),
@@ -610,7 +722,7 @@ async fn update_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
     Query(query): Query<std::collections::HashMap<String, String>>,
-    Json(body): Json<Value>,
+    ManagedJson(body): ManagedJson<MemoryUpdateParams>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
@@ -629,21 +741,20 @@ async fn update_memory(
     };
     // The CAS base: an explicit precondition (stale → conflict) else the live sha.
     let base_sha = body
-        .get("precondition")
-        .and_then(|p| p.get("content_sha256"))
-        .and_then(Value::as_str)
+        .precondition
+        .as_ref()
+        .and_then(MemoryPrecondition::content_sha256)
         .unwrap_or(&current.content_sha256)
         .to_string();
     let new_content = body
-        .get("content")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .content
+        .flatten()
         .unwrap_or_else(|| current.content.clone().unwrap_or_default());
-    let target_path = body.get("path").and_then(Value::as_str);
+    let target_path = body.path.flatten();
 
     match state
         .memories
-        .update_head(&id, &mid, &new_content, &base_sha, target_path)
+        .update_head(&id, &mid, &new_content, &base_sha, target_path.as_deref())
         .await
     {
         Ok(updated) => match project_current_memory(&state, &updated, &id, view).await {
@@ -677,7 +788,10 @@ async fn delete_memory(
     }
     (
         StatusCode::OK,
-        Json(json!({ "id": mid, "type": "memory_deleted" })),
+        Json(DeletedMemoryResource {
+            id: mid,
+            kind: "memory_deleted",
+        }),
     )
         .into_response()
 }
@@ -711,7 +825,7 @@ async fn list_versions(
         Ok(log) => log,
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
-    let data: Vec<Value> = collect_versions(&log)
+    let data: Vec<_> = collect_versions(&log)
         .iter()
         .map(|version| project_version(version, &id, view))
         .collect();
@@ -770,4 +884,46 @@ async fn redact_version(
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     not_found("memory_version")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_list_union_and_delete_receipts_have_closed_wire_shapes() {
+        // Cause/effect decision table: M1 stored memory -> full typed memory
+        // fields; M2 depth rollup -> prefix-only fields; M3 deletion -> id/type
+        // receipt. The untagged enum selects one DTO and never merges the two
+        // variants or relies on object indexing.
+        let memory = serde_json::to_value(MemoryListItem::Memory(MemoryObject {
+            id: "mem_1".into(),
+            kind: "memory",
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            memory_store_id: "memstore_1".into(),
+            memory_version_id: "memver_1".into(),
+            path: "/notes.md".into(),
+            content: None,
+            content_sha256: "0".repeat(64),
+            content_size_bytes: 0,
+        }))
+        .unwrap();
+        assert_eq!(memory["type"], "memory", "M1");
+        assert!(memory["content"].is_null(), "M1 basic view");
+        let prefix = serde_json::to_value(MemoryListItem::Prefix(MemoryPrefix {
+            kind: "memory_prefix",
+            path: "/projects/".into(),
+        }))
+        .unwrap();
+        assert_eq!(prefix["type"], "memory_prefix", "M2");
+        assert_eq!(prefix.as_object().unwrap().len(), 2, "M2 exact fields");
+        let deleted = serde_json::to_value(DeletedMemoryResource {
+            id: "mem_1".into(),
+            kind: "memory_deleted",
+        })
+        .unwrap();
+        assert_eq!(deleted["type"], "memory_deleted", "M3");
+        assert_eq!(deleted.as_object().unwrap().len(), 2, "M3 exact fields");
+    }
 }

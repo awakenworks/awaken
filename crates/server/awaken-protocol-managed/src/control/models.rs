@@ -15,9 +15,9 @@ use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use serde_json::json;
+use serde::Serialize;
 
-use crate::types::Page;
+use crate::types::{ErrorResponse, Page};
 
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
 /// RFC-3339 `created_at`; a reproducible constant keeps tests stable).
@@ -56,21 +56,42 @@ impl ModelEntry {
         self
     }
 
-    /// The `BetaModelInfo` JSON projection. `max_input_tokens`/`max_tokens` carry the
+    /// The `BetaModelInfo` projection. `max_input_tokens`/`max_tokens` carry the
     /// model's published context window / output ceiling (or `null` when unknown);
     /// `allowed_fallback_models` is an empty list (fallbacks are a gateway concern).
-    fn to_json(&self) -> serde_json::Value {
-        json!({
-            "id": self.id,
-            "type": "model",
-            "display_name": self.display_name,
-            "created_at": CREATED_AT,
-            "allowed_fallback_models": [],
-            "capabilities": null,
-            "max_input_tokens": self.context_window,
-            "max_tokens": self.max_output_tokens,
-        })
+    fn project(&self) -> ModelInfo<'_> {
+        ModelInfo {
+            id: &self.id,
+            kind: "model",
+            display_name: &self.display_name,
+            created_at: CREATED_AT,
+            allowed_fallback_models: Vec::new(),
+            capabilities: None,
+            max_input_tokens: self.context_window,
+            max_tokens: self.max_output_tokens,
+        }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ModelInfo<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    display_name: &'a str,
+    created_at: &'static str,
+    allowed_fallback_models: Vec<String>,
+    capabilities: Option<()>,
+    max_input_tokens: Option<u32>,
+    max_tokens: Option<u32>,
+}
+
+fn model_error(
+    status: StatusCode,
+    kind: &'static str,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (status, axum::Json(ErrorResponse::new(kind, message))).into_response()
 }
 
 #[derive(Clone)]
@@ -143,13 +164,13 @@ async fn list_models(
 ) -> axum::response::Response {
     let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
     let Ok(models) = available.in_workspace(&workspace).await else {
-        return (
+        return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({ "error": "model directory unavailable" })),
-        )
-            .into_response();
+            "api_error",
+            "model directory unavailable",
+        );
     };
-    let data: Vec<_> = models.iter().map(ModelEntry::to_json).collect();
+    let data: Vec<_> = models.iter().map(ModelEntry::project).collect();
     let first_id = models.first().map(|m| m.id.clone());
     let last_id = models.last().map(|m| m.id.clone());
     (
@@ -168,19 +189,19 @@ async fn get_model(
 ) -> impl IntoResponse {
     let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
     let Ok(models) = available.in_workspace(&workspace).await else {
-        return (
+        return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({ "error": "model directory unavailable" })),
-        )
-            .into_response();
+            "api_error",
+            "model directory unavailable",
+        );
     };
     match models.iter().find(|m| m.id == id) {
-        Some(entry) => (StatusCode::OK, axum::Json(entry.to_json())).into_response(),
-        None => (
+        Some(entry) => (StatusCode::OK, axum::Json(entry.project())).into_response(),
+        None => model_error(
             StatusCode::NOT_FOUND,
-            axum::Json(json!({ "error": format!("model `{id}` not found") })),
-        )
-            .into_response(),
+            "not_found_error",
+            format!("model `{id}` not found"),
+        ),
     }
 }
 
@@ -192,11 +213,15 @@ mod tests {
 
     #[test]
     fn default_models_are_nonempty_and_project_to_beta_model_info() {
+        // Cause/effect decision table: known limits -> numeric max fields;
+        // unknown capabilities -> explicit null; every entry -> the exact eight
+        // BetaModelInfo fields. The typed projection is the sole response owner.
         let models = default_models();
         assert!(models.iter().any(|m| m.id == "claude-opus-4-8"));
         // Every entry projects to the `BetaModelInfo` core shape the SDK decodes.
         for m in &models {
-            let v = m.to_json();
+            let v = serde_json::to_value(m.project()).unwrap();
+            assert_eq!(v.as_object().unwrap().len(), 8);
             assert_eq!(v["type"], "model");
             assert_eq!(v["id"], m.id);
             assert!(v["display_name"].is_string());
