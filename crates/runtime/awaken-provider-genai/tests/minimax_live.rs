@@ -46,7 +46,7 @@ fn executor() -> GenaiExecutor {
     let client = Client::builder()
         .with_service_target_resolver(resolver)
         .build();
-    GenaiExecutor::with_client(client)
+    GenaiExecutor::with_client_for_adapter(client, AdapterKind::Anthropic)
 }
 
 fn binding() -> ModelBinding {

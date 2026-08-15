@@ -6,13 +6,13 @@ use std::time::Duration;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
-    GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call, map_assistant_output,
-    map_usage, to_genai_request,
+    AdapterKind, GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call,
+    map_assistant_output, map_usage, to_genai_request, to_genai_request_for_adapter,
 };
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::chat::{
-    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails,
+    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails, ThinkingBlock,
     ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 
@@ -237,6 +237,108 @@ fn assistant_reasoning_is_replayed_with_its_tool_call() {
 }
 
 #[test]
+fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
+    // Cause/effect graph: C1 an Anthropic assistant turn contains signed thinking;
+    // C2 text, another signed thinking block, and a typed tool call follow it;
+    // C3 genai also supplies its legacy aggregate reasoning scalar. Effects: E1
+    // map exactly one ordered neutral turn with no scalar duplicate; E2 replay
+    // the same ordered Thinking/Text/Thinking/ToolCall parts on the Anthropic
+    // dialect; E3 keep each signature bound to its own thinking text. Constraint:
+    // OpenAI reasoning uses the existing scalar ReasoningContent path and is
+    // covered by the adjacent test.
+    //
+    // | Rule | C1 | C2 | C3 | Dialect   | Effects    |
+    // | R1   | Y  | Y  | Y  | Anthropic | E1+E2+E3 |
+    let provider = MessageContent::from_parts(vec![
+        ContentPart::Thinking(ThinkingBlock {
+            thinking: "select the fixture".into(),
+            signature: Some("opaque-proof".into()),
+        }),
+        ContentPart::Text("checking".into()),
+        ContentPart::Thinking(ThinkingBlock {
+            thinking: "verify arguments".into(),
+            signature: Some("opaque-proof-2".into()),
+        }),
+        ContentPart::ToolCall(GenaiToolCall {
+            call_id: "call-1".into(),
+            fn_name: "read_fixture".into(),
+            fn_arguments: serde_json::json!({"id":"compat"}),
+            thought_signatures: None,
+        }),
+    ]);
+    let model = genai::ModelIden::new(AdapterKind::Anthropic, "deepseek-v4-pro");
+    let neutral = from_genai_response(genai::chat::ChatResponse {
+        content: provider,
+        reasoning_content: Some("select the fixture\nverify arguments".into()),
+        model_iden: model.clone(),
+        provider_model_iden: model,
+        stop_reason: Some(genai::chat::StopReason::ToolCall("tool_use".into())),
+        usage: Usage::default(),
+        captured_raw_body: None,
+        response_id: None,
+    })
+    .output;
+    assert_eq!(neutral.blocks.len(), 4, "R1/E1 no scalar duplicate");
+    assert!(
+        matches!(
+            &neutral.blocks[0],
+            ContentBlock::Thinking { text, signature }
+                if text == "select the fixture" && signature.as_deref() == Some("opaque-proof")
+        ),
+        "R1/E1+E3"
+    );
+    assert_eq!(neutral.blocks[1], ContentBlock::text("checking"), "R1/E1");
+    assert!(
+        matches!(
+            &neutral.blocks[2],
+            ContentBlock::Thinking { text, signature }
+                if text == "verify arguments" && signature.as_deref() == Some("opaque-proof-2")
+        ),
+        "R1/E1+E3"
+    );
+    assert!(
+        matches!(neutral.blocks[3], ContentBlock::ToolUse { .. }),
+        "R1/E1"
+    );
+
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: neutral.blocks,
+        }],
+        tools: Vec::new(),
+    };
+    let replayed = to_genai_request_for_adapter(&request, AdapterKind::Anthropic).unwrap();
+    let parts = replayed.messages[0].content.parts();
+    assert!(
+        matches!(
+            &parts[0],
+            ContentPart::Thinking(ThinkingBlock { thinking, signature })
+                if thinking == "select the fixture" && signature.as_deref() == Some("opaque-proof")
+        ),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[1], ContentPart::Text(text) if text == "checking"),
+        "R1/E2"
+    );
+    assert!(
+        matches!(
+            &parts[2],
+            ContentPart::Thinking(ThinkingBlock { thinking, signature })
+                if thinking == "verify arguments" && signature.as_deref() == Some("opaque-proof-2")
+        ),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[3], ContentPart::ToolCall(call) if call.call_id == "call-1"),
+        "R1/E2"
+    );
+}
+
+#[test]
 fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
@@ -332,7 +434,7 @@ fn non_streaming_reasoning_precedes_the_public_answer() {
     assert!(
         matches!(
             mapped.output.blocks.first(),
-            Some(ContentBlock::Thinking { text }) if text == "private reasoning"
+            Some(ContentBlock::Thinking { text, .. }) if text == "private reasoning"
         ),
         "R3/private reasoning"
     );

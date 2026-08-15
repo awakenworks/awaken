@@ -16,6 +16,7 @@ FULL_GIT_REV = re.compile(r"[0-9a-f]{40}")
 ALLOWED_GIT_REPOSITORIES = {
     "https://github.com/awakenworks/awaken-foundation",
     "https://github.com/awakenworks/awaken-iam",
+    "https://github.com/awakenworks/rust-genai",
 }
 DEPENDENCY_TABLES = {"dependencies", "dev-dependencies", "build-dependencies"}
 
@@ -148,11 +149,14 @@ def self_test() -> int:
     # Manifest and lock cases both exercise the last rule so dependency unity
     # is enforced before compilation and again on Cargo's resolved graph.
     revision = "1" * 40
+    for allowed in sorted(ALLOWED_GIT_REPOSITORIES):
+        good_manifest = {
+            "workspace": {"dependencies": {"x": {"git": allowed, "rev": revision}}}
+        }
+        if validate_manifest_data(good_manifest, "good"):
+            print(f"Self-test FAILED: valid manifest was rejected: {allowed}", file=sys.stderr)
+            return 1
     allowed = "https://github.com/awakenworks/awaken-foundation"
-    good_manifest = {"workspace": {"dependencies": {"x": {"git": allowed, "rev": revision}}}}
-    if validate_manifest_data(good_manifest, "good"):
-        print("Self-test FAILED: valid manifest was rejected", file=sys.stderr)
-        return 1
 
     bad_manifest = {
         "target": {
