@@ -337,3 +337,18 @@ URL/stdio/credential normalization. An invalid candidate or equal-origin name
 conflict fails before insertion; a Session candidate with the same logical name
 as an Agent candidate replaces it independent of input order. The persisted
 frozen MCP set remains the only desired-state authority.
+
+## Amendment (2026-08-15): Worker projection carries the exact Agent publication
+
+A registered Worker remains authority-store-free, so the initial Session
+realization cannot reopen Control's publication store and cannot wait for a Run
+claim that is admitted only after the Session exists. The existing Coordinator
+catalog therefore projects the complete exact executable snapshot selected by
+the Session baseline into the frozen Session projection.
+
+The snapshot is rebuildable transport input, not Session state. The Session
+aggregate continues to persist only the Agent identity, source revision and
+backend projection; Control remains the publication authority. A Worker retains
+the delivered snapshot for lease renewal, and an overlapping claimed Run must
+carry the same snapshot or fail closed before any effect. Historical baselines
+without an exact revision retain their existing compatibility behavior.

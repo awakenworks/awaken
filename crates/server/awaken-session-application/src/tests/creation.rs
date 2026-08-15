@@ -49,12 +49,30 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
         agent_id: &str,
         source_revision: u64,
     ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        (workspace_id == "workspace" && agent_id == "profiled" && matches!(source_revision, 7 | 9))
+            .then(
+                || awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                    source_revision,
+                    model: Some("historical-model".into()),
+                    execution_model_ref: Some("historical-execution-model".into()),
+                    ..Default::default()
+                },
+            )
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
         (workspace_id == "workspace" && agent_id == "profiled" && source_revision == 7).then(|| {
-            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
-                model: Some("historical-model".into()),
-                execution_model_ref: Some("historical-execution-model".into()),
-                ..Default::default()
-            }
+            let mut snapshot =
+                awaken_runtime_contract::ExecutableAgentSnapshot::builder("profiled")
+                    .fingerprint("profiled-revision-7")
+                    .build();
+            snapshot.metadata.source.revision = 7;
+            snapshot
         })
     }
 
@@ -474,6 +492,23 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         .await
         .expect("exact historical publication");
     assert_eq!(historical.model(), Some("historical-model"));
+    // Exact-publication projection decision table:
+    // | baseline revision | catalog snapshot | placement | effect |
+    // | exact             | exact            | any       | project snapshot |
+    // | exact             | missing          | Worker    | fail before effect |
+    // The first assertion proves the sole profile source supplies the complete
+    // immutable publication; P2 below covers the missing-snapshot Worker rule.
+    let historical_projection = available
+        .frozen_session_projection("workspace".into(), &historical, true)
+        .await
+        .expect("exact historical projection");
+    assert_eq!(
+        historical_projection
+            .agent_publication
+            .as_ref()
+            .map(|snapshot| snapshot.fingerprint.0.as_str()),
+        Some("profiled-revision-7")
+    );
 
     let mut missing_command = command("profiled-missing", None);
     missing_command.source_revision = Some(8);
@@ -483,6 +518,25 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             .await
             .is_err(),
         "an unproven exact publication fails closed"
+    );
+
+    let mut worker = application_with_configuration(
+        repository.clone(),
+        Arc::new(AdmissionEnvironment),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+    worker.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    let mut profile_without_snapshot = command("profiled-worker-missing-snapshot", None);
+    profile_without_snapshot.source_revision = Some(9);
+    assert!(
+        worker
+            .create_profiled_session(profile_without_snapshot)
+            .await
+            .is_err(),
+        "P2: a Worker effect cannot start without the complete immutable publication"
     );
 
     let mismatched = available

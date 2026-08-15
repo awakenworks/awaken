@@ -86,6 +86,18 @@ pub trait ExecutableAgentProfileSource: Send + Sync {
             .filter(|profile| profile.source_revision == source_revision)
     }
 
+    /// Resolve the complete immutable publication behind an exact Session
+    /// profile. The Coordinator uses this only as rebuildable Worker input;
+    /// Control's publication store remains authoritative.
+    fn executable_snapshot_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        _agent_id: &str,
+        _source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        None
+    }
+
     fn unavailable_delegate_in(&self, workspace_id: &str, agent_id: &str) -> Option<String> {
         self.session_profile_in(workspace_id, agent_id)?
             .delegates
