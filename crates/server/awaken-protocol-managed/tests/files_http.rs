@@ -117,9 +117,10 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     assert_eq!(meta["size_bytes"], 11);
     assert_eq!(meta["mime_type"], "application/octet-stream");
     assert_eq!(meta["downloadable"], false);
-    assert_eq!(meta["purpose"], "input");
-    assert!(meta["session_id"].is_null());
-    assert!(meta["logical_path"].is_null());
+    assert!(meta["scope"].is_null());
+    assert!(meta.get("purpose").is_none());
+    assert!(meta.get("session_id").is_none());
+    assert!(meta.get("logical_path").is_none());
     assert!(id.starts_with("file_"), "{id}");
     assert_ne!(meta["created_at"], "1970-01-01T00:00:00Z");
 
@@ -210,9 +211,10 @@ async fn error_arms_are_fail_closed() {
 }
 
 #[tokio::test]
-async fn global_and_scoped_lists_are_pure_catalog_queries() {
-    // Rule R6: active uploaded File + no scope → global Files list contains it.
-    // Rule R7: unknown scope → empty page; listing never scans a Sandbox.
+async fn standard_global_and_scoped_lists_reject_private_filters() {
+    // Causes: C1 standard global list; C2 official `scope_id` filter; C3 private
+    // `purpose` filter. Effects: E1 catalog page; E2 scoped page; E3 invalid
+    // request. Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3.
     let router = router();
     let (_, uploaded) = upload(&router, "listed.txt", b"listed").await;
     let (status, body) = get(&router, "/v1/files").await;
@@ -224,18 +226,23 @@ async fn global_and_scoped_lists_are_pure_catalog_queries() {
     assert_eq!(list["first_id"], uploaded["id"]);
     assert_eq!(list["last_id"], uploaded["id"]);
 
-    // A scope_id for an unknown session harvests nothing and lists nothing (no panic).
     let (status, body) = get(&router, "/v1/files?scope_id=no-such-session").await;
-    assert_eq!(status, StatusCode::OK);
-    let list: Value = serde_json::from_slice(&body).unwrap();
-    assert!(list["data"].as_array().unwrap().is_empty(), "{list}");
+    assert_eq!(status, StatusCode::OK, "R2");
+    let scoped: Value = serde_json::from_slice(&body).unwrap();
+    assert!(scoped["data"].as_array().unwrap().is_empty(), "R2");
+    assert_eq!(
+        get(&router, "/v1/files?purpose=artifact").await.0,
+        StatusCode::BAD_REQUEST,
+        "R3"
+    );
 }
 
 #[tokio::test]
 async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session_state() {
-    // Rule R8: downloadable output record + durable blob + Session no longer
-    // registered → scope query and content download still succeed. This pins the
-    // File-over-Session lifecycle edge without relying on a GET-time harvest.
+    // Causes: C1 downloadable output record; C2 durable blob; C3 originating
+    // Session no longer registered. Effects: E1 standard `scope` projection;
+    // E2 scoped list and content download succeed. Rule C1+C2+C3 -> E1+E2
+    // without a GET-time harvest.
     let resources = support::resources::ephemeral_resources();
     let authorities = resources.authorities();
     let blob_id = authorities
@@ -271,23 +278,16 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     let (status, body) = get(&router, "/v1/files?scope_id=deleted-session").await;
     assert_eq!(status, StatusCode::OK);
     let list: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(list["data"][0]["id"], "file_output");
-    assert_eq!(list["data"][0]["downloadable"], true);
-    assert_eq!(list["data"][0]["purpose"], "artifact");
-    assert_eq!(list["data"][0]["session_id"], "deleted-session");
-    assert_eq!(list["data"][0]["logical_path"], "report.txt");
-    let (status, body) = get(&router, "/v1/files?purpose=artifact").await;
-    assert_eq!(status, StatusCode::OK);
-    let artifacts: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(artifacts["data"].as_array().unwrap().len(), 1);
-    let (status, body) = get(&router, "/v1/files?purpose=input").await;
-    assert_eq!(status, StatusCode::OK);
-    let inputs: Value = serde_json::from_slice(&body).unwrap();
-    assert!(inputs["data"].as_array().unwrap().is_empty());
+    let file = &list["data"][0];
+    assert_eq!(file["id"], "file_output");
+    assert_eq!(file["downloadable"], true);
     assert_eq!(
-        get(&router, "/v1/files?purpose=unknown").await.0,
-        StatusCode::BAD_REQUEST
+        file["scope"],
+        serde_json::json!({"type":"session","id":"deleted-session"})
     );
+    assert!(file.get("purpose").is_none());
+    assert!(file.get("session_id").is_none());
+    assert!(file.get("logical_path").is_none());
     let (status, bytes) = get(&router, "/v1/files/file_output/content").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, b"finished report");

@@ -174,29 +174,14 @@ pub fn agent_multiagent(caps: &AgentCapabilities) -> Option<crate::types::agent:
 pub fn agent_multiagent_ids(
     delegate_ids: &[String],
 ) -> Option<crate::types::agent::MultiagentConfig> {
-    agent_multiagent_roster(delegate_ids, None)
-}
-
-pub fn agent_multiagent_roster(
-    delegate_ids: &[String],
-    advisor_model: Option<&str>,
-) -> Option<crate::types::agent::MultiagentConfig> {
-    if delegate_ids.is_empty() && advisor_model.is_none() {
+    if delegate_ids.is_empty() {
         return None;
     }
-    let mut agents = delegate_ids
+    let agents = delegate_ids
         .iter()
         .cloned()
         .map(crate::types::agent::MultiagentRosterEntry::Id)
         .collect::<Vec<_>>();
-    if let Some(model) = advisor_model {
-        agents.push(crate::types::agent::MultiagentRosterEntry::Advisor(
-            crate::types::agent::AdvisorRosterReference {
-                model: model.to_string(),
-                kind: crate::types::agent::AdvisorRosterReferenceKind::Advisor,
-            },
-        ));
-    }
     Some(crate::types::agent::MultiagentConfig::Coordinator { agents })
 }
 

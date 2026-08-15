@@ -232,6 +232,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         let mut body = json!({ "agent": "a", "environment_id": environment_id });
         if with_mcp {
             body["mcp_servers"] = json!([{
+                "type": "url",
                 "name": "docs",
                 "url": "https://Docs.Example.test:443/rpc"
             }]);

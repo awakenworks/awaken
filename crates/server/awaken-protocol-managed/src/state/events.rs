@@ -386,14 +386,11 @@ impl ManagedState {
                 .multiagent
                 .as_ref()
                 .and_then(|coordinator| {
-                    coordinator.agents.iter().find_map(|entry| match entry {
-                        crate::types::SessionMultiagentRosterEntry::Agent(agent)
-                            if agent.id == d.agent_id =>
-                        {
-                            Some(agent.clone())
-                        }
-                        _ => None,
-                    })
+                    coordinator
+                        .agents
+                        .iter()
+                        .find(|agent| agent.id == d.agent_id)
+                        .cloned()
                 })
                 .unwrap_or_else(|| {
                     Self::thread_agent_from_profile(&d.agent_id, Default::default())

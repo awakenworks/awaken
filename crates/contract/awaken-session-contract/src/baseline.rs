@@ -673,7 +673,7 @@ mod tests {
         // | M1 | qualified | upstream-a | E1 |
         // | M2 | same | upstream-b | E2 |
         let mut inputs = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
-        inputs.model = "anyrouter@open_ai_chat/qwen/qwen3-235b".into();
+        inputs.model = "qwen/qwen3-235b;provider=anyrouter;api=open_ai_chat".into();
         let first =
             SessionBaseline::compile_with_execution_model_ref(inputs, "qwen/qwen3-235b".into());
         let mut inputs = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
@@ -681,7 +681,10 @@ mod tests {
         let second =
             SessionBaseline::compile_with_execution_model_ref(inputs, "upstream-alias".into());
 
-        assert_eq!(first.model, "anyrouter@open_ai_chat/qwen/qwen3-235b", "M1");
+        assert_eq!(
+            first.model, "qwen/qwen3-235b;provider=anyrouter;api=open_ai_chat",
+            "M1"
+        );
         assert_eq!(first.execution_model_ref, "qwen/qwen3-235b", "M1");
         assert_ne!(first.fingerprint, second.fingerprint, "M2");
     }

@@ -456,7 +456,7 @@ impl ExecutableAgentProfileSource for AgentWithPublishedModel {
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "model-agent").then(|| ExecutableAgentSessionProfile {
-            model: Some("openai@edge/gpt-5".into()),
+            model: Some("gpt-5;provider=openai;api=open_ai_responses;endpoint=edge".into()),
             execution_model_ref: Some("gpt-5-upstream".into()),
             ..empty_agent_view("genai")
         })
@@ -476,7 +476,7 @@ async fn session_model_override_cannot_change_a_published_execution_route() {
         "agent": {
             "id": "model-agent",
             "type": "agent_with_overrides",
-            "model": "openai@edge/gpt-5"
+            "model": "gpt-5;provider=openai;api=open_ai_responses;endpoint=edge"
         }
     }))
     .unwrap();
@@ -491,7 +491,7 @@ async fn session_model_override_cannot_change_a_published_execution_route() {
         "agent": {
             "id": "model-agent",
             "type": "agent_with_overrides",
-            "model": "openai@gateway/gpt-5"
+            "model": "gpt-5;provider=openai;api=open_ai_responses;endpoint=gateway"
         }
     }))
     .unwrap();
@@ -880,6 +880,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         Some(json!({
             "agent": "integrated",
             "mcp_servers": [{
+                "type": "url",
                 "name": "public-docs",
                 "url": "https://session-public.example.test"
             }]
@@ -985,6 +986,7 @@ async fn create_rejects_different_names_for_one_canonical_mcp_target_before_inse
         Some(json!({
             "agent": "integrated",
             "mcp_servers": [{
+                "type": "url",
                 "name": "docs-alias",
                 "url": "HTTPS://MCP.EXAMPLE.TEST:443/"
             }]

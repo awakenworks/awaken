@@ -86,11 +86,7 @@ async fn create(app: &Router) -> String {
 /// | I6 | valid | non-empty initial events | 400; never replay an event batch |
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
-    async fn post(
-        app: &Router,
-        key: Option<&str>,
-        title: &str,
-    ) -> (StatusCode, serde_json::Value, Option<String>) {
+    async fn post(app: &Router, key: Option<&str>, title: &str) -> (StatusCode, serde_json::Value) {
         let mut request = Request::builder()
             .method("POST")
             .uri("/v1/sessions")
@@ -114,14 +110,9 @@ async fn session_create_idempotency_replays_one_canonical_session() {
             .await
             .unwrap();
         let status = response.status();
-        let operation = response
-            .headers()
-            .get("x-awaken-operation-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        (status, body, operation)
+        (status, body)
     }
 
     let app = router(Arc::new(ManagedState::new(EchoFake)));
@@ -130,8 +121,6 @@ async fn session_create_idempotency_replays_one_canonical_session() {
     assert_eq!(first.0, StatusCode::OK, "I2 first create succeeds");
     assert_eq!(replay.0, StatusCode::OK, "I2 replay succeeds");
     assert_eq!(first.1["id"], replay.1["id"], "I2 identity is stable");
-    assert!(first.2.is_some(), "I2 returns an operation receipt");
-    assert_eq!(first.2, replay.2, "I2 operation receipt is stable");
 
     let mismatch = post(&app, Some("design-project-a"), "Changed").await;
     assert_eq!(
@@ -384,9 +373,12 @@ async fn an_unknown_inbound_event_type_is_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// The session honors the official `agent` model axis (Part A/B). A plain reference
-/// echoes the host default model at version 1; an `agent_with_overrides.model`
-/// replaces the model for the session and echoes the pinned `version`.
+/// The session honors the official `agent` model axis without constructing an
+/// unpublished route from a model string. Cause/effect: a plain reference
+/// inherits the published model; an equal-id override may change public
+/// inference controls; a different id or unavailable version is rejected by the
+/// state-layer authority test. Rules: inherit -> published id/version 1;
+/// equal id + fast -> same route/fast/inherited version.
 #[tokio::test]
 async fn session_agent_model_override_is_honored_and_echoed() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
@@ -400,7 +392,7 @@ async fn session_agent_model_override_is_honored_and_echoed() {
     .await;
     assert_eq!(base["agent"]["model"]["id"], "test-model");
     assert_eq!(base["agent"]["version"], 1);
-    // `agent_with_overrides.model` (object form) replaces the model, pinned version echoed.
+    // The official object form changes controls while retaining the published route.
     let over = json_call(
         &app,
         "POST",
@@ -409,14 +401,14 @@ async fn session_agent_model_override_is_honored_and_echoed() {
             "agent": {
                 "id": "coder",
                 "type": "agent_with_overrides",
-                "version": 4,
-                "model": { "id": "claude-sonnet-5" }
+                "model": { "id": "test-model", "speed": "fast" }
             }
         }),
     )
     .await;
-    assert_eq!(over["agent"]["model"]["id"], "claude-sonnet-5");
-    assert_eq!(over["agent"]["version"], 4);
+    assert_eq!(over["agent"]["model"]["id"], "test-model");
+    assert_eq!(over["agent"]["model"]["speed"], "fast");
+    assert_eq!(over["agent"]["version"], 1);
 }
 
 /// `agent_with_overrides` with `model: null` clears the model — rejected, since a

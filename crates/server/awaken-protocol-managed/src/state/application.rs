@@ -13,30 +13,12 @@ pub(crate) fn agent_mcp_candidate(
     server: AgentMcpServer,
     origin: awaken_session_contract::McpAttachmentOrigin,
 ) -> McpAttachmentCandidate {
-    match server {
-        AgentMcpServer::Url {
-            name,
-            url,
-            prompts_as_skills,
-        } => McpAttachmentCandidate {
-            name,
-            target: McpAttachmentCandidateTarget::HttpUrl(url),
-            prompts_as_skills,
-            published_credential: None,
-            origin,
-        },
-        AgentMcpServer::SandboxStdio {
-            name,
-            command,
-            args,
-            prompts_as_skills,
-        } => McpAttachmentCandidate {
-            name,
-            target: McpAttachmentCandidateTarget::SandboxStdio { command, args },
-            prompts_as_skills,
-            published_credential: None,
-            origin,
-        },
+    McpAttachmentCandidate {
+        name: server.name,
+        target: McpAttachmentCandidateTarget::HttpUrl(server.url),
+        prompts_as_skills: false,
+        published_credential: None,
+        origin,
     }
 }
 
@@ -60,7 +42,7 @@ pub(super) fn initial_mcp_candidates(
             .map(|server| McpAttachmentCandidate {
                 name: server.name,
                 target: McpAttachmentCandidateTarget::HttpUrl(server.url),
-                prompts_as_skills: server.prompts_as_skills,
+                prompts_as_skills: false,
                 published_credential: None,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }),

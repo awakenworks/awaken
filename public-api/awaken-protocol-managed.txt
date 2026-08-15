@@ -10,7 +10,6 @@ pub awaken_protocol_managed::project::ProjectedEvent::kind: awaken_protocol_mana
 pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>, alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_contract::session::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_multiagent_ids(&[alloc::string::String]) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
-pub fn awaken_protocol_managed::project::agent_multiagent_roster(&[alloc::string::String], core::option::Option<&str>) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
@@ -21,20 +20,6 @@ pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_ses
 pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_contract::session::CustomTool) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_protocol_managed::types
 pub mod awaken_protocol_managed::types::agent
-pub enum awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind
-pub awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind::Advisor
-pub enum awaken_protocol_managed::types::agent::AgentMcpServer
-pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio
-pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio::args: alloc::vec::Vec<alloc::string::String>
-pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio::command: alloc::string::String
-pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio::name: alloc::string::String
-pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio::prompts_as_skills: bool
-pub awaken_protocol_managed::types::agent::AgentMcpServer::Url
-pub awaken_protocol_managed::types::agent::AgentMcpServer::Url::name: alloc::string::String
-pub awaken_protocol_managed::types::agent::AgentMcpServer::Url::prompts_as_skills: bool
-pub awaken_protocol_managed::types::agent::AgentMcpServer::Url::url: alloc::string::String
-impl awaken_protocol_managed::types::agent::AgentMcpServer
-pub fn awaken_protocol_managed::types::agent::AgentMcpServer::name(&self) -> &str
 pub enum awaken_protocol_managed::types::agent::AgentRosterReferenceKind
 pub awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent
 pub enum awaken_protocol_managed::types::agent::AgentSkill
@@ -60,15 +45,11 @@ pub enum awaken_protocol_managed::types::agent::MultiagentConfig
 pub awaken_protocol_managed::types::agent::MultiagentConfig::Coordinator
 pub awaken_protocol_managed::types::agent::MultiagentConfig::Coordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::agent::MultiagentRosterEntry>
 pub enum awaken_protocol_managed::types::agent::MultiagentRosterEntry
-pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Id(alloc::string::String)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Reference(awaken_protocol_managed::types::agent::AgentRosterReference)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::SelfReference(awaken_protocol_managed::types::agent::SelfRosterReference)
 pub enum awaken_protocol_managed::types::agent::SelfRosterReferenceKind
 pub awaken_protocol_managed::types::agent::SelfRosterReferenceKind::SelfReference
-pub struct awaken_protocol_managed::types::agent::AdvisorRosterReference
-pub awaken_protocol_managed::types::agent::AdvisorRosterReference::kind: awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind
-pub awaken_protocol_managed::types::agent::AdvisorRosterReference::model: alloc::string::String
 pub struct awaken_protocol_managed::types::agent::Agent
 pub awaken_protocol_managed::types::agent::Agent::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::Agent::created_at: alloc::string::String
@@ -87,7 +68,6 @@ pub awaken_protocol_managed::types::agent::Agent::system: core::option::Option<a
 pub awaken_protocol_managed::types::agent::Agent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::agent::Agent::updated_at: alloc::string::String
 pub awaken_protocol_managed::types::agent::Agent::version: u64
-pub awaken_protocol_managed::types::agent::Agent::x_awaken: core::option::Option<awaken_protocol_managed::types::agent::AwakenAgentExtensions>
 pub struct awaken_protocol_managed::types::agent::AgentCreateParams
 pub awaken_protocol_managed::types::agent::AgentCreateParams::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::AgentCreateParams::mcp_servers: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>
@@ -98,7 +78,6 @@ pub awaken_protocol_managed::types::agent::AgentCreateParams::name: alloc::strin
 pub awaken_protocol_managed::types::agent::AgentCreateParams::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::agent::AgentCreateParams::system: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::AgentCreateParams::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub awaken_protocol_managed::types::agent::AgentCreateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::agent::AwakenAgentExtensions>
 pub struct awaken_protocol_managed::types::agent::AgentListParams
 pub awaken_protocol_managed::types::agent::AgentListParams::created_at_gte: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::AgentListParams::created_at_lte: core::option::Option<alloc::string::String>
@@ -107,6 +86,15 @@ pub awaken_protocol_managed::types::agent::AgentListParams::limit: core::option:
 pub awaken_protocol_managed::types::agent::AgentListParams::page: core::option::Option<alloc::string::String>
 impl awaken_protocol_managed::types::agent::AgentListParams
 pub fn awaken_protocol_managed::types::agent::AgentListParams::page_query(&self) -> awaken_protocol_managed::types::page::PageQuery
+pub struct awaken_protocol_managed::types::agent::AgentMcpServer
+pub awaken_protocol_managed::types::agent::AgentMcpServer::name: alloc::string::String
+pub awaken_protocol_managed::types::agent::AgentMcpServer::url: alloc::string::String
+impl awaken_protocol_managed::types::agent::AgentMcpServer
+pub fn awaken_protocol_managed::types::agent::AgentMcpServer::name(&self) -> &str
+impl serde_core::ser::Serialize for awaken_protocol_managed::types::agent::AgentMcpServer
+pub fn awaken_protocol_managed::types::agent::AgentMcpServer::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_managed::types::agent::AgentMcpServer
+pub fn awaken_protocol_managed::types::agent::AgentMcpServer::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_protocol_managed::types::agent::AgentReference
 pub awaken_protocol_managed::types::agent::AgentReference::id: alloc::string::String
 pub awaken_protocol_managed::types::agent::AgentReference::object_type: &'static str
@@ -131,10 +119,6 @@ pub awaken_protocol_managed::types::agent::AgentUpdateParams::skills: core::opti
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::system: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::tools: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>>
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::version: core::option::Option<u64>
-pub awaken_protocol_managed::types::agent::AgentUpdateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::agent::AwakenAgentExtensions>
-pub struct awaken_protocol_managed::types::agent::AwakenAgentExtensions
-pub awaken_protocol_managed::types::agent::AwakenAgentExtensions::max_steps: core::option::Option<usize>
-pub awaken_protocol_managed::types::agent::AwakenAgentExtensions::state_machine: core::option::Option<serde_json::value::Value>
 pub struct awaken_protocol_managed::types::agent::SelfRosterReference
 pub awaken_protocol_managed::types::agent::SelfRosterReference::kind: awaken_protocol_managed::types::agent::SelfRosterReferenceKind
 pub mod awaken_protocol_managed::types::deployment
@@ -671,9 +655,6 @@ pub enum awaken_protocol_managed::types::session::RetryStatus
 pub awaken_protocol_managed::types::session::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::session::RetryStatus::Retrying
 pub awaken_protocol_managed::types::session::RetryStatus::Terminal
-pub enum awaken_protocol_managed::types::session::SessionMultiagentRosterEntry
-pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
-pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
 pub enum awaken_protocol_managed::types::session::SessionStatus
 pub awaken_protocol_managed::types::session::SessionStatus::Idle
 pub awaken_protocol_managed::types::session::SessionStatus::Rescheduling
@@ -710,8 +691,6 @@ pub awaken_protocol_managed::types::session::AgentRefObject::version: core::opti
 pub struct awaken_protocol_managed::types::session::ApiError
 pub awaken_protocol_managed::types::session::ApiError::kind: &'static str
 pub awaken_protocol_managed::types::session::ApiError::message: alloc::string::String
-pub struct awaken_protocol_managed::types::session::AwakenModelExtensions
-pub awaken_protocol_managed::types::session::AwakenModelExtensions::acp: core::option::Option<awaken_agent_contract::acp::AcpSessionConfiguration>
 pub struct awaken_protocol_managed::types::session::DeletedSession
 pub awaken_protocol_managed::types::session::DeletedSession::id: alloc::string::String
 pub awaken_protocol_managed::types::session::DeletedSession::kind: &'static str
@@ -734,18 +713,11 @@ pub struct awaken_protocol_managed::types::session::ListEventsResponse
 pub awaken_protocol_managed::types::session::ListEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub awaken_protocol_managed::types::session::ListEventsResponse::has_more: bool
 pub awaken_protocol_managed::types::session::ListEventsResponse::next_page: core::option::Option<alloc::string::String>
-pub struct awaken_protocol_managed::types::session::McpServer
-pub awaken_protocol_managed::types::session::McpServer::name: alloc::string::String
-pub awaken_protocol_managed::types::session::McpServer::prompts_as_skills: bool
-pub awaken_protocol_managed::types::session::McpServer::url: alloc::string::String
-impl serde_core::ser::Serialize for awaken_protocol_managed::types::McpServer
-pub fn awaken_protocol_managed::types::McpServer::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub struct awaken_protocol_managed::types::session::ModelConfig
 pub awaken_protocol_managed::types::session::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::session::ModelConfig::id: alloc::string::String
 pub awaken_protocol_managed::types::session::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
-pub awaken_protocol_managed::types::session::ModelConfig::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -754,7 +726,6 @@ pub awaken_protocol_managed::types::session::ModelConfigParams::effort: core::op
 pub awaken_protocol_managed::types::session::ModelConfigParams::id: alloc::string::String
 pub awaken_protocol_managed::types::session::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
-pub awaken_protocol_managed::types::session::ModelConfigParams::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -815,8 +786,6 @@ pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol
 pub struct awaken_protocol_managed::types::session::SessionAgentUpdate
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
-pub struct awaken_protocol_managed::types::session::SessionCreateExtensions
-pub awaken_protocol_managed::types::session::SessionCreateExtensions::transcript_prefix: core::option::Option<awaken_protocol_managed::types::TranscriptPrefixInput>
 pub struct awaken_protocol_managed::types::session::SessionCreateParams
 pub awaken_protocol_managed::types::session::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::session::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -827,7 +796,6 @@ pub awaken_protocol_managed::types::session::SessionCreateParams::metadata: allo
 pub awaken_protocol_managed::types::session::SessionCreateParams::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
 pub awaken_protocol_managed::types::session::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_protocol_managed::types::session::SessionCreateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::SessionCreateExtensions>
 pub struct awaken_protocol_managed::types::session::SessionError
 pub awaken_protocol_managed::types::session::SessionError::kind: &'static str
 pub awaken_protocol_managed::types::session::SessionError::mcp_server_name: core::option::Option<alloc::string::String>
@@ -836,7 +804,7 @@ pub awaken_protocol_managed::types::session::SessionError::retry_status: awaken_
 impl awaken_protocol_managed::types::SessionError
 pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::session::SessionMultiagentCoordinator
-pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
+pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionThreadAgent>
 pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::session::SessionStats
 pub struct awaken_protocol_managed::types::session::SessionThread
@@ -888,9 +856,6 @@ pub awaken_protocol_managed::types::session::SessionUpdateParams::vault_ids: cor
 pub struct awaken_protocol_managed::types::session::SpanModelUsage
 pub awaken_protocol_managed::types::session::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
-pub struct awaken_protocol_managed::types::session::TranscriptPrefixInput
-pub awaken_protocol_managed::types::session::TranscriptPrefixInput::end_seq: core::option::Option<u64>
-pub awaken_protocol_managed::types::session::TranscriptPrefixInput::session_id: alloc::string::String
 pub struct awaken_protocol_managed::types::session::Usage
 pub awaken_protocol_managed::types::session::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -899,6 +864,7 @@ pub awaken_protocol_managed::types::session::Usage::input_tokens: core::option::
 pub awaken_protocol_managed::types::session::Usage::list_cost: core::option::Option<awaken_protocol_managed::types::MonetaryAmount>
 pub awaken_protocol_managed::types::session::Usage::output_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
+pub type awaken_protocol_managed::types::session::McpServer = awaken_protocol_managed::types::agent::AgentMcpServer
 pub mod awaken_protocol_managed::types::tunnel
 pub struct awaken_protocol_managed::types::tunnel::CertificateCreateParams
 pub awaken_protocol_managed::types::tunnel::CertificateCreateParams::ca_certificate_pem: alloc::string::String
@@ -1307,9 +1273,6 @@ pub enum awaken_protocol_managed::types::RetryStatus
 pub awaken_protocol_managed::types::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::RetryStatus::Retrying
 pub awaken_protocol_managed::types::RetryStatus::Terminal
-pub enum awaken_protocol_managed::types::SessionMultiagentRosterEntry
-pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
-pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
 pub enum awaken_protocol_managed::types::SessionStatus
 pub awaken_protocol_managed::types::SessionStatus::Idle
 pub awaken_protocol_managed::types::SessionStatus::Rescheduling
@@ -1346,8 +1309,6 @@ pub awaken_protocol_managed::types::AgentRefObject::version: core::option::Optio
 pub struct awaken_protocol_managed::types::ApiError
 pub awaken_protocol_managed::types::ApiError::kind: &'static str
 pub awaken_protocol_managed::types::ApiError::message: alloc::string::String
-pub struct awaken_protocol_managed::types::AwakenModelExtensions
-pub awaken_protocol_managed::types::AwakenModelExtensions::acp: core::option::Option<awaken_agent_contract::acp::AcpSessionConfiguration>
 pub struct awaken_protocol_managed::types::DeletedSession
 pub awaken_protocol_managed::types::DeletedSession::id: alloc::string::String
 pub awaken_protocol_managed::types::DeletedSession::kind: &'static str
@@ -1370,18 +1331,11 @@ pub struct awaken_protocol_managed::types::ListEventsResponse
 pub awaken_protocol_managed::types::ListEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub awaken_protocol_managed::types::ListEventsResponse::has_more: bool
 pub awaken_protocol_managed::types::ListEventsResponse::next_page: core::option::Option<alloc::string::String>
-pub struct awaken_protocol_managed::types::McpServer
-pub awaken_protocol_managed::types::McpServer::name: alloc::string::String
-pub awaken_protocol_managed::types::McpServer::prompts_as_skills: bool
-pub awaken_protocol_managed::types::McpServer::url: alloc::string::String
-impl serde_core::ser::Serialize for awaken_protocol_managed::types::McpServer
-pub fn awaken_protocol_managed::types::McpServer::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub struct awaken_protocol_managed::types::ModelConfig
 pub awaken_protocol_managed::types::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::ModelConfig::id: alloc::string::String
 pub awaken_protocol_managed::types::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
-pub awaken_protocol_managed::types::ModelConfig::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1390,7 +1344,6 @@ pub awaken_protocol_managed::types::ModelConfigParams::effort: core::option::Opt
 pub awaken_protocol_managed::types::ModelConfigParams::id: alloc::string::String
 pub awaken_protocol_managed::types::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
-pub awaken_protocol_managed::types::ModelConfigParams::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1460,8 +1413,6 @@ pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol
 pub struct awaken_protocol_managed::types::SessionAgentUpdate
 pub awaken_protocol_managed::types::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
 pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
-pub struct awaken_protocol_managed::types::SessionCreateExtensions
-pub awaken_protocol_managed::types::SessionCreateExtensions::transcript_prefix: core::option::Option<awaken_protocol_managed::types::TranscriptPrefixInput>
 pub struct awaken_protocol_managed::types::SessionCreateParams
 pub awaken_protocol_managed::types::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -1472,7 +1423,6 @@ pub awaken_protocol_managed::types::SessionCreateParams::metadata: alloc::collec
 pub awaken_protocol_managed::types::SessionCreateParams::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
 pub awaken_protocol_managed::types::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_protocol_managed::types::SessionCreateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::SessionCreateExtensions>
 pub struct awaken_protocol_managed::types::SessionError
 pub awaken_protocol_managed::types::SessionError::kind: &'static str
 pub awaken_protocol_managed::types::SessionError::mcp_server_name: core::option::Option<alloc::string::String>
@@ -1481,7 +1431,7 @@ pub awaken_protocol_managed::types::SessionError::retry_status: awaken_protocol_
 impl awaken_protocol_managed::types::SessionError
 pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::SessionMultiagentCoordinator
-pub awaken_protocol_managed::types::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
+pub awaken_protocol_managed::types::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionThreadAgent>
 pub awaken_protocol_managed::types::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::SessionStats
 pub struct awaken_protocol_managed::types::SessionThread
@@ -1533,9 +1483,6 @@ pub awaken_protocol_managed::types::SessionUpdateParams::vault_ids: core::option
 pub struct awaken_protocol_managed::types::SpanModelUsage
 pub awaken_protocol_managed::types::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
-pub struct awaken_protocol_managed::types::TranscriptPrefixInput
-pub awaken_protocol_managed::types::TranscriptPrefixInput::end_seq: core::option::Option<u64>
-pub awaken_protocol_managed::types::TranscriptPrefixInput::session_id: alloc::string::String
 pub struct awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -1546,6 +1493,7 @@ pub awaken_protocol_managed::types::Usage::output_tokens: core::option::Option<u
 pub awaken_protocol_managed::types::Usage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
 pub fn awaken_protocol_managed::types::paginate<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> &str) -> awaken_protocol_managed::types::page::Page<T>
 pub fn awaken_protocol_managed::types::paginate_by<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> alloc::string::String) -> awaken_protocol_managed::types::page::Page<T>
+pub type awaken_protocol_managed::types::McpServer = awaken_protocol_managed::types::agent::AgentMcpServer
 pub enum awaken_protocol_managed::ManagedAgentError
 pub awaken_protocol_managed::ManagedAgentError::Conflict(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::Invalid(alloc::string::String)

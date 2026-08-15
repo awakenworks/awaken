@@ -11,7 +11,7 @@
 //! domain state — projecting engine events into [`OutboundKind`], building a
 //! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
-use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBlock};
+use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,9 +211,10 @@ impl AgentRef {
     }
 }
 
-/// `POST /v1/sessions` request body (only the fields the runtime slice reads;
-/// unknown fields are ignored so the full SDK payload is accepted).
+/// `POST /v1/sessions` request body. The boundary is deliberately closed: an
+/// unsupported extension must fail instead of being silently ignored.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
     #[serde(default)]
@@ -241,26 +242,6 @@ pub struct SessionCreateParams {
     /// state layer lowers them into neutral input bindings.
     #[serde(default)]
     pub resources: Vec<ResourceInput>,
-    /// Explicit Awaken compatibility extensions. Product workflows may select a
-    /// committed source prefix without making it part of Anthropic's wire model.
-    #[serde(default)]
-    pub x_awaken: Option<SessionCreateExtensions>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionCreateExtensions {
-    #[serde(default)]
-    pub transcript_prefix: Option<TranscriptPrefixInput>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TranscriptPrefixInput {
-    pub session_id: String,
-    /// Half-open committed message ordinal. Omitted freezes the latest prefix.
-    #[serde(default)]
-    pub end_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -289,32 +270,9 @@ pub struct SessionUpdateParams {
     pub vault_ids: Option<Vec<String>>,
 }
 
-/// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
-/// `BetaManagedAgentsURLMCPServerParams`): `{ name, type: "url", url }`. The
-/// SDK's `type: "url"` tag is tolerated (and ignored) on input — there is only
-/// one variant — and always re-serialized on output.
-#[derive(Debug, Clone, Deserialize)]
-pub struct McpServer {
-    pub name: String,
-    pub url: String,
-    #[serde(default)]
-    pub prompts_as_skills: bool,
-}
-
-impl Serialize for McpServer {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut s =
-            serializer.serialize_struct("McpServer", if self.prompts_as_skills { 4 } else { 3 })?;
-        s.serialize_field("name", &self.name)?;
-        s.serialize_field("type", "url")?;
-        s.serialize_field("url", &self.url)?;
-        if self.prompts_as_skills {
-            s.serialize_field("prompts_as_skills", &true)?;
-        }
-        s.end()
-    }
-}
+/// Session requests reuse the exact Agent URL-MCP DTO; there is one Managed MCP
+/// vocabulary and one serializer/deserializer authority.
+pub type McpServer = super::agent::AgentMcpServer;
 
 /// The resolved `BetaManagedAgentsModelConfig` object. A session/agent's
 /// `model` is this object on the wire, never a bare string (the SDK reads
@@ -329,11 +287,6 @@ pub struct ModelConfig {
     pub effort: Option<ModelEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inference_geo: Option<String>,
-    /// Optional Awaken behavior carried beside the fully compatible Managed
-    /// model fields. Official clients that do not need ACP-native options omit
-    /// it and retain the exact SDK shape.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub x_awaken: Option<AwakenModelExtensions>,
 }
 
 impl ModelConfig {
@@ -343,7 +296,6 @@ impl ModelConfig {
             speed: None,
             effort: None,
             inference_geo: None,
-            x_awaken: None,
         }
     }
 
@@ -373,18 +325,8 @@ impl ModelConfig {
             }),
             inference_geo: (inference.inference_geo == Some(InferenceGeography::Us))
                 .then(|| "us".to_owned()),
-            x_awaken: None,
         }
     }
-}
-
-/// Namespaced model extensions. Route identity remains exclusively in `id`;
-/// this object carries only executor-native configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AwakenModelExtensions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp: Option<AcpSessionConfiguration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,8 +395,6 @@ pub struct ModelConfigParams {
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
     pub inference_geo: Option<String>,
-    #[serde(default)]
-    pub x_awaken: Option<AwakenModelExtensions>,
 }
 
 impl ModelConfigParams {
@@ -464,7 +404,6 @@ impl ModelConfigParams {
             speed: None,
             effort: None,
             inference_geo: None,
-            x_awaken: None,
         }
     }
 
@@ -475,7 +414,6 @@ impl ModelConfigParams {
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
             inference_geo: self.inference_geo,
-            x_awaken: self.x_awaken,
         }
     }
 }
@@ -507,14 +445,7 @@ pub struct SessionAgent {
 pub struct SessionMultiagentCoordinator {
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub agents: Vec<SessionMultiagentRosterEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum SessionMultiagentRosterEntry {
-    Agent(SessionThreadAgent),
-    Advisor(super::agent::AdvisorRosterReference),
+    pub agents: Vec<SessionThreadAgent>,
 }
 
 /// `BetaManagedAgentsSessionThreadAgent` — the agent snapshot frozen for one
@@ -1375,7 +1306,6 @@ mod tests {
             },
         );
         assert_eq!(us.inference_geo.as_deref(), Some("us"), "R1");
-        assert!(us.x_awaken.is_none(), "R1");
 
         let eu = ModelConfig::from_inference(
             "model",
@@ -1385,7 +1315,6 @@ mod tests {
             },
         );
         assert!(eu.inference_geo.is_none(), "R2");
-        assert!(eu.x_awaken.is_none(), "R2");
     }
 
     /// Causal graph: rubric object tag + variant payload -> one closed domain
@@ -1717,7 +1646,7 @@ mod tests {
             skills: Vec::new(),
             multiagent: Some(SessionMultiagentCoordinator {
                 kind: "coordinator",
-                agents: vec![SessionMultiagentRosterEntry::Agent(SessionThreadAgent {
+                agents: vec![SessionThreadAgent {
                     id: "researcher".into(),
                     kind: "agent",
                     version: 3,
@@ -1728,7 +1657,7 @@ mod tests {
                     tools: Vec::new(),
                     mcp_servers: Vec::new(),
                     skills: Vec::new(),
-                })],
+                }],
             }),
         };
         let projected = serde_json::to_value(SessionThreadAgent::from(&session_agent)).unwrap();
@@ -1738,34 +1667,6 @@ mod tests {
         assert!(
             projected.get("multiagent").is_none(),
             "the thread contract has no duplicate roster field"
-        );
-    }
-
-    #[test]
-    fn mcp_prompt_skill_switch_is_opt_in_and_wire_compatible() {
-        let omitted: McpServer = serde_json::from_value(serde_json::json!({
-            "name": "docs",
-            "type": "url",
-            "url": "https://docs.test/mcp"
-        }))
-        .unwrap();
-        assert!(!omitted.prompts_as_skills, "R1 omitted means disabled");
-        assert!(
-            serde_json::to_value(&omitted)
-                .unwrap()
-                .get("prompts_as_skills")
-                .is_none(),
-            "R1 false remains absent on the legacy wire shape"
-        );
-
-        let enabled = McpServer {
-            prompts_as_skills: true,
-            ..omitted
-        };
-        assert_eq!(
-            serde_json::to_value(enabled).unwrap()["prompts_as_skills"],
-            true,
-            "R2 explicit opt-in survives serialization"
         );
     }
 }

@@ -1324,6 +1324,7 @@ pub(crate) mod resource_prompt_tests {
             target: awaken_agent_config::ModelTarget {
                 model_id: "m-first".into(),
                 provider_id: Some("openai".into()),
+                api_dialect: Some("open_ai_chat".into()),
                 protocol_endpoint_id: None,
                 endpoint_name: Some("edge".into()),
             },
@@ -1337,11 +1338,10 @@ pub(crate) mod resource_prompt_tests {
         let view = catalog
             .session_profile_in(DEFAULT_SCOPE, &config.id)
             .unwrap();
-        // Cause/effect rule: a provider-qualified Managed target (C1) projects
-        // its full display id for the API (E1) and the already-published exact
-        // candidate model_ref for execution (E2); neither string substitutes for
-        // the other at Session preparation.
-        assert_eq!(view.model.as_deref(), Some("openai@edge/m-first"), "E1");
+        // Rule: provider-qualified Target (C1) -> full API id (E1) + exact
+        // published execution model_ref (E2); neither substitutes for the other.
+        let public_model = "m-first;provider=openai;api=open_ai_chat;endpoint=edge";
+        assert_eq!(view.model.as_deref(), Some(public_model), "E1");
         assert_eq!(view.execution_model_ref.as_deref(), Some("m-first"), "E2");
     }
 

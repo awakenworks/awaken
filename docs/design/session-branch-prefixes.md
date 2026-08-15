@@ -18,7 +18,8 @@ selection, labels, branch trees, and navigation remain application concerns.
 | Reused unchanged | `CommittedThreadView`, `TranscriptSnapshotRef`, `TranscriptSliceSpec` | Freeze, verify, and reconstruct one append-only prefix |
 | Reused unchanged | `RuntimeRunContext.request_context` | Make derived messages model-visible without committing them |
 | Existing mechanism modified | Session baseline and frozen Worker projection | Persist the slice reference; carry only its rebuildable materialization across placement |
-| Existing mechanism modified | Managed Session create | Admit the namespaced `x_awaken.transcript_prefix` extension after Workspace and range validation |
+| Existing mechanism modified | None | No public ingress currently authors this internal baseline field |
+| Genuinely new public mechanism (deferred) | Typed native control-plane Session command | A future product API may admit a transcript prefix after Workspace and range validation; Managed Session create has no private ingress |
 | Genuinely new durable aggregate/store | None | No branch tree, transcript copy, event copy, or context cache is durable truth |
 
 ## Static Structure
@@ -44,7 +45,7 @@ and before remote Worker realization.
 ## Dynamic Behavior
 
 ```text
-create target with source Session id + optional end_seq
+future typed native command supplies source Session id + optional end_seq
   -> authorize source in target Workspace
   -> read committed source messages
   -> reject end_seq beyond committed end
@@ -66,9 +67,9 @@ changing its retained committed transcript.
 
 | Rule | Causes | Effects | Executable owner |
 |---|---|---|---|
-| B1 | same-Workspace source, valid end | exact frozen reference; exact request context; empty target transcript | `mcp_sessions::transcript_prefix_is_frozen_projected_and_never_copied` |
-| B2 | end beyond committed source | reject before target creation | same test |
-| B3 | missing/cross-Workspace source | existing Session ownership guard rejects | same test plus ownership guard suite |
+| B1 | same-Workspace source, valid end | exact frozen reference; exact request context; empty target transcript | required with the deferred typed command |
+| B2 | end beyond committed source | reject before target creation | required with the deferred typed command |
+| B3 | missing/cross-Workspace source | existing Session ownership guard rejects | required with the deferred typed command plus ownership guard suite |
 | B4 | local or remote frozen projection | context precedes current input; source ids never commit | `control_frozen_baseline_is_the_only_worker_runtime_projection` |
 | B5 | fresh or resumed Runtime attempt | common model-transcript assembly consumes request context | `multi_run::request_context_is_model_visible_but_never_committed` |
 
@@ -80,3 +81,5 @@ changing its retained committed transcript.
 4. Materialized prefix messages are never passed to `ThreadCommit.new_messages`.
 5. Local and remote realization consume the same frozen projection.
 6. Product branch metadata is descriptive and cannot select transcript truth.
+7. Managed Session requests cannot author a transcript prefix; unknown private
+   fields fail before persistence.

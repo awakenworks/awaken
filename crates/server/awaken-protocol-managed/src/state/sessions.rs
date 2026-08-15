@@ -114,28 +114,25 @@ impl ManagedState {
         profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         caps: &AgentCapabilities,
     ) -> Result<Option<crate::types::SessionMultiagentCoordinator>, StateError> {
-        let (delegates, advisor_model) = profile.map_or_else(
+        let delegates = profile.map_or_else(
             || {
-                (
-                    caps.delegates
-                        .iter()
-                        .cloned()
-                        .map(
-                            |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
-                                agent_id,
-                                source_revision: None,
-                            },
-                        )
-                        .collect(),
-                    None,
-                )
+                caps.delegates
+                    .iter()
+                    .cloned()
+                    .map(
+                        |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
+                            agent_id,
+                            source_revision: None,
+                        },
+                    )
+                    .collect()
             },
-            |profile| (profile.delegates.clone(), profile.advisor_model.clone()),
+            |profile| profile.delegates.clone(),
         );
-        if delegates.is_empty() && advisor_model.is_none() {
+        if delegates.is_empty() {
             return Ok(None);
         }
-        let mut agents = Vec::with_capacity(delegates.len() + usize::from(advisor_model.is_some()));
+        let mut agents = Vec::with_capacity(delegates.len());
         for delegate in delegates {
             let resolved = delegate
                 .source_revision
@@ -162,15 +159,7 @@ impl ManagedState {
                     ))));
                 }
             };
-            agents.push(crate::types::SessionMultiagentRosterEntry::Agent(child));
-        }
-        if let Some(model) = advisor_model {
-            agents.push(crate::types::SessionMultiagentRosterEntry::Advisor(
-                crate::types::agent::AdvisorRosterReference {
-                    model,
-                    kind: crate::types::agent::AdvisorRosterReferenceKind::Advisor,
-                },
-            ));
+            agents.push(child);
         }
         Ok(Some(crate::types::SessionMultiagentCoordinator {
             kind: "coordinator",
@@ -360,52 +349,6 @@ impl ManagedState {
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         self.check_bind(&owner_scope, &req).await?;
-        let transcript_prefix = match req
-            .x_awaken
-            .as_ref()
-            .and_then(|extensions| extensions.transcript_prefix.as_ref())
-        {
-            Some(prefix) => {
-                if prefix.session_id.trim().is_empty() {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "x_awaken.transcript_prefix.session_id must be non-empty",
-                    )));
-                }
-                let committed = self
-                    .application
-                    .session_transcript(&owner_scope, &prefix.session_id)
-                    .await
-                    .map_err(StateError::Run)?;
-                let available_end = u64::try_from(committed.len()).unwrap_or(u64::MAX);
-                let end_seq = prefix.end_seq.unwrap_or(available_end);
-                if end_seq > available_end {
-                    return Err(StateError::Run(RunError::bad_request(format!(
-                        "transcript prefix end_seq {end_seq} exceeds committed end {available_end}"
-                    ))));
-                }
-                let end = usize::try_from(end_seq).map_err(|_| {
-                    StateError::Run(RunError::bad_request(
-                        "transcript prefix end_seq cannot be represented",
-                    ))
-                })?;
-                let snapshot = awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::new(
-                    awaken_agent_contract::agent::thread::Id(prefix.session_id.clone()),
-                    awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
-                    committed[..end].to_vec(),
-                );
-                Some(
-                    awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec {
-                        snapshot: snapshot.reference().clone(),
-                        ranges: vec![
-                            awaken_agent_contract::thread::read::transcript::TranscriptRange::new(
-                                0, end_seq,
-                            ),
-                        ],
-                    },
-                )
-            }
-            None => None,
-        };
         // Mint from the process-incarnation namespace so active-active peers and
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the
@@ -819,7 +762,7 @@ impl ManagedState {
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
-                transcript_prefix,
+                transcript_prefix: None,
                 resources: resolved_resources,
                 initial_mcp: mcp_drafts,
             },

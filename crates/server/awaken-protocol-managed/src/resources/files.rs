@@ -26,11 +26,12 @@ pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
 }
 
 fn metadata(record: &FileRecord) -> Value {
-    let purpose = if record.harvest_key.is_some() {
-        "artifact"
-    } else {
-        "input"
-    };
+    let scope = record.scope_id.as_ref().map(|id| {
+        json!({
+            "type": "session",
+            "id": id,
+        })
+    });
     json!({
         "id": record.id,
         "type": "file",
@@ -39,12 +40,7 @@ fn metadata(record: &FileRecord) -> Value {
         "size_bytes": record.size_bytes,
         "created_at": record.created_at,
         "downloadable": record.downloadable,
-        // Awaken extension fields. Artifacts remain ordinary File records; these
-        // fields let the Console project separate input and output views without
-        // introducing a second Artifact aggregate.
-        "purpose": purpose,
-        "session_id": record.scope_id,
-        "logical_path": record.logical_path,
+        "scope": scope,
     })
 }
 
@@ -64,6 +60,17 @@ async fn list_files(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(name) = query.keys().find(|name| {
+        !matches!(
+            name.as_str(),
+            "before_id" | "after_id" | "limit" | "scope_id"
+        )
+    }) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("unsupported Files list parameter `{name}`"),
+        );
+    }
     let before_id = query.get("before_id");
     let after_id = query.get("after_id");
     if before_id.is_some() && after_id.is_some() {
@@ -94,30 +101,6 @@ async fn list_files(
             return error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string());
         }
     };
-    let purpose = match query.get("purpose").map(String::as_str) {
-        None => None,
-        Some("input") => Some("input"),
-        Some("artifact") => Some("artifact"),
-        Some(_) => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "purpose must be either input or artifact",
-            );
-        }
-    };
-    let records = records
-        .into_iter()
-        .filter(|record| {
-            purpose.is_none_or(|purpose| {
-                let record_purpose = if record.harvest_key.is_some() {
-                    "artifact"
-                } else {
-                    "input"
-                };
-                record_purpose == purpose
-            })
-        })
-        .collect::<Vec<_>>();
     let start = if let Some(cursor) = after_id.map(String::as_str) {
         match records.iter().position(|record| record.id == cursor) {
             Some(position) => position + 1,

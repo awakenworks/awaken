@@ -335,4 +335,67 @@ mod tests {
             "E4: a local credential cannot substitute for a disabled brokered path"
         );
     }
+
+    #[test]
+    fn acp_executor_dialect_matrix_fails_closed() {
+        // Cause/effect graph: selected ACP executor (C1) + executor availability
+        // (C2) + selected Offering API dialect (C3) -> publication admission
+        // (E1), RuntimeUnavailable (E2), or DialectUnavailable (E3).
+        //
+        // Decision table:
+        // | rule | executor   | available | dialect              | effect |
+        // | R1   | claude     | yes       | anthropic_messages   | E1     |
+        // | R2   | claude     | yes       | open_ai_responses    | E3     |
+        // | R3   | codex      | yes       | open_ai_responses    | E1     |
+        // | R4   | codex      | yes       | anthropic_messages   | E3     |
+        // | R5   | unknown    | -         | any                  | E2     |
+        // | R6   | claude     | no        | anthropic_messages   | E2     |
+        let executors = [
+            ExecutorModelCapability {
+                backend_ref: "acp:claude".into(),
+                model_api_dialects: vec!["anthropic_messages".into()],
+                available: true,
+            },
+            ExecutorModelCapability {
+                backend_ref: "acp:codex".into(),
+                model_api_dialects: vec!["open_ai_responses".into()],
+                available: true,
+            },
+            ExecutorModelCapability {
+                backend_ref: "acp:claude-offline".into(),
+                model_api_dialects: vec!["anthropic_messages".into()],
+                available: false,
+            },
+        ];
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:claude", "anthropic_messages"),
+            Ok(()),
+            "R1"
+        );
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:claude", "open_ai_responses"),
+            Err(ExecutableModelReadiness::DialectUnavailable),
+            "R2: Claude Code must not receive an OpenAI Responses route"
+        );
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:codex", "open_ai_responses"),
+            Ok(()),
+            "R3"
+        );
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:codex", "anthropic_messages"),
+            Err(ExecutableModelReadiness::DialectUnavailable),
+            "R4"
+        );
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:unknown", "anthropic_messages"),
+            Err(ExecutableModelReadiness::RuntimeUnavailable),
+            "R5"
+        );
+        assert_eq!(
+            validate_executor_offering(&executors, "acp:claude-offline", "anthropic_messages"),
+            Err(ExecutableModelReadiness::RuntimeUnavailable),
+            "R6"
+        );
+    }
 }

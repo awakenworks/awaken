@@ -585,6 +585,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publication_resolution_rejects_an_incompatible_acp_dialect_before_access() {
+        // Cause/effect graph: authored exact model+API target (C1) + selected
+        // ACP executor (C2) + executor capability matrix (C3) -> immutable
+        // publication (E1) or CandidateUnavailable before credential selection
+        // and Worker dispatch (E2).
+        //
+        // Decision rule: open_ai_responses + Claude executor -> E2. The
+        // compatible and unavailable matrix rows are owned by
+        // `acp_executor_dialect_matrix_fails_closed` in the shared validator.
+        // Claude Code's catalog row owns only `anthropic_messages`; publication
+        // must not fall back to native execution or reinterpret the API.
+        let resolver = resolver_for_catalog(catalog_with_dialect(
+            &["responses-model"],
+            ApiDialect::OpenAiResponses,
+        ))
+        .await;
+        let selection = awaken_config_service::parse_managed_model_id(
+            "responses-model;provider=openai;api=open_ai_responses;executor=acp:claude",
+        )
+        .expect("canonical Managed model reference");
+        let error = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &selection, &[])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PublicationResolutionError::CandidateUnavailable { binding, reason }
+                    if binding.backend_ref == "acp:claude"
+                        && reason.contains("open_ai_responses")
+                        && reason.contains("DialectUnavailable")
+            ),
+            "incompatible dialect rule"
+        );
+    }
+
+    #[tokio::test]
     async fn exact_target_keeps_its_protocol_endpoint_through_publication() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         enter_credential_idempotent(
@@ -632,6 +669,7 @@ mod tests {
             target: ModelTarget {
                 model_id: "shared-model".into(),
                 provider_id: Some("openai".into()),
+                api_dialect: None,
                 protocol_endpoint_id: Some("ep2".into()),
                 endpoint_name: None,
             },
@@ -713,6 +751,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -724,6 +763,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "fallback".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep2".into()),
                             endpoint_name: None,
                         },
@@ -836,6 +876,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -883,6 +924,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -915,6 +957,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -961,6 +1004,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -1034,6 +1078,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "managed-model".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -1086,6 +1131,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "managed-model".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -1119,6 +1165,7 @@ mod tests {
                         target: ModelTarget {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
+                            api_dialect: None,
                             protocol_endpoint_id: Some("ep1".into()),
                             endpoint_name: None,
                         },
@@ -1235,6 +1282,7 @@ mod tests {
                     target: ModelTarget {
                         model_id: "primary".into(),
                         provider_id: Some("openai".into()),
+                        api_dialect: None,
                         protocol_endpoint_id: None,
                         endpoint_name: None,
                     },
@@ -1361,6 +1409,7 @@ mod tests {
             target: ModelTarget {
                 model_id: "primary".into(),
                 provider_id: Some("openai".into()),
+                api_dialect: None,
                 protocol_endpoint_id: None,
                 endpoint_name: None,
             },
@@ -1494,6 +1543,7 @@ mod tests {
                     target: ModelTarget {
                         model_id: "claude-test".into(),
                         provider_id: Some("anthropic".into()),
+                        api_dialect: None,
                         protocol_endpoint_id: None,
                         endpoint_name: None,
                     },

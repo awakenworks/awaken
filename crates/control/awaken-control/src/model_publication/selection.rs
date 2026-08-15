@@ -125,6 +125,7 @@ impl CatalogModelPublicationResolver {
             model_id: binding.model_ref.clone(),
             provider_id: (!binding.provider_identity_ref.is_empty())
                 .then(|| binding.provider_identity_ref.clone()),
+            api_dialect: None,
             protocol_endpoint_id: None,
             endpoint_name: None,
         };

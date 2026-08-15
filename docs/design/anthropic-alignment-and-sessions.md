@@ -75,7 +75,7 @@ publication path, not to a Cloud-only shadow registry.
 The Managed compatibility boundary exposes only Anthropic's official
 `inference_geo` vocabulary, `us | global`; `global` and omission both mean no
 additional caller-selected placement constraint. Provider-specific or
-non-Anthropic boundaries must not be added to `model`, `x_awaken`, Session, or
+non-Anthropic boundaries must not be added as fields to `model`, Session, or
 Agent response DTOs. A hosting adapter may carry an opaque provider placement
 proof in the existing resolved candidate and exact-target seams, but clients
 cannot select its mechanism or observe Provider routing configuration through
@@ -91,30 +91,62 @@ credential, egress, usage, and Billing seams; the Managed adapter only selects
 it through the official toolset policy.
 
 Multiagent authoring and execution continue through the one `AgentConfig` roster
-and Session thread/event authority. An advisor is a typed roster member with the
-reserved name `anthropic.advisor`, not a second agent resource. At most one may
-be present and it is projected last. Only the primary thread may consult it;
-the consultation creates an exempt child thread, emits the ordinary thread
-lifecycle/message events, contributes to the same Session usage, then
-terminates. Consultation failure or interruption terminates only that advisor
-thread and never fails the primary turn. Client projection redacts advice when
-the selected advisor policy requires it, while the primary runtime receives the
-full result.
-
-The first executable Advisor slice uses the reserved `advisor` service tool,
-the publication-pinned candidate, the attempt's existing ownership/credential
-fence, a no-tools consultation, shared Session usage, primary-only admission,
-and fail-soft tool output. It deliberately does not invent a parallel raw-tool
-or model-resolution path. Separate persisted advisor child-Thread lifecycle
-events and client-selectable redaction are still a release gate; until that
-projection is implemented and differentially tested, the implementation may
-claim Advisor consultation compatibility but not full Advisor observability
-equivalence.
+and Session thread/event authority. The Managed roster admits only Agent
+references and the official self reference. Internal advisor targets remain a
+native control-plane capability and are neither accepted nor projected as a
+private Managed union member.
 
 Public Session status is restricted to the official
 `rescheduling | running | idle | terminated` union. Provisioning and internal
 failure phases remain internal state and are projected to the nearest official
 observable state/event rather than leaking adapter-private enum members.
+
+## MCP URL compatibility and sandbox stdio
+
+The Managed wire accepts the official URL MCP shape. `sandbox_stdio` already has
+one authoritative internal path—Agent binding, Session attachment/generation,
+Environment process realization, and the runtime stdio MCP client—but a command
+and arguments cannot be represented as a Managed URL. The Managed DTO therefore
+has no stdio variant; native bindings are omitted rather than assigned a
+fabricated URL.
+
+The standards-preserving target design is:
+
+| Classification | Authority | Role |
+|---|---|---|
+| Reuse unchanged | `McpTarget::SandboxStdio`, Session MCP generation/lease, Environment process realization, `awaken-ext-mcp` stdio client | Own the command, process, connection, and exact Session lifetime |
+| Modify | Runtime Host `McpRelay` exact-generation capability table | Add a stdio upstream target beside its existing HTTP upstream target; keep one route/lease/cleanup authority |
+| Modify | Managed Session MCP projection | Project the realized, capability-bearing bridge URL as the ordinary `{type:"url"}` shape |
+| New | stdio request/notification adapter inside the relay | Translate Streamable HTTP requests and session lifecycle to the existing stdio MCP connection without building a second tool registry |
+| New | native registration command, if callers must author commands | Register a sandbox command outside the Managed wire and return an opaque MCP reference; credentials remain typed bindings, never URL data |
+
+Static structure:
+
+```text
+native Agent MCP binding (sandbox command)
+  -> Session MCP attachment + exact generation/lease
+  -> Session Environment process + existing stdio MCP connection
+  -> existing McpRelay route table (stdio upstream variant)
+  -> session-scoped capability URL
+  -> standard Managed {type:"url", name, url} projection
+```
+
+Dynamic behavior:
+
+```text
+Session realization starts the frozen command
+  -> initialize the stdio MCP peer
+  -> atomically stage the exact-generation relay route
+  -> expose the URL only after both process and route are healthy
+  -> forward POST/GET/DELETE and notifications through that connection
+  -> reject unknown, stale, expired, or cross-Session capabilities
+  -> retry by creating a new generation and URL, never by retargeting an old one
+  -> terminal Session cleanup removes the route and reaps the process
+```
+
+Until that bridge exists, native execution may consume sandbox stdio directly.
+It must not fabricate a URL, expose command data through Managed fields, or
+silently reinterpret a URL request as a local process.
 
 ## Events
 
