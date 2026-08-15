@@ -31,6 +31,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: None,
     }

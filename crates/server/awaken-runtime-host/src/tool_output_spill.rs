@@ -104,6 +104,7 @@ mod tests {
             outputs_path: "/outputs".into(),
             requests: Default::default(),
             limits: ResourceLimits::default(),
+            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             extra: None,
         }

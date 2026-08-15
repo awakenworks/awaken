@@ -320,6 +320,7 @@ mod cgroup_host_config_tests {
             network: crate::NetworkMode::Open,
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: Vec::new(),
             rootfs: crate::RootfsPlan::HostUserland,
         }

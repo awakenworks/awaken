@@ -103,6 +103,7 @@ mod tests {
             outputs_path: output.into(),
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
+            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: Some(60),
             extra: None,
         }

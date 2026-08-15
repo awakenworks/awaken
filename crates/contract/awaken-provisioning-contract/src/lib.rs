@@ -62,8 +62,8 @@ pub use sandbox::{
     select_provider, select_provider_with_policy,
 };
 pub use spec::{
-    Command, EnvironmentKind, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar,
-    RootfsSource, SandboxCapacityShapeId, SandboxOverride, SandboxSpec, Stdio,
+    Command, EnvironmentKind, FilesystemContinuity, MaterializedCommand, MaterializedEnvValue,
+    MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId, SandboxOverride, SandboxSpec, Stdio,
     materialize_process_command,
 };
 pub use vocab::{

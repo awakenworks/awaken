@@ -92,7 +92,6 @@ pub(crate) fn spawn_probe(
         // A slow bounded probe batch must not cause Tokio's default burst mode
         // to replay every missed tick and immediately launch another batch.
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        interval.tick().await;
         loop {
             interval.tick().await;
             if let Err(error) = cache
@@ -449,6 +448,46 @@ mod tests {
         assert!(credential.observed_at_ms >= released_at_ms);
         assert_eq!(credential.valid_until_ms, credential.observed_at_ms + 30);
         assert_eq!(capability.valid_until_ms, credential.valid_until_ms);
+    }
+
+    #[tokio::test]
+    async fn background_probe_starts_immediately_and_publishes_only_after_success() {
+        /* Startup isolation cause/effect table.
+         * Causes: C1 the background probe is spawned; C2 its Sandbox-backed
+         * capability source is still blocked; C3 it later succeeds. Effects:
+         * E1 the spawn call returns without awaiting the source; E2 no unproven
+         * evidence is visible; E3 the completed batch becomes visible without
+         * waiting one full periodic interval. Rules: BP1 C1+C2=>E1+E2;
+         * BP2 C1+C3=>E3. Worker readiness relies on BP1 while placement remains
+         * fail-closed through E2.
+         */
+        let cache = Arc::new(WorkerObservationCache::default());
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let task = spawn_probe(
+            cache.clone(),
+            None,
+            Some(Arc::new(BlockingCapabilitySource {
+                entered: entered.clone(),
+                release: release.clone(),
+            })),
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        );
+
+        tokio::time::timeout(Duration::from_millis(100), entered.notified())
+            .await
+            .expect("BP1/E1: first probe starts immediately");
+        assert!(cache.acp_capability_snapshot().is_empty(), "BP1/E2");
+        release.notify_one();
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while cache.acp_capability_snapshot().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("BP2/E3");
+        task.abort();
     }
 
     // Cause/effect graph for concurrent refresh triggers:

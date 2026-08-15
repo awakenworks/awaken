@@ -1566,6 +1566,7 @@ mod tests {
                 memory_bytes: Some(1 << 30),
                 ..Default::default()
             },
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: mounts,
             rootfs: crate::RootfsPlan::HostUserland,
         }

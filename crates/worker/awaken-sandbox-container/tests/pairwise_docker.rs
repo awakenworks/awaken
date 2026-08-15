@@ -66,6 +66,7 @@ fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", "ip route 2>/dev/null | grep -q default"],
@@ -147,6 +148,7 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sh", "-c", command] })),
     }
@@ -209,6 +211,7 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", "grep -q hello-inline-content /data/config.toml"]
@@ -254,6 +257,7 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", format!("test -f /acp-config/auth.json || exit 11; test \"$(cat /acp-config/auth.json)\" = '{}' || exit 12; printf '%s' '{}' > /acp-config/auth.json || exit 13", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
@@ -296,6 +300,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", "grep -q resolved-from-the-store /data/in.txt"]
@@ -345,6 +350,7 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c",
@@ -430,6 +436,7 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: pc::ResourceRequests::default(),
         limits,
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["dd", "if=/dev/zero", "of=/dev/shm/x", "bs=1M", "count=32"],
@@ -496,6 +503,7 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["true"],
@@ -521,6 +529,7 @@ fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     }

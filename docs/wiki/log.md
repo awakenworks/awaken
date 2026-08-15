@@ -296,3 +296,14 @@
   projection with the complete exact publication selected by the baseline.
 - Kept Control authoritative and Workers authority-store-free; the Coordinator
   transports a rebuildable snapshot and conflicting Run claims fail closed.
+
+## 2026-08-15 — Separate Worker liveness from Sandbox-backed observations
+
+- Kept Worker observations and warm capacity on their existing background
+  reconcilers, but made them start immediately after an evidence-empty Ready
+  heartbeat instead of blocking the process readiness boundary.
+- Added typed retained/ephemeral filesystem continuity to the neutral Sandbox
+  plan; Kubernetes still owns one realization path and skips continuation PVCs
+  only for disposable probes and child environments.
+- Preserved retained Session environments and `DurableRequest` placement while
+  missing dynamic evidence continues to reject only dependent Runs.
