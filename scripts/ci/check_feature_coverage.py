@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 
 
@@ -30,6 +31,7 @@ ASSUMPTION_KINDS = {
     "supply_chain",
 }
 ASSUMPTION_STATUSES = {"open", "evidenced"}
+EXECUTABLE_EVIDENCE_KINDS = {"ci_checker", "e2e_scenario", "rust_test"}
 
 
 def fail(message: str) -> None:
@@ -49,6 +51,56 @@ def require_path(relative: str, owner: str) -> None:
         fail(f"{owner} has invalid repository-relative evidence {relative!r}")
     if not (ROOT / relative).is_file():
         fail(f"{owner} references missing evidence {relative}")
+
+
+def require_executable_evidence(evidence: object, owner: str) -> None:
+    """Require an executable, named oracle rather than accepting a bare path."""
+    if not isinstance(evidence, dict):
+        fail(f"{owner} executable evidence must be an object")
+    kind = str(evidence.get("kind", ""))
+    name = str(evidence.get("name", ""))
+    relative = str(evidence.get("path", ""))
+    if kind not in EXECUTABLE_EVIDENCE_KINDS:
+        fail(f"{owner} has invalid executable evidence kind {kind!r}")
+    if not name:
+        fail(f"{owner} executable evidence has no test/check name")
+    require_path(relative, owner)
+    path = ROOT / relative
+    source = path.read_text(encoding="utf-8")
+    if name not in source:
+        fail(f"{owner} executable evidence {name!r} is absent from {relative}")
+
+    if kind == "rust_test":
+        if path.suffix != ".rs":
+            fail(f"{owner} Rust test evidence must reference a .rs file")
+        test = re.compile(
+            r"#\[(?:tokio::)?test(?:\([^\]]*\))?\]\s*"
+            r"(?:#\[[^\]]+\]\s*)*(?:async\s+)?fn\s+"
+            + re.escape(name)
+            + r"\s*\("
+        )
+        if not test.search(source):
+            fail(f"{owner} names {name!r}, but it is not a Rust test in {relative}")
+    elif kind == "e2e_scenario":
+        if not relative.startswith("e2e/") or path.suffix not in {".js", ".mjs", ".ts"}:
+            fail(f"{owner} E2E evidence must reference an e2e JS/TS scenario")
+        package = load_json(ROOT / "e2e" / "package.json")
+        scripts = package.get("scripts", {})
+        if not isinstance(scripts, dict) or not any(
+            path.name in str(command) for command in scripts.values()
+        ):
+            fail(f"{owner} E2E evidence {relative} is not package-script orchestrated")
+        has_entrypoint = bool(re.search(r"\bmain\s*\(\s*\)", source)) or (
+            "import assert" in source and "console.log" in source
+        )
+        if "assert" not in source or not has_entrypoint:
+            fail(f"{owner} E2E evidence {relative} has no executable entrypoint/assert oracle")
+    else:
+        if not relative.startswith("scripts/ci/") or path.suffix != ".py":
+            fail(f"{owner} CI checker evidence must reference a scripts/ci Python checker")
+        callable_pattern = re.compile(r"^def\s+" + re.escape(name) + r"\s*\(", re.MULTILINE)
+        if not callable_pattern.search(source) or "__main__" not in source:
+            fail(f"{owner} CI checker {name!r} is not an executable checker callable")
 
 
 def functional_coverage_rows(relative: str) -> list[str]:
@@ -227,7 +279,13 @@ def main() -> None:
                     fail(f"{requirement_id} names missing assumption {assumption_id}")
                 used_assumptions.add(assumption_id)
 
-            has_verification = bool(matched or requirement.get("executable_evidence"))
+            executable = requirement.get("executable_evidence", [])
+            if not isinstance(executable, list):
+                fail(f"{requirement_id} executable_evidence must be a list")
+            for item in executable:
+                require_executable_evidence(item, requirement_id)
+
+            has_verification = bool(matched or executable)
             if requirement["repository_controlled"] and not has_verification:
                 incomplete_requirements.append(requirement_id)
 
