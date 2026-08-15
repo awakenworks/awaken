@@ -25,7 +25,7 @@ use std::sync::Arc;
 use crate::provider::{materialize_read_only_tree_at, resolve_source, restrict_to_owner, verify};
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
-    namespace_raw_tools, provision_repo_at, push_repo_at, scan_skill_dir_at,
+    provision_repo_at, push_repo_at, scan_skill_dir_at,
 };
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -94,75 +94,6 @@ pub struct RenderInput<'a> {
     pub network: &'a pc::NetworkPolicy,
     pub cwd: &'a str,
     pub argv: &'a [String],
-}
-
-/// Adapts a native hand-tool shell call to the same OS launcher and realized
-/// layout used by spawned Namespace processes. This is intentionally a view of
-/// the provider-owned layout, not a second launcher or mount source of truth.
-#[derive(Clone)]
-pub(crate) struct NamespaceToolShell {
-    host_workspace: PathBuf,
-    host_outputs: PathBuf,
-    outputs_path: String,
-    mounts: Vec<RenderMount>,
-    network: pc::NetworkPolicy,
-    path_env: Vec<(String, String)>,
-}
-
-impl NamespaceToolShell {
-    fn new(sandbox: &NamespaceSandbox) -> Self {
-        Self {
-            host_workspace: sandbox.host_workspace.clone(),
-            host_outputs: sandbox.host_outputs.clone(),
-            outputs_path: sandbox.outputs_path.clone(),
-            mounts: sandbox
-                .layout
-                .read()
-                .expect("namespace layout lock poisoned")
-                .clone(),
-            network: sandbox.network.clone(),
-            path_env: std::env::var("PATH")
-                .ok()
-                .map(|value| vec![("PATH".to_string(), value)])
-                .unwrap_or_default(),
-        }
-    }
-
-    pub(crate) fn wrap_command(&self, command: &str) -> String {
-        let argv = vec![s("/bin/sh"), s("-c"), s(command)];
-        let input = RenderInput {
-            host_workspace: &self.host_workspace,
-            host_outputs: &self.host_outputs,
-            outputs_path: &self.outputs_path,
-            mounts: &self.mounts,
-            env: &self.path_env,
-            network: &self.network,
-            cwd: "",
-            argv: &argv,
-        };
-        let rendered = if cfg!(target_os = "macos") {
-            sandbox_exec_argv(&input)
-        } else {
-            bubblewrap_tool_argv(&input)
-        };
-        let rendered = rendered
-            .iter()
-            .map(|token| crate::sh_squote(token))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if cfg!(target_os = "macos") {
-            // Seatbelt confines the host filesystem but does not provide a mount
-            // namespace or change the child's working directory. Keep native tools
-            // on the same runtime-path contract as spawned Namespace processes:
-            // PWD and AWAKEN_PROJECT_DIR both identify the realized workspace.
-            format!(
-                "cd {} && {rendered}",
-                crate::sh_squote(&self.host_workspace.to_string_lossy())
-            )
-        } else {
-            rendered
-        }
-    }
 }
 
 fn s(v: impl Into<String>) -> String {
@@ -269,13 +200,6 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     bubblewrap_argv_for(input, true)
 }
 
-/// Native tools already execute as children of the Awaken runtime and need the
-/// Namespace filesystem/network boundary, but not a second PID/user namespace.
-/// Both modes deliberately share the same layout renderer.
-fn bubblewrap_tool_argv(input: &RenderInput) -> Vec<String> {
-    bubblewrap_argv_for(input, false)
-}
-
 fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String> {
     let mut a: Vec<String> = vec![s("bwrap")];
     if isolate_process {
@@ -320,7 +244,7 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
     // roots above (NVM, ~/.local/bin, etc.). Expose only those explicitly
     // allowlisted PATH roots read-only. NVM's bin entries symlink into the
     // sibling lib tree, so bind the complete version root.
-    for root in projected_runtime_roots(input.env) {
+    for root in projected_runtime_roots_for_command(input.env, input.argv) {
         a.push(s("--ro-bind-try"));
         a.push(root.clone());
         a.push(root);
@@ -349,26 +273,18 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
     a
 }
 
-fn projected_runtime_roots(env: &[(String, String)]) -> Vec<String> {
-    let Some(path) = env
-        .iter()
-        .rev()
-        .find_map(|(key, value)| (key == "PATH").then_some(value))
-    else {
-        return Vec::new();
-    };
-    let mut roots = Vec::new();
-    for entry in std::env::split_paths(path) {
-        if !entry.is_absolute()
-            || entry.starts_with("/usr")
-            || entry.starts_with("/bin")
-            || entry.starts_with("/sbin")
-        {
-            continue;
-        }
-        let is_bin = entry.file_name().is_some_and(|name| name == "bin");
-        let path = entry.to_string_lossy();
-        let root = if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
+fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {
+    if !entry.is_absolute()
+        || entry.starts_with("/usr")
+        || entry.starts_with("/bin")
+        || entry.starts_with("/sbin")
+    {
+        return None;
+    }
+    let is_bin = entry.file_name().is_some_and(|name| name == "bin");
+    let path = entry.to_string_lossy();
+    Some(
+        if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
             // uv virtualenv interpreters use absolute links through a moving
             // version alias (for example `cpython-3.11-linux-*`) that resolves to
             // a concrete patch directory. Project the uv Python directory so both
@@ -388,11 +304,41 @@ fn projected_runtime_roots(env: &[(String, String)]) -> Vec<String> {
             entry.parent().unwrap_or(&entry).to_path_buf()
         } else {
             entry
-        };
-        let root = root.to_string_lossy().into_owned();
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
+        },
+    )
+}
+
+fn push_runtime_projection(roots: &mut Vec<String>, entry: PathBuf) {
+    let Some(root) = runtime_projection_root(entry) else {
+        return;
+    };
+    let root = root.to_string_lossy().into_owned();
+    if !roots.contains(&root) {
+        roots.push(root);
+    }
+}
+
+fn projected_runtime_roots(env: &[(String, String)]) -> Vec<String> {
+    let Some(path) = env
+        .iter()
+        .rev()
+        .find_map(|(key, value)| (key == "PATH").then_some(value))
+    else {
+        return Vec::new();
+    };
+    let mut roots = Vec::new();
+    for entry in std::env::split_paths(path) {
+        push_runtime_projection(&mut roots, entry);
+    }
+    roots
+}
+
+fn projected_runtime_roots_for_command(env: &[(String, String)], argv: &[String]) -> Vec<String> {
+    let mut roots = projected_runtime_roots(env);
+    if let Some(executable) = argv.first().map(PathBuf::from)
+        && let Some(parent) = executable.parent()
+    {
+        push_runtime_projection(&mut roots, parent.to_path_buf());
     }
     roots
 }
@@ -911,24 +857,6 @@ impl NamespaceSandbox {
         }
     }
 
-    /// Native hand tools bound to this same environment. Shell is always wrapped
-    /// in bwrap; path tools remain rooted through the shared lexical jail.
-    pub fn rooted_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-        namespace_raw_tools(
-            self.workspace_root(),
-            self.host_outputs.clone(),
-            if cfg!(target_os = "macos") {
-                crate::RuntimePathEnv::new(
-                    self.host_workspace.to_string_lossy().into_owned(),
-                    self.host_outputs.to_string_lossy().into_owned(),
-                )
-            } else {
-                crate::RuntimePathEnv::new("/workspace", self.outputs_path.clone())
-            },
-            NamespaceToolShell::new(self),
-        )
-    }
-
     pub fn provision_repo(
         &self,
         logical: &str,
@@ -1350,6 +1278,7 @@ impl pc::Sandbox for NamespaceSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt as _;
 
     struct Broker;
 
@@ -1609,11 +1538,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_tools_and_runtime_projections_share_the_workspace_root() {
+    async fn opaque_processes_and_runtime_projections_share_the_workspace_root() {
         // Cause-effect graph: C1=runtime projects a workspace-relative file;
-        // C2=Native path tool reads the same relative path; C3=a same-named path
+        // C2=an opaque process reads the same sandbox path; C3=a same-named path
         // does not exist at the outer namespace root. E1=projected bytes are
-        // readable; E2=the outer root cannot become a competing tool workspace.
+        // readable through the one process launcher; E2=the outer root cannot
+        // become a competing tool workspace.
         //
         // | Rule | C1 | C2 | C3 | Effects |
         // | W1   | yes | yes | yes | E1,E2 |
@@ -1627,23 +1557,19 @@ mod tests {
             .materialize_inline(".awaken/tool-results/result.txt", b"complete")
             .unwrap();
 
-        let read = sandbox
-            .rooted_tools()
-            .into_iter()
-            .find(|tool| tool.id() == "read")
-            .expect("read tool");
-        let output = read
-            .invoke(awaken_runtime_contract::llm::ToolCall {
-                call_id: "read-projection".into(),
-                tool_id: "read".into(),
-                arguments: serde_json::json!({
-                    "path": ".awaken/tool-results/result.txt"
-                }),
-            })
+        let (process, mut channel) = sandbox
+            .spawn_agent(pc::Command::new([
+                "/bin/sh",
+                "-c",
+                "cat .awaken/tool-results/result.txt",
+            ]))
             .await
             .unwrap();
+        let mut output = String::new();
+        channel.read_to_string(&mut output).await.unwrap();
+        assert_eq!(process.wait().await.unwrap().code, Some(0));
 
-        assert!(output.text().contains("complete"), "W1/E1");
+        assert_eq!(output, "complete", "W1/E1");
         assert!(
             !sandbox
                 .root
@@ -1737,54 +1663,6 @@ mod tests {
     }
 
     #[test]
-    fn namespace_tool_shell_reuses_the_process_layout_and_quotes_the_payload() {
-        // Cause/effect graph: C1=Namespace tool has one authoritative workspace/output
-        // layout; C2=network is denied; C3=payload contains a shell quote;
-        // C4=tool already runs under the owning runtime process. Effects:
-        // E1=tool binds the same host roots at /workspace and outputs_path;
-        // E2=the same network restriction is rendered; E3=payload remains one argv token;
-        // E4=no incompatible second PID/user process namespace is requested.
-        //
-        // | Rule | C1 | C2 | C3 | C4 | Effects |
-        // | N1   | yes | yes | yes | yes | E1,E2,E3,E4 |
-        let shell = NamespaceToolShell {
-            host_workspace: PathBuf::from("/host/session/workspace"),
-            host_outputs: PathBuf::from("/host/session/outputs"),
-            outputs_path: "/outputs".into(),
-            mounts: Vec::new(),
-            network: pc::NetworkPolicy::None,
-            path_env: Vec::new(),
-        };
-        let rendered = shell.wrap_command("printf '%s' ok > \"$AWAKEN_OUTPUTS_DIR/out\"");
-
-        if cfg!(target_os = "macos") {
-            assert!(
-                rendered.starts_with("cd '/host/session/workspace' && 'sandbox-exec'"),
-                "N1/E1: {rendered}"
-            );
-            assert!(rendered.contains("/host/session/workspace"), "N1/E1");
-            assert!(rendered.contains("/host/session/outputs"), "N1/E1");
-        } else {
-            assert!(
-                rendered.contains("'--bind' '/host/session/workspace' '/workspace'"),
-                "N1/E1: {rendered}"
-            );
-            assert!(
-                rendered.contains("'--bind' '/host/session/outputs' '/outputs'"),
-                "N1/E1: {rendered}"
-            );
-            assert!(rendered.contains("'--unshare-net'"), "N1/E2");
-            assert!(!rendered.contains("'--unshare-user'"), "N1/E4");
-            assert!(!rendered.contains("'--unshare-pid'"), "N1/E4");
-        }
-        assert!(
-            rendered
-                .ends_with(r#"'/bin/sh' '-c' 'printf '\''%s'\'' ok > "$AWAKEN_OUTPUTS_DIR/out"'"#),
-            "N1/E3: {rendered}"
-        );
-    }
-
-    #[test]
     fn bubblewrap_projects_explicit_non_system_path_runtimes_read_only() {
         let ws = PathBuf::from("/host/ws");
         let out = PathBuf::from("/host/out");
@@ -1837,6 +1715,37 @@ mod tests {
                 "/home/u/.local/bin".to_string(),
             ]
         );
+    }
+
+    /// Runtime projection cause/effect decision table:
+    /// | argv[0] | location | effect |
+    /// |---|---|---|
+    /// | absolute | non-system | project its parent read-only |
+    /// | absolute | system root | reuse the canonical system projection |
+    /// | relative | any | resolve only through the declared PATH projections |
+    /// This covers both an operator-installed ACP executable and the Runtime's
+    /// own Session Hand without adding a second Hand-specific mount mechanism.
+    #[test]
+    fn bubblewrap_projects_an_explicit_non_system_executable_read_only() {
+        let ws = PathBuf::from("/host/ws");
+        let out = PathBuf::from("/host/out");
+        let argv = vec![s("/opt/awaken/bin/awaken-sandbox"), s("hand")];
+        let rendered = bubblewrap_argv(&input(
+            &ws,
+            &out,
+            &[],
+            &[],
+            &pc::NetworkPolicy::Unrestricted,
+            &argv,
+        ));
+
+        assert!(
+            rendered.windows(3).any(|window| {
+                window == ["--ro-bind-try", "/opt/awaken/bin", "/opt/awaken/bin"]
+            })
+        );
+        assert!(projected_runtime_roots_for_command(&[], &[s("/usr/bin/bash")]).is_empty());
+        assert!(projected_runtime_roots_for_command(&[], &[s("bash")]).is_empty());
     }
 
     #[test]

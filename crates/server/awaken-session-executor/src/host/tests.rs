@@ -1841,6 +1841,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                 std::process::id()
             )),
             false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
         );
     let host = Arc::new(raw_host);
     install_test_memory_mounter(&host);
@@ -2276,6 +2279,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
                 std::process::id()
             )),
             false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
         );
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
@@ -6116,7 +6122,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     init.resources = effective_resources(vec![resource]);
     managed.prepare_session("t-g1", init).await.unwrap();
 
-    let realized = ".mnt/mnt/memory";
+    let realized = "/mnt/memory";
     let prompts = host.thread_session_prompts("t-g1");
     assert!(
         prompts.iter().any(|p| p.contains(realized)),
@@ -6138,7 +6144,9 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
     // C2 store count={1,2,8}; C3 access={all RO, all RW, alternating};
     // C4 instructions={absent,present}. Effects: E1 every store becomes one
     // mount/prompt/binding; E2 access and instructions survive projection;
-    // E3 no automatic-memory binding is selected by ordinary Managed resources.
+    // E3 no automatic-memory binding is selected by ordinary Managed resources;
+    // E4 every backend receives the same Managed absolute /mnt/memory path, never
+    // a host-relative `.mnt` carrier.
     // Constraint: backend selection owns execution only and cannot change
     // resource realization. The nine rows below are a strength-2 covering array:
     // every value pair across C1..C4 occurs at least once. This test verifies
@@ -6280,6 +6288,8 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         let spec = host.sandbox_spec(&thread);
         assert_eq!(spec.mounts.len(), count, "{} E1", case.rule);
         for (index, mount) in spec.mounts.iter().enumerate() {
+            let managed_path = format!("/mnt/memory/{}-{index}", case.rule.to_lowercase());
+            assert_eq!(mount.mount_path, managed_path, "{} E4/{index}", case.rule);
             let expected = match expected_access[index] {
                 ResourceAccess::ReadOnly => awaken_provisioning_contract::MountAccess::ReadOnly,
                 ResourceAccess::ReadWrite => awaken_provisioning_contract::MountAccess::ReadWrite,
@@ -6288,6 +6298,11 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         }
         let prompts = host.thread_session_prompts(&thread);
         assert_eq!(prompts.len(), count, "{} E1 prompts", case.rule);
+        for (index, prompt) in prompts.iter().enumerate() {
+            let managed_path = format!("/mnt/memory/{}-{index}", case.rule.to_lowercase());
+            assert!(prompt.contains(&managed_path), "{} E4/{index}", case.rule);
+            assert!(!prompt.contains(".mnt/"), "{} E4/{index}", case.rule);
+        }
         assert_eq!(
             prompts.iter().all(|prompt| prompt.contains(case.rule)),
             case.instructions == "present",
@@ -6460,7 +6475,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     let at_path: Vec<_> = spec
         .mounts
         .iter()
-        .filter(|mount| mount.mount_path == ".mnt/mnt/memory")
+        .filter(|mount| mount.mount_path == "/mnt/memory")
         .collect();
     assert_eq!(
         at_path.len(),

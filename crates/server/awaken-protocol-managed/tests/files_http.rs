@@ -213,8 +213,10 @@ async fn error_arms_are_fail_closed() {
 #[tokio::test]
 async fn standard_global_and_scoped_lists_reject_private_filters() {
     // Causes: C1 standard global list; C2 official `scope_id` filter; C3 private
-    // `purpose` filter. Effects: E1 catalog page; E2 scoped page; E3 invalid
-    // request. Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3.
+    // `purpose` filter; C4 the official SDK serializes its `betas` option as the
+    // `beta` list query. Effects: E1 catalog page; E2 scoped page; E3 invalid
+    // request; E4 the same catalog page (beta selection changes no File truth).
+    // Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3; C1+C4 -> E4.
     let router = router();
     let (_, uploaded) = upload(&router, "listed.txt", b"listed").await;
     let (status, body) = get(&router, "/v1/files").await;
@@ -225,6 +227,15 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     assert_eq!(list["has_more"], false);
     assert_eq!(list["first_id"], uploaded["id"]);
     assert_eq!(list["last_id"], uploaded["id"]);
+
+    let (status, body) = get(
+        &router,
+        "/v1/files?beta=managed-agents-2026-04-01&limit=100",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R4 official SDK query");
+    let sdk_list: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(sdk_list["data"][0]["id"], uploaded["id"], "R4");
 
     let (status, body) = get(&router, "/v1/files?scope_id=no-such-session").await;
     assert_eq!(status, StatusCode::OK, "R2");

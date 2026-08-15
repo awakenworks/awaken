@@ -65,6 +65,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.
 awaken-runtime-contract = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
+awaken-sandbox-local = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true

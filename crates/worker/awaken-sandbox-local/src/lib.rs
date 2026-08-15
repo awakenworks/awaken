@@ -175,7 +175,6 @@ fn jail_args(
     root: &IsolatedRoot,
     host_outputs: &Path,
     deny_egress: bool,
-    namespace_shell: Option<&namespace::NamespaceToolShell>,
 ) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
@@ -206,9 +205,7 @@ fn jail_args(
         "glob" => rebase(&mut args, "pattern", root)?,
         "bash" => {
             if let Some(Value::String(cmd)) = args.get("command") {
-                let rooted = if let Some(shell) = namespace_shell {
-                    shell.wrap_command(cmd)
-                } else if deny_egress {
+                let rooted = if deny_egress {
                     // Egress denied: run the command inside a bwrap namespace with no
                     // network (`--unshare-net`), rooted at the environment dir. The
                     // shared bash tool still `sh -c`s this string, which execs bwrap.
@@ -328,9 +325,6 @@ pub(crate) struct RootedTool {
     host_outputs: PathBuf,
     /// Deny network egress for the `bash` tool (from the environment's spec).
     deny_egress: bool,
-    /// Namespace tools reuse the provider's authoritative process launcher so
-    /// workspace, outputs, mounts, and network have one rendered layout.
-    namespace_shell: Option<namespace::NamespaceToolShell>,
     runtime_paths: RuntimePathEnv,
 }
 
@@ -347,24 +341,6 @@ impl RootedTool {
             root,
             host_outputs,
             deny_egress,
-            namespace_shell: None,
-            runtime_paths,
-        }
-    }
-
-    pub(crate) fn namespace(
-        inner: Arc<dyn RawTool>,
-        root: IsolatedRoot,
-        host_outputs: PathBuf,
-        runtime_paths: RuntimePathEnv,
-        namespace_shell: namespace::NamespaceToolShell,
-    ) -> Self {
-        Self {
-            inner,
-            root,
-            host_outputs,
-            deny_egress: false,
-            namespace_shell: Some(namespace_shell),
             runtime_paths,
         }
     }
@@ -388,7 +364,6 @@ impl HandTool for RootedTool {
             &self.root,
             &self.host_outputs,
             self.deny_egress,
-            self.namespace_shell.as_ref(),
         )?;
         let out = self.inner.invoke(call).await?;
         // Narrow to content/error: an environment tool never authors runtime state.
@@ -700,26 +675,6 @@ pub(crate) fn rooted_raw_tools(
     rooted_hand_tools(root, host_outputs, runtime_paths, deny_egress)
         .into_iter()
         .map(hand_tool_as_raw)
-        .collect()
-}
-
-pub(crate) fn namespace_raw_tools(
-    root: IsolatedRoot,
-    host_outputs: PathBuf,
-    runtime_paths: RuntimePathEnv,
-    namespace_shell: namespace::NamespaceToolShell,
-) -> Vec<Arc<dyn RawTool>> {
-    all_hand_tools()
-        .into_iter()
-        .map(|inner| {
-            hand_tool_as_raw(Arc::new(RootedTool::namespace(
-                inner,
-                root.clone(),
-                host_outputs.clone(),
-                runtime_paths.clone(),
-                namespace_shell.clone(),
-            )))
-        })
         .collect()
 }
 
@@ -1063,7 +1018,6 @@ mod tests {
             &root,
             test_outputs(),
             false,
-            None,
         )
         .unwrap();
         assert_eq!(
@@ -1077,7 +1031,6 @@ mod tests {
             &root,
             test_outputs(),
             false,
-            None,
         )
         .unwrap();
         assert_eq!(
@@ -1115,7 +1068,6 @@ mod tests {
                 &root,
                 outputs,
                 false,
-                None,
             )
             .unwrap();
             assert_eq!(call["path"], expected, "{rule}");
@@ -1131,7 +1083,6 @@ mod tests {
             &root,
             test_outputs(),
             false,
-            None,
         )
         .unwrap();
         assert_eq!(u["path"], "../x"); // unknown tool: untouched
@@ -1143,7 +1094,6 @@ mod tests {
                 &root,
                 test_outputs(),
                 false,
-                None,
             )
             .is_err()
         );
@@ -1162,7 +1112,6 @@ mod tests {
             &root,
             test_outputs(),
             false,
-            None,
         )
         .unwrap();
         assert_eq!(moved["source"], "/env/old.md");
@@ -1174,7 +1123,7 @@ mod tests {
             ),
             ("delete", serde_json::json!({"path":"../escape.md"})),
         ] {
-            assert!(jail_args(tool, arguments, &root, test_outputs(), false, None).is_err());
+            assert!(jail_args(tool, arguments, &root, test_outputs(), false).is_err());
         }
     }
 
@@ -1192,7 +1141,6 @@ mod tests {
             &root,
             test_outputs(),
             true,
-            None,
         )
         .unwrap();
         let cmd = out["command"].as_str().unwrap();
@@ -1222,7 +1170,6 @@ mod tests {
             &root,
             test_outputs(),
             true,
-            None,
         )
         .unwrap();
         let cmd = out["command"].as_str().unwrap();

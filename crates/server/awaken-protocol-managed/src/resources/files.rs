@@ -85,7 +85,7 @@ async fn list_files(
     if let Some(name) = query.keys().find(|name| {
         !matches!(
             name.as_str(),
-            "before_id" | "after_id" | "limit" | "scope_id"
+            "before_id" | "after_id" | "limit" | "scope_id" | "beta"
         )
     }) {
         return error(
