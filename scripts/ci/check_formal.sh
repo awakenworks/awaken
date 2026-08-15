@@ -19,6 +19,8 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 python3 scripts/ci/check_feature_coverage.py
 python3 scripts/ci/check_formal_coverage.py
 python3 scripts/ci/check_formal_surface.py
+python3 scripts/ci/check_proof_boundaries.py
+python3 scripts/ci/check_formal_mutations.py
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
@@ -99,16 +101,20 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness exhausted_credentials_are_unavailable_at_every_time \
     --harness a_pool_with_no_enabled_available_member_fails_closed
   run_kani awaken-config-resolver \
-    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence
+    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
+    --harness provider_scope_never_widens_endpoint_scope
   run_kani awaken-agent-config \
     --harness processing_geography_requires_exact_evidence_from_every_candidate
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
-    --harness environment_credential_custody_selects_exactly_one_authorized_profile
+    --harness environment_credential_custody_selects_exactly_one_authorized_profile \
+    --harness http_effect_material_shape_is_exact_and_non_widening \
+    --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-ingress-contract \
     --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation
   run_kani awaken-credential-materializer \
-    --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source
+    --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
+    --harness platform_relay_local_gate_admits_only_exact_platform_relay
   run_kani awaken-executable-agent-contract \
     --harness requested_agent_profile_accepts_only_the_same_positive_revision \
     --harness executable_snapshot_pin_is_complete_exact_and_non_mixing \
@@ -147,7 +153,20 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness live_inbox_identity_advances_strictly_or_exhausts \
     --harness advisor_never_substitutes_for_primary_model_admission \
     --harness fallback_selection_preserves_the_complete_publication_pin \
-    --harness every_route_pin_axis_participates_in_exact_identity
+    --harness every_route_pin_axis_participates_in_exact_identity \
+    --harness capture_meet_is_exact_commutative_and_non_widening \
+    --harness capture_projection_admits_content_only_at_full \
+    --harness non_full_capture_fails_closed_before_redaction \
+    --harness tool_capability_intersection_never_widens_configured_authority \
+    --harness permission_verdict_projects_to_exact_non_widening_gate_outcome \
+    --harness every_gate_outcome_has_one_exact_audit_label
+  run_kani awaken-ext-permission \
+    --harness unmatched_permission_mode_is_exact_and_plan_fails_closed \
+    --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority
+  run_kani awaken-runtime-host \
+    --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
+    --harness configured_capture_redactor_selection_is_total_and_exact \
+    --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
