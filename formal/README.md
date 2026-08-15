@@ -410,13 +410,21 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
-formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 225/242 formalizable obligations proved
-or machine-linked, plus 10 explicitly external obligations, for 93.0%
-formalizable coverage. Seventeen executable-only rows remain explicit proof
-candidates.
+formalizable safety obligations have checked formal evidence. At this review
+checkpoint the ledger is 225/242 formalizable obligations model-linked or
+kernel-proved, plus 10 explicitly external obligations, for 93.0% formal
+evidence coverage. The evidence dimensions are reported independently: 175
+model-checked, 27 model-proved, 71 Kani-kernel-proved, and 6 linked to the
+executable Runtime trace refinement bridge. These dimensions overlap and must
+not be summed. Seventeen executable-only rows remain explicit proof candidates.
 Environmental properties are listed separately and never
-silently omitted or mislabeled as machine-linked merely to raise the percentage.
+silently omitted or mislabeled as model-linked merely to raise the percentage.
+
+`model_linked` deliberately means that a checked formal model and concrete Rust
+evidence are traceably associated; it is not a claim that every execution of
+that Rust file refines the model. Direct implementation evidence is counted only
+when a named Kani harness invokes the production kernel or the real Runtime
+emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
 The denominator (previously 237 and now 242 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
@@ -427,8 +435,9 @@ authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
 source-oriented inventory finds 570 candidate modules: 153 are classified, 136
-have at least one proved obligation linked to the production file, and 417 are
-not yet classified. This deliberately over-approximating inventory is the work
+have checked formal evidence associated with the production file, 52 have a
+direct Kani/trace proof link, and 417 are not yet classified. This deliberately
+over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`

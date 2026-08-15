@@ -91,7 +91,7 @@ PRODUCTION_ROOTS = (
     ROOT / "crates" / "bin",
 )
 
-PROOF_STATUSES = {"machine_linked", "kernel_proved"}
+FORMAL_EVIDENCE_STATUSES = {"model_linked", "kernel_proved"}
 
 
 def fail(message: str) -> None:
@@ -175,15 +175,26 @@ def main() -> None:
                 continue
             relative = path.relative_to(ROOT).as_posix()
             obligations = by_source.get(relative, [])
-            proved = [
-                item["id"] for item in obligations if item["status"] in PROOF_STATUSES
+            formally_linked = [
+                item["id"]
+                for item in obligations
+                if item["status"] in FORMAL_EVIDENCE_STATUSES
+            ]
+            directly_proved = [
+                item["id"]
+                for item in obligations
+                if item["status"] == "kernel_proved"
+                or item.get("proof_harnesses")
+                or "crates/runtime/awaken-runtime/tests/formal_refinement.rs"
+                in item.get("evidence", [])
             ]
             inventory.append(
                 {
                     "path": relative,
                     "signals": signals,
                     "obligations": [item["id"] for item in obligations],
-                    "proved_obligations": proved,
+                    "formal_evidence_obligations": formally_linked,
+                    "direct_proof_obligations": directly_proved,
                     "excluded": exclusions.get(relative),
                 }
             )
@@ -200,12 +211,20 @@ def main() -> None:
     classified = [
         item for item in inventory if item["obligations"] or item["excluded"] is not None
     ]
-    proof_linked = [item for item in inventory if item["proved_obligations"]]
+    formal_evidence_linked = [
+        item for item in inventory if item["formal_evidence_obligations"]
+    ]
+    direct_proof_linked = [
+        item for item in inventory if item["direct_proof_obligations"]
+    ]
     uncovered = [
         item for item in inventory if not item["obligations"] and item["excluded"] is None
     ]
     classified_ratio = len(classified) / len(inventory) if inventory else 1.0
-    proof_ratio = len(proof_linked) / len(inventory) if inventory else 1.0
+    formal_evidence_ratio = (
+        len(formal_evidence_linked) / len(inventory) if inventory else 1.0
+    )
+    direct_proof_ratio = len(direct_proof_linked) / len(inventory) if inventory else 1.0
 
     if args.json:
         print(
@@ -214,10 +233,12 @@ def main() -> None:
                     "summary": {
                         "inventoried": len(inventory),
                         "classified": len(classified),
-                        "proof_linked": len(proof_linked),
+                        "formal_evidence_linked": len(formal_evidence_linked),
+                        "direct_proof_linked": len(direct_proof_linked),
                         "uncovered": len(uncovered),
                         "classified_ratio": classified_ratio,
-                        "proof_linked_ratio": proof_ratio,
+                        "formal_evidence_linked_ratio": formal_evidence_ratio,
+                        "direct_proof_linked_ratio": direct_proof_ratio,
                     },
                     "surfaces": inventory,
                 },
@@ -229,7 +250,10 @@ def main() -> None:
         print(
             "formal source surface: "
             f"{len(classified)}/{len(inventory)} classified ({classified_ratio:.1%}); "
-            f"{len(proof_linked)}/{len(inventory)} proof-linked ({proof_ratio:.1%}); "
+            f"{len(formal_evidence_linked)}/{len(inventory)} formal-evidence-linked "
+            f"({formal_evidence_ratio:.1%}); "
+            f"{len(direct_proof_linked)}/{len(inventory)} direct-proof-linked "
+            f"({direct_proof_ratio:.1%}); "
             f"{len(uncovered)} uncovered"
         )
         for item in uncovered[:25]:
