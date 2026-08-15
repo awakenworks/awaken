@@ -93,6 +93,50 @@ async fn shutdown_is_idempotent_and_aborts_only_after_the_drain_deadline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_shutdown_cannot_return_before_the_active_drain_finishes() {
+    // C1 the leader owns a non-cooperative task; C2 a follower calls shutdown
+    // after cancellation is visible but before the leader's deadline. E1 the
+    // follower remains blocked; E2 the leader reports/aborts the stuck task;
+    // E3 only then may the follower observe the drained registry and return.
+    // The old check-and-take implementation violated E1 by returning Ok from
+    // the follower while the task was still live in the leader's local set.
+    let group = ServiceLifecycle::new();
+    let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+    group.spawn("stuck", move |cancel| async move {
+        cancel.cancelled().await;
+        let _ = cancelled_tx.send(());
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+
+    let leader_group = group.clone();
+    let leader =
+        tokio::spawn(async move { leader_group.shutdown(Duration::from_millis(80)).await });
+    cancelled_rx
+        .await
+        .expect("leader transferred and cancelled the task set");
+
+    let follower_group = group.clone();
+    let follower =
+        tokio::spawn(async move { follower_group.shutdown(Duration::from_secs(1)).await });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        !follower.is_finished(),
+        "a concurrent shutdown must wait for the active drain"
+    );
+
+    let leader_error = leader
+        .await
+        .expect("leader task")
+        .expect_err("stuck task crosses the leader deadline");
+    assert_eq!(leader_error.timed_out, vec!["stuck"]);
+    follower
+        .await
+        .expect("follower task")
+        .expect("follower returns only after the registry is drained");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_and_shutdown_have_one_atomic_ownership_boundary() {
     // FMECA cause/effect graph:
     // C1 registration linearizes before shutdown; C2 shutdown linearizes first;
