@@ -410,6 +410,8 @@ pub enum SessionRealizationControlFailure {
     NotFound,
     #[error("Session is not ready for this realization phase")]
     NotReady,
+    #[error("Session realization is terminal")]
+    Terminal,
     #[error("Session realization ownership is stale")]
     StaleOwnership,
     #[error("Session changed concurrently")]
@@ -418,6 +420,32 @@ pub enum SessionRealizationControlFailure {
     Invalid(String),
     #[error("Session realization service is unavailable: {0}")]
     Unavailable(String),
+}
+
+/// Stable effect class for one Control failure at a Worker/Run boundary.
+///
+/// The Session contract owns this classification so HTTP, embedded, and remote
+/// Workers cannot independently reinterpret the same durable state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRealizationControlDisposition {
+    NotReady,
+    Retryable,
+    Terminal,
+}
+
+impl SessionRealizationControlFailure {
+    #[must_use]
+    pub const fn disposition(&self) -> SessionRealizationControlDisposition {
+        match self {
+            Self::NotReady => SessionRealizationControlDisposition::NotReady,
+            Self::StaleOwnership | Self::Conflict | Self::Unavailable(_) => {
+                SessionRealizationControlDisposition::Retryable
+            }
+            Self::NotFound | Self::Terminal | Self::Invalid(_) => {
+                SessionRealizationControlDisposition::Terminal
+            }
+        }
+    }
 }
 
 /// Driving port for the Control-owned realization state machine. It performs no
@@ -645,8 +673,9 @@ pub async fn drive_session_realization(
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionRealizationControlFailure, realization_generation_authorizes,
-        realization_lease_authorizes, realization_lease_is_live_at,
+        SessionRealizationControlDisposition, SessionRealizationControlFailure,
+        realization_generation_authorizes, realization_lease_authorizes,
+        realization_lease_is_live_at,
     };
     use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
 
@@ -800,28 +829,58 @@ mod tests {
 
     #[test]
     fn realization_control_failures_round_trip_without_semantic_loss() {
-        // Transport cause/effect table: T1 unit lifecycle failures, T2 detailed
-        // invalid input, and T3 detailed dependency failure each serialize and
-        // deserialize to the exact variant. This preserves renewal retirement
-        // decisions across HTTP instead of reconstructing them from prose.
-        for (rule, failure) in [
-            ("T1 not found", SessionRealizationControlFailure::NotFound),
-            ("T1 not ready", SessionRealizationControlFailure::NotReady),
-            ("T1 stale", SessionRealizationControlFailure::StaleOwnership),
-            ("T1 conflict", SessionRealizationControlFailure::Conflict),
+        // Cause/effect graph: C1 transient backpressure, C2 retryable authority
+        // or dependency failure, and C3 an absent/terminal/invalid aggregate.
+        // Effects: E1 defer without crash accounting, E2 relinquish for the
+        // existing retry path, and E3 absorb the Run instead of hot-looping.
+        // Every cause also round-trips over the existing typed transport.
+        //
+        // | Rule | cause | disposition |
+        // | T1 | not ready | NotReady |
+        // | T2 | stale/conflict/unavailable | Retryable |
+        // | T3 | not found/terminal/invalid | Terminal |
+        for (rule, failure, disposition) in [
             (
-                "T2 invalid",
-                SessionRealizationControlFailure::Invalid("bad target".into()),
+                "T3 not found",
+                SessionRealizationControlFailure::NotFound,
+                SessionRealizationControlDisposition::Terminal,
             ),
             (
-                "T3 unavailable",
+                "T1 not ready",
+                SessionRealizationControlFailure::NotReady,
+                SessionRealizationControlDisposition::NotReady,
+            ),
+            (
+                "T3 terminal",
+                SessionRealizationControlFailure::Terminal,
+                SessionRealizationControlDisposition::Terminal,
+            ),
+            (
+                "T2 stale",
+                SessionRealizationControlFailure::StaleOwnership,
+                SessionRealizationControlDisposition::Retryable,
+            ),
+            (
+                "T2 conflict",
+                SessionRealizationControlFailure::Conflict,
+                SessionRealizationControlDisposition::Retryable,
+            ),
+            (
+                "T3 invalid",
+                SessionRealizationControlFailure::Invalid("bad target".into()),
+                SessionRealizationControlDisposition::Terminal,
+            ),
+            (
+                "T2 unavailable",
                 SessionRealizationControlFailure::Unavailable("control offline".into()),
+                SessionRealizationControlDisposition::Retryable,
             ),
         ] {
             let wire = serde_json::to_value(&failure).expect(rule);
             let decoded: SessionRealizationControlFailure =
                 serde_json::from_value(wire).expect(rule);
             assert_eq!(decoded, failure, "{rule}");
+            assert_eq!(decoded.disposition(), disposition, "{rule}");
         }
     }
 }
