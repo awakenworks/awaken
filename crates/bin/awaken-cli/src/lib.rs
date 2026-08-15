@@ -305,11 +305,12 @@ async fn open_process_stores(
     };
 
     // The credential repo and its sealed-secret blobs share the one credential backend.
-    let (credentials, secrets) = if opens_control {
+    let (credentials, vaults, secrets) = if opens_control {
         ensure_parent(&cfg.credential)?;
         let key = key.ok_or_else(|| "Control stores require the Control seal key".to_owned())?;
-        let pair: (
+        let triple: (
             Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+            Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>,
             Arc<dyn awaken_credential_vault::SecretStore>,
         ) = match &cfg.credential {
             StoreBackend::Sqlite(p) => {
@@ -317,6 +318,7 @@ async fn open_process_stores(
                 let (creds, blobs) = awaken_credential_store::sqlite::open_migrated_pair(&file)
                     .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?;
                 (
+                    Arc::new(creds.clone()),
                     Arc::new(creds),
                     Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                         key,
@@ -338,6 +340,7 @@ async fn open_process_stores(
                     }
                 };
                 (
+                    Arc::new(creds.clone()),
                     Arc::new(creds),
                     Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                         key,
@@ -346,9 +349,9 @@ async fn open_process_stores(
                 )
             }
         };
-        (Some(pair.0), Some(pair.1))
+        (Some(triple.0), Some(triple.1), Some(triple.2))
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // The admin aggregate backs three Control ports (profiles / Agent resource
@@ -615,6 +618,7 @@ async fn open_process_stores(
             Some(ControlStores {
                 catalog: catalog.expect("Control role opens Catalog"),
                 credentials: credentials.expect("Control role opens CredentialRepo"),
+                vaults: vaults.expect("Control role opens ManagedVaultRepo"),
                 secrets: secrets.expect("Control role opens SecretStore"),
                 profiles: admin_profiles.expect("Control role opens profile store"),
                 resources: admin_resources.expect("Control role opens Resource authoring store"),

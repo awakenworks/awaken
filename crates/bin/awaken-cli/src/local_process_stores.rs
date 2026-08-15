@@ -5,6 +5,7 @@ use super::*;
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn in_memory_process_stores() -> ProcessStores {
+    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),
@@ -20,7 +21,8 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
         workspace_root: None,
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
-            credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+            credentials: credentials.clone(),
+            vaults: credentials,
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             profiles: admin.clone(),
             resources: admin.clone(),
@@ -68,6 +70,7 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         awaken_protocol_managed::VaultState::new(
             control.secrets.clone(),
             control.credentials.clone(),
+            control.vaults.clone(),
         )
         .with_probe(Arc::new(ExtMcpProbe)),
     );

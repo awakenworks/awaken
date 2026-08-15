@@ -9,7 +9,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the credential domain.
 pub const BUNDLE_ID: &str = "awaken.credential";
 
-const SPECS: [(i64, &str, &str); 4] = [
+const SPECS: [(i64, &str, &str); 6] = [
     (
         1,
         "credential sources: the secret-free row (kind + refs, never material)",
@@ -44,15 +44,44 @@ const SPECS: [(i64, &str, &str); 4] = [
             data {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
+    (
+        5,
+        "managed vaults: secret-free management aggregates",
+        "CREATE TABLE {prefix}_managed_vault (\
+            id TEXT PRIMARY KEY, \
+            workspace_id TEXT NOT NULL, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        6,
+        "managed vault credentials: exact source-backed projections",
+        "CREATE TABLE {prefix}_managed_vault_credential (\
+            id TEXT PRIMARY KEY, \
+            vault_id TEXT NOT NULL, \
+            workspace_id TEXT NOT NULL, \
+            source_id TEXT NOT NULL UNIQUE, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
 ];
 
 /// Build the credential-schema migration bundle (prefix `credential`).
 pub fn credential_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS
+    credential_bundle_through(SPECS.len())
+}
+
+fn credential_bundle_through(count: usize) -> Result<MigrationBundle, MigrationError> {
+    let migrations = SPECS[..count]
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
+}
+
+#[cfg(test)]
+pub(crate) fn credential_bundle_before_managed_vaults() -> Result<MigrationBundle, MigrationError> {
+    credential_bundle_through(4)
 }
 
 #[cfg(test)]

@@ -71,6 +71,7 @@ pub struct ControlDependencies {
     pub enrollment_signing_key: [u8; 32],
     pub catalog: Arc<dyn CatalogRepo>,
     pub credentials: Arc<dyn CredentialRepo>,
+    pub vaults: Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>,
     pub secrets: Arc<dyn SecretStore>,
     pub profiles: Arc<dyn InferenceProfileStore>,
     pub webhook_store: Arc<dyn WebhookStore>,
@@ -146,6 +147,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         enrollment_signing_key,
         catalog,
         credentials,
+        vaults,
         secrets,
         profiles,
         webhook_store,
@@ -189,7 +191,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone(), &service_lifecycle)
         .await;
 
-    let mut vault_state = VaultState::new(secrets.clone(), credentials.clone());
+    let mut vault_state = VaultState::new(secrets.clone(), credentials.clone(), vaults);
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
     }

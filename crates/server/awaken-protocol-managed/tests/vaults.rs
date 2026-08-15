@@ -41,7 +41,11 @@ struct Harness {
 fn harness() -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()));
+    let state = Arc::new(VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+        credentials.clone(),
+    ));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -146,7 +150,10 @@ impl McpProbe for FakeProbe {
 fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe));
+    let state = Arc::new(
+        VaultState::new(secrets.clone(), credentials.clone(), credentials.clone())
+            .with_probe(probe),
+    );
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -286,6 +293,54 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
 }
 
 #[tokio::test]
+async fn replacement_control_instance_reads_the_same_vault_authority() {
+    // Cause/effect decision table for rolling Control replacement:
+    // | Rule | first instance state | replacement request | Effect |
+    // | R1 | vault + static bearer committed | retrieve/list | identical secret-free projection |
+    // | R2 | R1 | Session exact URL selection | same CredentialSourceId |
+    // | R3 | R1 | archived/deleted catalog entry | replacement rejects selection (covered by lifecycle tests) |
+    // The replacement receives only the shared repositories; no cache snapshot,
+    // source-id prefix fallback, or plaintext transfer is available.
+    let h = harness();
+    let vault_id = create_vault(&h, "rolling").await;
+    let credential = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/mcp", None).await;
+    let credential_id = credential["id"].as_str().unwrap();
+    let expected_source = h
+        .state
+        .credential_source_id(&vault_id, credential_id)
+        .await
+        .unwrap();
+
+    let replacement = Arc::new(VaultState::new(
+        h.secrets.clone(),
+        h.credentials.clone(),
+        h.credentials.clone(),
+    ));
+    let replacement_app = vault_router(replacement.clone());
+    let (status, retrieved) = call(
+        &replacement_app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1");
+    assert_eq!(retrieved["id"], vault_id, "R1");
+    assert_eq!(
+        SessionCredentialSource::mcp_credential_source_for_url(
+            replacement.as_ref(),
+            "default",
+            std::slice::from_ref(&vault_id),
+            "https://MCP.example.com:443/mcp/",
+        )
+        .await
+        .unwrap(),
+        Some(expected_source),
+        "R2"
+    );
+}
+
+#[tokio::test]
 async fn vault_credential_lifecycle_and_resolution() {
     let h = harness();
 
@@ -354,6 +409,7 @@ async fn vault_credential_lifecycle_and_resolution() {
     let source_id = h
         .state
         .credential_source_id(&vault_id, &cred_id)
+        .await
         .expect("vault credential maps to a domain source");
     let catalog = seed_catalog(&h).await;
     let source: CredentialSource = {
@@ -569,7 +625,12 @@ async fn delete_vault_cascades_credentials() {
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    assert!(h.state.credential_source_id(&vault_id, &cred_id).is_none());
+    assert!(
+        h.state
+            .credential_source_id(&vault_id, &cred_id)
+            .await
+            .is_none()
+    );
 
     // Deleting an unknown vault is a 404, not an idempotent 200.
     let (s, _) = call(&h.app, "DELETE", "/v1/vaults/vlt_missing", None).await;
@@ -679,7 +740,11 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     let vault_id = create_vault(&h, "v").await;
     let keep = create_credential(&h, &vault_id, "KEEP").await;
     let gone = create_credential(&h, &vault_id, "GONE").await;
-    let gone_source_id = h.state.credential_source_id(&vault_id, &gone).unwrap();
+    let gone_source_id = h
+        .state
+        .credential_source_id(&vault_id, &gone)
+        .await
+        .unwrap();
     let gone_before = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&gone_source_id).await.unwrap()
@@ -761,7 +826,7 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    assert!(h.state.credential_source_id(&vault_a, &c1).is_some());
+    assert!(h.state.credential_source_id(&vault_a, &c1).await.is_some());
 
     // Delete c1 under its own vault: the receipt, then it is gone from the list.
     let (s, deleted) = call(
@@ -774,7 +839,7 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(deleted["type"], "vault_credential_deleted");
     assert_eq!(deleted["id"], c1);
-    assert!(h.state.credential_source_id(&vault_a, &c1).is_none());
+    assert!(h.state.credential_source_id(&vault_a, &c1).await.is_none());
 
     let (_, page) = call(
         &h.app,
@@ -863,7 +928,11 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     let h = harness();
     let vault_id = create_vault(&h, "v").await;
     let cred_id = create_credential(&h, &vault_id, "ENVKEY").await;
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     let before = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&source_id).await.unwrap()
@@ -987,7 +1056,11 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     )
     .await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     use awaken_credential_vault::repo::CredentialRepo;
     let before = h.credentials.get(&source_id).await.unwrap();
 
@@ -1095,7 +1168,11 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     )
     .await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     use awaken_credential_vault::repo::CredentialRepo;
     let before = h.credentials.get(&source_id).await.unwrap();
 
@@ -1177,7 +1254,11 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    let bearer_source = h.state.credential_source_id(&vault_id, &bearer_id).unwrap();
+    let bearer_source = h
+        .state
+        .credential_source_id(&vault_id, &bearer_id)
+        .await
+        .unwrap();
     let bearer_row = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&bearer_source).await.unwrap()
@@ -1245,7 +1326,11 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
     );
 
     // The rotated access token re-sealed under the row's material_ref.
-    let oauth_source = h.state.credential_source_id(&vault_id, &oauth_id).unwrap();
+    let oauth_source = h
+        .state
+        .credential_source_id(&vault_id, &oauth_id)
+        .await
+        .unwrap();
     let oauth_row = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&oauth_source).await.unwrap()
@@ -1448,7 +1533,11 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
     );
 
     // The token is sealed in the domain: the row is secret-free but materializes.
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     let source = {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&source_id).await.unwrap()
@@ -1495,12 +1584,17 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     let source_id = h
         .state
         .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
+        .await
         .unwrap();
     use awaken_credential_vault::repo::CredentialRepo;
     let source_workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let issuer = Arc::new(RecordingEnvelopeIssuer::default());
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
-        .with_envelope_issuer(issuer.clone());
+    let state = VaultState::new(
+        h.secrets.clone(),
+        h.credentials.clone(),
+        h.credentials.clone(),
+    )
+    .with_envelope_issuer(issuer.clone());
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
     let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
@@ -1623,8 +1717,12 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         AdversarialEnvelopeResponse::SubstitutedPayload,
         AdversarialEnvelopeResponse::Failure,
     ] {
-        let adversarial = VaultState::new(h.secrets.clone(), h.credentials.clone())
-            .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
+        let adversarial = VaultState::new(
+            h.secrets.clone(),
+            h.credentials.clone(),
+            h.credentials.clone(),
+        )
+        .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
         assert!(
             SessionCredentialSource::mcp_access_for_source(
                 &adversarial,
@@ -1714,7 +1812,11 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
 
     // The client secret was SEALED (not dropped) in the aggregate's named slot,
     // so the confidential-client refresh grant can authenticate later.
-    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &cred_id)
+        .await
+        .unwrap();
     use awaken_credential_vault::repo::CredentialRepo;
     let source = h.credentials.get(&source_id).await.unwrap();
     let sealed = h
@@ -1795,24 +1897,34 @@ async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
     let oauth_source = h
         .state
         .credential_source_id(&oauth_vault, &oauth_id)
+        .await
         .unwrap();
     assert_eq!(
-        h.state.mcp_credential_source_for_url(
-            std::slice::from_ref(&oauth_vault),
-            "https://mcp.example.com/sse"
-        ),
+        h.state
+            .mcp_credential_source_for_url(
+                "default",
+                std::slice::from_ref(&oauth_vault),
+                "https://mcp.example.com/sse"
+            )
+            .await
+            .unwrap(),
         Some(oauth_source)
     );
 
     let bearer_source = h
         .state
         .credential_source_id(&bearer_vault, &bearer_id)
+        .await
         .unwrap();
     assert_eq!(
-        h.state.mcp_credential_source_for_url(
-            std::slice::from_ref(&bearer_vault),
-            "https://MCP.example.com:443/mcp/"
-        ),
+        h.state
+            .mcp_credential_source_for_url(
+                "default",
+                std::slice::from_ref(&bearer_vault),
+                "https://MCP.example.com:443/mcp/"
+            )
+            .await
+            .unwrap(),
         Some(bearer_source)
     );
 
@@ -1824,14 +1936,22 @@ async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
     ] {
         assert!(
             h.state
-                .mcp_credential_source_for_url(std::slice::from_ref(&bearer_vault), different)
+                .mcp_credential_source_for_url(
+                    "default",
+                    std::slice::from_ref(&bearer_vault),
+                    different
+                )
+                .await
+                .unwrap()
                 .is_none(),
             "a structurally different target must not match: {different}"
         );
     }
     assert!(
         h.state
-            .mcp_credential_source_for_url(&[], "https://mcp.example.com/mcp")
+            .mcp_credential_source_for_url("default", &[], "https://mcp.example.com/mcp")
+            .await
+            .unwrap()
             .is_none()
     );
 }
@@ -1847,20 +1967,30 @@ async fn mcp_binding_uses_vault_id_order_as_credential_precedence() {
     let first_source = h
         .state
         .credential_source_id(&first_created, first_credential["id"].as_str().unwrap())
+        .await
         .unwrap();
     let second_source = h
         .state
         .credential_source_id(&second_created, second_credential["id"].as_str().unwrap())
+        .await
         .unwrap();
 
     assert_eq!(
         h.state
-            .mcp_credential_source_for_url(&[second_created.clone(), first_created.clone()], url),
+            .mcp_credential_source_for_url(
+                "default",
+                &[second_created.clone(), first_created.clone()],
+                url
+            )
+            .await
+            .unwrap(),
         Some(second_source)
     );
     assert_eq!(
         h.state
-            .mcp_credential_source_for_url(&[first_created, second_created], url),
+            .mcp_credential_source_for_url("default", &[first_created, second_created], url)
+            .await
+            .unwrap(),
         Some(first_source)
     );
 }
@@ -1886,12 +2016,17 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
     let first_source = h
         .state
         .credential_source_id(&vault_id, first["id"].as_str().unwrap())
+        .await
         .unwrap();
     assert_eq!(
-        h.state.mcp_credential_source_for_url(
-            std::slice::from_ref(&vault_id),
-            "https://mcp.example.com/mcp"
-        ),
+        h.state
+            .mcp_credential_source_for_url(
+                "default",
+                std::slice::from_ref(&vault_id),
+                "https://mcp.example.com/mcp"
+            )
+            .await
+            .unwrap(),
         Some(first_source),
         "the lowest credential id breaks a same-Vault tie"
     );
@@ -1908,12 +2043,17 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
     let second_source = h
         .state
         .credential_source_id(&vault_id, second["id"].as_str().unwrap())
+        .await
         .unwrap();
     assert_eq!(
-        h.state.mcp_credential_source_for_url(
-            std::slice::from_ref(&vault_id),
-            "https://mcp.example.com/mcp"
-        ),
+        h.state
+            .mcp_credential_source_for_url(
+                "default",
+                std::slice::from_ref(&vault_id),
+                "https://mcp.example.com/mcp"
+            )
+            .await
+            .unwrap(),
         Some(second_source),
         "archiving the first credential exposes the next deterministic candidate"
     );
@@ -2057,6 +2197,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     let source_id = h
         .state
         .credential_source_id(&vault_id, &refreshable_id)
+        .await
         .unwrap();
     let access = h
         .state
@@ -2088,7 +2229,11 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     // An mcp_oauth credential entered WITHOUT a refresh object yields none.
     let plain = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/plain", None).await;
     let plain_id = plain["id"].as_str().unwrap().to_string();
-    let plain_source = h.state.credential_source_id(&vault_id, &plain_id).unwrap();
+    let plain_source = h
+        .state
+        .credential_source_id(&vault_id, &plain_id)
+        .await
+        .unwrap();
     assert!(
         h.state
             .mcp_access_for_source(&plain_source)
@@ -2121,6 +2266,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         let confidential_source = h
             .state
             .credential_source_id(&vault_id, &confidential_id)
+            .await
             .unwrap();
         let access = h
             .state
@@ -2151,7 +2297,11 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
 
     // Env-var and static_bearer rows never carry a refresh configuration.
     let env_id = create_credential(&h, &vault_id, "K").await;
-    let env_source = h.state.credential_source_id(&vault_id, &env_id).unwrap();
+    let env_source = h
+        .state
+        .credential_source_id(&vault_id, &env_id)
+        .await
+        .unwrap();
     assert!(
         h.state
             .mcp_access_for_source(&env_source)
@@ -2173,7 +2323,11 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     .await;
     assert_eq!(s, StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
-    let bearer_source = h.state.credential_source_id(&vault_id, &bearer_id).unwrap();
+    let bearer_source = h
+        .state
+        .credential_source_id(&vault_id, &bearer_id)
+        .await
+        .unwrap();
     assert!(
         h.state
             .mcp_access_for_source(&bearer_source)

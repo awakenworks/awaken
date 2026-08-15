@@ -69,6 +69,7 @@ pub(super) async fn control_component_for_process(
         enrollment_signing_key,
         catalog: control.catalog.clone(),
         credentials: control.credentials.clone(),
+        vaults: control.vaults.clone(),
         secrets: control.secrets.clone(),
         profiles: control.profiles.clone(),
         webhook_store: control.webhooks.clone(),
