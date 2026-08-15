@@ -187,6 +187,13 @@ production logic.
   epoch for unchanged heartbeats, and proves that failures cannot publish a
   fence while every skipped epoch was already published or superseded.
   `ObservationReconcileProof.tla` proves the complete inductive safety invariant.
+- `ExecutableProjectionRefresh.tla` covers two concurrent Runtime-admitting
+  requests refreshing the Agent projection and then the Environment projection.
+  Each domain has one mutex owner; replay installs a clone before the infallible
+  cursor advance, failures publish neither projection nor cursor, and a handler
+  is admitted only after both independently captured high-water marks are
+  covered. `ExecutableProjectionRefreshProof.tla` proves the unbounded inductive
+  invariant, including the short install-before-cursor visibility window.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
@@ -283,6 +290,7 @@ At the current source revision TLAPS discharges all obligations:
 - Service lifecycle shutdown barriers: 4/4.
 - Shared mount reference safety: 29/29.
 - Observation reconciliation fencing: 69/69.
+- Executable projection refresh safety: 120/120.
 
 ## TLC exhaustive finite checks
 
@@ -309,6 +317,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ServiceLifecycle | 226 | 131 | 9 |
 | MountCoordinator | 361 | 81 | 11 |
 | ObservationReconcile | 10,055 | 2,835 | 16 |
+| ExecutableProjectionRefresh | 111,151 | 39,600 | 37 |
 | CheckpointRecovery | 462 | 141 | 8 |
 | WebhookOutbox | 10 | 6 | 4 |
 | RegistrationIntent | 1,454 | 487 | 17 |
@@ -402,14 +411,14 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have a machine-checked production link. At
-this review checkpoint the ledger is 220/237 formalizable obligations proved
-or machine-linked, plus 10 explicitly external obligations, for 92.8%
+this review checkpoint the ledger is 225/242 formalizable obligations proved
+or machine-linked, plus 10 explicitly external obligations, for 93.0%
 formalizable coverage. Seventeen executable-only rows remain explicit proof
 candidates.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
-The denominator (previously 233 and now 237 as new obligations were discovered)
+The denominator (previously 237 and now 242 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -417,8 +426,8 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 570 candidate modules: 149 are classified, 132
-have at least one proved obligation linked to the production file, and 421 are
+source-oriented inventory finds 570 candidate modules: 153 are classified, 136
+have at least one proved obligation linked to the production file, and 417 are
 not yet classified. This deliberately over-approximating inventory is the work
 queue for expansion; it is not a claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
@@ -471,6 +480,15 @@ eventual heartbeat/network delivery, scheduler fairness, or the correctness of
 the external credential/ACP sources. Those remain explicit environment and
 adapter obligations; a failed source refresh is modeled only as a safe retryable
 failure that cannot advance the published fence.
+
+`ExecutableProjectionRefresh` proves per-domain serialization, clone-install and
+cursor ordering, fail-closed middleware admission, and Agent-before-Environment
+refresh for concurrent requests. It assumes the append-only command stores
+return a stable bounded range through the captured high-water and that the
+database engine honors the query and transaction contracts. The two domain
+high-water marks are captured independently, so the proof intentionally does
+not claim a transactionally atomic cross-domain snapshot or eventual command
+delivery.
 
 The `host-executor/v1` capability pins the declared model identity and fails
 closed on a replacement that does not install that identity. Proving that two
