@@ -2,6 +2,103 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExistingContinuationDecision {
+    Preserve,
+    ReapPod,
+}
+
+fn existing_continuation_decision(
+    expected_claim: &str,
+    pod_claim: Option<&str>,
+    pod_claim_uid: Option<&str>,
+    observed_claim_uid: Option<&str>,
+) -> ExistingContinuationDecision {
+    if pod_claim != Some(expected_claim) {
+        return ExistingContinuationDecision::Preserve;
+    }
+    match (pod_claim_uid, observed_claim_uid) {
+        (_, None) => ExistingContinuationDecision::ReapPod,
+        (Some(expected), Some(observed)) if expected != observed => {
+            ExistingContinuationDecision::ReapPod
+        }
+        _ => ExistingContinuationDecision::Preserve,
+    }
+}
+
+async fn delete_exact_pod(pods: &Api<Pod>, observed: &Pod) -> Result<(), RuntimeError> {
+    let name = observed
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
+    let uid = observed
+        .metadata
+        .uid
+        .clone()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
+    let resource_version = observed
+        .metadata
+        .resource_version
+        .clone()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
+    match pods
+        .delete(
+            &name,
+            &DeleteParams::default().preconditions(kube::api::Preconditions {
+                uid: Some(uid),
+                resource_version: Some(resource_version),
+            }),
+        )
+        .await
+    {
+        Ok(_) => await_pod_deleted(pods, &name).await,
+        Err(error) if api_not_found(&error) => Ok(()),
+        Err(error) => Err(backend(error)),
+    }
+}
+
+async fn reap_broken_continuation_pod(
+    runtime: &K8sRuntime,
+    pods: &Api<Pod>,
+    pod_name: &str,
+    claim_name: &str,
+) -> Result<(), RuntimeError> {
+    let Some(pod) = pods.get_opt(pod_name).await.map_err(backend)? else {
+        return Ok(());
+    };
+    let pod_claim = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.volumes.as_ref())
+        .and_then(|volumes| {
+            volumes.iter().find_map(|volume| {
+                volume
+                    .persistent_volume_claim
+                    .as_ref()
+                    .map(|claim| claim.claim_name.as_str())
+            })
+        });
+    if pod_claim != Some(claim_name) {
+        return Ok(());
+    }
+    let observed_claim_uid = match runtime.persistent_volume_claims().get(claim_name).await {
+        Ok(claim) => Some(continuation::claim_uid(&claim)?),
+        Err(error) if api_not_found(&error) => None,
+        Err(error) => return Err(backend(error)),
+    };
+    if existing_continuation_decision(
+        claim_name,
+        pod_claim,
+        continuation::bound_claim_uid(&pod),
+        observed_claim_uid.as_deref(),
+    ) == ExistingContinuationDecision::ReapPod
+    {
+        delete_exact_pod(pods, &pod).await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn create(
     runtime: &K8sRuntime,
     id: &str,
@@ -16,6 +113,12 @@ pub(super) async fn create(
         )));
     }
     let runtime_id = k8s_runtime_id(id)?;
+    let pods = runtime.pods();
+    let managed_pod_name = pod_name(&runtime_id);
+    if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
+        let claim_name = continuation_claim_name(&runtime_id);
+        reap_broken_continuation_pod(runtime, &pods, &managed_pod_name, &claim_name).await?;
+    }
     let claim_outcome = if continuation::claim_required(plan, runtime.continuation_volume.is_some())
     {
         let config = runtime
@@ -35,8 +138,6 @@ pub(super) async fn create(
     let claim_created = claim_outcome
         .as_ref()
         .is_some_and(|outcome| outcome.created);
-    let pods = runtime.pods();
-    let managed_pod_name = pod_name(&runtime_id);
     let mut created_pod_uid = None::<String>;
     let result = async {
         reap_terminal_pod(&pods, &managed_pod_name).await?;
@@ -119,16 +220,7 @@ pub(super) async fn create(
             && let Ok(observed) = pods.get(&managed_pod_name).await
             && observed.metadata.uid.as_deref() == Some(expected_pod_uid)
         {
-            let _ = pods
-                .delete(
-                    &managed_pod_name,
-                    &DeleteParams::default().preconditions(kube::api::Preconditions {
-                        uid: Some(expected_pod_uid.to_owned()),
-                        resource_version: observed.metadata.resource_version,
-                    }),
-                )
-                .await;
-            let _ = await_pod_deleted(&pods, &managed_pod_name).await;
+            let _ = delete_exact_pod(&pods, &observed).await;
         }
         // Preserve a claim only when an exact concurrent Pod already binds it.
         if let Some(uid) = claim_uid.as_deref() {
@@ -150,4 +242,56 @@ pub(super) async fn create(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_continuation_reference_decision_table() {
+        /* Existing-realization recovery cause/effect table.
+         * Causes: C1 the deterministic Pod references this realization's PVC;
+         * C2 that PVC is absent/present; C3 the Pod has no legacy incarnation,
+         * the exact current UID, or a different UID. Effects: E1 preserve a Pod
+         * which may still own live Session data; E2 reap only an impossible Pod
+         * projection before recreating the PVC. Rules: R1 !C1=>E1;
+         * R2 C1+absent(C2)=>E2; R3 C1+present(C2)+legacy(C3)=>E1;
+         * R4 C1+present(C2)+exact(C3)=>E1;
+         * R5 C1+present(C2)+different(C3)=>E2. The subsequent create transaction
+         * remains the sole PVC/Pod owner and retains UID/resourceVersion fencing.
+         */
+        use ExistingContinuationDecision::{Preserve, ReapPod};
+
+        assert_eq!(
+            existing_continuation_decision("awc-s", Some("other"), None, None),
+            Preserve,
+            "R1"
+        );
+        assert_eq!(
+            existing_continuation_decision("awc-s", Some("awc-s"), None, None),
+            ReapPod,
+            "R2"
+        );
+        assert_eq!(
+            existing_continuation_decision("awc-s", Some("awc-s"), None, Some("uid-1")),
+            Preserve,
+            "R3"
+        );
+        assert_eq!(
+            existing_continuation_decision("awc-s", Some("awc-s"), Some("uid-1"), Some("uid-1")),
+            Preserve,
+            "R4"
+        );
+        assert_eq!(
+            existing_continuation_decision(
+                "awc-s",
+                Some("awc-s"),
+                Some("uid-old"),
+                Some("uid-new")
+            ),
+            ReapPod,
+            "R5"
+        );
+    }
 }
