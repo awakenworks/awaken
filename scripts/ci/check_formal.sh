@@ -127,6 +127,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
+    --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
+    --harness live_inbox_identity_advances_strictly_or_exhausts \
     --harness advisor_never_substitutes_for_primary_model_admission
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
@@ -154,6 +156,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RustCommitSystemProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
 else
   echo "skipped TLAPS: set TLAPM_BIN or install tlapm"
   missing=1
