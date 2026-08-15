@@ -138,7 +138,7 @@ pub use skill_execution::{
     validate_skill_bundle,
 };
 pub use terminal_cleanup::{
-    SessionTerminalCleanupError, SessionTerminalCleanupIntent, SessionTerminalCleanupReceipt,
-    SessionTerminalCleanupState,
+    SessionCleanupCommand, SessionCleanupCompletion, SessionCleanupError, SessionCleanupOperation,
+    VerifiedSessionCleanupReceipt,
 };
 pub use tool_configuration::SessionToolConfiguration;

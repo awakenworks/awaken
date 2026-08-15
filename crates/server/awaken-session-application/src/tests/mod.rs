@@ -31,7 +31,7 @@ struct RecordingCleanupRuntime {
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
-    intents: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupIntent>>,
+    intents: Mutex<Vec<awaken_session_contract::SessionCleanupCommand>>,
     effective_ids: Mutex<BTreeSet<String>>,
     block_quiesce: AtomicBool,
     quiesce_entered: tokio::sync::Notify,
@@ -172,6 +172,19 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
 
 #[async_trait::async_trait]
 impl SessionRuntime for NoopRuntime {
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+            true,
+            true,
+            true,
+        ))
+    }
+
     async fn run(
         &self,
         _agent: &str,
@@ -291,8 +304,8 @@ impl SessionRuntime for RecordingCleanupRuntime {
 
     async fn execute_terminal_cleanup(
         &self,
-        intent: awaken_session_contract::SessionTerminalCleanupIntent,
-    ) -> Result<awaken_session_contract::SessionTerminalCleanupReceipt, RunError> {
+        intent: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
         if self.fail_before_effect_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::internal("injected pre-effect crash window"));
         }
@@ -304,7 +317,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
         if self.fail_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::internal("injected cleanup crash window"));
         }
-        Ok(awaken_session_contract::SessionTerminalCleanupReceipt::new(
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &intent,
             Vec::new(),
             true,

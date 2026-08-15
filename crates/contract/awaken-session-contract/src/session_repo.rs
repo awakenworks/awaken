@@ -203,6 +203,52 @@ impl SessionDisposition {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum SessionDeleteDispositionClass {
+    Active,
+    Archived,
+    Deleting,
+    Deleted,
+}
+
+impl From<&SessionDisposition> for SessionDeleteDispositionClass {
+    fn from(value: &SessionDisposition) -> Self {
+        match value {
+            SessionDisposition::Active => Self::Active,
+            SessionDisposition::Archived { .. } => Self::Archived,
+            SessionDisposition::Deleting => Self::Deleting,
+            SessionDisposition::Deleted => Self::Deleted,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SessionDeleteRequestPlan {
+    transition_to_deleting: bool,
+    terminalize_execution: bool,
+    request_cleanup: bool,
+}
+
+/// Closed reducer plan for the durable Delete-intent transaction. Deleting and
+/// Deleted are absorbing replays; every admitted request hides the aggregate,
+/// fences nonterminal execution, and requests recoverable cleanup together.
+#[must_use]
+const fn session_delete_request_plan(
+    disposition: SessionDeleteDispositionClass,
+    execution_terminal: bool,
+) -> SessionDeleteRequestPlan {
+    let transition_to_deleting = matches!(
+        disposition,
+        SessionDeleteDispositionClass::Active | SessionDeleteDispositionClass::Archived
+    );
+    SessionDeleteRequestPlan {
+        transition_to_deleting,
+        terminalize_execution: transition_to_deleting && !execution_terminal,
+        request_cleanup: transition_to_deleting,
+    }
+}
+
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SessionDispositionTransitionError {
     #[error("cannot archive a Session while deletion is in progress or complete")]
@@ -286,7 +332,7 @@ pub struct PersistedSession {
     /// Durable intent/receipt state for terminal Runtime effects. Resource,
     /// Environment, artifact, and process cleanup project from this one fact.
     #[serde(default)]
-    pub terminal_cleanup: crate::SessionTerminalCleanupState,
+    pub terminal_cleanup: crate::SessionCleanupOperation,
 }
 
 impl PersistedSession {
@@ -345,6 +391,28 @@ impl PersistedSession {
         }
         self.execution = next;
         Ok(true)
+    }
+
+    /// Whether the durable aggregate may be replaced by a compact tombstone.
+    /// This is deliberately checked again by the store inside its transaction;
+    /// callers cannot authorize physical deletion merely by constructing a
+    /// [`SessionMutationPayload::Delete`].
+    #[must_use]
+    pub fn admits_tombstone(
+        &self,
+        asserted_session_id: &str,
+        deleted_revision: SessionRevision,
+    ) -> bool {
+        session_tombstone_is_admitted(
+            self.disposition.is_hidden(),
+            self.execution.is_terminal(),
+            self.terminal_cleanup.is_completed(),
+            self.session_id == asserted_session_id,
+            self.revision
+                .0
+                .checked_add(1)
+                .is_some_and(|next| deleted_revision == SessionRevision(next)),
+        )
     }
 
     /// Open the one continuous Running interval after the execution transition
@@ -416,16 +484,19 @@ impl PersistedSession {
     /// and activation-failed Sessions remain deletable because disposition is an
     /// orthogonal state axis.
     pub fn request_delete(&mut self) -> bool {
-        if matches!(
-            self.disposition,
-            SessionDisposition::Deleting | SessionDisposition::Deleted
-        ) {
+        let plan = session_delete_request_plan(
+            SessionDeleteDispositionClass::from(&self.disposition),
+            self.execution.is_terminal(),
+        );
+        if !plan.transition_to_deleting {
             return false;
         }
-        if !self.execution.is_terminal() {
+        if plan.terminalize_execution {
             self.execution = SessionExecutionState::Terminated;
         }
-        self.terminal_cleanup.request(&self.session_id);
+        if plan.request_cleanup {
+            self.terminal_cleanup.request(&self.session_id);
+        }
         self.disposition = SessionDisposition::Deleting;
         true
     }
@@ -557,6 +628,24 @@ const fn normalized_runtime_interval_end(started_at_unix_ms: u64, ended_at_unix_
     } else {
         ended_at_unix_ms
     }
+}
+
+/// Closed admission kernel for physically deleting the authoritative Session
+/// row. Visibility, execution fencing, and verified cleanup are independent
+/// axes; omitting any one of them fails closed.
+#[must_use]
+pub const fn session_tombstone_is_admitted(
+    disposition_hidden: bool,
+    execution_terminal: bool,
+    cleanup_completed: bool,
+    session_identity_exact: bool,
+    next_revision_exact: bool,
+) -> bool {
+    disposition_hidden
+        && execution_terminal
+        && cleanup_completed
+        && session_identity_exact
+        && next_revision_exact
 }
 
 #[cfg(kani)]
@@ -1016,7 +1105,7 @@ mod mutation_tests {
         assert!(
             matches!(
                 prepared.terminal_cleanup,
-                crate::SessionTerminalCleanupState::NotRequested
+                crate::SessionCleanupOperation::NotRequested
             ),
             "C1/E1"
         );
@@ -1593,7 +1682,10 @@ mod mutation_tests {
 
 #[cfg(kani)]
 mod verification {
-    use super::SessionExecutionState;
+    use super::{
+        SessionDeleteDispositionClass, SessionExecutionState, session_delete_request_plan,
+        session_tombstone_is_admitted,
+    };
 
     #[kani::proof]
     fn terminal_execution_never_reopens() {
@@ -1613,6 +1705,56 @@ mod verification {
         };
         if terminal.can_transition_to(next) {
             assert_eq!(terminal, next);
+        }
+    }
+
+    #[kani::proof]
+    fn session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup() {
+        let disposition_hidden = kani::any::<bool>();
+        let execution_terminal = kani::any::<bool>();
+        let cleanup_completed = kani::any::<bool>();
+        let session_identity_exact = kani::any::<bool>();
+        let next_revision_exact = kani::any::<bool>();
+        assert_eq!(
+            session_tombstone_is_admitted(
+                disposition_hidden,
+                execution_terminal,
+                cleanup_completed,
+                session_identity_exact,
+                next_revision_exact,
+            ),
+            disposition_hidden
+                && execution_terminal
+                && cleanup_completed
+                && session_identity_exact
+                && next_revision_exact
+        );
+    }
+
+    #[kani::proof]
+    fn session_delete_request_plan_is_exact_hidden_terminal_and_idempotent() {
+        let disposition_code = kani::any::<u8>();
+        kani::assume(disposition_code < 4);
+        let disposition = match disposition_code {
+            0 => SessionDeleteDispositionClass::Active,
+            1 => SessionDeleteDispositionClass::Archived,
+            2 => SessionDeleteDispositionClass::Deleting,
+            3 => SessionDeleteDispositionClass::Deleted,
+            _ => unreachable!(),
+        };
+        let execution_terminal = kani::any::<bool>();
+        let plan = session_delete_request_plan(disposition, execution_terminal);
+        let first_request = disposition_code < 2;
+        assert_eq!(plan.transition_to_deleting, first_request);
+        assert_eq!(plan.request_cleanup, first_request);
+        assert_eq!(
+            plan.terminalize_execution,
+            first_request && !execution_terminal
+        );
+        if disposition_code >= 2 {
+            assert!(!plan.transition_to_deleting);
+            assert!(!plan.request_cleanup);
+            assert!(!plan.terminalize_execution);
         }
     }
 }

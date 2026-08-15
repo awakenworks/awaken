@@ -14,8 +14,11 @@ RESOURCE_EXECUTION = "crates/contract/awaken-resource-contract/src/execution.rs"
 APPLICATION_CLEANUP = (
     "crates/server/awaken-session-application/src/resource_reconciliation.rs"
 )
+APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
 PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
 SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
+SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
+POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
 RUNTIME_HOST = "crates/server/awaken-runtime-host/src/lib.rs"
 WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
 ARTIFACT_HARVEST = "crates/server/awaken-runtime-host/src/provisioning.rs"
@@ -34,9 +37,9 @@ REQUIRED = {
         "DelegatedRunSnapshot",
     ),
     SESSION_CLEANUP: (
-        "SessionTerminalCleanupIntent",
-        "SessionTerminalCleanupReceipt",
-        "SessionTerminalCleanupState",
+        "SessionCleanupCommand",
+        "SessionCleanupCompletion",
+        "SessionCleanupOperation",
         "Fenced",
         "freeze_targets",
         "delegation_watermark",
@@ -61,19 +64,31 @@ REQUIRED = {
         "receipt does not match its exact publication intent",
     ),
     APPLICATION_CLEANUP: (
-        ".execute_terminal_cleanup(intent.clone())",
+        ".execute_terminal_cleanup(command.clone())",
         ".complete(session_id, &receipts)",
+        ".commit_delete_tombstone(owner_scope, &session)",
+        ".retire_terminal_work(&session)",
         "SessionEnvironmentState::Unmaterialized",
         ".quiesce_terminal_delegations(session_id)",
         ".freeze_targets(",
         '"terminal-cleanup-fence"',
     ),
-    PROTOCOL_SESSIONS: ("release_terminal_resources(&transition.owner_scope, id)",),
+    APPLICATION_TERMINAL: (
+        "SessionDeleteCommand",
+        "commit_delete_intent",
+        'event_type: "session.deleted"',
+    ),
+    PROTOCOL_SESSIONS: (
+        "SessionDeleteCommand::new(id)",
+        "release_terminal_resources(&transition.owner_scope, id)",
+    ),
     SESSION_STORE: ("SessionRepositoryError::Unavailable", "SessionRepositoryError::Corrupt"),
+    SQLITE_SESSION_STORE: ("current_session.admits_tombstone(",),
+    POSTGRES_SESSION_STORE: ("current_session.admits_tombstone(",),
     RUNTIME_HOST: (
         "async fn execute_terminal_cleanup",
-        "SessionTerminalCleanupReceipt::new",
-        ".harvest_thread_artifacts(&intent.thread_id)",
+        "SessionCleanupCompletion::new",
+        ".harvest_thread_artifacts(&command.thread_id)",
     ),
     WORKER_RUNTIME: (),
     ARTIFACT_HARVEST: (
@@ -105,6 +120,11 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             f"{APPLICATION_CLEANUP}: terminal cleanup bypasses its durable intent/receipt port"
         )
     protocol = sources.get(PROTOCOL_SESSIONS, "")
+    for forbidden in (".begin_delete(", "lifecycle_event::SESSION_DELETED"):
+        if forbidden in protocol:
+            errors.append(
+                f"{PROTOCOL_SESSIONS}: protocol adapter owns Delete authority via {forbidden!r}"
+            )
     if "child_thread_ids" in protocol:
         errors.append(
             f"{PROTOCOL_SESSIONS}: protocol projection still supplies terminal cleanup targets"
@@ -119,7 +139,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "use the aggregate constructor and SessionApplication command"
         )
     worker = sources.get(WORKER_RUNTIME, "")
-    for forbidden in ("SessionTerminalCleanupIntent", "execute_terminal_cleanup"):
+    for forbidden in ("SessionCleanupCommand", "execute_terminal_cleanup"):
         if forbidden in worker:
             errors.append(
                 f"{WORKER_RUNTIME}: stale Worker can settle Coordinator-owned cleanup via "
@@ -188,5 +208,5 @@ def selftest() -> None:
     assert session_effect_violations(protocol_authority), "protocol mutation rejected"
 
     stale_worker = dict(canonical)
-    stale_worker[WORKER_RUNTIME] = "execute_terminal_cleanup(SessionTerminalCleanupIntent)"
+    stale_worker[WORKER_RUNTIME] = "execute_terminal_cleanup(SessionCleanupCommand)"
     assert session_effect_violations(stale_worker), "Worker cleanup settlement rejected"

@@ -740,20 +740,18 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Execute the exact durable terminal cleanup intent and return evidence for
-    /// that same intent. Recovery calls this entry again with the same effect id.
-    /// The compatibility default preserves hosts without substrate lifecycle.
+    /// Execute the exact durable cleanup command and return untrusted completion
+    /// data for that same command. The application verifies that data before the
+    /// durable operation can advance. Recovery calls this entry again with the
+    /// same effect id. Hosts must opt in explicitly: silently reporting success
+    /// would allow a no-op runtime to authorize physical Session deletion.
     async fn execute_terminal_cleanup(
         &self,
-        intent: crate::SessionTerminalCleanupIntent,
-    ) -> Result<crate::SessionTerminalCleanupReceipt, RunError> {
-        self.end_session(&intent.thread_id).await?;
-        Ok(crate::SessionTerminalCleanupReceipt::new(
-            &intent,
-            Vec::new(),
-            true,
-            true,
-            true,
+        _command: crate::SessionCleanupCommand,
+    ) -> Result<crate::SessionCleanupCompletion, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_cleanup_runtime_unsupported",
+            "runtime does not implement Session cleanup",
         ))
     }
 

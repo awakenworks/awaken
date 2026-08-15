@@ -1,8 +1,9 @@
-//! Durable intent and receipt vocabulary for terminal Session cleanup.
+//! Domain-owned operation vocabulary for terminal Session cleanup.
 //!
 //! The Session aggregate owns whether cleanup is required or complete. Runtime
 //! implementations own the substrate-specific effects, but must execute them
-//! from the stable intent and return a receipt for that exact intent.
+//! from a stable [`SessionCleanupCommand`]. Their untrusted completion report
+//! becomes a [`VerifiedSessionCleanupReceipt`] only after exact command binding.
 
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use std::collections::BTreeSet;
 /// comparisons; this closed rule makes every required axis explicit and is
 /// shared by production verification and exhaustive checking.
 #[must_use]
-pub(crate) const fn terminal_cleanup_receipt_admitted(
+pub(crate) const fn session_cleanup_completion_admitted(
     artifact_effects_unique: bool,
     repositories_settled: bool,
     skills_settled: bool,
@@ -33,10 +34,43 @@ pub(crate) const fn terminal_cleanup_receipt_admitted(
         && canonical_receipt_matches
 }
 
-/// The one terminal cleanup lifecycle stored by the Session aggregate.
+/// Heap-free phase projection used by the production operation gate and Kani.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum SessionCleanupPhase {
+    NotRequested,
+    Fenced,
+    Requested,
+    Completed,
+}
+
+/// A durable cleanup operation may advance by exactly one phase. Replays are
+/// handled by the phase-specific methods without rewriting durable authority.
+#[must_use]
+pub(crate) const fn session_cleanup_phase_advance_admitted(
+    current: SessionCleanupPhase,
+    next: SessionCleanupPhase,
+) -> bool {
+    matches!(
+        (current, next),
+        (
+            SessionCleanupPhase::NotRequested,
+            SessionCleanupPhase::Fenced
+        ) | (SessionCleanupPhase::Fenced, SessionCleanupPhase::Requested)
+            | (
+                SessionCleanupPhase::Requested,
+                SessionCleanupPhase::Completed
+            )
+    )
+}
+
+/// The one durable cleanup operation stored by the Session aggregate.
+///
+/// The serde representation intentionally retains the existing tagged shape so
+/// persisted Session rows remain backward compatible across this domain rename.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum SessionTerminalCleanupState {
+pub enum SessionCleanupOperation {
     #[default]
     NotRequested,
     /// Durable admission fence. No new Session Run or delegation may begin,
@@ -59,16 +93,30 @@ pub enum SessionTerminalCleanupState {
     },
 }
 
-impl SessionTerminalCleanupState {
-    /// Commit the stable whole-Session intent before any Runtime effect.
-    pub fn request(&mut self, session_id: &str) -> bool {
-        if !matches!(self, Self::NotRequested) {
+impl SessionCleanupOperation {
+    #[must_use]
+    pub(crate) const fn phase(&self) -> SessionCleanupPhase {
+        match self {
+            Self::NotRequested => SessionCleanupPhase::NotRequested,
+            Self::Fenced { .. } => SessionCleanupPhase::Fenced,
+            Self::Requested { .. } => SessionCleanupPhase::Requested,
+            Self::Completed { .. } => SessionCleanupPhase::Completed,
+        }
+    }
+
+    fn advance_to(&mut self, next: Self) -> bool {
+        if !session_cleanup_phase_advance_admitted(self.phase(), next.phase()) {
             return false;
         }
-        *self = Self::Fenced {
-            effect_id: cleanup_effect_id(session_id),
-        };
+        *self = next;
         true
+    }
+
+    /// Commit the stable whole-Session operation before any Runtime effect.
+    pub fn request(&mut self, session_id: &str) -> bool {
+        self.advance_to(Self::Fenced {
+            effect_id: cleanup_effect_id(session_id),
+        })
     }
 
     /// Freeze the complete target set only after the terminal fence is durable
@@ -79,7 +127,7 @@ impl SessionTerminalCleanupState {
         session_id: &str,
         thread_ids: impl IntoIterator<Item = String>,
         delegation_watermark: u64,
-    ) -> Result<bool, SessionTerminalCleanupError> {
+    ) -> Result<bool, SessionCleanupError> {
         let Self::Fenced { effect_id } = self else {
             return match self {
                 Self::Requested {
@@ -97,24 +145,28 @@ impl SessionTerminalCleanupState {
                     if *durable == asserted && *durable_watermark == delegation_watermark {
                         Ok(false)
                     } else {
-                        Err(SessionTerminalCleanupError::FrozenTargetsMismatch)
+                        Err(SessionCleanupError::FrozenTargetsMismatch)
                     }
                 }
-                Self::NotRequested => Err(SessionTerminalCleanupError::NotRequested),
+                Self::NotRequested => Err(SessionCleanupError::NotRequested),
                 Self::Fenced { .. } => unreachable!(),
             };
         };
         if *effect_id != cleanup_effect_id(session_id) {
-            return Err(SessionTerminalCleanupError::IntentMismatch);
+            return Err(SessionCleanupError::OperationMismatch);
         }
+        let effect_id = effect_id.clone();
         let mut durable = BTreeSet::from([session_id.to_string()]);
         durable.extend(thread_ids);
-        *self = Self::Requested {
-            effect_id: effect_id.clone(),
+        let advanced = self.advance_to(Self::Requested {
+            effect_id,
             thread_ids: durable,
             delegation_watermark,
-        };
-        Ok(true)
+        });
+        if !advanced {
+            return Err(SessionCleanupError::InvalidPhaseAdvance);
+        }
+        Ok(advanced)
     }
 
     #[must_use]
@@ -128,31 +180,27 @@ impl SessionTerminalCleanupState {
     }
 
     #[must_use]
-    pub fn is_fenced(&self) -> bool {
+    pub const fn is_fenced(&self) -> bool {
         matches!(self, Self::Fenced { .. })
     }
 
     #[must_use]
-    pub fn is_requested(&self) -> bool {
+    pub const fn is_requested(&self) -> bool {
         matches!(self, Self::Requested { .. })
     }
 
     #[must_use]
-    pub fn is_completed(&self) -> bool {
+    pub const fn is_completed(&self) -> bool {
         matches!(self, Self::Completed { .. })
     }
 
     #[must_use]
-    pub fn needs_reconciliation(&self) -> bool {
+    pub const fn needs_reconciliation(&self) -> bool {
         matches!(self, Self::Fenced { .. } | Self::Requested { .. })
     }
 
     #[must_use]
-    pub fn intent_for(
-        &self,
-        session_id: &str,
-        thread_id: &str,
-    ) -> Option<SessionTerminalCleanupIntent> {
+    pub fn command_for(&self, session_id: &str, thread_id: &str) -> Option<SessionCleanupCommand> {
         let Self::Requested {
             effect_id,
             thread_ids,
@@ -164,17 +212,16 @@ impl SessionTerminalCleanupState {
         if !thread_ids.contains(thread_id) {
             return None;
         }
-        Some(SessionTerminalCleanupIntent::new(
-            session_id, thread_id, effect_id,
-        ))
+        Some(SessionCleanupCommand::new(session_id, thread_id, effect_id))
     }
 
-    /// Commit receipt evidence only after every thread effect has succeeded.
+    /// Commit verified receipt evidence only after every thread effect has
+    /// succeeded. Raw Runtime completions cannot cross this boundary.
     pub fn complete(
         &mut self,
         session_id: &str,
-        receipts: &[SessionTerminalCleanupReceipt],
-    ) -> Result<bool, SessionTerminalCleanupError> {
+        receipts: &[VerifiedSessionCleanupReceipt],
+    ) -> Result<bool, SessionCleanupError> {
         let Self::Requested {
             effect_id,
             thread_ids,
@@ -184,35 +231,36 @@ impl SessionTerminalCleanupState {
             return if self.is_completed() {
                 Ok(false)
             } else {
-                Err(SessionTerminalCleanupError::NotRequested)
+                Err(SessionCleanupError::NotRequested)
             };
         };
         if receipts.is_empty() {
-            return Err(SessionTerminalCleanupError::MissingReceipt);
+            return Err(SessionCleanupError::MissingReceipt);
         }
         let mut evidence = receipts.to_vec();
-        evidence.sort_by(|left, right| left.thread_id.cmp(&right.thread_id));
+        evidence.sort_by(|left, right| left.thread_id().cmp(right.thread_id()));
         for pair in evidence.windows(2) {
-            if pair[0].thread_id == pair[1].thread_id {
-                return Err(SessionTerminalCleanupError::DuplicateThread(
-                    pair[0].thread_id.clone(),
+            if pair[0].thread_id() == pair[1].thread_id() {
+                return Err(SessionCleanupError::DuplicateThread(
+                    pair[0].thread_id().to_string(),
                 ));
             }
         }
         let evidenced_threads = evidence
             .iter()
-            .map(|receipt| receipt.thread_id.clone())
+            .map(|receipt| receipt.thread_id().to_string())
             .collect::<BTreeSet<_>>();
         if !evidenced_threads.contains(session_id) {
-            return Err(SessionTerminalCleanupError::MissingRootReceipt);
+            return Err(SessionCleanupError::MissingRootReceipt);
         }
         if evidenced_threads != *thread_ids {
-            return Err(SessionTerminalCleanupError::MissingReceipt);
+            return Err(SessionCleanupError::MissingReceipt);
         }
         for receipt in &evidence {
-            let intent =
-                SessionTerminalCleanupIntent::new(session_id, &receipt.thread_id, effect_id);
-            receipt.verify(&intent)?;
+            let expected = SessionCleanupCommand::new(session_id, receipt.thread_id(), effect_id);
+            if receipt.command != expected {
+                return Err(SessionCleanupError::ReceiptMismatch);
+            }
         }
         let receipt_fingerprint = crate::stable_fingerprint(&(
             "session-terminal-cleanup-receipt-v1",
@@ -222,33 +270,39 @@ impl SessionTerminalCleanupState {
                 .iter()
                 .map(|receipt| {
                     (
-                        receipt.thread_id.as_str(),
-                        receipt.effect_id.as_str(),
-                        receipt.receipt_fingerprint.as_str(),
+                        receipt.thread_id(),
+                        receipt.effect_id(),
+                        receipt.receipt_fingerprint(),
                     )
                 })
                 .collect::<Vec<_>>(),
         ));
-        *self = Self::Completed {
-            effect_id: effect_id.clone(),
-            thread_ids: thread_ids.clone(),
-            delegation_watermark: *delegation_watermark,
+        let completed_effect_id = effect_id.clone();
+        let completed_thread_ids = thread_ids.clone();
+        let completed_watermark = *delegation_watermark;
+        let advanced = self.advance_to(Self::Completed {
+            effect_id: completed_effect_id,
+            thread_ids: completed_thread_ids,
+            delegation_watermark: completed_watermark,
             receipt_fingerprint,
-        };
-        Ok(true)
+        });
+        if !advanced {
+            return Err(SessionCleanupError::InvalidPhaseAdvance);
+        }
+        Ok(advanced)
     }
 }
 
-/// Stable, per-thread terminal cleanup command derived from the root intent.
+/// Stable, per-thread cleanup command derived from the root operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionTerminalCleanupIntent {
+pub struct SessionCleanupCommand {
     pub session_id: String,
     pub thread_id: String,
     pub effect_id: String,
 }
 
-impl SessionTerminalCleanupIntent {
-    /// Construct the canonical intent when no persisted state object is at hand
+impl SessionCleanupCommand {
+    /// Construct the canonical command when no persisted operation is at hand
     /// (for example a compatibility call into `SessionRuntime::end_session`).
     #[must_use]
     pub fn for_thread(session_id: &str, thread_id: &str) -> Self {
@@ -270,9 +324,9 @@ impl SessionTerminalCleanupIntent {
     }
 }
 
-/// Runtime evidence that the exact per-thread cleanup intent completed.
+/// Untrusted Runtime report that one per-thread cleanup command completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionTerminalCleanupReceipt {
+pub struct SessionCleanupCompletion {
     pub session_id: String,
     pub thread_id: String,
     pub effect_id: String,
@@ -283,10 +337,10 @@ pub struct SessionTerminalCleanupReceipt {
     pub receipt_fingerprint: String,
 }
 
-impl SessionTerminalCleanupReceipt {
+impl SessionCleanupCompletion {
     #[must_use]
     pub fn new(
-        intent: &SessionTerminalCleanupIntent,
+        command: &SessionCleanupCommand,
         mut artifact_receipts: Vec<ArtifactPublicationReceipt>,
         repositories_settled: bool,
         skills_settled: bool,
@@ -295,9 +349,9 @@ impl SessionTerminalCleanupReceipt {
         artifact_receipts.sort_by(|left, right| left.effect_id.cmp(&right.effect_id));
         let receipt_fingerprint = crate::stable_fingerprint(&(
             "session-terminal-cleanup-thread-receipt-v1",
-            intent.session_id.as_str(),
-            intent.thread_id.as_str(),
-            intent.effect_id.as_str(),
+            command.session_id.as_str(),
+            command.thread_id.as_str(),
+            command.effect_id.as_str(),
             artifact_receipts
                 .iter()
                 .map(|receipt| (receipt.effect_id.as_str(), receipt.content_id.as_str()))
@@ -307,9 +361,9 @@ impl SessionTerminalCleanupReceipt {
             environment_disposed,
         ));
         Self {
-            session_id: intent.session_id.clone(),
-            thread_id: intent.thread_id.clone(),
-            effect_id: intent.effect_id.clone(),
+            session_id: command.session_id.clone(),
+            thread_id: command.thread_id.clone(),
+            effect_id: command.effect_id.clone(),
             artifact_receipts,
             repositories_settled,
             skills_settled,
@@ -320,37 +374,72 @@ impl SessionTerminalCleanupReceipt {
 
     pub fn verify(
         &self,
-        intent: &SessionTerminalCleanupIntent,
-    ) -> Result<(), SessionTerminalCleanupError> {
+        command: &SessionCleanupCommand,
+    ) -> Result<VerifiedSessionCleanupReceipt, SessionCleanupError> {
         let duplicate_artifact = self
             .artifact_receipts
             .windows(2)
             .any(|pair| pair[0].effect_id == pair[1].effect_id);
         let canonical = Self::new(
-            intent,
+            command,
             self.artifact_receipts.clone(),
             self.repositories_settled,
             self.skills_settled,
             self.environment_disposed,
         );
-        if !terminal_cleanup_receipt_admitted(
+        if !session_cleanup_completion_admitted(
             !duplicate_artifact,
             self.repositories_settled,
             self.skills_settled,
             self.environment_disposed,
-            self.session_id == intent.session_id,
-            self.thread_id == intent.thread_id,
-            self.effect_id == intent.effect_id,
+            self.session_id == command.session_id,
+            self.thread_id == command.thread_id,
+            self.effect_id == command.effect_id,
             *self == canonical,
         ) {
-            return Err(SessionTerminalCleanupError::ReceiptMismatch);
+            return Err(SessionCleanupError::ReceiptMismatch);
         }
-        Ok(())
+        Ok(VerifiedSessionCleanupReceipt {
+            command: command.clone(),
+            completion: self.clone(),
+        })
+    }
+}
+
+/// Exact, process-local completion evidence admitted against one cleanup
+/// command. It is intentionally not serializable and has no public constructor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedSessionCleanupReceipt {
+    command: SessionCleanupCommand,
+    completion: SessionCleanupCompletion,
+}
+
+impl VerifiedSessionCleanupReceipt {
+    #[must_use]
+    pub fn command(&self) -> &SessionCleanupCommand {
+        &self.command
+    }
+
+    #[must_use]
+    pub fn completion(&self) -> &SessionCleanupCompletion {
+        &self.completion
+    }
+
+    fn thread_id(&self) -> &str {
+        &self.completion.thread_id
+    }
+
+    fn effect_id(&self) -> &str {
+        &self.completion.effect_id
+    }
+
+    fn receipt_fingerprint(&self) -> &str {
+        &self.completion.receipt_fingerprint
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SessionTerminalCleanupError {
+pub enum SessionCleanupError {
     #[error("Session terminal cleanup was not requested")]
     NotRequested,
     #[error("Session terminal cleanup has no Runtime receipt")]
@@ -361,10 +450,12 @@ pub enum SessionTerminalCleanupError {
     DuplicateThread(String),
     #[error("Session terminal cleanup receipt does not match its exact intent")]
     ReceiptMismatch,
-    #[error("Session terminal cleanup state does not match its Session identity")]
-    IntentMismatch,
+    #[error("Session cleanup operation does not match its Session identity")]
+    OperationMismatch,
     #[error("Session terminal cleanup targets were already frozen at a different watermark")]
     FrozenTargetsMismatch,
+    #[error("Session cleanup operation attempted an invalid phase advance")]
+    InvalidPhaseAdvance,
 }
 
 fn cleanup_effect_id(session_id: &str) -> String {
@@ -376,75 +467,66 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn verified(command: &SessionCleanupCommand) -> VerifiedSessionCleanupReceipt {
+        SessionCleanupCompletion::new(command, Vec::new(), true, true, true)
+            .verify(command)
+            .unwrap()
+    }
+
     #[test]
     fn intent_and_receipt_are_stable_across_recovery() {
-        let mut state = SessionTerminalCleanupState::default();
+        let mut state = SessionCleanupOperation::default();
         assert!(state.request("session-1"));
         assert!(state.is_fenced());
         assert!(state.freeze_targets("session-1", [], 7).unwrap());
-        let first = state.intent_for("session-1", "session-1").unwrap();
-        let replay = state.intent_for("session-1", "session-1").unwrap();
+        let first = state.command_for("session-1", "session-1").unwrap();
+        let replay = state.command_for("session-1", "session-1").unwrap();
         assert_eq!(first, replay);
-        let receipt = SessionTerminalCleanupReceipt::new(&first, Vec::new(), true, true, true);
+        let receipt = verified(&first);
         assert!(state.complete("session-1", &[receipt]).unwrap());
         assert!(state.is_completed());
     }
 
     #[test]
     fn child_threads_are_part_of_the_durable_intent_and_required_evidence() {
-        let mut state = SessionTerminalCleanupState::default();
+        let mut state = SessionCleanupOperation::default();
         state.request("session-1");
         assert!(
             state
                 .freeze_targets("session-1", ["child-1".to_string()], 11)
                 .unwrap()
         );
-        let root = state.intent_for("session-1", "session-1").unwrap();
-        let child = state.intent_for("session-1", "child-1").unwrap();
+        let root = state.command_for("session-1", "session-1").unwrap();
+        let child = state.command_for("session-1", "child-1").unwrap();
         assert_eq!(
-            state.complete(
-                "session-1",
-                &[SessionTerminalCleanupReceipt::new(
-                    &root,
-                    Vec::new(),
-                    true,
-                    true,
-                    true,
-                )]
-            ),
-            Err(SessionTerminalCleanupError::MissingReceipt)
+            state.complete("session-1", &[verified(&root)]),
+            Err(SessionCleanupError::MissingReceipt)
         );
         assert!(
             state
-                .complete(
-                    "session-1",
-                    &[
-                        SessionTerminalCleanupReceipt::new(&root, Vec::new(), true, true, true,),
-                        SessionTerminalCleanupReceipt::new(&child, Vec::new(), true, true, true,),
-                    ],
-                )
+                .complete("session-1", &[verified(&root), verified(&child),],)
                 .unwrap()
         );
     }
 
     #[test]
     fn mismatched_or_incomplete_receipts_fail_closed() {
-        let mut state = SessionTerminalCleanupState::default();
+        let mut state = SessionCleanupOperation::default();
         state.request("session-1");
         state.freeze_targets("session-1", [], 0).unwrap();
-        let intent = state.intent_for("session-1", "session-1").unwrap();
-        let mut receipt = SessionTerminalCleanupReceipt::new(&intent, Vec::new(), true, true, true);
-        receipt.effect_id.push_str("-stale");
+        let command = state.command_for("session-1", "session-1").unwrap();
+        let mut completion = SessionCleanupCompletion::new(&command, Vec::new(), true, true, true);
+        completion.effect_id.push_str("-stale");
         assert_eq!(
-            state.complete("session-1", &[receipt]),
-            Err(SessionTerminalCleanupError::ReceiptMismatch)
+            completion.verify(&command),
+            Err(SessionCleanupError::ReceiptMismatch)
         );
         assert!(state.is_requested());
     }
 
     #[test]
     fn frozen_targets_cannot_be_expanded_by_a_late_projection() {
-        let mut state = SessionTerminalCleanupState::default();
+        let mut state = SessionCleanupOperation::default();
         assert!(state.request("session-1"));
         assert!(
             state
@@ -462,7 +544,7 @@ mod tests {
                 ["child-1".to_string(), "child-2".to_string()],
                 20,
             ),
-            Err(SessionTerminalCleanupError::FrozenTargetsMismatch)
+            Err(SessionCleanupError::FrozenTargetsMismatch)
         );
     }
 
@@ -474,32 +556,31 @@ mod tests {
         // fail-closed error without changing durable Requested state.
         //
         // | Rule | Session | root receipt | duplicate | child set | Effect |
-        // | T05 | foreign | n/a | no | exact | IntentMismatch |
+        // | T05 | foreign | n/a | no | exact | OperationMismatch |
         // | T06 | exact | missing | no | child only | MissingRootReceipt |
         // | T07 | exact | present | yes | exact | DuplicateThread |
         // | T04 | exact | present | no | expanded after freeze | FrozenTargetsMismatch |
-        let mut foreign = SessionTerminalCleanupState::default();
+        let mut foreign = SessionCleanupOperation::default();
         foreign.request("session-a");
         assert_eq!(
             foreign.freeze_targets("session-b", [], 1),
-            Err(SessionTerminalCleanupError::IntentMismatch),
+            Err(SessionCleanupError::OperationMismatch),
             "T05"
         );
         assert!(foreign.is_fenced(), "T05 leaves Session-A unchanged");
 
-        let mut state = SessionTerminalCleanupState::default();
+        let mut state = SessionCleanupOperation::default();
         state.request("session-a");
         state
             .freeze_targets("session-a", ["child-a".to_string()], 7)
             .unwrap();
-        let root = state.intent_for("session-a", "session-a").unwrap();
-        let child = state.intent_for("session-a", "child-a").unwrap();
-        let root_receipt = SessionTerminalCleanupReceipt::new(&root, Vec::new(), true, true, true);
-        let child_receipt =
-            SessionTerminalCleanupReceipt::new(&child, Vec::new(), true, true, true);
+        let root = state.command_for("session-a", "session-a").unwrap();
+        let child = state.command_for("session-a", "child-a").unwrap();
+        let root_receipt = verified(&root);
+        let child_receipt = verified(&child);
         assert_eq!(
             state.complete("session-a", std::slice::from_ref(&child_receipt)),
-            Err(SessionTerminalCleanupError::MissingRootReceipt),
+            Err(SessionCleanupError::MissingRootReceipt),
             "T06"
         );
         assert!(state.is_requested(), "T06");
@@ -508,7 +589,7 @@ mod tests {
                 "session-a",
                 &[root_receipt.clone(), root_receipt, child_receipt],
             ),
-            Err(SessionTerminalCleanupError::DuplicateThread(
+            Err(SessionCleanupError::DuplicateThread(
                 "session-a".to_string()
             )),
             "T07"
@@ -532,32 +613,29 @@ mod tests {
             (true, false, true),
             (true, true, false),
         ] {
-            let mut state = SessionTerminalCleanupState::default();
+            let mut state = SessionCleanupOperation::default();
             state.request("session-flags");
             state.freeze_targets("session-flags", [], 3).unwrap();
-            let intent = state.intent_for("session-flags", "session-flags").unwrap();
-            let receipt =
-                SessionTerminalCleanupReceipt::new(&intent, Vec::new(), flags.0, flags.1, flags.2);
+            let command = state.command_for("session-flags", "session-flags").unwrap();
+            let completion =
+                SessionCleanupCompletion::new(&command, Vec::new(), flags.0, flags.1, flags.2);
             assert_eq!(
-                state.complete("session-flags", &[receipt]),
-                Err(SessionTerminalCleanupError::ReceiptMismatch),
+                completion.verify(&command),
+                Err(SessionCleanupError::ReceiptMismatch),
                 "T08 {flags:?}"
             );
             assert!(state.is_requested(), "T08 {flags:?}");
         }
 
-        fn completed_with_order(reverse: bool) -> SessionTerminalCleanupState {
-            let mut state = SessionTerminalCleanupState::default();
+        fn completed_with_order(reverse: bool) -> SessionCleanupOperation {
+            let mut state = SessionCleanupOperation::default();
             state.request("session-order");
             state
                 .freeze_targets("session-order", ["child-order".to_string()], 9)
                 .unwrap();
-            let root = state.intent_for("session-order", "session-order").unwrap();
-            let child = state.intent_for("session-order", "child-order").unwrap();
-            let mut receipts = vec![
-                SessionTerminalCleanupReceipt::new(&root, Vec::new(), true, true, true),
-                SessionTerminalCleanupReceipt::new(&child, Vec::new(), true, true, true),
-            ];
+            let root = state.command_for("session-order", "session-order").unwrap();
+            let child = state.command_for("session-order", "child-order").unwrap();
+            let mut receipts = vec![verified(&root), verified(&child)];
             if reverse {
                 receipts.reverse();
             }
@@ -568,14 +646,14 @@ mod tests {
         let reverse = completed_with_order(true);
         assert_eq!(forward, reverse, "T09 canonical receipt order");
 
-        let mut watermark = SessionTerminalCleanupState::default();
+        let mut watermark = SessionCleanupOperation::default();
         watermark.request("session-watermark");
         watermark
             .freeze_targets("session-watermark", ["child".to_string()], 10)
             .unwrap();
         assert_eq!(
             watermark.freeze_targets("session-watermark", ["child".to_string()], 11),
-            Err(SessionTerminalCleanupError::FrozenTargetsMismatch),
+            Err(SessionCleanupError::FrozenTargetsMismatch),
             "T10"
         );
     }
@@ -586,13 +664,13 @@ mod tests {
             let mut axes = [true; 8];
             axes[missing] = false;
             assert!(
-                !terminal_cleanup_receipt_admitted(
+                !session_cleanup_completion_admitted(
                     axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6], axes[7],
                 ),
                 "receipt axis {missing}"
             );
         }
-        assert!(terminal_cleanup_receipt_admitted(
+        assert!(session_cleanup_completion_admitted(
             true, true, true, true, true, true, true, true,
         ));
     }
@@ -611,7 +689,7 @@ mod tests {
              * mismatched commands never rewrite authority. Random sequences
              * cover order/replay combinations after the deterministic decision
              * table owns each individual oracle. */
-            let mut state = SessionTerminalCleanupState::default();
+            let mut state = SessionCleanupOperation::default();
             for action in actions {
                 let before = state.clone();
                 let before_rank = cleanup_rank(&before);
@@ -633,16 +711,18 @@ mod tests {
                                 .unwrap()
                                 .iter()
                                 .map(|thread_id| {
-                                    let intent = state
-                                        .intent_for("model-session", thread_id)
+                                    let command = state
+                                        .command_for("model-session", thread_id)
                                         .unwrap();
-                                    SessionTerminalCleanupReceipt::new(
-                                        &intent,
+                                    SessionCleanupCompletion::new(
+                                        &command,
                                         Vec::new(),
                                         true,
                                         true,
                                         true,
                                     )
+                                    .verify(&command)
+                                    .unwrap()
                                 })
                                 .collect::<Vec<_>>();
                             state.complete("model-session", &receipts).unwrap();
@@ -651,7 +731,7 @@ mod tests {
                         } else {
                             prop_assert_eq!(
                                 state.complete("model-session", &[]),
-                                Err(SessionTerminalCleanupError::NotRequested),
+                                Err(SessionCleanupError::NotRequested),
                             );
                         }
                     }
@@ -672,7 +752,7 @@ mod tests {
                     prop_assert_eq!(&state, &before, "E2");
                 }
                 prop_assert_eq!(
-                    state.intent_for("model-session", "model-session").is_some(),
+                    state.command_for("model-session", "model-session").is_some(),
                     state.is_requested(),
                     "E3",
                 );
@@ -680,12 +760,12 @@ mod tests {
         }
     }
 
-    fn cleanup_rank(state: &SessionTerminalCleanupState) -> u8 {
+    fn cleanup_rank(state: &SessionCleanupOperation) -> u8 {
         match state {
-            SessionTerminalCleanupState::NotRequested => 0,
-            SessionTerminalCleanupState::Fenced { .. } => 1,
-            SessionTerminalCleanupState::Requested { .. } => 2,
-            SessionTerminalCleanupState::Completed { .. } => 3,
+            SessionCleanupOperation::NotRequested => 0,
+            SessionCleanupOperation::Fenced { .. } => 1,
+            SessionCleanupOperation::Requested { .. } => 2,
+            SessionCleanupOperation::Completed { .. } => 3,
         }
     }
 }
@@ -695,7 +775,7 @@ mod verification {
     use super::*;
 
     #[kani::proof]
-    fn terminal_cleanup_receipt_requires_every_identity_and_settlement_axis() {
+    fn session_cleanup_completion_requires_every_identity_and_settlement_axis() {
         let artifact_effects_unique = kani::any::<bool>();
         let repositories_settled = kani::any::<bool>();
         let skills_settled = kani::any::<bool>();
@@ -704,7 +784,7 @@ mod verification {
         let thread_matches = kani::any::<bool>();
         let effect_matches = kani::any::<bool>();
         let canonical_receipt_matches = kani::any::<bool>();
-        let admitted = terminal_cleanup_receipt_admitted(
+        let admitted = session_cleanup_completion_admitted(
             artifact_effects_unique,
             repositories_settled,
             skills_settled,
@@ -724,6 +804,32 @@ mod verification {
                 && thread_matches
                 && effect_matches
                 && canonical_receipt_matches
+        );
+    }
+
+    #[kani::proof]
+    fn session_cleanup_phase_advances_only_not_requested_fenced_requested_completed() {
+        let current_code = kani::any::<u8>();
+        let next_code = kani::any::<u8>();
+        kani::assume(current_code < 4);
+        kani::assume(next_code < 4);
+        let current = match current_code {
+            0 => SessionCleanupPhase::NotRequested,
+            1 => SessionCleanupPhase::Fenced,
+            2 => SessionCleanupPhase::Requested,
+            3 => SessionCleanupPhase::Completed,
+            _ => unreachable!(),
+        };
+        let next = match next_code {
+            0 => SessionCleanupPhase::NotRequested,
+            1 => SessionCleanupPhase::Fenced,
+            2 => SessionCleanupPhase::Requested,
+            3 => SessionCleanupPhase::Completed,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            session_cleanup_phase_advance_admitted(current, next),
+            next_code == current_code + 1
         );
     }
 }

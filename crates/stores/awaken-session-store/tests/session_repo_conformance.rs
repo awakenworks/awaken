@@ -186,6 +186,44 @@ async fn replace_session<R: ManagedSessionRepository>(
     value
 }
 
+fn complete_terminal_cleanup(value: &mut PersistedSession) {
+    let session_id = value.session_id.clone();
+    if !value.terminal_cleanup.is_fenced() && !value.terminal_cleanup.is_requested() {
+        assert!(
+            value.terminal_cleanup.request(&session_id),
+            "cleanup operation starts exactly once"
+        );
+    }
+    if value.terminal_cleanup.is_fenced() {
+        assert!(
+            value
+                .terminal_cleanup
+                .freeze_targets(&session_id, [], 0)
+                .expect("freeze root cleanup target")
+        );
+    }
+    let command = value
+        .terminal_cleanup
+        .command_for(&session_id, &session_id)
+        .expect("requested cleanup exposes its exact root command");
+    let completion = awaken_session_contract::SessionCleanupCompletion::new(
+        &command,
+        Vec::new(),
+        true,
+        true,
+        true,
+    );
+    let verified = completion
+        .verify(&command)
+        .expect("exact completion becomes a verified receipt");
+    assert!(
+        value
+            .terminal_cleanup
+            .complete(&session_id, &[verified])
+            .expect("complete cleanup operation")
+    );
+}
+
 // ── The universal port contract, trait-generic over any backend ──────────────────
 
 /// Round-trip: a saved aggregate reads back byte-for-byte (every field persists).
@@ -313,7 +351,17 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     r.complete_lifecycle(&archived.id).await.unwrap();
 
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
-    let current = r.get("sesn_lifecycle").await.unwrap();
+    let mut current = r.get("sesn_lifecycle").await.unwrap();
+    assert!(current.request_delete(), "archive remains deletable");
+    complete_terminal_cleanup(&mut current);
+    let current = replace_session(
+        r,
+        "ws_a",
+        current,
+        "test:delete:cleanup-complete",
+        Vec::new(),
+    )
+    .await;
     let payload = SessionMutationPayload::Delete(SessionTombstone {
         session_id: current.session_id.clone(),
         deleted_revision: SessionRevision(current.revision.0 + 1),
@@ -432,6 +480,102 @@ fn record(key: &str, payload: &SessionMutationPayload) -> IdempotencyRecord {
     }
 }
 
+fn delete_mutation(value: &PersistedSession, key: &str) -> SessionMutation {
+    let payload = SessionMutationPayload::Delete(SessionTombstone {
+        session_id: value.session_id.clone(),
+        deleted_revision: SessionRevision(value.revision.0 + 1),
+        deleted_at: "2026-08-15T00:00:00Z".into(),
+    });
+    SessionMutation {
+        expected_revision: value.revision,
+        idempotency: record(key, &payload),
+        payload,
+        lifecycle_facts: Vec::new(),
+    }
+}
+
+async fn tombstone_requires_hidden_completed_cleanup<R: ManagedSessionRepository>(repo: &R) {
+    // Every rejected delete must be an exact stutter: the aggregate, command
+    // receipt and lifecycle outbox remain unchanged. The cases isolate the two
+    // durable admission axes: hidden disposition and verified cleanup completion.
+    let mut active = session("sesn_delete_active", "active");
+    active.execution = SessionExecutionState::Terminated;
+    complete_terminal_cleanup(&mut active);
+    let active = create_session(repo, "ws_a", active, Vec::new()).await;
+
+    let mut archived = session("sesn_delete_archived", "archived");
+    archived.archive("2026-08-15T00:00:00Z").unwrap();
+    complete_terminal_cleanup(&mut archived);
+    let archived = create_session(repo, "ws_a", archived, Vec::new()).await;
+
+    let mut pending = session("sesn_delete_pending", "pending");
+    assert!(pending.request_delete());
+    pending
+        .terminal_cleanup
+        .freeze_targets(&pending.session_id.clone(), [], 0)
+        .expect("pending delete freezes its root target");
+    let pending = create_session(repo, "ws_a", pending, Vec::new()).await;
+
+    for (rule, value) in [
+        ("active", active),
+        ("archived", archived),
+        ("deleting-pending", pending),
+    ] {
+        let key = format!("test:tombstone:{rule}");
+        let before = repo.get(&value.session_id).await.unwrap();
+        let outbox_before = repo.pending_lifecycle().await.unwrap();
+        assert!(
+            matches!(
+                repo.commit_mutation("ws_a", delete_mutation(&before, &key))
+                    .await,
+                Err(SessionRepositoryError::InvalidMutation(_))
+            ),
+            "{rule}: tombstone admission fails closed"
+        );
+        assert_eq!(
+            repo.get(&value.session_id).await,
+            Ok(before.clone()),
+            "{rule}: rejected tombstone preserves the complete aggregate"
+        );
+        assert_eq!(
+            repo.idempotency_receipt(&value.session_id, &key).await,
+            Ok(None),
+            "{rule}: rejection writes no command receipt"
+        );
+        assert_eq!(
+            repo.pending_lifecycle().await.unwrap(),
+            outbox_before,
+            "{rule}: rejection writes no lifecycle fact"
+        );
+    }
+
+    let mut completed = session("sesn_delete_completed", "completed");
+    assert!(completed.request_delete());
+    complete_terminal_cleanup(&mut completed);
+    let completed = create_session(repo, "ws_a", completed, Vec::new()).await;
+    let mutation = delete_mutation(&completed, "test:tombstone:completed");
+    assert_eq!(
+        repo.commit_mutation("ws_a", mutation.clone())
+            .await
+            .unwrap(),
+        SessionMutationResult::Applied {
+            new_revision: SessionRevision(completed.revision.0 + 1)
+        },
+        "deleting plus verified completed cleanup is tombstone-admissible"
+    );
+    assert_eq!(
+        repo.get(&completed.session_id).await,
+        Err(SessionRepositoryError::NotFound)
+    );
+    assert_eq!(
+        repo.commit_mutation("ws_a", mutation).await.unwrap(),
+        SessionMutationResult::Replayed {
+            new_revision: SessionRevision(completed.revision.0 + 1)
+        },
+        "an admitted tombstone has one stable replay receipt"
+    );
+}
+
 async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
     // Cause-effect graph:
     // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
@@ -465,7 +609,11 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
     ];
     for (index, rule) in rules.into_iter().enumerate() {
         let id = format!("sesn_cas_{index}");
-        let initial = session(&id, "initial");
+        let mut initial = session(&id, "initial");
+        if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
+            assert!(initial.request_delete());
+            complete_terminal_cleanup(&mut initial);
+        }
         let create_payload = SessionMutationPayload::Replace(initial.clone());
         let create_record = record("create", &create_payload);
         let created = repo
@@ -615,6 +763,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     environment_state_is_atomic_and_non_destructive(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
+    tombstone_requires_hidden_completed_cleanup(&fresh()).await;
     let cas_repo = fresh();
     root_cas_decision_table(&cas_repo).await;
 }

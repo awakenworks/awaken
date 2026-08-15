@@ -34,9 +34,14 @@ type checking are valuable executable evidence, but are not formal proofs.
 - Durable deployment admission and sandbox-support projection consume bounded
   evidence selectors. Actual PostgreSQL/filesystem persistence, NetworkPolicy,
   registry, builder, container, and kernel enforcement remain external.
-- Quiescence, checkpoint, source-disposal, restore, and terminal-cleanup
-  receipts require every identity, generation, fence, and settlement axis.
-  Database commit atomicity and remote effect execution remain adapter claims.
+- Quiescence, checkpoint, source-disposal, restore, and Session cleanup
+  completions require every identity, generation, fence, and settlement axis.
+  Session cleanup phases are exact and monotonic; physical deletion additionally
+  requires hidden disposition, terminal execution, and verified completion in
+  both store adapters. `SessionDeletion.tla` checks crash/retry, Work retirement,
+  stable effect identity, single fact emission, and tombstone ordering. Database
+  engine atomicity and the truth of remote cleanup/retirement effects remain
+  adapter claims.
 - Worker observations require an exact verified fact and the complete half-open
   lease interval. This does not prove TLS, DNS, WebPKI, the remote process, or
   the orchestrator.

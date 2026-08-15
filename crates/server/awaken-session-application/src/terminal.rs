@@ -16,8 +16,41 @@ pub struct SessionDispositionMutation {
     pub transitioned: bool,
 }
 
+/// Protocol-neutral request to commit the durable Session Delete fence.
+/// Application code, not an edge adapter, derives the canonical lifecycle fact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionDeleteCommand {
+    session_id: String,
+    requested_at_unix_s: i64,
+}
+
+impl SessionDeleteCommand {
+    #[must_use]
+    pub fn new(session_id: impl Into<String>) -> Self {
+        let requested_at_unix_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        Self {
+            session_id: session_id.into(),
+            requested_at_unix_s,
+        }
+    }
+
+    fn lifecycle_fact(&self, owner_scope: &str) -> ManagedLifecycleFact {
+        ManagedLifecycleFact {
+            id: format!("session:{}:deleted", self.session_id),
+            object_id: self.session_id.clone(),
+            workspace_id: Some(owner_scope.to_string()),
+            event_type: "session.deleted".into(),
+            timestamp: self.requested_at_unix_s,
+            runtime_interval: None,
+        }
+    }
+}
+
 impl SessionApplication {
-    async fn retire_terminal_work(
+    pub(crate) async fn retire_terminal_work(
         &self,
         session: &PersistedSession,
     ) -> Result<(), SessionPreparationError> {
@@ -131,11 +164,11 @@ impl SessionApplication {
     }
 
     /// Commit the hidden delete intent and Resource release intent atomically.
-    pub async fn begin_delete(
+    pub async fn commit_delete_intent(
         &self,
-        session_id: &str,
-        fact: ManagedLifecycleFact,
+        command: SessionDeleteCommand,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let session_id = command.session_id.as_str();
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
@@ -160,7 +193,7 @@ impl SessionApplication {
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
                 .into_iter()
                 .collect::<Vec<_>>();
-            facts.push(fact.clone());
+            facts.push(command.lifecycle_fact(&owner_scope));
             if session.resources.pending.is_none() {
                 session
                     .resources

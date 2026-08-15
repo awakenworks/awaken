@@ -821,50 +821,49 @@ impl SessionRuntime for ManagedHost {
     }
 
     async fn end_session(&self, thread: &str) -> Result<(), RunError> {
-        let intent =
-            awaken_session_contract::SessionTerminalCleanupIntent::for_thread(thread, thread);
-        self.execute_terminal_cleanup(intent).await.map(|_| ())
+        let command = awaken_session_contract::SessionCleanupCommand::for_thread(thread, thread);
+        self.execute_terminal_cleanup(command).await.map(|_| ())
     }
 
     async fn execute_terminal_cleanup(
         &self,
-        intent: awaken_session_contract::SessionTerminalCleanupIntent,
-    ) -> Result<awaken_session_contract::SessionTerminalCleanupReceipt, RunError> {
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
         // Terminal release owns every reverse operation: publish Agent-authored Repo
         // commits (when the Agent did not own publication through MCP), persist
         // run-authored Skills, then dispose. A GET /files poll is never a write edge.
         self.host
-            .publish_thread_repositories(&intent.thread_id)
+            .publish_thread_repositories(&command.thread_id)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
         self.host
-            .harvest_thread_skills(&intent.thread_id)
+            .harvest_thread_skills(&command.thread_id)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
         // Failure is terminal-release blocking: keep the Sandbox available for
         // the durable cleanup retry instead of disposing unharvested outputs.
         let artifact_receipts = self
             .host
-            .harvest_thread_artifacts(&intent.thread_id)
+            .harvest_thread_artifacts(&command.thread_id)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
         // Memory is owned by its MemoryMount guard: FUSE writes through live and
         // copy realization performs one CAS harvest during teardown.
         self.host
-            .end_session(&intent.thread_id)
+            .end_session(&command.thread_id)
             .await
             .map_err(to_run_error)?;
-        let receipt = awaken_session_contract::SessionTerminalCleanupReceipt::new(
-            &intent,
+        let completion = awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
             artifact_receipts,
             true,
             true,
             true,
         );
-        receipt
-            .verify(&intent)
+        completion
+            .verify(&command)
             .map_err(|error| RunError::internal(error.to_string()))?;
-        Ok(receipt)
+        Ok(completion)
     }
 
     async fn run(

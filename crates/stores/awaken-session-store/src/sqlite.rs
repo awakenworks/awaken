@@ -180,13 +180,36 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         }
         let current = tx
             .query_row(
-                "SELECT revision, scope_id FROM managed_session WHERE session_id = ?1",
+                "SELECT revision, scope_id, aggregate_json, agent_id, model, title,
+                        metadata_json, environment_id, status, archived_at,
+                        effective_inputs_json, environment_binding, runtime_json
+                 FROM managed_session WHERE session_id = ?1",
                 params![session_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        EncodedSessionRow {
+                            aggregate_json: row.get(2)?,
+                            session_id: session_id.clone(),
+                            agent_id: row.get(3)?,
+                            model: row.get(4)?,
+                            title: row.get(5)?,
+                            metadata_json: row.get(6)?,
+                            environment_id: row.get(7)?,
+                            status: row.get(8)?,
+                            archived_at: row.get(9)?,
+                            effective_inputs_json: row.get(10)?,
+                            environment_binding: row.get(11)?,
+                            runtime_json: row.get(12)?,
+                            revision: row.get(0)?,
+                        },
+                    ))
+                },
             )
             .optional()
             .map_err(storage)?;
-        let Some((current_revision, current_owner)) = current else {
+        let Some((current_revision, current_owner, current_row)) = current else {
             let tombstone_revision = tx
                 .query_row(
                     "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = ?1",
@@ -208,6 +231,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         );
         if current_owner != owner_scope || current_revision != mutation.expected_revision {
             return Ok(SessionMutationResult::Conflict { current_revision });
+        }
+        if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+            let current_session = decode(current_row).map_err(corrupt)?;
+            let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
+                unreachable!("guarded above")
+            };
+            if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
+                return Err(SessionRepositoryError::InvalidMutation(
+                    "Session tombstone requires hidden terminal disposition and completed cleanup"
+                        .into(),
+                ));
+            }
         }
         match &mutation.payload {
             SessionMutationPayload::Replace(replacement) => {

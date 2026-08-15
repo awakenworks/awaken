@@ -1181,16 +1181,9 @@ impl ManagedState {
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
-        let owner = self.resolve_owner(id).await?;
-        let deleted_fact = lifecycle_fact(
-            format!("session:{id}:deleted"),
-            id,
-            owner.clone(),
-            lifecycle_event::SESSION_DELETED,
-        );
         let transition = self
             .application
-            .begin_delete(id, deleted_fact.clone())
+            .commit_delete_intent(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
         self.refresh_cached_projection(&transition.session)?;

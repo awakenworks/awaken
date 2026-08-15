@@ -300,6 +300,38 @@ pub fn awaken_session_contract::SessionBudgetState::max_list_cost_minor(&self) -
 pub fn awaken_session_contract::SessionBudgetState::public_list_cost_minor(&self) -> core::option::Option<u64>
 pub fn awaken_session_contract::SessionBudgetState::reconcile_cumulative_usage(&mut self, awaken_session_contract::ManagedBudgetUsageCursor) -> core::result::Result<bool, awaken_session_contract::ManagedListPriceError>
 pub fn awaken_session_contract::SessionBudgetState::usage_cursor(&self) -> core::option::Option<&awaken_session_contract::ManagedBudgetUsageCursor>
+pub enum awaken_session_contract::SessionCleanupError
+pub awaken_session_contract::SessionCleanupError::DuplicateThread(alloc::string::String)
+pub awaken_session_contract::SessionCleanupError::FrozenTargetsMismatch
+pub awaken_session_contract::SessionCleanupError::InvalidPhaseAdvance
+pub awaken_session_contract::SessionCleanupError::MissingReceipt
+pub awaken_session_contract::SessionCleanupError::MissingRootReceipt
+pub awaken_session_contract::SessionCleanupError::NotRequested
+pub awaken_session_contract::SessionCleanupError::OperationMismatch
+pub awaken_session_contract::SessionCleanupError::ReceiptMismatch
+pub enum awaken_session_contract::SessionCleanupOperation
+pub awaken_session_contract::SessionCleanupOperation::Completed
+pub awaken_session_contract::SessionCleanupOperation::Completed::delegation_watermark: u64
+pub awaken_session_contract::SessionCleanupOperation::Completed::effect_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupOperation::Completed::receipt_fingerprint: alloc::string::String
+pub awaken_session_contract::SessionCleanupOperation::Completed::thread_ids: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_session_contract::SessionCleanupOperation::Fenced
+pub awaken_session_contract::SessionCleanupOperation::Fenced::effect_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupOperation::NotRequested
+pub awaken_session_contract::SessionCleanupOperation::Requested
+pub awaken_session_contract::SessionCleanupOperation::Requested::delegation_watermark: u64
+pub awaken_session_contract::SessionCleanupOperation::Requested::effect_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupOperation::Requested::thread_ids: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+impl awaken_session_contract::SessionCleanupOperation
+pub fn awaken_session_contract::SessionCleanupOperation::command_for(&self, &str, &str) -> core::option::Option<awaken_session_contract::SessionCleanupCommand>
+pub fn awaken_session_contract::SessionCleanupOperation::complete(&mut self, &str, &[awaken_session_contract::VerifiedSessionCleanupReceipt]) -> core::result::Result<bool, awaken_session_contract::SessionCleanupError>
+pub fn awaken_session_contract::SessionCleanupOperation::freeze_targets(&mut self, &str, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, u64) -> core::result::Result<bool, awaken_session_contract::SessionCleanupError>
+pub const fn awaken_session_contract::SessionCleanupOperation::is_completed(&self) -> bool
+pub const fn awaken_session_contract::SessionCleanupOperation::is_fenced(&self) -> bool
+pub const fn awaken_session_contract::SessionCleanupOperation::is_requested(&self) -> bool
+pub const fn awaken_session_contract::SessionCleanupOperation::needs_reconciliation(&self) -> bool
+pub fn awaken_session_contract::SessionCleanupOperation::request(&mut self, &str) -> bool
+pub fn awaken_session_contract::SessionCleanupOperation::thread_ids(&self) -> core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>
 pub enum awaken_session_contract::SessionCreationFinalizeError
 pub awaken_session_contract::SessionCreationFinalizeError::McpConflict(alloc::string::String)
 pub enum awaken_session_contract::SessionDisposition
@@ -472,37 +504,6 @@ pub enum awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified
 pub awaken_session_contract::SessionRuntimePlacement::Local
 pub awaken_session_contract::SessionRuntimePlacement::Worker
-pub enum awaken_session_contract::SessionTerminalCleanupError
-pub awaken_session_contract::SessionTerminalCleanupError::DuplicateThread(alloc::string::String)
-pub awaken_session_contract::SessionTerminalCleanupError::FrozenTargetsMismatch
-pub awaken_session_contract::SessionTerminalCleanupError::IntentMismatch
-pub awaken_session_contract::SessionTerminalCleanupError::MissingReceipt
-pub awaken_session_contract::SessionTerminalCleanupError::MissingRootReceipt
-pub awaken_session_contract::SessionTerminalCleanupError::NotRequested
-pub awaken_session_contract::SessionTerminalCleanupError::ReceiptMismatch
-pub enum awaken_session_contract::SessionTerminalCleanupState
-pub awaken_session_contract::SessionTerminalCleanupState::Completed
-pub awaken_session_contract::SessionTerminalCleanupState::Completed::delegation_watermark: u64
-pub awaken_session_contract::SessionTerminalCleanupState::Completed::effect_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupState::Completed::receipt_fingerprint: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupState::Completed::thread_ids: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub awaken_session_contract::SessionTerminalCleanupState::Fenced
-pub awaken_session_contract::SessionTerminalCleanupState::Fenced::effect_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupState::NotRequested
-pub awaken_session_contract::SessionTerminalCleanupState::Requested
-pub awaken_session_contract::SessionTerminalCleanupState::Requested::delegation_watermark: u64
-pub awaken_session_contract::SessionTerminalCleanupState::Requested::effect_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupState::Requested::thread_ids: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-impl awaken_session_contract::SessionTerminalCleanupState
-pub fn awaken_session_contract::SessionTerminalCleanupState::complete(&mut self, &str, &[awaken_session_contract::SessionTerminalCleanupReceipt]) -> core::result::Result<bool, awaken_session_contract::SessionTerminalCleanupError>
-pub fn awaken_session_contract::SessionTerminalCleanupState::freeze_targets(&mut self, &str, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, u64) -> core::result::Result<bool, awaken_session_contract::SessionTerminalCleanupError>
-pub fn awaken_session_contract::SessionTerminalCleanupState::intent_for(&self, &str, &str) -> core::option::Option<awaken_session_contract::SessionTerminalCleanupIntent>
-pub fn awaken_session_contract::SessionTerminalCleanupState::is_completed(&self) -> bool
-pub fn awaken_session_contract::SessionTerminalCleanupState::is_fenced(&self) -> bool
-pub fn awaken_session_contract::SessionTerminalCleanupState::is_requested(&self) -> bool
-pub fn awaken_session_contract::SessionTerminalCleanupState::needs_reconciliation(&self) -> bool
-pub fn awaken_session_contract::SessionTerminalCleanupState::request(&mut self, &str) -> bool
-pub fn awaken_session_contract::SessionTerminalCleanupState::thread_ids(&self) -> core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>
 pub enum awaken_session_contract::SuspendPhase
 pub awaken_session_contract::SuspendPhase::Quiescing
 pub awaken_session_contract::SuspendPhase::ReadyToDispose
@@ -844,10 +845,11 @@ pub awaken_session_contract::PersistedSession::revision: awaken_session_contract
 pub awaken_session_contract::PersistedSession::running_interval: core::option::Option<awaken_session_contract::SessionRuntimeIntervalStart>
 pub awaken_session_contract::PersistedSession::runtime_active_millis: u64
 pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
-pub awaken_session_contract::PersistedSession::terminal_cleanup: awaken_session_contract::SessionTerminalCleanupState
+pub awaken_session_contract::PersistedSession::terminal_cleanup: awaken_session_contract::SessionCleanupOperation
 pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
 pub awaken_session_contract::PersistedSession::tools: awaken_session_contract::SessionToolConfiguration
 impl awaken_session_contract::PersistedSession
+pub fn awaken_session_contract::PersistedSession::admits_tombstone(&self, &str, awaken_session_contract::SessionRevision) -> bool
 pub fn awaken_session_contract::PersistedSession::agent_id(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::archive(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<bool, awaken_session_contract::SessionDispositionTransitionError>
 pub fn awaken_session_contract::PersistedSession::archived_at(&self) -> core::option::Option<&str>
@@ -985,6 +987,25 @@ pub awaken_session_contract::SessionBaselineInputs::runtime: core::option::Optio
 pub awaken_session_contract::SessionBaselineInputs::runtime_placement: awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::SessionBaselineInputs::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub awaken_session_contract::SessionBaselineInputs::transcript_prefix: core::option::Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>
+pub struct awaken_session_contract::SessionCleanupCommand
+pub awaken_session_contract::SessionCleanupCommand::effect_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupCommand::session_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupCommand::thread_id: alloc::string::String
+impl awaken_session_contract::SessionCleanupCommand
+pub fn awaken_session_contract::SessionCleanupCommand::for_thread(&str, &str) -> Self
+pub fn awaken_session_contract::SessionCleanupCommand::new(&str, &str, &str) -> Self
+pub struct awaken_session_contract::SessionCleanupCompletion
+pub awaken_session_contract::SessionCleanupCompletion::artifact_receipts: alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>
+pub awaken_session_contract::SessionCleanupCompletion::effect_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupCompletion::environment_disposed: bool
+pub awaken_session_contract::SessionCleanupCompletion::receipt_fingerprint: alloc::string::String
+pub awaken_session_contract::SessionCleanupCompletion::repositories_settled: bool
+pub awaken_session_contract::SessionCleanupCompletion::session_id: alloc::string::String
+pub awaken_session_contract::SessionCleanupCompletion::skills_settled: bool
+pub awaken_session_contract::SessionCleanupCompletion::thread_id: alloc::string::String
+impl awaken_session_contract::SessionCleanupCompletion
+pub fn awaken_session_contract::SessionCleanupCompletion::new(&awaken_session_contract::SessionCleanupCommand, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>, bool, bool, bool) -> Self
+pub fn awaken_session_contract::SessionCleanupCompletion::verify(&self, &awaken_session_contract::SessionCleanupCommand) -> core::result::Result<awaken_session_contract::VerifiedSessionCleanupReceipt, awaken_session_contract::SessionCleanupError>
 pub struct awaken_session_contract::SessionCreationIntent
 pub awaken_session_contract::SessionCreationIntent::control: awaken_session_contract::ControlSessionCreationInputs
 impl awaken_session_contract::SessionCreationIntent
@@ -1159,25 +1180,6 @@ pub struct awaken_session_contract::SessionRuntimeIntervalStart
 pub awaken_session_contract::SessionRuntimeIntervalStart::activity_epoch: u64
 pub awaken_session_contract::SessionRuntimeIntervalStart::interval_id: alloc::string::String
 pub awaken_session_contract::SessionRuntimeIntervalStart::started_at_unix_ms: u64
-pub struct awaken_session_contract::SessionTerminalCleanupIntent
-pub awaken_session_contract::SessionTerminalCleanupIntent::effect_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupIntent::session_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupIntent::thread_id: alloc::string::String
-impl awaken_session_contract::SessionTerminalCleanupIntent
-pub fn awaken_session_contract::SessionTerminalCleanupIntent::for_thread(&str, &str) -> Self
-pub fn awaken_session_contract::SessionTerminalCleanupIntent::new(&str, &str, &str) -> Self
-pub struct awaken_session_contract::SessionTerminalCleanupReceipt
-pub awaken_session_contract::SessionTerminalCleanupReceipt::artifact_receipts: alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>
-pub awaken_session_contract::SessionTerminalCleanupReceipt::effect_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupReceipt::environment_disposed: bool
-pub awaken_session_contract::SessionTerminalCleanupReceipt::receipt_fingerprint: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupReceipt::repositories_settled: bool
-pub awaken_session_contract::SessionTerminalCleanupReceipt::session_id: alloc::string::String
-pub awaken_session_contract::SessionTerminalCleanupReceipt::skills_settled: bool
-pub awaken_session_contract::SessionTerminalCleanupReceipt::thread_id: alloc::string::String
-impl awaken_session_contract::SessionTerminalCleanupReceipt
-pub fn awaken_session_contract::SessionTerminalCleanupReceipt::new(&awaken_session_contract::SessionTerminalCleanupIntent, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>, bool, bool, bool) -> Self
-pub fn awaken_session_contract::SessionTerminalCleanupReceipt::verify(&self, &awaken_session_contract::SessionTerminalCleanupIntent) -> core::result::Result<(), awaken_session_contract::SessionTerminalCleanupError>
 pub struct awaken_session_contract::SessionTombstone
 pub awaken_session_contract::SessionTombstone::deleted_at: alloc::string::String
 pub awaken_session_contract::SessionTombstone::deleted_revision: awaken_session_contract::SessionRevision
@@ -1245,6 +1247,10 @@ pub fn awaken_session_contract::StepOutcome::with_run_id(self, awaken_agent_cont
 pub struct awaken_session_contract::ToolPermissionDecision
 pub awaken_session_contract::ToolPermissionDecision::allow: bool
 pub awaken_session_contract::ToolPermissionDecision::note: core::option::Option<alloc::string::String>
+pub struct awaken_session_contract::VerifiedSessionCleanupReceipt
+impl awaken_session_contract::VerifiedSessionCleanupReceipt
+pub fn awaken_session_contract::VerifiedSessionCleanupReceipt::command(&self) -> &awaken_session_contract::SessionCleanupCommand
+pub fn awaken_session_contract::VerifiedSessionCleanupReceipt::completion(&self) -> &awaken_session_contract::SessionCleanupCompletion
 pub struct awaken_session_contract::VisibleMcpServer
 pub awaken_session_contract::VisibleMcpServer::name: alloc::string::String
 pub awaken_session_contract::VisibleMcpServer::prompts_as_skills: bool
@@ -1332,7 +1338,7 @@ pub fn awaken_session_contract::SessionRuntime::delegated_runs<'life0, 'life1, '
 pub fn awaken_session_contract::SessionRuntime::delete_session_checkpoint<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::SandboxCheckpointRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::dispose_checkpoint_source<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::SessionEnvironmentOperation, &'life3 awaken_session_contract::SandboxGeneration, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::end_session<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_contract::SessionRuntime::execute_terminal_cleanup<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionTerminalCleanupIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionTerminalCleanupReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::execute_terminal_cleanup<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionCleanupCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionCleanupCompletion, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::install_environment_binding_sink(&self, alloc::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>)
 pub fn awaken_session_contract::SessionRuntime::install_expected_environment_binding(&self, &str, core::option::Option<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::RunError>
 pub fn awaken_session_contract::SessionRuntime::install_session_realization_lease(&self, &str, awaken_session_contract::SessionRealizationLease)

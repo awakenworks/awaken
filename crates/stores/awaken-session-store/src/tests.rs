@@ -382,6 +382,32 @@ async fn delete_fixture<R: ManagedSessionRepository>(
     ));
 }
 
+fn make_deletable(session: &mut PersistedSession) {
+    let session_id = session.session_id.clone();
+    session.request_delete();
+    session
+        .terminal_cleanup
+        .freeze_targets(&session_id, [], 0)
+        .unwrap();
+    let command = session
+        .terminal_cleanup
+        .command_for(&session_id, &session_id)
+        .unwrap();
+    let receipt = awaken_session_contract::SessionCleanupCompletion::new(
+        &command,
+        Vec::new(),
+        true,
+        true,
+        true,
+    )
+    .verify(&command)
+    .unwrap();
+    session
+        .terminal_cleanup
+        .complete(&session_id, &[receipt])
+        .unwrap();
+}
+
 /// Root-mutation cause graph shared by every durable backend:
 /// C1=idempotency key exists, C2=payload hash matches, C3=root revision
 /// matches, C4=aggregate was tombstoned. Key/hash resolution precedes CAS,
@@ -398,6 +424,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();
     replacement.title = Some("winner".into());
+    make_deletable(&mut replacement);
     let replace_payload = SessionMutationPayload::Replace(replacement);
     let replace_hash = replace_payload.stable_hash();
     let replace = || SessionMutation {
@@ -697,26 +724,28 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         assert!(recovered.terminal_cleanup.is_requested());
         let intent = recovered
             .terminal_cleanup
-            .intent_for("sesn_cleanup", "sesn_cleanup")
+            .command_for("sesn_cleanup", "sesn_cleanup")
             .unwrap();
         let child_intent = recovered
             .terminal_cleanup
-            .intent_for("sesn_cleanup", "child-cleanup")
+            .command_for("sesn_cleanup", "child-cleanup")
             .expect("child cleanup intent survives restart");
-        let receipt = awaken_session_contract::SessionTerminalCleanupReceipt::new(
+        let receipt = awaken_session_contract::SessionCleanupCompletion::new(
             &intent,
             Vec::new(),
             true,
             true,
             true,
         );
-        let child_receipt = awaken_session_contract::SessionTerminalCleanupReceipt::new(
+        let child_receipt = awaken_session_contract::SessionCleanupCompletion::new(
             &child_intent,
             Vec::new(),
             true,
             true,
             true,
         );
+        let receipt = receipt.verify(&intent).unwrap();
+        let child_receipt = child_receipt.verify(&child_intent).unwrap();
         recovered
             .terminal_cleanup
             .complete("sesn_cleanup", &[receipt, child_receipt])
@@ -772,6 +801,16 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
     assert_eq!(repo.pending_lifecycle().await.unwrap()[0].id, "terminated");
 
     repo.complete_lifecycle("terminated").await.unwrap();
+    let mut deleting = repo.get("sesn_terminal").await.unwrap();
+    make_deletable(&mut deleting);
+    replace_fixture(
+        &repo,
+        "ws_a",
+        deleting,
+        "test:delete-cleanup-complete",
+        Vec::new(),
+    )
+    .await;
     delete_fixture(
         &repo,
         "ws_a",

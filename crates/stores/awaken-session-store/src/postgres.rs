@@ -185,7 +185,10 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             });
         }
         let current = sqlx::query(
-            "SELECT revision, scope_id FROM managed_session WHERE session_id = $1 FOR UPDATE",
+            "SELECT revision, scope_id, aggregate_json, agent_id, model, title,
+                    metadata_json, environment_id, status, archived_at,
+                    effective_inputs_json, environment_binding, runtime_json
+             FROM managed_session WHERE session_id = $1 FOR UPDATE",
         )
         .bind(&session_id)
         .fetch_optional(&mut *tx)
@@ -213,6 +216,33 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let current_owner: String = current.get("scope_id");
         if current_owner != owner_scope || current_revision != mutation.expected_revision {
             return Ok(SessionMutationResult::Conflict { current_revision });
+        }
+        if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+            let current_session = decode(EncodedSessionRow {
+                aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
+                session_id: session_id.clone(),
+                agent_id: current.try_get("agent_id").map_err(storage)?,
+                model: current.try_get("model").map_err(storage)?,
+                title: current.try_get("title").map_err(storage)?,
+                metadata_json: current.try_get("metadata_json").map_err(storage)?,
+                environment_id: current.try_get("environment_id").map_err(storage)?,
+                status: current.try_get("status").map_err(storage)?,
+                archived_at: current.try_get("archived_at").map_err(storage)?,
+                effective_inputs_json: current.try_get("effective_inputs_json").map_err(storage)?,
+                environment_binding: current.try_get("environment_binding").map_err(storage)?,
+                runtime_json: current.try_get("runtime_json").map_err(storage)?,
+                revision: current.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)?;
+            let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
+                unreachable!("guarded above")
+            };
+            if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
+                return Err(SessionRepositoryError::InvalidMutation(
+                    "Session tombstone requires hidden terminal disposition and completed cleanup"
+                        .into(),
+                ));
+            }
         }
         match &mutation.payload {
             SessionMutationPayload::Replace(replacement) => {
