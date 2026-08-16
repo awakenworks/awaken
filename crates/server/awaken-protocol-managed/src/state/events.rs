@@ -898,6 +898,25 @@ impl ManagedState {
         events: &[InboundEvent],
         deployment_initial: bool,
     ) -> Result<(), StateError> {
+        let mut file_documents = 0usize;
+        for event in events {
+            file_documents = file_documents
+                .checked_add(
+                    event
+                        .validate_content()
+                        .map_err(|message| StateError::Run(RunError::bad_request(message)))?,
+                )
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "event batch contains too many file-sourced documents",
+                    ))
+                })?;
+        }
+        if file_documents > 100 {
+            return Err(StateError::Run(RunError::bad_request(
+                "event batch supports at most 100 file-sourced document blocks",
+            )));
+        }
         let pending = self
             .application
             .pending_tool(session_id)

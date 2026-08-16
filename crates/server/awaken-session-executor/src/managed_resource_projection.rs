@@ -91,10 +91,15 @@ impl crate::ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
-                let (content_digest, bytes) = self
+                let content = self
                     .host
                     .file_content_source
-                    .read(workspace, file_id.as_str(), claim)
+                    .read(
+                        workspace,
+                        file_id.as_str(),
+                        &awaken_resource_contract::FileReadPurpose::SessionResource,
+                        claim,
+                    )
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
                     .ok_or_else(|| {
@@ -102,8 +107,8 @@ impl crate::ManagedHost {
                             "file resource `{file_id}` not found in this workspace"
                         ))
                     })?;
-                let actual = awaken_resource_contract::content_id(&bytes);
-                if actual != content_digest {
+                let actual = awaken_resource_contract::content_id(&content.bytes);
+                if actual != content.content_id {
                     return Err(RunError::bad_request(format!(
                         "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
                     )));
@@ -114,8 +119,8 @@ impl crate::ManagedHost {
                     .push(awaken_provisioning_contract::MountRequirement {
                         mount_id: file_id.to_string(),
                         source: awaken_provisioning_contract::MountSource::InlineBytes {
-                            contents: bytes,
-                            content_hash: Some(content_digest),
+                            contents: content.bytes,
+                            content_hash: Some(content.content_id),
                         },
                         mount_path: managed_path,
                         access: awaken_provisioning_contract::MountAccess::ReadOnly,

@@ -27,8 +27,16 @@ impl RunStepResult {
     }
 
     pub(super) fn ended(run_id: RunId, cause: EndCause) -> Self {
+        Self::ended_with_messages(run_id, cause, Vec::new())
+    }
+
+    pub(super) fn ended_with_messages(
+        run_id: RunId,
+        cause: EndCause,
+        new_messages: Vec<Message>,
+    ) -> Self {
         Self {
-            new_messages: Vec::new(),
+            new_messages,
             staged_state: Vec::new(),
             audit: Vec::new(),
             disposition: RunDisposition::ended(run_id, cause),

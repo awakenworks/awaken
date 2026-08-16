@@ -68,7 +68,7 @@ pub use execution::{
 };
 pub use inference::InferenceExecutorMaterializer;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
-pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
+pub use llm::{ChatRequest, ChatResponse, LlmExecutor, ModelContentMaterializer};
 pub use pause::PauseSignal;
 pub use permission::{GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionVerdict};
 pub use plugin::{

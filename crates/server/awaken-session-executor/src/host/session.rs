@@ -1041,7 +1041,7 @@ impl SharedHost {
                 .iter()
                 .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
         });
-        let memory_selected = if installed.is_some() {
+        let selected_memory = if installed.is_some() {
             let binding_id = if published_memory_selected {
                 Some(authored_memory.binding_id.as_deref().ok_or_else(|| {
                     HostError::bad_request(
@@ -1057,16 +1057,15 @@ impl SharedHost {
             if let Some(memory) = &selected {
                 memory.reconcile(thread).await;
             }
-            selected.is_some()
+            selected
         } else {
             // Direct embedders opt in through `bind_resolved_memory`; Managed
             // compatibility Sessions merely register standard mount bindings.
-            self.memory_for_thread(thread).is_some()
+            self.memory_for_thread(thread)
         };
-        let selected_memory = self.memory_for_thread(thread).filter(|_| memory_selected);
-        let recalled_memory = selected_memory.clone().filter(|memory| {
-            memory.recall_enabled() && memory_selected && authored_memory.recall_enabled
-        });
+        let recalled_memory = selected_memory
+            .clone()
+            .filter(|memory| memory.recall_enabled() && authored_memory.recall_enabled);
         let memory_selector = recalled_memory.as_ref().map(|_| {
             let agent_id = authored_memory
                 .selector_agent_id
@@ -1411,15 +1410,27 @@ impl SharedHost {
         // Cause/effect rules: terminal observers and Session plugins
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
+        let workspace_id = self.thread_workspace(thread).to_owned();
         let run_context = terminal_observers.iter().cloned().fold(
             awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
                 awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(
-                    self.thread_workspace(thread),
+                    workspace_id.as_str(),
                 )),
             ),
             awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
         );
-        let mut run_context = run_context;
+        let dispatch_claim = self
+            .session_slots
+            .read(thread, |slot| slot.dispatch_claim.clone())
+            .flatten();
+        let mut run_context = run_context.with_model_content_materializer(Arc::new(
+            crate::model_content_materializer::ResourceModelContentMaterializer::new(
+                self.file_content_source.clone(),
+                workspace_id,
+                thread,
+                dispatch_claim,
+            ),
+        ));
         run_context.request_context = self
             .session_slots
             .read(thread, |slot| slot.request_context.clone())
