@@ -889,6 +889,16 @@ async fn agent_default_environment_requires_the_exact_revision() {
 
 #[async_trait::async_trait]
 impl SessionRuntime for AcceptingFake {
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+        ))
+    }
+
     async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
         self.prepared.lock().unwrap().push(init);
         Ok(())
@@ -1275,7 +1285,6 @@ async fn app_with_session() -> (Router, String) {
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        credential_repo.clone(),
         credential_repo,
     ));
     let app = router(std::sync::Arc::new(
@@ -1845,8 +1854,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
             &("repository-a", 1_u64),
             &usage,
         );
-        let vaults =
-            awaken_protocol_managed::VaultState::new(secrets, credentials.clone(), credentials);
+        let vaults = awaken_protocol_managed::VaultState::new(secrets, credentials);
         let actual = vaults
             .credential_access_for_source(
                 &source_id,
@@ -2516,7 +2524,6 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        credential_repo.clone(),
         credential_repo,
     ));
     let repo = std::sync::Arc::new(
@@ -2678,7 +2685,6 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         secrets,
-        credentials.clone(),
         credentials,
     ));
     let sessions = std::sync::Arc::new(

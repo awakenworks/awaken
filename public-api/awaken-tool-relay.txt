@@ -29,8 +29,10 @@ pub awaken_tool_relay::wire::HandRequest::catalog_fingerprint: core::option::Opt
 pub awaken_tool_relay::wire::HandRequest::correlation_id: awaken_tool_relay::wire::CorrelationId
 pub awaken_tool_relay::wire::HandRequest::deadline_unix_ms: core::option::Option<u64>
 pub awaken_tool_relay::wire::HandRequest::operation_id: alloc::string::String
+pub awaken_tool_relay::wire::HandRequest::protocol_version: u16
 impl awaken_tool_relay::wire::HandRequest
 pub fn awaken_tool_relay::wire::HandRequest::new(awaken_tool_relay::wire::CorrelationId, awaken_runtime_contract::llm::ToolCall) -> Self
+pub const awaken_tool_relay::wire::CURRENT_HAND_PROTOCOL_VERSION: u16
 pub type awaken_tool_relay::wire::CorrelationId = u64
 pub enum awaken_tool_relay::HandErrorKind
 pub awaken_tool_relay::HandErrorKind::DeadlineExceeded
@@ -77,6 +79,7 @@ pub awaken_tool_relay::HandRequest::catalog_fingerprint: core::option::Option<al
 pub awaken_tool_relay::HandRequest::correlation_id: awaken_tool_relay::wire::CorrelationId
 pub awaken_tool_relay::HandRequest::deadline_unix_ms: core::option::Option<u64>
 pub awaken_tool_relay::HandRequest::operation_id: alloc::string::String
+pub awaken_tool_relay::HandRequest::protocol_version: u16
 impl awaken_tool_relay::wire::HandRequest
 pub fn awaken_tool_relay::wire::HandRequest::new(awaken_tool_relay::wire::CorrelationId, awaken_runtime_contract::llm::ToolCall) -> Self
 pub struct awaken_tool_relay::HandSession

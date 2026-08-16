@@ -213,6 +213,16 @@ struct DelegateFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for DelegateFake {
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+        ))
+    }
+
     async fn run(
         &self,
         _a: &str,

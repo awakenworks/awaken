@@ -109,6 +109,31 @@ enum HandAvailability {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HandGenerationStep {
+    next: u64,
+    exhausted: bool,
+}
+
+/// Advance the activity fence without ever wrapping back to an older value.
+///
+/// `u64::MAX` is a terminal sentinel rather than a usable generation. Moving
+/// into it exhausts the lifecycle and must fence dispatch permanently.
+#[must_use]
+const fn hand_generation_step(current: u64) -> HandGenerationStep {
+    if current >= u64::MAX - 1 {
+        HandGenerationStep {
+            next: u64::MAX,
+            exhausted: true,
+        }
+    } else {
+        HandGenerationStep {
+            next: current + 1,
+            exhausted: false,
+        }
+    }
+}
+
 #[must_use]
 const fn hand_availability_transition_admitted(
     current: HandAvailability,
@@ -167,10 +192,15 @@ impl HandLifecycle {
 
     fn is_open(&self) -> bool {
         self.availability() == HandAvailability::Open
+            && self.generation.load(Ordering::Acquire) != u64::MAX
     }
 
     fn begin_projection_update(&self) -> bool {
         loop {
+            if self.generation.load(Ordering::Acquire) == u64::MAX {
+                self.fence_without_activity();
+                return false;
+            }
             let current = self.availability();
             if !hand_availability_transition_admitted(current, HandAvailability::ProjectionUpdate) {
                 return false;
@@ -185,12 +215,22 @@ impl HandLifecycle {
                 )
                 .is_ok()
             {
+                // A concurrent touch may have consumed the terminal sentinel
+                // after the pre-check. Keep the projection fenced in that race.
+                if self.generation.load(Ordering::Acquire) == u64::MAX {
+                    self.fence_without_activity();
+                    return false;
+                }
                 return true;
             }
         }
     }
 
     fn commit_projection_update(&self) {
+        if self.generation.load(Ordering::Acquire) == u64::MAX {
+            self.fence_without_activity();
+            return;
+        }
         debug_assert!(hand_availability_transition_admitted(
             HandAvailability::ProjectionUpdate,
             HandAvailability::Open,
@@ -203,11 +243,11 @@ impl HandLifecycle {
         );
     }
 
-    fn fence(&self) {
+    fn fence_without_activity(&self) -> bool {
         loop {
             let current = self.availability();
             if matches!(current, HandAvailability::Fenced | HandAvailability::Closed) {
-                return;
+                return false;
             }
             debug_assert!(hand_availability_transition_admitted(
                 current,
@@ -223,15 +263,40 @@ impl HandLifecycle {
                 )
                 .is_ok()
             {
-                self.touch();
-                return;
+                return true;
             }
         }
     }
 
-    fn touch(&self) {
-        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let _ = self.activity.send(generation);
+    fn fence(&self) {
+        if self.fence_without_activity() {
+            let _ = self.touch();
+        }
+    }
+
+    /// Publish a fresh activity generation. `false` means the finite identity
+    /// space is exhausted and the lifecycle has been fenced fail-closed.
+    fn touch(&self) -> bool {
+        loop {
+            let current = self.generation.load(Ordering::Acquire);
+            let step = hand_generation_step(current);
+            if step.next == current {
+                self.fence_without_activity();
+                return false;
+            }
+            if self
+                .generation
+                .compare_exchange(current, step.next, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            if step.exhausted {
+                self.fence_without_activity();
+            }
+            let _ = self.activity.send(step.next);
+            return !step.exhausted;
+        }
     }
 
     fn close(&self) {
@@ -240,7 +305,7 @@ impl HandLifecycle {
             .swap(HandAvailability::Closed as u8, Ordering::AcqRel)
             != HandAvailability::Closed as u8
         {
-            self.touch();
+            let _ = self.touch();
         }
     }
 
@@ -731,7 +796,12 @@ impl ToolExecutor for SessionHandExecutor {
                 "Session hand binding is closed or its resource projection is updating".into(),
             ));
         }
-        self.lifecycle.touch();
+        if !self.lifecycle.touch() {
+            return Err(ToolError::UnavailableBeforeDispatch(
+                "Session hand activity generation is exhausted; environment must be reconstructed"
+                    .into(),
+            ));
+        }
         self.replacement().await?;
         let mut binding = self.lifecycle.binding.lock().await;
         if !self.lifecycle.is_open() {
@@ -789,7 +859,7 @@ impl ToolExecutor for SessionHandExecutor {
         {
             tracing::warn!(error = %error, "failed to refresh container skill catalog");
         }
-        self.lifecycle.touch();
+        let _ = self.lifecycle.touch();
         result
     }
 }
@@ -814,7 +884,7 @@ impl HandProjectionUpdate<'_> {
     pub(crate) fn commit(mut self) {
         self.committed = true;
         self.hand.lifecycle.commit_projection_update();
-        self.hand.lifecycle.touch();
+        let _ = self.hand.lifecycle.touch();
     }
 }
 
@@ -826,6 +896,111 @@ impl Drop for HandProjectionUpdate<'_> {
                 session_environment = %self.hand.operation_scope,
                 "resource projection update did not commit; keeping Session hand fenced"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    fn lifecycle_with_generation(
+        generation: u64,
+    ) -> (Arc<HandLifecycle>, tokio::sync::watch::Receiver<u64>) {
+        let (activity, observed_activity) = tokio::sync::watch::channel(generation);
+        (
+            Arc::new(HandLifecycle {
+                binding: Mutex::new(HandBindingState::Vacant),
+                binding_changed: tokio::sync::Notify::new(),
+                availability: AtomicU8::new(HandAvailability::Open as u8),
+                generation: AtomicU64::new(generation),
+                activity,
+            }),
+            observed_activity,
+        )
+    }
+
+    #[test]
+    fn concurrent_final_generation_claims_fence_without_wrapping() {
+        let (lifecycle, observed_activity) = lifecycle_with_generation(u64::MAX - 1);
+        let start = Arc::new(Barrier::new(3));
+        let contenders = (0..2)
+            .map(|_| {
+                let lifecycle = lifecycle.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    lifecycle.touch()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        start.wait();
+        for contender in contenders {
+            assert!(!contender.join().expect("generation contender joins"));
+        }
+        assert_eq!(lifecycle.generation.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(lifecycle.availability(), HandAvailability::Fenced);
+        assert!(!lifecycle.is_open());
+        assert_eq!(*observed_activity.borrow(), u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_waiting_on_binding_observes_a_concurrent_touch_as_stale() {
+        let (lifecycle, _observed_activity) = lifecycle_with_generation(7);
+        let binding = lifecycle.binding.lock().await;
+        let retirement = {
+            let lifecycle = lifecycle.clone();
+            tokio::spawn(async move {
+                lifecycle
+                    .hibernate_if_current(Some(7), "concurrent_idle_test")
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(lifecycle.touch());
+        drop(binding);
+
+        assert_eq!(
+            retirement.await.expect("idle retirement joins"),
+            Ok(RetireOutcome::Stale)
+        );
+        assert_eq!(lifecycle.generation.load(Ordering::Acquire), 8);
+    }
+
+    #[test]
+    fn close_wins_every_projection_begin_or_commit_interleaving() {
+        for _ in 0..64 {
+            let (lifecycle, _observed_activity) = lifecycle_with_generation(0);
+            let start = Arc::new(Barrier::new(3));
+            let projection = {
+                let lifecycle = lifecycle.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    if lifecycle.begin_projection_update() {
+                        std::thread::yield_now();
+                        lifecycle.commit_projection_update();
+                        let _ = lifecycle.touch();
+                    }
+                })
+            };
+            let close = {
+                let lifecycle = lifecycle.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    lifecycle.close();
+                })
+            };
+
+            start.wait();
+            projection.join().expect("projection contender joins");
+            close.join().expect("close contender joins");
+            assert_eq!(lifecycle.availability(), HandAvailability::Closed);
+            assert!(!lifecycle.is_open());
         }
     }
 }
@@ -869,6 +1044,21 @@ mod verification {
         ));
         if hand_binding_transition_admitted(current, HandBindingPhase::Ready) {
             assert_eq!(current, HandBindingPhase::Starting);
+        }
+    }
+
+    #[kani::proof]
+    fn hand_generation_advance_never_wraps_and_exhaustion_is_terminal() {
+        let current = kani::any::<u64>();
+        let step = hand_generation_step(current);
+
+        assert!(step.next >= current);
+        if step.exhausted {
+            assert_eq!(step.next, u64::MAX);
+            assert!(current >= u64::MAX - 1);
+        } else {
+            assert_eq!(step.next, current + 1);
+            assert!(step.next < u64::MAX);
         }
     }
 }

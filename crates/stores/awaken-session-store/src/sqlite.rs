@@ -497,6 +497,42 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         })()
     }
 
+    async fn sessions_referencing_vault(
+        &self,
+        workspace_id: &str,
+        vault_id: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let session_ids = {
+            let conn = self.conn.lock().map_err(storage)?;
+            let mut statement = conn
+                .prepare(
+                    "SELECT session_id FROM managed_session WHERE scope_id = ?1 ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+        };
+        let mut sessions = Vec::new();
+        for session_id in session_ids {
+            let session = self.get(&session_id).await?;
+            if !session.is_terminal()
+                && session.frozen_baseline().is_some_and(|baseline| {
+                    baseline
+                        .mcp_authoring
+                        .ordered_vault_ids
+                        .iter()
+                        .any(|id| id == vault_id)
+                })
+            {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
     async fn idempotency_receipt(
         &self,
         session_id: &str,

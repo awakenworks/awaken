@@ -21,8 +21,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
         workspace_root: None,
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
-            credentials: credentials.clone(),
-            vaults: credentials,
+            credentials,
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             profiles: admin.clone(),
             resources: admin.clone(),
@@ -70,7 +69,6 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         awaken_protocol_managed::VaultState::new(
             control.secrets.clone(),
             control.credentials.clone(),
-            control.vaults.clone(),
         )
         .with_probe(Arc::new(ExtMcpProbe)),
     );

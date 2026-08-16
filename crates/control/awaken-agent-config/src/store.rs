@@ -33,6 +33,57 @@ pub enum ConfigWrite {
     Conflict { current_revision: Option<u64> },
 }
 
+/// Pure classification of a publication attempt against already durable
+/// publications for the same Agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationRevisionDecision {
+    /// No publication occupies the proposed execution target and source revision.
+    Apply,
+    /// The exact fingerprint is already durable; retrying is idempotent.
+    ExactReplay,
+    /// The target and source revision are already bound to another fingerprint.
+    Conflict,
+}
+
+/// Classify a publication attempt without performing storage I/O.
+///
+/// `None` is the legacy representation of an execution target and resolves to
+/// the durable configuration scope. An exact replay wins over a conflicting
+/// legacy duplicate so retries remain compatible with data written before the
+/// execution-target coordinate was introduced.
+pub fn publication_revision_decision<'a, T, I>(
+    configuration_scope: &'a T,
+    proposed_execution_target: Option<&'a T>,
+    proposed_source_revision: u64,
+    proposed_fingerprint: &'a T,
+    existing: I,
+) -> PublicationRevisionDecision
+where
+    T: PartialEq + ?Sized + 'a,
+    I: IntoIterator<Item = (Option<&'a T>, u64, &'a T)>,
+{
+    let proposed_execution_target = proposed_execution_target.unwrap_or(configuration_scope);
+    let mut conflicting_fingerprint = false;
+
+    for (execution_target, source_revision, fingerprint) in existing {
+        if source_revision != proposed_source_revision
+            || execution_target.unwrap_or(configuration_scope) != proposed_execution_target
+        {
+            continue;
+        }
+        if fingerprint == proposed_fingerprint {
+            return PublicationRevisionDecision::ExactReplay;
+        }
+        conflicting_fingerprint = true;
+    }
+
+    if conflicting_fingerprint {
+        PublicationRevisionDecision::Conflict
+    } else {
+        PublicationRevisionDecision::Apply
+    }
+}
+
 /// Secret-free durable management audit record keyed by stable tool call id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementAuditRecord {
@@ -90,6 +141,14 @@ pub struct StoredPublication {
     pub agent_id: String,
     #[serde(default, alias = "source_generation")]
     pub source_revision: u64,
+    /// Workspace in which this publication is executable. Ordinary Agent
+    /// publications use their authoring scope; reserved platform Agents may be
+    /// authored once and published into several execution Workspaces.
+    ///
+    /// Legacy rows omitted this coordinate and therefore inherit their durable
+    /// configuration scope at the store boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_workspace: Option<String>,
     pub state: PublicationState,
     pub snapshot: ExecutableAgentSnapshot,
     /// Exact Agent input defaults used to compile this publication. Keeping the
@@ -119,6 +178,7 @@ impl StoredPublication {
             fingerprint: config.fingerprint.0.clone(),
             agent_id: agent_id.into(),
             source_revision,
+            execution_workspace: None,
             state: PublicationState::Published,
             snapshot: config,
             agent_inputs: None,
@@ -130,6 +190,31 @@ impl StoredPublication {
     pub fn with_agent_inputs(mut self, inputs: Option<serde_json::Value>) -> Self {
         self.agent_inputs = inputs;
         self
+    }
+
+    /// Bind the immutable publication to its explicit execution Workspace.
+    #[must_use]
+    pub fn with_execution_workspace(mut self, workspace_id: impl Into<String>) -> Self {
+        self.execution_workspace = Some(workspace_id.into());
+        self
+    }
+
+    /// Resolve the durable execution target. Legacy rows are scoped exactly as
+    /// they were before this coordinate was persisted.
+    #[must_use]
+    pub fn execution_workspace_or<'a>(&'a self, configuration_scope: &'a str) -> &'a str {
+        self.execution_workspace
+            .as_deref()
+            .unwrap_or(configuration_scope)
+    }
+
+    #[must_use]
+    pub fn targets_execution_workspace(
+        &self,
+        configuration_scope: &str,
+        execution_workspace: &str,
+    ) -> bool {
+        self.execution_workspace_or(configuration_scope) == execution_workspace
     }
 }
 
@@ -400,16 +485,24 @@ pub trait ScopedConfigRegistry: Send + Sync {
         if current_revision != Some(expected_revision) {
             return Ok(ConfigWrite::Conflict { current_revision });
         }
-        if self
-            .list_published_scoped(scope)
-            .await?
-            .into_iter()
-            .any(|existing| {
-                existing.agent_id == publication.agent_id
-                    && existing.source_revision == publication.source_revision
-                    && existing.fingerprint != publication.fingerprint
-            })
-        {
+        let existing = self.list_published_scoped(scope).await?;
+        let decision = publication_revision_decision(
+            scope.as_str(),
+            publication.execution_workspace.as_deref(),
+            publication.source_revision,
+            publication.fingerprint.as_str(),
+            existing
+                .iter()
+                .filter(|existing| existing.agent_id == publication.agent_id)
+                .map(|existing| {
+                    (
+                        existing.execution_workspace.as_deref(),
+                        existing.source_revision,
+                        existing.fingerprint.as_str(),
+                    )
+                }),
+        );
+        if decision == PublicationRevisionDecision::Conflict {
             return Ok(ConfigWrite::Conflict { current_revision });
         }
         self.put_publication_scoped(scope, publication).await?;
@@ -441,6 +534,102 @@ pub trait ScopedConfigRegistry: Send + Sync {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<StoredPublication>, ConfigStoreError>;
+}
+
+#[cfg(test)]
+mod publication_revision_tests {
+    use super::{PublicationRevisionDecision, publication_revision_decision};
+
+    #[test]
+    fn different_execution_target_does_not_conflict() {
+        let existing = [(Some("workspace-b"), 7, "old")];
+
+        assert_eq!(
+            publication_revision_decision(
+                "authoring-scope",
+                Some("workspace-a"),
+                7,
+                "new",
+                existing,
+            ),
+            PublicationRevisionDecision::Apply
+        );
+    }
+
+    #[test]
+    fn same_execution_target_and_revision_with_different_fingerprint_conflicts() {
+        let existing = [(Some("workspace-a"), 7, "old")];
+
+        assert_eq!(
+            publication_revision_decision(
+                "authoring-scope",
+                Some("workspace-a"),
+                7,
+                "new",
+                existing,
+            ),
+            PublicationRevisionDecision::Conflict
+        );
+    }
+
+    #[test]
+    fn exact_replay_wins_over_conflicting_legacy_row() {
+        let existing = [(None, 7, "old"), (Some("authoring-scope"), 7, "new")];
+
+        assert_eq!(
+            publication_revision_decision("authoring-scope", None, 7, "new", existing),
+            PublicationRevisionDecision::ExactReplay
+        );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
+    let scope: u8 = kani::any();
+    let proposed_target: u8 = kani::any();
+    let other_target: u8 = kani::any();
+    let proposed_fingerprint: u8 = kani::any();
+    let other_fingerprint: u8 = kani::any();
+    let revision: u64 = kani::any();
+
+    kani::assume(other_target != proposed_target);
+    assert_ne!(
+        publication_revision_decision(
+            &scope,
+            Some(&proposed_target),
+            revision,
+            &proposed_fingerprint,
+            [(Some(&other_target), revision, &other_fingerprint)],
+        ),
+        PublicationRevisionDecision::Conflict
+    );
+
+    kani::assume(other_fingerprint != proposed_fingerprint);
+    assert_eq!(
+        publication_revision_decision(
+            &scope,
+            Some(&proposed_target),
+            revision,
+            &proposed_fingerprint,
+            [(Some(&proposed_target), revision, &other_fingerprint)],
+        ),
+        PublicationRevisionDecision::Conflict
+    );
+
+    assert_eq!(
+        publication_revision_decision(
+            &scope,
+            None,
+            revision,
+            &proposed_fingerprint,
+            [
+                (None, revision, &other_fingerprint),
+                (Some(&scope), revision, &proposed_fingerprint),
+            ],
+        ),
+        PublicationRevisionDecision::ExactReplay
+    );
 }
 
 /// The decorator that makes tenancy an edge aspect for the config plane: it

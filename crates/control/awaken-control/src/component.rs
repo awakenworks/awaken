@@ -39,6 +39,7 @@ use crate::{
 };
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
+const CREDENTIAL_ROLLOUT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Hosted tenant Workspaces are selected at authenticated request time. A
 /// process-local coordinate cannot safely recover or refresh their reserved
@@ -70,8 +71,7 @@ pub struct ControlDependencies {
     pub data_subject_org: String,
     pub enrollment_signing_key: [u8; 32],
     pub catalog: Arc<dyn CatalogRepo>,
-    pub credentials: Arc<dyn CredentialRepo>,
-    pub vaults: Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>,
+    pub credentials: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     pub secrets: Arc<dyn SecretStore>,
     pub profiles: Arc<dyn InferenceProfileStore>,
     pub webhook_store: Arc<dyn WebhookStore>,
@@ -147,7 +147,6 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         enrollment_signing_key,
         catalog,
         credentials,
-        vaults,
         secrets,
         profiles,
         webhook_store,
@@ -185,13 +184,10 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         remote_iam,
     } = dependencies;
     let request_scoped_execution_workspace = remote_iam.is_some();
+    let managed_credentials = credentials.clone();
+    let credentials: Arc<dyn CredentialRepo> = credentials;
 
-    recover_and_supervise_credentials(secrets.clone(), credentials.clone(), &service_lifecycle)
-        .await;
-    recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone(), &service_lifecycle)
-        .await;
-
-    let mut vault_state = VaultState::new(secrets.clone(), credentials.clone(), vaults);
+    let mut vault_state = VaultState::new(secrets.clone(), managed_credentials.clone());
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
     }
@@ -199,6 +195,17 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         vault_state = vault_state.with_envelope_issuer(issuer);
     }
     let vault_state = Arc::new(vault_state);
+
+    recover_and_supervise_credentials(
+        secrets.clone(),
+        credentials.clone(),
+        managed_credentials.clone(),
+        vault_state.clone(),
+        &service_lifecycle,
+    )
+    .await;
+    recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone(), &service_lifecycle)
+        .await;
 
     let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
         global_tools.clone(),
@@ -365,6 +372,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
 async fn recover_and_supervise_credentials(
     secrets: Arc<dyn SecretStore>,
     credentials: Arc<dyn CredentialRepo>,
+    managed: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
+    vault_state: Arc<VaultState>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) {
     if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
@@ -375,7 +384,39 @@ async fn recover_and_supervise_credentials(
     {
         eprintln!("credential mutation recovery failed: {error}");
     }
-    report_credential_inventory(secrets.as_ref(), credentials.as_ref()).await;
+    if let Err(error) = awaken_credential_vault::repo::recover_managed_credential_mutations(
+        secrets.as_ref(),
+        managed.as_ref(),
+    )
+    .await
+    {
+        eprintln!("Managed credential mutation recovery failed: {error}");
+    }
+    if let Err(error) = awaken_credential_vault::repo::reconcile_managed_vault_deletions(
+        secrets.as_ref(),
+        managed.as_ref(),
+    )
+    .await
+    {
+        eprintln!("Managed Vault deletion recovery failed: {error}");
+    }
+    report_credential_inventory(secrets.as_ref(), managed.as_ref()).await;
+
+    let rollout_state = vault_state;
+    service_lifecycle.spawn("control-credential-rollout", move |cancel| async move {
+        let mut interval = tokio::time::interval(CREDENTIAL_ROLLOUT_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            if let Err(error) = rollout_state.reconcile_rollouts().await {
+                eprintln!("Managed credential rollout reconciliation failed: {error}");
+            }
+        }
+        Ok(())
+    });
 
     service_lifecycle.spawn(
         "control-credential-reconciliation",
@@ -396,22 +437,51 @@ async fn recover_and_supervise_credentials(
                 {
                     eprintln!("credential mutation reconciliation failed: {error}");
                 }
-                report_credential_inventory(secrets.as_ref(), credentials.as_ref()).await;
+                if let Err(error) =
+                    awaken_credential_vault::repo::reconcile_ready_managed_credential_mutations(
+                        secrets.as_ref(),
+                        managed.as_ref(),
+                    )
+                    .await
+                {
+                    eprintln!("Managed credential mutation reconciliation failed: {error}");
+                }
+                if let Err(error) =
+                    awaken_credential_vault::repo::reconcile_managed_vault_deletions(
+                        secrets.as_ref(),
+                        managed.as_ref(),
+                    )
+                    .await
+                {
+                    eprintln!("Managed Vault deletion reconciliation failed: {error}");
+                }
+                report_credential_inventory(secrets.as_ref(), managed.as_ref()).await;
             }
             Ok(())
         },
     );
 }
 
-async fn report_credential_inventory(secrets: &dyn SecretStore, credentials: &dyn CredentialRepo) {
-    match awaken_credential_vault::repo::reconcile_credential_inventory(secrets, credentials).await
-    {
-        Ok(report) if !report.missing_material.is_empty() => eprintln!(
-            "credential inventory is missing referenced material: {:?}",
-            report.missing_material
-        ),
+async fn report_credential_inventory(
+    secrets: &dyn SecretStore,
+    credentials: &dyn awaken_credential_vault::repo::ManagedCredentialRepository,
+) {
+    match awaken_credential_vault::repo::inspect_credential_inventory(secrets, credentials).await {
+        Ok(report) => {
+            if !report.orphaned_detected.is_empty() {
+                eprintln!(
+                    "credential inventory detected unreferenced material (retained without an atomic orphan claim): {:?}",
+                    report.orphaned_detected
+                );
+            }
+            if !report.missing_material.is_empty() {
+                eprintln!(
+                    "credential inventory is missing referenced material: {:?}",
+                    report.missing_material
+                );
+            }
+        }
         Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
-        _ => {}
     }
 }
 

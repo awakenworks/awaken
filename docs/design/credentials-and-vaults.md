@@ -194,14 +194,98 @@ Wire facts to match exactly:
   immutable, secret fields write-only, max 20 credentials per vault.
 - Beta header `managed-agents-2026-04-01`; sessions attach vaults via `vault_ids`.
 
+Every Managed credential create/update/archive/delete is one Credential
+bounded-context command, not an HTTP-layer dual write. A secret-free
+`PendingManagedCredentialMutation` freezes the exact Source and child before/
+after pair around material IO. Create always begins in `Writing`; update begins
+in `Writing` only when it introduces new material. Metadata-only update,
+archive, and delete introduce no material and begin in `Ready`. The exact live
+writer may advance `Writing` to `Ready` after its material writes; recovery may
+claim only a repository-CAS-matched `Writing` fact whose recorded lease is
+expired. This lease test uses the injected process time and has no renewal
+heartbeat, so it fences durable transitions but does not prove that a slow
+external write is no longer executing.
+
+One `ManagedCredentialRepository` transaction locks the parent Vault, checks
+both revision fences, publishes `CredentialSource` plus
+`ManagedVaultCredential`, and advances the fact to `Reclaiming`. A non-create
+commit writes its exact-revision rollout outbox event in that same transaction;
+create has no rollout event. Periodic reconciliation claims expired `Writing`,
+commits `Ready`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
+
+The child lifecycle is the closed `Active | Archived | Deleted` value;
+`Deleted` is absorbing and physical purge is separate GC. The configured
+rollout target adopts the event through the existing Session generation
+protocol. AllInOne invokes one local Managed Session application; split Control
+calls one configured authenticated private Coordinator endpoint with a
+rotation-aware service token. One delivery pass queries that target's current
+referencing Sessions. A non-idle Session or failed update keeps the event
+pending; update prepares/publishes/drains the next MCP generation, while
+archive/delete drain affected authenticated attachments and never downgrade
+them to anonymous. Control deletes the row only after that configured target
+accepts the complete event and the repository still contains the exact event
+payload for its id. This is not a durable fleet-wide consumer registry or a
+proof that no referencing Session appeared concurrently with the query.
+
+An HTTP success for update/archive/delete acknowledges the durable credential
+fence and outbox commit; it is not a claim that every online Session has already
+converged. Busy Sessions keep their old generation and leave the event pending
+for a later rolling-reconciliation pass; immediate revocation is not provided.
+Consumers that require an immediate global revocation guarantee must use a
+separate short-lived execution permit or wait for an exposed convergence receipt;
+the current Managed wire provides retryable rollout with exact acknowledgement. Eventual
+convergence additionally assumes repeated supervisor ticks, target recovery,
+and that every relevant Session eventually becomes idle; those fairness
+conditions are not enforced by the outbox model or its single target adapter.
+
+Deleting a Vault root is the composition of those child commands, never a
+database cascade. The first request stores a stable root deletion identity and
+revision fence, immediately hides the Vault, and rejects new child create or
+update. A supervised reconciler tombstones each child through the same
+Source/child/material protocol and waits until every resulting durable outbox
+event has been accepted and exactly acknowledged by the configured rollout
+target before completing the absorbing root tombstone. Request
+cancellation or process restart therefore resumes the same operation; physical
+purge of root and child tombstones is separate GC.
+
+The repository transaction cannot include an external KMS or SecretStore.
+Material may therefore exist while its durable pending fact owns it, but an
+executable Source cannot exist without its exact Managed child. Recovery either
+publishes the pair or reclaims only that pending fact's references. This uses a
+local transaction plus idempotent recovery, never distributed two-phase commit.
+Every current-format Managed material reference admitted by the command is
+namespaced with that command's stable attempt identity. Writer takeover changes
+the lease owner but not that physical namespace. The Kani harness proves only
+the bounded admission predicate: a current-format new-material path requires a
+declared owner and a matching namespace flag. Constructor/validation tests
+cover suffix construction; UUID entropy and arbitrary SecretStore behavior are
+not proved. Given distinct namespaces, a fenced writer's delayed write cannot
+overwrite a later attempt; it may still create an unreferenced blob. The generic
+inventory reconciler detects and reports that blob while protecting both
+ordinary and Managed pending facts, but does not delete it: the SecretStore and
+repository have no shared transaction, and a snapshot-based delete could race a
+new mutation reusing a deterministic reference. Physical reclamation therefore
+requires a backend-specific durable orphan claim followed by exact deletion.
+This is an application-level isolation fence, not a claim that an arbitrary
+SecretStore supports conditional writes. Database-authoritative time, lease
+heartbeat during a long external call, and backend conditional effects remain
+adapter improvements needed to eliminate premature takeover and potentially
+unbounded orphan retention before an exact collector exists.
+
+Recovery enumeration treats each durable mutation or rollout row as an
+independent work item. An undecodable row or a mutation with an unsupported
+future format is retained and logged for operator migration or repair; it
+cannot prevent current, well-formed rows in the same scan from reconciling.
+Isolation does not reinterpret, acknowledge, or delete the unknown record.
+
 ### Hosted application static-bearer admission
 
 The official Vault CRUD remains the human/operator resource surface. Hosted
 applications additionally need one narrow write-only command because its
 random wire Vault ids cannot provide HA-safe create-or-find semantics. That
 Awaken Control owns the `/v1/config/application-mcp-credentials` command, which
-extends the same `VaultState`, `CredentialRepo`, `SecretStore`, and
-credential mutation intent; it is not another Vault implementation.
+extends the same `VaultState`, `ManagedCredentialRepository`, `SecretStore`, and
+Managed creation boundary; it is not another Vault implementation.
 
 Control derives a stable Vault id and credential-source id from the trusted
 Workspace, opaque application authority id, and canonical `McpTarget` identity.

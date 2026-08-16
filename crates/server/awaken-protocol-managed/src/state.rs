@@ -55,9 +55,10 @@ mod session_service;
 mod session_update;
 mod sessions;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod threads;
 mod types;
+mod vault_rollout;
 mod work_dispatch;
 
 pub use error::StateError;

@@ -63,6 +63,9 @@ pub use rate_limit::{
 pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
+pub use routes::credential_rollouts::{
+    HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
+};
 pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
 pub use routes::environments::{
     EnvironmentAuthoringState, environment_authoring_router, environment_work_router,

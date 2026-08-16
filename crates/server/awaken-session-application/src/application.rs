@@ -492,25 +492,29 @@ impl SessionApplication {
         published_model: &str,
         inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
     ) -> Result<awaken_session_contract::SessionModelOverride, RunError> {
-        let publication = if published_model == requested_model {
-            None
-        } else {
-            let resolver = self.model_publication_resolver.as_deref().ok_or_else(|| {
-                RunError::unavailable("Session model override resolution is not configured")
-            })?;
-            Some(Box::new(
-                resolver
-                    .resolve_session_model(workspace_id, requested_model)
-                    .await
-                    .map_err(|error| match error {
-                        awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
-                            RunError::bad_request(error.to_string())
-                        }
-                        awaken_session_contract::SessionModelResolutionError::Unavailable(_) => {
-                            RunError::unavailable(error.to_string())
-                        }
-                    })?,
-            ))
+        let publication = match awaken_session_contract::session_model_override_decision(
+            requested_model,
+            published_model,
+        ) {
+            awaken_session_contract::SessionModelOverrideDecision::ReusePublished => None,
+            awaken_session_contract::SessionModelOverrideDecision::ResolveComplete => {
+                let resolver = self.model_publication_resolver.as_deref().ok_or_else(|| {
+                    RunError::unavailable("Session model override resolution is not configured")
+                })?;
+                Some(Box::new(
+                    resolver
+                        .resolve_session_model(workspace_id, requested_model)
+                        .await
+                        .map_err(|error| match error {
+                            awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
+                                RunError::bad_request(error.to_string())
+                            }
+                            awaken_session_contract::SessionModelResolutionError::Unavailable(
+                                _,
+                            ) => RunError::unavailable(error.to_string()),
+                        })?,
+                ))
+            }
         };
         Ok(awaken_session_contract::SessionModelOverride {
             publication,

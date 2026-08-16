@@ -2,6 +2,12 @@
   "version": 1,
   "exclusions": [
     {
+      "path": "crates/control/awaken-credential-vault/src/repo/credential_operations/managed_tests.rs",
+      "boundary": "test_only",
+      "reason": "Managed Credential aggregate scenarios compiled only through the cfg(test) module declaration; production commands and recovery remain inventoried in credential_operations.rs.",
+      "evidence": ["crates/control/awaken-credential-vault/src/repo/credential_operations.rs"]
+    },
+    {
       "path": "crates/control/awaken-control/src/authz/credential_authentication_tests.rs",
       "boundary": "test_only",
       "reason": "Authentication characterization compiled only by the cfg(test) module declaration; the production authentication decision remains inventoried in authz.rs.",
