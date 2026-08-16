@@ -5,7 +5,9 @@ use awaken_dream_application::{
     DreamModelReadiness, DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource,
     InMemoryDreamProcessStore,
 };
-use awaken_protocol_managed::{DREAMING_BETA, MANAGED_BETA, dreams_router, enforce_managed_beta};
+use awaken_protocol_managed::{
+    ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, dreams_router, enforce_managed_beta,
+};
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::{DreamModelConfig, DreamUsage};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -335,7 +337,14 @@ impl DreamExecutor for Worker {
 
     async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
         Ok(DreamPreparation {
-            result_memory_store_id: format!("mem_result_{}", request.job_id),
+            result_memory_store_id: match &request.output_behavior {
+                awaken_session_contract::DreamOutputBehavior::CreateNew => {
+                    format!("mem_result_{}", request.job_id)
+                }
+                awaken_session_contract::DreamOutputBehavior::UpdateExisting {
+                    memory_store_id,
+                } => memory_store_id.clone(),
+            },
             session_id: format!("sesn_{}", request.job_id),
             transcript_file_ids: Vec::new(),
         })
@@ -468,6 +477,7 @@ async fn official_create_retrieve_list_archive_and_failure_shapes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(created["type"], "dream");
     assert_eq!(created["status"], "pending");
+    assert_eq!(created["output_behavior"], json!({"type":"create_new"}));
     let id = created["id"].as_str().unwrap();
     let completed = wait_for_status(&app, id, "completed").await;
     assert_eq!(completed["outputs"][0]["type"], "memory_store");
@@ -495,6 +505,38 @@ async fn official_create_retrieve_list_archive_and_failure_shapes() {
     let failed = wait_for_status(&failed_app, created["id"].as_str().unwrap(), "failed").await;
     assert_eq!(failed["error"]["type"], "internal_error");
     assert_eq!(failed["outputs"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn update_existing_output_behavior_round_trips_and_reuses_the_source_store() {
+    let (state, _, _) = state(Outcome::Complete);
+    let app = dreams_router(state);
+    let mut body = create_body("mem_1", &["sesn_1"]);
+    body["output_behavior"] = json!({
+        "type": "update_existing",
+        "memory_store_id": "mem_1"
+    });
+
+    let (status, created) = request(&app, "POST", "/v1/dreams", Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        created["output_behavior"],
+        json!({"type":"update_existing", "memory_store_id":"mem_1"})
+    );
+    let completed = wait_for_status(&app, created["id"].as_str().unwrap(), "completed").await;
+    assert_eq!(completed["outputs"][0]["memory_store_id"], "mem_1");
+
+    let mut mismatched = create_body("mem_1", &["sesn_1"]);
+    mismatched["output_behavior"] = json!({
+        "type": "update_existing",
+        "memory_store_id": "mem_2"
+    });
+    assert_eq!(
+        request(&app, "POST", "/v1/dreams", Some(mismatched))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]
@@ -592,6 +634,36 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        let unsupported_version = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("anthropic-version", "2099-01-01")
+                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unsupported_version.status(), StatusCode::BAD_REQUEST);
+
+        let supported_version = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("anthropic-version", ANTHROPIC_API_VERSION)
+                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(supported_version.status(), StatusCode::OK);
     }
 }
 

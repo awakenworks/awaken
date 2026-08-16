@@ -84,16 +84,8 @@ pub fn selected_hand_recovery_modes(
 
 pub fn builtin_tools() -> Vec<BuiltinTool> {
     vec![
-        hand_tool(
-            "bash",
-            "Run a shell command",
-            path_arg("command", "shell command to run"),
-        ),
-        hand_tool(
-            "read",
-            "Read a file",
-            path_arg("path", "absolute file path to read"),
-        ),
+        hand_tool("bash", "Run a shell command", bash_args()),
+        hand_tool("read", "Read a file", read_args()),
         hand_tool("write", "Write a file", write_args()),
         hand_tool("edit", "Edit a file by replacing text", edit_args()),
         hand_tool("move", "Move or rename a file", move_args()),
@@ -102,11 +94,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             "Delete one file",
             path_arg("path", "absolute file path to delete"),
         ),
-        hand_tool(
-            "glob",
-            "Find files matching a glob",
-            path_arg("pattern", "glob pattern"),
-        ),
+        hand_tool("glob", "Find files matching a glob", glob_args()),
         hand_tool("grep", "Search file contents", grep_args()),
         hand_tool("web_fetch", "Fetch a URL", path_arg("url", "URL to fetch")),
         task_tool_with_recovery(
@@ -189,10 +177,10 @@ fn write_args() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "path": { "type": "string", "description": "absolute file path" },
+            "file_path": { "type": "string", "description": "path of the file to write" },
             "content": { "type": "string", "description": "file content" },
         },
-        "required": ["path", "content"],
+        "required": ["file_path", "content"],
     })
 }
 
@@ -200,11 +188,12 @@ fn edit_args() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "path": { "type": "string" },
-            "old": { "type": "string" },
-            "new": { "type": "string" },
+            "file_path": { "type": "string" },
+            "old_string": { "type": "string" },
+            "new_string": { "type": "string" },
+            "replace_all": { "type": "boolean" },
         },
-        "required": ["path", "old", "new"],
+        "required": ["file_path", "old_string", "new_string"],
     })
 }
 
@@ -213,9 +202,47 @@ fn grep_args() -> serde_json::Value {
         "type": "object",
         "properties": {
             "pattern": { "type": "string", "description": "regular expression" },
-            "path": { "type": "string", "description": "file path to search" },
+            "path": { "type": "string", "description": "optional directory root to search under" },
         },
-        "required": ["pattern", "path"],
+        "required": ["pattern"],
+    })
+}
+
+fn bash_args() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "command": { "type": "string", "description": "shell command to execute" },
+            "restart": { "type": "boolean", "description": "restart the runner-side bash session" },
+            "timeout_ms": { "type": "integer", "minimum": 0 },
+        },
+    })
+}
+
+fn read_args() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "file_path": { "type": "string", "description": "path of the file to read" },
+            "view_range": {
+                "type": "array",
+                "items": { "type": "integer" },
+                "minItems": 2,
+                "maxItems": 2
+            },
+        },
+        "required": ["file_path"],
+    })
+}
+
+fn glob_args() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pattern": { "type": "string", "description": "doublestar glob pattern" },
+            "path": { "type": "string", "description": "optional directory root" },
+        },
+        "required": ["pattern"],
     })
 }
 
