@@ -109,11 +109,13 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         }
         None => Body::empty(),
     };
-    let resp = app
-        .clone()
-        .oneshot(builder.body(body).unwrap())
-        .await
-        .unwrap();
+    let mut request = builder.body(body).unwrap();
+    if uri.starts_with("/v1/config/agents/") && uri.ends_with("/resources") {
+        request
+            .extensions_mut()
+            .insert(awaken_tenancy::WorkspaceScope("workspace-test".into()));
+    }
+    let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {

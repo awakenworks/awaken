@@ -11,12 +11,13 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use serde::Serialize;
 
+use crate::common::scope::RequiredWorkspaceScope;
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
@@ -160,9 +161,8 @@ fn models_router_for(models: AvailableModels) -> Router {
 /// id-cursor paginator; both `null` when the directory is empty.
 async fn list_models(
     State(available): State<AvailableModels>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> axum::response::Response {
-    let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -184,10 +184,9 @@ async fn list_models(
 /// SDK's alias-resolution endpoint (an exact id here resolves to itself).
 async fn get_model(
     State(available): State<AvailableModels>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -250,7 +249,9 @@ mod tests {
         // belongs to the HTTP adapter; directory implementations need only
         // supply opaque model ids.
         let id = "provider/claude/model-a";
-        let app = models_router(Arc::new(vec![ModelEntry::new(id, "Model A")]));
+        let app = models_router(Arc::new(vec![ModelEntry::new(id, "Model A")])).layer(
+            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
+        );
         let response = app
             .oneshot(
                 axum::http::Request::builder()

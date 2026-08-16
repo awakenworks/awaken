@@ -13,18 +13,15 @@ use awaken_agent_config::{
 };
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_executable_agent_contract::{
-    ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+    ExecutableAgentRegistrar, ExecutableAgentRegistrationError,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
-use crate::agent_projection::registered_session_profile;
 use crate::binding_resolver::ModelPublicationResolver;
-use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
-use crate::plugin_validation::{PluginPublicationResolver, resolve_plugin_configuration};
-use crate::publication::{
-    PreparedPublication, PublishError, prepare_agent_publication, snapshot_metadata,
-};
+use crate::credential_reference::CredentialReferenceValidator;
+use crate::plugin_validation::PluginPublicationResolver;
+use crate::publication::{PreparedPublication, PublishError};
 
 #[cfg(test)]
 use crate::ConfigPlane;
@@ -48,6 +45,12 @@ use axum::{Extension, Json};
 use serde_json::json;
 
 mod lifecycle;
+mod publication_build;
+
+#[cfg(test)]
+use crate::publication::prepare_agent_publication;
+#[cfg(test)]
+use awaken_executable_agent_contract::ExecutableAgentRegistration;
 
 /// The config domain service: validate, store, and publish Agent configuration.
 ///
@@ -144,109 +147,16 @@ impl ConfigService {
         expected_source_revision: Option<u64>,
         expected_resource_revision: Option<i64>,
     ) -> Result<PreparedPublication, PublishError> {
-        let versioned = registry
-            .get_config_revision(id)
-            .await
-            .map_err(|e| PublishError::Store(e.to_string()))?
-            .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
-        if expected_source_revision.is_some_and(|expected| expected != versioned.revision) {
-            return Err(PublishError::StaleRevision(Some(versioned.revision)));
-        }
-        if versioned.config.lifecycle() != awaken_agent_config::AgentLifecycle::Published {
-            return Err(PublishError::Unavailable(id.to_string()));
-        }
-        let source_revision = versioned.revision;
-        let mut resolved = prepare_agent_publication(
-            self.model_publication_resolver.as_ref(),
+        publication_build::prepare_publication(
+            self,
             workspace,
-            versioned,
-        )
-        .await?;
-        resolve_plugin_configuration(
-            &self.plugin_publication_resolvers,
-            workspace,
-            &mut resolved.config,
-        )
-        .await
-        .map_err(|error| {
-            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
-        })?;
-        validate_credential_references(
-            self.credential_reference_validator.as_ref(),
-            workspace,
-            &resolved.config,
-        )
-        .await
-        .map_err(|error| {
-            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
-        })?;
-        let mut metadata = snapshot_metadata(&resolved);
-        let defaults = match self.resources.as_ref() {
-            Some(store) => store
-                .get_agent_inputs(workspace.as_str(), id)
-                .map_err(|error| PublishError::Store(error.to_string()))?,
-            None => None,
-        };
-        let current_resource_revision = defaults.as_ref().map_or(0, |inputs| inputs.revision);
-        if expected_resource_revision.is_some_and(|expected| expected != current_resource_revision)
-        {
-            return Err(PublishError::StaleResourceRevision(
-                current_resource_revision,
-            ));
-        }
-        if let Some(defaults) = &defaults {
-            let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
-            inputs.push(awaken_runtime_contract::ResolvedInputRef {
-                kind: "agent_session_defaults".into(),
-                id: id.to_string(),
-                version: awaken_runtime_contract::ResolvedInputVersion::Revision(
-                    defaults.revision as u64,
-                ),
-            });
-            metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
-                .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-        }
-        let snapshot = awaken_agent_config::compile_published(
-            &resolved.config,
+            registry,
+            id,
             catalog,
-            metadata,
-            resolved.models.primary,
-            resolved.models.candidates,
-            resolved.advisor,
+            expected_source_revision,
+            expected_resource_revision,
         )
-        .map_err(|e| PublishError::Compile(e.to_string()))?;
-        let stored_inputs = defaults
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|error| PublishError::Store(error.to_string()))?;
-        let publication =
-            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
-                .with_execution_workspace(workspace.as_str())
-                .with_agent_inputs(stored_inputs);
-        let session_profile = registered_session_profile(
-            &snapshot,
-            &resolved.config,
-            &resolved.authored_model_selection,
-            defaults,
-        )
-        .ok_or_else(|| {
-            PublishError::Registration(
-                awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
-                    "Agent Session defaults changed while the publication was compiled".into(),
-                ),
-            )
-        })?;
-        Ok(PreparedPublication {
-            publication,
-            registration: ExecutableAgentRegistration {
-                workspace_id: workspace.as_str().to_owned(),
-                agent_id: id.to_owned(),
-                source_revision,
-                snapshot,
-                session_profile,
-            },
-        })
+        .await
     }
 
     /// Compile the exact publication that a subsequent [`Self::publish`] would
@@ -943,7 +853,7 @@ pub(crate) mod resource_prompt_tests {
         let (status, _body) = super::get_config(
             State(failing_scoped_plane()),
             Path("a".to_string()),
-            None,
+            default_workspace(),
             None,
         )
         .await;
@@ -955,7 +865,7 @@ pub(crate) mod resource_prompt_tests {
     async fn put_config_handler_returns_400_on_store_error() {
         let (status, _body) = super::put_config(
             State(failing_scoped_plane()),
-            None,
+            default_workspace(),
             Path("a".to_string()),
             Json(json!({ "model": "gpt" })),
         )
@@ -1633,16 +1543,43 @@ pub(crate) mod resource_prompt_tests {
 
     #[test]
     fn request_scope_uses_the_workspace_scope_when_present() {
-        // F17a.
-        let scope = super::request_scope(Some(Extension(WorkspaceScope("wrkspc_acme".into()))));
+        // Cause/effect decision table: C1 edge stamp exists, C2 stamp is
+        // non-empty. R1 C1+C2 => exact scope; R2 !C1 => reject; R3 C1+!C2 =>
+        // reject. No handler may synthesize an ownership coordinate.
+        let scope = super::request_scope(Some(Extension(WorkspaceScope("wrkspc_acme".into()))))
+            .expect("R1 accepts the exact edge scope");
         assert_eq!(scope.as_str(), "wrkspc_acme");
     }
 
     #[test]
-    fn request_scope_falls_back_to_the_default_scope() {
-        // F17b.
-        let scope = super::request_scope(None);
-        assert_eq!(scope.as_str(), DEFAULT_SCOPE);
+    fn request_scope_rejects_missing_and_empty_edge_scope() {
+        // Same decision table as `request_scope_uses...`: R2 and R3 are
+        // indistinguishable fail-closed outcomes at this adapter seam.
+        assert!(super::request_scope(None).is_err(), "R2");
+        assert!(
+            super::request_scope(Some(Extension(WorkspaceScope(" ".into())))).is_err(),
+            "R3"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_missing_scope_before_parsing_untrusted_config() {
+        // Extend the scope cause/effect table with C3=malformed request body.
+        // R4 !C1+C3 => 404 Workspace, with no config parsing or persistence;
+        // R5 C1+C2+C3 => 400 validation error (covered by handler tests below).
+        let (status, _) = super::validate(
+            State(static_plane(None)),
+            None,
+            None,
+            Path("mgmt".into()),
+            Json(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "R4");
+    }
+
+    fn default_workspace() -> Option<Extension<WorkspaceScope>> {
+        Some(Extension(WorkspaceScope(DEFAULT_SCOPE.into())))
     }
 
     // ---- get_config handler (F19) ----
@@ -1653,8 +1590,13 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
-        let (status, Json(body)) =
-            super::get_config(State(plane), Path("mgmt".to_string()), None, None).await;
+        let (status, Json(body)) = super::get_config(
+            State(plane),
+            Path("mgmt".to_string()),
+            default_workspace(),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["id"], "mgmt");
     }
@@ -1663,8 +1605,13 @@ pub(crate) mod resource_prompt_tests {
     async fn get_config_handler_returns_404_when_absent() {
         // F19b: absent (or cross-tenant) → 404, never disclosed.
         let plane = static_plane(None);
-        let (status, _body) =
-            super::get_config(State(plane), Path("ghost".to_string()), None, None).await;
+        let (status, _body) = super::get_config(
+            State(plane),
+            Path("ghost".to_string()),
+            default_workspace(),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -1676,7 +1623,7 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::validate(
             State(plane),
-            None,
+            default_workspace(),
             None,
             Path("mgmt".to_string()),
             Json(json!({ "context_policy": 123 })),
@@ -1692,7 +1639,7 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::validate(
             State(plane),
-            None,
+            default_workspace(),
             None,
             Path("mgmt".to_string()),
             Json(json!({ "model": { "id": "m" } })),
@@ -1709,7 +1656,7 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::validate(
             State(plane),
-            None,
+            default_workspace(),
             None,
             Path("mgmt".to_string()),
             Json(json!({ "model": { "id": "m" }, "tools": ["ghost"] })),
@@ -1728,7 +1675,7 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, _body) = super::put_config(
             State(plane),
-            None,
+            default_workspace(),
             Path("mgmt".to_string()),
             Json(json!({ "context_policy": 123 })),
         )
@@ -1742,7 +1689,7 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::put_config(
             State(plane.clone()),
-            None,
+            default_workspace(),
             Path("mgmt".to_string()),
             Json(json!({ "model": { "id": "m" }, "system": "hi" })),
         )
@@ -1764,8 +1711,14 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(None);
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
-        let (status, Json(body)) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
+        let (status, Json(body)) = super::publish(
+            State(plane),
+            default_workspace(),
+            None,
+            Path("mgmt".to_string()),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["installed"], json!(true));
     }
@@ -1776,8 +1729,14 @@ pub(crate) mod resource_prompt_tests {
         let plane = static_plane(Some(Arc::new(ErrResolver)));
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &auto_config("mgmt")).await.unwrap();
-        let (status, _body) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
+        let (status, _body) = super::publish(
+            State(plane),
+            default_workspace(),
+            None,
+            Path("mgmt".to_string()),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
 
@@ -1785,8 +1744,14 @@ pub(crate) mod resource_prompt_tests {
     async fn publish_handler_returns_400_on_other_publish_error() {
         // F23c: any other publish failure (here NotStored) stays a 400.
         let plane = static_plane(None);
-        let (status, _body) =
-            super::publish(State(plane), None, None, Path("ghost".to_string()), None).await;
+        let (status, _body) = super::publish(
+            State(plane),
+            default_workspace(),
+            None,
+            Path("ghost".to_string()),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
