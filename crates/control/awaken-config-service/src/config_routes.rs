@@ -3,9 +3,9 @@
 //! Domain mutation and publication remain owned by [`ConfigPlane`]; this module
 //! only binds request scope, maps wire JSON, and translates outcomes to HTTP.
 
-use awaken_agent_config::{ConfigWrite, DEFAULT_SCOPE};
+use awaken_agent_config::ConfigWrite;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
-use awaken_tenancy::{ExecutionWorkspace, ScopeId};
+use awaken_tenancy::{ExecutionWorkspace, ScopeId, WorkspaceScope};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -87,6 +87,9 @@ async fn create_preview(
     Path(preview_id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     if !valid_preview_id(&preview_id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -124,7 +127,6 @@ async fn create_preview(
             );
         }
     };
-    let scope = request_scope(scope);
     let Some(workspace) = publication_workspace(&scope, execution.as_ref()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -165,13 +167,15 @@ async fn delete_preview(
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(preview_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     if !valid_preview_id(&preview_id) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid preview id" })),
         );
     }
-    let scope = request_scope(scope);
     let Some(workspace) = publication_workspace(&scope, execution.as_ref()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -187,9 +191,16 @@ async fn delete_preview(
     }
 }
 
-pub(crate) fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
-    ext.map(|Extension(w)| ScopeId::from(w.0))
-        .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
+fn workspace_not_found() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "workspace not found" })),
+    )
+}
+
+pub(crate) fn request_scope(ext: Option<Extension<WorkspaceScope>>) -> Result<ScopeId, ()> {
+    ext.and_then(|Extension(workspace)| workspace.non_empty().map(ScopeId::from))
+        .ok_or(())
 }
 
 /// Absence is scoped, so another Workspace's fingerprint is never disclosed.
@@ -198,13 +209,16 @@ async fn get_publication(
     Path(fingerprint): Path<String>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     if fingerprint.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "publication fingerprint is required" })),
         );
     }
-    match plane.publication(&request_scope(scope), &fingerprint).await {
+    match plane.publication(&scope, &fingerprint).await {
         Ok(Some(publication)) => (
             StatusCode::OK,
             Json(serde_json::to_value(publication).expect("StoredPublication serializes")),
@@ -227,13 +241,16 @@ async fn export_publication(
     Path(fingerprint): Path<String>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     if fingerprint.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "publication fingerprint is required" })),
         );
     }
-    match plane.publication(&request_scope(scope), &fingerprint).await {
+    match plane.publication(&scope, &fingerprint).await {
         Ok(Some(publication)) => match publication.snapshot.validate_embedded_native() {
             Ok(()) => (
                 StatusCode::OK,
@@ -263,7 +280,9 @@ async fn list_configs(
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     let execution = publication_workspace(&scope, execution.as_ref());
     match plane.list(&scope).await {
         Ok(configs) => {
@@ -309,7 +328,9 @@ pub(crate) async fn get_config(
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     match plane.get_versioned(&scope, &id).await {
         Ok(Some(versioned)) => {
             let _execution_workspace = publication_workspace(&scope, execution.as_ref());
@@ -349,6 +370,9 @@ pub(crate) async fn validate(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     let config = match agent_config_from_managed(id, &body) {
         Ok(config) => config,
         Err(error) => {
@@ -361,7 +385,6 @@ pub(crate) async fn validate(
             );
         }
     };
-    let scope = request_scope(scope);
     let result = match publication_workspace(&scope, execution.as_ref()) {
         Some(workspace) => {
             plane
@@ -391,11 +414,13 @@ pub(crate) async fn put_config(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     let config = match agent_config_from_managed(id.clone(), &body) {
         Ok(config) => config,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     };
-    let scope = request_scope(scope);
     if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
         return match plane.put_if_revision(&scope, &config, expected).await {
             Ok(ConfigWrite::Applied { revision }) => (
@@ -431,7 +456,9 @@ pub(crate) async fn publish(
     Path(id): Path<String>,
     request: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
-    let scope = request_scope(scope);
+    let Ok(scope) = request_scope(scope) else {
+        return workspace_not_found();
+    };
     let request = match request
         .map(|Json(request)| PublishRequest::try_from(request))
         .transpose()
@@ -640,9 +667,13 @@ mod publication_projection_tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
-            get_publication(State(failing_scoped_plane()), Path("fp".into()), None)
-                .await
-                .0,
+            get_publication(
+                State(failing_scoped_plane()),
+                Path("fp".into()),
+                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+            )
+            .await
+            .0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
@@ -686,15 +717,23 @@ mod publication_projection_tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            export_publication(State(failing_scoped_plane()), Path("fp".into()), None)
-                .await
-                .0,
+            export_publication(
+                State(failing_scoped_plane()),
+                Path("fp".into()),
+                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+            )
+            .await
+            .0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(
-            export_publication(State(plane.clone()), Path("   ".into()), None)
-                .await
-                .0,
+            export_publication(
+                State(plane.clone()),
+                Path("   ".into()),
+                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+            )
+            .await
+            .0,
             StatusCode::BAD_REQUEST,
             "R4"
         );

@@ -11,7 +11,7 @@ use awaken_deployment_application::{
     DeploymentRunView, DeploymentSchedule, DeploymentStatus, DeploymentTrigger, DeploymentView,
     UpdateDeploymentCommand,
 };
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -19,7 +19,8 @@ use chrono::{DateTime, FixedOffset};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::routes::{ManagedJson, WorkspaceScope};
+use crate::common::scope::RequiredWorkspaceScope;
+use crate::routes::ManagedJson;
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
     DeploymentUpdateParams, RunError, Schedule, TriggerContext,
@@ -50,13 +51,6 @@ pub fn deployments_router(application: Arc<DeploymentApplication>) -> Router {
         .route("/v1/deployment_runs", get(list_runs))
         .route("/v1/deployment_runs/{id}", get(retrieve_run))
         .with_state(application)
-}
-
-fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
-    scope.as_ref().map_or_else(
-        || crate::state::DEFAULT_SCOPE.to_string(),
-        |workspace| workspace.0.0.clone(),
-    )
 }
 
 fn invalid(message: impl Into<String>) -> WireError {
@@ -282,13 +276,13 @@ fn validate_durable_resources(resources: &[ResourceInput]) -> Result<(), WireErr
 
 async fn create_deployment(
     State(application): State<Arc<DeploymentApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
     validate_initial_events(&params.initial_events)?;
     validate_durable_resources(&params.resources)?;
     let command = CreateDeploymentCommand {
-        workspace_id: request_scope(&scope),
+        workspace_id: scope,
         agent: selector(&params.agent)?,
         environment_id: params.environment_id,
         name: params.name,
@@ -315,10 +309,10 @@ async fn create_deployment(
 async fn retrieve_deployment(
     State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<Deployment>, WireError> {
     application
-        .get(&request_scope(&scope), &id)
+        .get(&scope, &id)
         .await
         .map_err(wire_error)
         .and_then(project_deployment)
@@ -365,7 +359,7 @@ fn page_query(query: &PageQuery) -> Result<PageQuery, WireError> {
 async fn list_deployments(
     State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentListParams>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<Deployment>>, WireError> {
     if query.include_archived && query.status.is_some() {
         return Err(invalid(
@@ -374,7 +368,7 @@ async fn list_deployments(
     }
     let page = page_query(&query.page)?;
     let data = application
-        .list(&request_scope(&scope))
+        .list(&scope)
         .await
         .map_err(wire_error)?
         .into_iter()
@@ -413,7 +407,7 @@ async fn list_deployments(
 async fn update_deployment(
     State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
     if let Some(events) = &params.initial_events {
@@ -445,7 +439,7 @@ async fn update_deployment(
         },
     };
     application
-        .update(&request_scope(&scope), &id, command)
+        .update(&scope, &id, command)
         .await
         .map_err(wire_error)
         .and_then(project_deployment)
@@ -457,10 +451,10 @@ macro_rules! deployment_action {
         async fn $name(
             State(application): State<Arc<DeploymentApplication>>,
             Path(id): Path<String>,
-            scope: Option<Extension<WorkspaceScope>>,
+            RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
         ) -> Result<Json<Deployment>, WireError> {
             application
-                .$method(&request_scope(&scope), &id)
+                .$method(&scope, &id)
                 .await
                 .map_err(wire_error)
                 .and_then(project_deployment)
@@ -476,10 +470,10 @@ deployment_action!(unpause_deployment, unpause);
 async fn run_deployment(
     State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<DeploymentRun>, WireError> {
     application
-        .run(&request_scope(&scope), &id)
+        .run(&scope, &id)
         .await
         .map_err(wire_error)
         .and_then(project_run)
@@ -519,10 +513,10 @@ enum TriggerType {
 async fn retrieve_run(
     State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<DeploymentRun>, WireError> {
     application
-        .get_run(&request_scope(&scope), &id)
+        .get_run(&scope, &id)
         .await
         .map_err(wire_error)
         .and_then(project_run)
@@ -532,11 +526,11 @@ async fn retrieve_run(
 async fn list_runs(
     State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentRunListParams>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<DeploymentRun>>, WireError> {
     let page = page_query(&query.page)?;
     let data = application
-        .list_runs(&request_scope(&scope))
+        .list_runs(&scope)
         .await
         .map_err(wire_error)?
         .into_iter()
