@@ -1188,14 +1188,12 @@ async fn put_agent_inputs(
     Json(mut config): Json<AgentInputConfig>,
 ) -> Result<Json<AgentInputConfig>, Problem> {
     config.agent_id = agent_id;
-    let workspace = scope.map_or_else(
-        || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
-        |Extension(scope)| scope.0,
-    );
+    let rid = req_id(&headers);
+    let workspace = resource_workspace(scope).map_err(|_| resource_workspace_problem(&rid))?;
     state
         .resources
         .put_agent_inputs(&workspace, config.clone())
-        .map_err(|error| agent_input_write_problem(error, &req_id(&headers)))?;
+        .map_err(|error| agent_input_write_problem(error, &rid))?;
     Ok(Json(config))
 }
 
@@ -1205,16 +1203,37 @@ async fn get_agent_inputs(
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AgentInputConfig>, Problem> {
-    let workspace = scope.map_or_else(
-        || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
-        |Extension(scope)| scope.0,
-    );
+    let rid = req_id(&headers);
+    let workspace = resource_workspace(scope).map_err(|_| resource_workspace_problem(&rid))?;
     state
         .resources
         .get_agent_inputs(&workspace, &agent_id)
-        .map_err(|error| agent_input_write_problem(error, &req_id(&headers)))?
+        .map_err(|error| agent_input_write_problem(error, &rid))?
         .map(Json)
-        .ok_or_else(|| agent_inputs_missing(&agent_id, &req_id(&headers)))
+        .ok_or_else(|| agent_inputs_missing(&agent_id, &rid))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissingResourceWorkspace;
+
+fn resource_workspace(
+    scope: Option<Extension<ResourceWorkspace>>,
+) -> Result<String, MissingResourceWorkspace> {
+    scope
+        .as_ref()
+        .and_then(|Extension(scope)| scope.non_empty())
+        .map(str::to_owned)
+        .ok_or(MissingResourceWorkspace)
+}
+
+fn resource_workspace_problem(rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Workspace not found",
+        "no trusted Workspace was resolved for the request",
+        rid,
+    ))
 }
 
 fn agent_inputs_missing(agent_id: &str, rid: &str) -> Problem {
