@@ -34,6 +34,17 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDescriptor>,
 }
 
+/// Attempt-bound transformation of logical model content before provider I/O.
+///
+/// The runtime owns when this port runs (after request construction and model
+/// selection, before retry/telemetry/provider dispatch); an infrastructure
+/// adapter owns how a logical File reference is authorized and resolved. The
+/// returned request must contain no unresolved provider-visible references.
+#[async_trait]
+pub trait ModelContentMaterializer: Send + Sync {
+    async fn materialize(&self, request: ChatRequest) -> Result<ChatRequest>;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,

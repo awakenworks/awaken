@@ -7,7 +7,9 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
+use awaken_agent_contract::agent::content::{
+    ContentBlock, DocumentSource, ImageSource, extract_text,
+};
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
@@ -25,6 +27,7 @@ use genai::chat::{ChatOptions, ReasoningEffort as GenaiReasoningEffort};
 /// naming the model SDK itself (which stays named only in this crate).
 pub use genai::adapter::AdapterKind;
 
+mod anthropic_content;
 mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
 mod transcript_projection;
@@ -820,6 +823,9 @@ fn to_genai_request_with_adapter(
             .content
             .iter()
             .map(|block| to_genai_part(block, dialect))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
             .collect();
         // A standalone reasoning-only history row is not a complete assistant
         // turn and some provider protocols reject it. Reasoning that accompanies
@@ -872,20 +878,87 @@ fn to_genai_request_with_adapter(
 
 /// Map one neutral content block onto a `genai` content part. Text maps to text;
 /// an image maps to a `Binary` (base64 inline or a URL the provider fetches).
-fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> ContentPart {
+fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Option<ContentPart>> {
     match (project_part_kind(dialect, neutral_part_kind(block)), block) {
-        (ProviderPartKind::Text, ContentBlock::Text { text }) => ContentPart::Text(text.clone()),
+        (ProviderPartKind::Text, ContentBlock::Text { text }) => {
+            Ok(Some(ContentPart::Text(text.clone())))
+        }
+        (
+            ProviderPartKind::Text,
+            ContentBlock::SearchResult {
+                source,
+                title,
+                content,
+                ..
+            },
+        ) => Ok(Some(ContentPart::Text(format!(
+            "{title}\nSource: {source}\n{}",
+            content
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))),
         (ProviderPartKind::Binary, ContentBlock::Image { source }) => {
-            ContentPart::Binary(to_genai_binary(source))
+            Ok(Some(ContentPart::Binary(to_genai_binary(source)?)))
+        }
+        (
+            ProviderPartKind::Binary,
+            ContentBlock::Document {
+                source,
+                title,
+                context,
+            },
+        ) if dialect == TranscriptDialect::Anthropic => Ok(Some(ContentPart::from_custom(
+            anthropic_content::document(source, title.as_deref(), context.as_deref())?,
+            None,
+        ))),
+        (ProviderPartKind::Binary, ContentBlock::Document { source, .. }) => {
+            let part = match source {
+                DocumentSource::Base64 { media_type, data } => {
+                    ContentPart::Binary(Binary::from_base64(media_type.clone(), data.clone(), None))
+                }
+                DocumentSource::Text { data, .. } => ContentPart::Text(data.clone()),
+                DocumentSource::Url { url } => ContentPart::Binary(Binary::from_url(
+                    "application/octet-stream",
+                    url.clone(),
+                    None,
+                )),
+                DocumentSource::File { file_id } => {
+                    return Err(Error::InvalidRequest(format!(
+                        "File {file_id} was not materialized before provider dispatch"
+                    )));
+                }
+            };
+            Ok(Some(part))
         }
         (ProviderPartKind::ToolCall, ContentBlock::ToolUse { id, name, input }) => {
-            ContentPart::ToolCall(GenaiToolCall {
+            Ok(Some(ContentPart::ToolCall(GenaiToolCall {
                 call_id: id.clone(),
                 fn_name: name.clone(),
                 fn_arguments: input.clone(),
                 thought_signatures: None,
-            })
+            })))
         }
+        (
+            ProviderPartKind::ToolResponse,
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            },
+        ) if dialect == TranscriptDialect::Anthropic => Ok(Some(ContentPart::from_custom(
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content
+                    .iter()
+                    .map(anthropic_content::tool_result_content)
+                    .collect::<Result<Vec<_>>>()?,
+                "is_error": is_error,
+            }),
+            None,
+        ))),
         (
             ProviderPartKind::ToolResponse,
             ContentBlock::ToolResult {
@@ -893,20 +966,25 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> ContentPar
                 content,
                 ..
             },
-        ) => ContentPart::ToolResponse(ToolResponse::new(
+        ) => Ok(Some(ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
             extract_text(content),
-        )),
+        )))),
         (
             ProviderPartKind::Reasoning | ProviderPartKind::SignedThinking,
             ContentBlock::Thinking { text, signature },
-        ) => match project_thinking(dialect, text.clone(), signature.clone()) {
-            ThinkingProjection::Signed {
-                thinking,
-                signature,
-            } => ContentPart::Thinking(ThinkingBlock::new(thinking, signature)),
-            ThinkingProjection::Reasoning(reasoning) => ContentPart::ReasoningContent(reasoning),
-        },
+        ) => Ok(Some(
+            match project_thinking(dialect, text.clone(), signature.clone()) {
+                ThinkingProjection::Signed {
+                    thinking,
+                    signature,
+                } => ContentPart::Thinking(ThinkingBlock::new(thinking, signature)),
+                ThinkingProjection::Reasoning(reasoning) => {
+                    ContentPart::ReasoningContent(reasoning)
+                }
+            },
+        )),
+        (ProviderPartKind::Omitted, ContentBlock::Redacted) => Ok(None),
         _ => unreachable!("closed transcript projection returned a mismatched part kind"),
     }
 }
@@ -923,19 +1001,27 @@ const fn neutral_part_kind(block: &ContentBlock) -> NeutralPartKind {
     match block {
         ContentBlock::Text { .. } => NeutralPartKind::Text,
         ContentBlock::Image { .. } => NeutralPartKind::Image,
+        ContentBlock::Document { .. } => NeutralPartKind::Document,
+        ContentBlock::SearchResult { .. } => NeutralPartKind::SearchResult,
+        ContentBlock::Redacted => NeutralPartKind::Redacted,
         ContentBlock::ToolUse { .. } => NeutralPartKind::ToolUse,
         ContentBlock::ToolResult { .. } => NeutralPartKind::ToolResult,
         ContentBlock::Thinking { .. } => NeutralPartKind::Thinking,
     }
 }
 
-fn to_genai_binary(source: &ImageSource) -> Binary {
-    match source {
+fn to_genai_binary(source: &ImageSource) -> Result<Binary> {
+    Ok(match source {
         ImageSource::Base64 { media_type, data } => {
             Binary::from_base64(media_type.clone(), data.clone(), None)
         }
         ImageSource::Url { url } => Binary::from_url(content_type_for_url(url), url.clone(), None),
-    }
+        ImageSource::File { file_id } => {
+            return Err(Error::InvalidRequest(format!(
+                "File {file_id} was not materialized before provider dispatch"
+            )));
+        }
+    })
 }
 
 /// A neutral image URL carries no media type; infer one from the extension so
@@ -1754,8 +1840,12 @@ mod hermetic_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn probe_credential_classifies_http_401_as_invalid() {
-        // A clear authentication rejection (401) is a definitive `Invalid` — the
-        // key is refuted, never a false `Valid`.
+        // Probe cause/effect decision table: P1=2xx -> Valid; P2=401/403 auth
+        // rejection -> Invalid; P3=transport/5xx/bad endpoint -> Unknown. FMECA:
+        // false Valid admits a bad credential (critical), false Invalid can retire
+        // a good one during outage (high); exact P2 classification and P3 fail-safe
+        // prevent both. This test owns P2; the next owns P3; the ignored live test
+        // owns P1 through the same canonical Anthropic ACL.
         let base_url = spawn_status_server(
             "HTTP/1.1 401 Unauthorized",
             r#"{"error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,

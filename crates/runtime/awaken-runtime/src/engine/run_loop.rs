@@ -28,7 +28,11 @@ pub(crate) async fn run_agent_loop(
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
-        let step = RunStepResult::cancelled(run_id.clone());
+        let step = RunStepResult::ended_with_messages(
+            run_id.clone(),
+            EndCause::Cancelled,
+            activation.input,
+        );
         return finish(runtime, &context, &thread_id, run_id, step).await;
     }
 
@@ -37,7 +41,11 @@ pub(crate) async fn run_agent_loop(
     let env = match runtime.resolve_plugin_env_with(&resolved.spec, &context.session_plugins) {
         Ok(env) => env,
         Err(_) => {
-            let step = RunStepResult::capability_bound(run_id.clone());
+            let step = RunStepResult::ended_with_messages(
+                run_id.clone(),
+                EndCause::Error(Failure::CapabilityBound),
+                activation.input,
+            );
             return finish(runtime, &context, &thread_id, run_id, step).await;
         }
     };
@@ -206,6 +214,9 @@ async fn infer_step(
             request.messages.extend(transcript);
         }
         request.model_binding = candidates[cand_idx].clone();
+        if let Some(materializer) = &context.model_content_materializer {
+            request = materializer.materialize(request).await?;
+        }
         match infer_with_retry(
             llm,
             request,

@@ -930,7 +930,8 @@ fn mount_with_managed_over_and_models(
             worker_authenticator.clone(),
         )
         .with_worker_directory(worker_directory.clone())
-        .with_session_repository(session_application.session_repository_handle()),
+        .with_session_repository(session_application.session_repository_handle())
+        .with_recovery(host.worker_recovery_source()),
     ));
     let artifact_publication =
         awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(

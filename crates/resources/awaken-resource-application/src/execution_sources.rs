@@ -5,8 +5,9 @@ use std::sync::Arc;
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    FileApplicationService, FileContentSource, FileContentSourceError, RepositoryBindingVerifier,
-    RepositoryBindingVerifierError, ResourceBindingValidator, SkillStore, SkillVersion, content_id,
+    FileApplicationService, FileContentSource, FileContentSourceError, FileReadPurpose,
+    RepositoryBindingVerifier, RepositoryBindingVerifierError, ResolvedFileContent,
+    ResourceBindingValidator, SkillStore, SkillVersion, content_id,
 };
 use awaken_session_contract::{
     ResolvedSkillBinding, SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication,
@@ -30,8 +31,9 @@ impl<C: Sync> FileContentSource<C> for ApplicationFileContentSource {
         &self,
         workspace_id: &str,
         file_id: &str,
+        _purpose: &FileReadPurpose,
         _fence: Option<&C>,
-    ) -> Result<Option<(String, Vec<u8>)>, FileContentSourceError> {
+    ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
         let Some((record, bytes)) = self
             .application
             .bytes(workspace_id, file_id)
@@ -47,7 +49,13 @@ impl<C: Sync> FileContentSource<C> for ApplicationFileContentSource {
                 record.blob_id
             )));
         }
-        Ok(Some((record.blob_id, bytes)))
+        Ok(Some(ResolvedFileContent {
+            file_id: record.id,
+            content_id: record.blob_id,
+            filename: record.filename,
+            media_type: record.mime_type,
+            bytes,
+        }))
     }
 }
 
@@ -284,6 +292,7 @@ mod tests {
                 &awaken_resource_contract::UnavailableFileContentSource,
                 "workspace",
                 "file",
+                &awaken_resource_contract::FileReadPurpose::SessionResource,
                 None,
             )
             .await

@@ -39,8 +39,9 @@ pub use deployment_backing::{
 };
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    FileContentSource, FileContentSourceError, MemoryMaterializationReferenceEncoder,
-    MemoryMaterializationReferenceError, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    FileContentSource, FileContentSourceError, FileReadPurpose,
+    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
+    RepositoryBindingVerifier, RepositoryBindingVerifierError, ResolvedFileContent,
     UnavailableArtifactPublisher, UnavailableFileContentSource,
 };
 pub use input::{

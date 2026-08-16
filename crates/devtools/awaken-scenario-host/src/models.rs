@@ -269,6 +269,7 @@ impl LlmExecutor for VisionProbeModel {
                     ContentBlock::Image { source } => medias.push(match source {
                         ImageSource::Base64 { media_type, .. } => media_type.clone(),
                         ImageSource::Url { .. } => "image/url".to_string(),
+                        ImageSource::File { .. } => "image/unmaterialized-file".to_string(),
                     }),
                     _ => {}
                 }

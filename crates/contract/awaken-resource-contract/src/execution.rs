@@ -8,6 +8,27 @@ use async_trait::async_trait;
 
 use crate::{ConfigVersion, FileRecord, ResourceAccess, content_id, harvest_idempotency_key};
 
+/// Why immutable File bytes are being opened. A remote Resources adapter uses
+/// this value only to select the corresponding trusted-reference proof; it does
+/// not accept the requested `file_id` itself as authority.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FileReadPurpose {
+    SessionResource,
+    ModelContent { thread_id: String },
+}
+
+/// One exact logical File resolved to immutable content. Metadata travels with
+/// the bytes so a model-content adapter never guesses a MIME type or filename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFileContent {
+    pub file_id: String,
+    pub content_id: String,
+    pub filename: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("file content source: {0}")]
 pub struct FileContentSourceError(String);
@@ -25,8 +46,9 @@ pub trait FileContentSource<C: Sync = ()>: Send + Sync {
         &self,
         workspace_id: &str,
         file_id: &str,
+        purpose: &FileReadPurpose,
         fence: Option<&C>,
-    ) -> Result<Option<(String, Vec<u8>)>, FileContentSourceError>;
+    ) -> Result<Option<ResolvedFileContent>, FileContentSourceError>;
 }
 
 pub struct UnavailableFileContentSource;
@@ -37,8 +59,9 @@ impl<C: Sync> FileContentSource<C> for UnavailableFileContentSource {
         &self,
         _workspace_id: &str,
         _file_id: &str,
+        _purpose: &FileReadPurpose,
         _fence: Option<&C>,
-    ) -> Result<Option<(String, Vec<u8>)>, FileContentSourceError> {
+    ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
         Err(FileContentSourceError::new(
             "File content source is not configured by the composition root",
         ))

@@ -340,9 +340,8 @@ fn default_anthropic_compatible_model(base_url: &str) -> &'static str {
 }
 
 /// Claude Code accepts Kimi's `/coding/` root and appends `/v1` itself, while
-/// `GenaiExecutor` expects the Anthropic Messages API base. Accept both operator
-/// forms and canonicalize only the known Kimi coding endpoint.
-fn normalize_anthropic_compatible_base(base_url: String) -> String {
+/// the provider executor consumes the Messages API base directly.
+fn normalize_anthropic_compatible_base(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.contains("api.kimi.com/coding") && !trimmed.ends_with("/v1") {
         format!("{trimmed}/v1/")
@@ -351,10 +350,26 @@ fn normalize_anthropic_compatible_base(base_url: String) -> String {
     }
 }
 
+/// Route every direct scenario/live Anthropic endpoint through the same
+/// dialect-aware executor factory as publication-pinned worker materialization.
+/// Keeping this helper in the scenario assembly avoids reviving the legacy
+/// generic-genai Anthropic path merely because a test supplies environment vars.
+fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmExecutor> {
+    let credential = awaken_agent_contract::RedactedString::new(api_key);
+    let base_url = normalize_anthropic_compatible_base(base_url);
+    awaken_credential_materializer::executor_from_materialized_endpoint(
+        "anthropic_messages",
+        "anthropic",
+        Some(&base_url),
+        Some(&credential),
+    )
+    .expect("construct the canonical Anthropic Messages executor")
+}
+
 /// A server backed by a **live** Anthropic-compatible model, configured from the
 /// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
 /// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
-/// `RedactedString` → `GenaiExecutor` seam used by worker materialization, exposed as a server mode
+/// dialect-aware executor factory used by worker materialization, exposed as a server mode
 /// so the TypeScript e2e can drive a real turn through the managed / ai-sdk / a2a
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
 pub fn build_real_router() -> Router {
@@ -364,13 +379,12 @@ pub fn build_real_router() -> Router {
     let base = std::env::var("ANTHROPIC_BASE_URL")
         .or_else(|_| std::env::var("KIMI_BASE_URL"))
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
-    let base = normalize_anthropic_compatible_base(base);
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-    let executor = GenaiExecutor::anthropic_compatible(base, key);
+    let executor = anthropic_messages_executor(&base, key);
     mount(resource_host_with_deployment(
-        Arc::new(executor),
+        executor,
         model,
         scenario_deployment(),
     ))
@@ -425,7 +439,6 @@ pub async fn build_resolved_real_router() -> Router {
     let base = std::env::var("ANTHROPIC_BASE_URL")
         .or_else(|_| std::env::var("KIMI_BASE_URL"))
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
-    let base = normalize_anthropic_compatible_base(base);
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
@@ -1150,13 +1163,20 @@ mod compatible_endpoint_tests {
 
     #[test]
     fn kimi_coding_root_is_canonicalized_for_the_messages_provider() {
+        // Causes: C1 Kimi coding root omits /v1; C2 it already includes /v1;
+        // C3 another Anthropic-compatible base. Effect: one trailing-slash API
+        // base, adding /v1 only for C1. Rules K1/K2/K3 map directly to cases.
         assert_eq!(
-            normalize_anthropic_compatible_base("https://api.kimi.com/coding/".into()),
+            normalize_anthropic_compatible_base("https://api.kimi.com/coding/"),
             "https://api.kimi.com/coding/v1/"
         );
         assert_eq!(
-            normalize_anthropic_compatible_base("https://api.kimi.com/coding/v1/".into()),
+            normalize_anthropic_compatible_base("https://api.kimi.com/coding/v1/"),
             "https://api.kimi.com/coding/v1/"
+        );
+        assert_eq!(
+            normalize_anthropic_compatible_base("https://api.anthropic.com/v1"),
+            "https://api.anthropic.com/v1/"
         );
     }
 

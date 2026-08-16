@@ -133,9 +133,12 @@ async fn live_stream_is_not_replay_truth() {
     );
 }
 
-/// RS-CTRL-001 (cancel→terminal slice): Given a pre-cancelled run, When it
-/// executes, Then a terminal Cancelled outcome is committed and no assistant
-/// message is produced.
+/// RS-CTRL-001 cause/effect rule: C1=accepted activation carries one user input;
+/// C2=cancellation is already set before inference. E1=input and terminal
+/// Cancelled state commit atomically; E2=no assistant message/model side effect.
+/// FMECA: dropping C1 makes durable history deny accepted input (critical), while
+/// fabricating an assistant reply after C2 violates cancellation (critical).
+/// Decision rule C1+C2 -> E1+E2.
 #[tokio::test]
 async fn cancel_commits_terminal_outcome() {
     let runtime = runtime();
@@ -150,8 +153,9 @@ async fn cancel_commits_terminal_outcome() {
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
 
     let committed = commit.committed();
-    assert!(
-        committed.messages.is_empty(),
-        "a cancelled run must not commit assistant messages"
+    assert_eq!(
+        committed.messages,
+        activation().input,
+        "accepted user input commits, but cancellation produces no assistant message"
     );
 }
