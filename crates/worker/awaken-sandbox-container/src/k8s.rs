@@ -649,14 +649,8 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         container_id: &str,
     ) -> Result<Option<serde_json::Value>, RuntimeError> {
-        if self.continuation_volume.is_none() {
-            return Ok(None);
-        }
         let pod = self.pods().get(container_id).await.map_err(backend)?;
-        let uid = continuation::bound_claim_uid(&pod).ok_or_else(|| {
-            backend("Kubernetes Sandbox Pod has no continuation PVC incarnation evidence")
-        })?;
-        Ok(Some(serde_json::json!({ "continuation_claim_uid": uid })))
+        continuation::handle_extra(&pod)
     }
 
     async fn spawn(

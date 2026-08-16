@@ -117,6 +117,30 @@ pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&
         .map(String::as_str)
 }
 
+pub(super) fn handle_extra(
+    pod: &k8s_openapi::api::core::v1::Pod,
+) -> Result<Option<serde_json::Value>, RuntimeError> {
+    let binds_continuation_claim = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.volumes.as_ref())
+        .is_some_and(|volumes| {
+            volumes.iter().any(|volume| {
+                volume.name == CONTINUATION_VOLUME && volume.persistent_volume_claim.is_some()
+            })
+        });
+    match (binds_continuation_claim, bound_claim_uid(pod)) {
+        (false, None) => Ok(None),
+        (true, Some(uid)) => Ok(Some(serde_json::json!({ "continuation_claim_uid": uid }))),
+        (true, None) => Err(backend(
+            "Kubernetes Sandbox Pod has no continuation PVC incarnation evidence",
+        )),
+        (false, Some(_)) => Err(backend(
+            "Kubernetes Sandbox Pod has continuation PVC incarnation evidence without a bound claim",
+        )),
+    }
+}
+
 pub(super) fn build_claim(
     id: &str,
     config: &crate::K8sContinuationVolume,
@@ -312,6 +336,50 @@ mod tests {
             claim_deletion_admission(true, true, true),
             ClaimDeletionAdmission::DeleteExact,
         );
+    }
+
+    #[tokio::test]
+    async fn handle_evidence_follows_the_realized_continuation_binding() {
+        /* Handle-evidence cause/effect graph.
+         * Causes: C1 the deployment has continuation storage configured; C2
+         * the realized Pod binds the canonical continuation PVC; C3 the Pod
+         * carries the exact PVC-incarnation UID annotation. Effects: E1 return
+         * no durable handle for a PVC-free Pod; E2 persist the UID fence for a
+         * retained Pod; E3 fail closed on a missing or orphaned UID. Decision
+         * rules: H1 !C1+!C2+!C3=>E1 (configuration disabled); H2
+         * C1+!C2+!C3=>E1 (ephemeral capability probe); H3 C1+C2+C3=>E2
+         * (retained Session); H4 C1+C2+!C3=>E3; H5 any(C1)+!C2+C3=>E3.
+         * C2 is the realized-object authority, so this does not duplicate the
+         * typed claim selector used by allocation and Pod projection.
+         */
+        let plain = super::super::K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        let retained = plain.pod("configured-off", &plan());
+        assert_eq!(handle_extra(&retained).unwrap(), None, "H1");
+
+        let configured = super::super::K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+            .with_continuation_volume(crate::K8sContinuationVolume {
+                storage_class_name: Some("retained-rwo".into()),
+                size: "8Gi".into(),
+            });
+        let mut ephemeral_plan = plan();
+        ephemeral_plan.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+        let ephemeral = configured.pod("probe", &ephemeral_plan);
+        assert_eq!(handle_extra(&ephemeral).unwrap(), None, "H2");
+
+        let mut retained = configured.pod("session", &plan());
+        assert!(handle_extra(&retained).is_err(), "H4");
+        bind_claim_uid(&mut retained, "claim-incarnation-1");
+        assert_eq!(
+            handle_extra(&retained).unwrap(),
+            Some(serde_json::json!({
+                "continuation_claim_uid": "claim-incarnation-1"
+            })),
+            "H3"
+        );
+
+        let mut orphaned = ephemeral;
+        bind_claim_uid(&mut orphaned, "orphaned-incarnation");
+        assert!(handle_extra(&orphaned).is_err(), "H5");
     }
 
     #[tokio::test]
