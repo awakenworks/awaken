@@ -117,15 +117,15 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
-awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the single-machine embed over
 # migrated <data_dir>/iam.sqlite, seeded roles, and one-time browser setup.
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "589b73ada0d0a750d7600a67a80efac9353c39e8", version = "=0.1.2-dev" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "c470d4563659ec03f24d75248137ca7a04979b88", version = "=0.1.2-dev" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
