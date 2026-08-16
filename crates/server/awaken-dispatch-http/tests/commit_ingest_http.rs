@@ -313,3 +313,44 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
         serde_json::to_value(operation).unwrap()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_retryable_claimed_commit_preserves_the_server_cause() {
+    let identity = WorkerIdentity::new("diagnostic-worker", "diagnostic-boot", 1);
+    let app = axum::Router::new().route(
+        "/v1/worker/commit-claimed",
+        axum::routing::post(|| async {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "run claim is stale"})),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let commit = terminal_commit();
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("diagnostic-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    };
+    let error = RemoteClaimedRunCommit::new(format!("http://{address}"), identity.clone())
+        .commit_operation(ClaimedCommitCommand {
+            claim: RunClaim {
+                run_id: RunId("diagnostic-run".into()),
+                owner: identity.lease_owner(),
+                epoch: 1,
+            },
+            operation,
+        })
+        .await
+        .expect_err("400 remains fail-closed");
+    assert!(
+        error
+            .to_string()
+            .contains("400 Bad Request: run claim is stale")
+    );
+}

@@ -23,7 +23,9 @@ use bollard::container::{
 };
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{BuildImageOptions, CreateImageOptions, PruneImagesOptions, PushImageOptions};
-use bollard::models::{HostConfig, PortBinding};
+use bollard::models::{
+    ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, PortBinding,
+};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -35,6 +37,24 @@ use crate::{
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn abandoned_created_container(
+    info: &ContainerInspectResponse,
+    runtime_owner: &str,
+) -> Option<String> {
+    let labels = info.config.as_ref()?.labels.as_ref()?;
+    let created = info.state.as_ref()?.status == Some(ContainerStateStatusEnum::CREATED);
+    (created
+        && labels
+            .get(MANAGED_SANDBOX_LABEL)
+            .is_some_and(|value| value == "1")
+        && labels
+            .get(RUNTIME_OWNER_LABEL)
+            .is_some_and(|value| value == runtime_owner))
+    .then(|| info.id.clone())
+    .flatten()
+    .filter(|id| !id.is_empty())
+}
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -868,17 +888,56 @@ impl ContainerRuntime for DockerRuntime {
             labels: Some(labels),
             ..Default::default()
         };
-        let created = self
+        let name = runtime_container_name(&self.owner_id, id);
+        let created = match self
             .docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: runtime_container_name(&self.owner_id, id),
+                    name: name.clone(),
                     platform: None,
                 }),
-                config,
+                config.clone(),
             )
             .await
-            .map_err(backend)?;
+        {
+            Ok(created) => created,
+            Err(error) => {
+                // Docker can commit `create` and then have the caller's future
+                // cancelled before `start` returns. The next exact Session retry
+                // sees 409 forever unless it reconciles that never-started effect.
+                // A running/exited container or a different runtime owner is not
+                // authorized here and remains a hard conflict.
+                let abandoned = self
+                    .docker
+                    .inspect_container(&name, None)
+                    .await
+                    .ok()
+                    .and_then(|info| abandoned_created_container(&info, &self.owner_id));
+                let Some(abandoned) = abandoned else {
+                    return Err(backend(error));
+                };
+                self.docker
+                    .remove_container(
+                        &abandoned,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+                    .map_err(backend)?;
+                self.docker
+                    .create_container(
+                        Some(CreateContainerOptions {
+                            name,
+                            platform: None,
+                        }),
+                        config,
+                    )
+                    .await
+                    .map_err(backend)?
+            }
+        };
         if let Err(error) = self
             .docker
             .start_container(&created.id, None::<StartContainerOptions<String>>)
@@ -1196,5 +1255,57 @@ impl PackageImageProvisioner for DockerRuntime {
             }
         }
         Ok(self.docker.inspect_image(image).await.is_ok())
+    }
+}
+
+#[cfg(test)]
+mod creation_reconciliation_tests {
+    use super::*;
+
+    fn inspected(
+        status: ContainerStateStatusEnum,
+        managed: bool,
+        owner: &str,
+    ) -> ContainerInspectResponse {
+        let mut labels = HashMap::new();
+        if managed {
+            labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
+        }
+        labels.insert(RUNTIME_OWNER_LABEL.to_string(), owner.to_string());
+        ContainerInspectResponse {
+            id: Some("container-1".into()),
+            state: Some(bollard::models::ContainerState {
+                status: Some(status),
+                ..Default::default()
+            }),
+            config: Some(bollard::models::ContainerConfig {
+                labels: Some(labels),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_the_same_runtime_unstarted_effect_is_reconcilable() {
+        // Cause/effect matrix for a cancelled Docker create:
+        // C1 managed label, C2 exact runtime incarnation, C3 never started.
+        // Only C1+C2+C3 may be removed and recreated. Running/exited effects,
+        // foreign owners and non-Awaken containers remain hard conflicts.
+        assert_eq!(
+            abandoned_created_container(
+                &inspected(ContainerStateStatusEnum::CREATED, true, "runtime-a"),
+                "runtime-a",
+            ),
+            Some("container-1".into()),
+        );
+        for candidate in [
+            inspected(ContainerStateStatusEnum::RUNNING, true, "runtime-a"),
+            inspected(ContainerStateStatusEnum::EXITED, true, "runtime-a"),
+            inspected(ContainerStateStatusEnum::CREATED, true, "runtime-b"),
+            inspected(ContainerStateStatusEnum::CREATED, false, "runtime-a"),
+        ] {
+            assert_eq!(abandoned_created_container(&candidate, "runtime-a"), None);
+        }
     }
 }

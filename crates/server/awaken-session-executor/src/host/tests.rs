@@ -3213,6 +3213,103 @@ impl LlmExecutor for BrainSkillModel {
     }
 }
 
+/// Published-Skill tool-face cause/effect graph. C1 the immutable Agent
+/// publication selects a Skill; C2 the Session slot contains its exact verified
+/// bundle; C3 Runtime builds the model request. Effects: E1 both stable Skill
+/// tools are model-visible; E2 their executors share the same Session registry.
+/// Without C1 or C2, neither tool may appear. Filesystem bundle realization is
+/// independently covered by L7/L8 and manifest replacement coverage below.
+///
+/// | Rule | C1 selected | C2 delivered | Effect |
+/// |---|---|---|---|
+/// | S1 | yes | yes | E1 + E2 |
+/// | S2 | yes | no | no ambient Skill tools |
+/// | S3 | no | yes | no unselected Skill tools |
+#[tokio::test]
+async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face() {
+    use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+    use awaken_runtime_contract::agent_bindings::AgentBindings;
+    use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
+
+    #[derive(Clone, Default)]
+    struct ToolFaceRecorder(Arc<Mutex<Vec<ChatRequest>>>);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for ToolFaceRecorder {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            self.0.lock().unwrap().push(request);
+            Ok(ChatResponse {
+                output: AssistantOutput::text("ok"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let selected = "release-signal";
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-skill")
+        .agent_bindings(AgentBindings {
+            skills: vec![awaken_agent_contract::AgentSkillBinding::custom(selected)],
+            ..Default::default()
+        })
+        .build();
+    let publications =
+        StaticPublishedAgentSnapshots::try_new([snapshot]).expect("one immutable published Agent");
+    let recorder = ToolFaceRecorder::default();
+    let observed = recorder.0.clone();
+    let host = Arc::new(
+        SharedHost::new(Arc::new(recorder), "stub").with_agent_publications(Arc::new(publications)),
+    );
+    let files = vec![SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: b"---\nname: release-signal\ndescription: release\n---\nSay READY.".to_vec(),
+        executable: false,
+    }];
+    host.session_slots.update("published-skill-thread", |slot| {
+        slot.skills = Some(vec![SkillVersion {
+            id: "skver-release-signal-1".into(),
+            skill_id: selected.into(),
+            version: 1,
+            name: selected.into(),
+            description: "release".into(),
+            directory: "/skills/release-signal".into(),
+            bundle_sha256: bundle_sha256(&files),
+            files,
+            created_unix_nanos: 0,
+        }]);
+    });
+
+    host.run(
+        Some("published-skill"),
+        "published-skill-thread",
+        vec![Message::text(
+            MessageId("published-skill-user".into()),
+            Role::User,
+            "Release signal",
+        )],
+    )
+    .await
+    .expect("published Skill run");
+
+    let requests = observed.lock().unwrap();
+    let tools = &requests.last().expect("model request").tools;
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.id == awaken_ext_skills::SKILL_LIST_TOOL_ID),
+        "S1/E1 list_skills is visible"
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.id == awaken_ext_skills::SKILL_TOOL_ID),
+        "S1/E1 Skill is visible"
+    );
+}
+
 struct HandReadModel;
 
 #[async_trait::async_trait]

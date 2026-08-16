@@ -72,6 +72,7 @@ impl LeaseBook {
     /// Atomically install one owner, fencing epoch and lease window.  Keeping
     /// these fields under one mutex prevents an observer from combining a new
     /// epoch with the preceding owner or a lease window without either.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn claim_for(
         &self,
         work_id: &str,

@@ -387,17 +387,34 @@ impl WorkQueue for InMemoryWorkQueue {
     }
 
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
-        let mut works = self.works.lock().unwrap();
+        let owned = self
+            .works
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, work)| {
+                (work.state == WorkState::Active
+                    && matches!(&work.data, WorkPayload::Session { .. }))
+                .then_some((work.environment_id.clone(), id.clone()))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(_, id)| self.book.is_owned_by(id, worker_owner))
+            .collect::<Vec<_>>();
         let mut released = 0;
-        for (id, work) in works.iter_mut() {
-            if work.state != WorkState::Active || !self.book.is_owned_by(id, worker_owner) {
-                continue;
+        for (environment_id, id) in owned {
+            if self
+                .with_owned(&environment_id, &id, |work| {
+                    work.stop_requested_at = None;
+                    work.stopped_at = None;
+                    work.latest_heartbeat_at = None;
+                    work.state = WorkState::Queued;
+                })
+                .is_some()
+            {
+                self.book.release(&id);
+                released += 1;
             }
-            work.stop_requested_at = Some(OBJECT_AT.to_string());
-            work.stopped_at = Some(OBJECT_AT.to_string());
-            work.state = WorkState::Stopped;
-            self.book.release(id);
-            released += 1;
         }
         Ok(released)
     }
@@ -431,7 +448,7 @@ impl WorkQueue for InMemoryWorkQueue {
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         if let Some(lease) = self.current_session_lease(env_id, session_id, now_ms) {
             if lease.owner != worker_owner {
-                return Ok(None);
+                return Ok(Some(lease));
             }
             self.book.lease(&lease.work_id, now_ms);
             return Ok(self.current_session_lease(env_id, session_id, now_ms));

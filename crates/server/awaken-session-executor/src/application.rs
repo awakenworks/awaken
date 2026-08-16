@@ -41,13 +41,14 @@ fn realization_renewal_failure_disposition(
 fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
     use awaken_session_contract::SessionRealizationControlFailure;
 
-    let error = match kani::any::<u8>() % 7 {
+    let error = match kani::any::<u8>() % 8 {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::Terminal,
-        3 => SessionRealizationControlFailure::StaleOwnership,
-        4 => SessionRealizationControlFailure::Conflict,
-        5 => SessionRealizationControlFailure::Invalid(String::new()),
+        2 => SessionRealizationControlFailure::Retired,
+        3 => SessionRealizationControlFailure::Terminal,
+        4 => SessionRealizationControlFailure::StaleOwnership,
+        5 => SessionRealizationControlFailure::Conflict,
+        6 => SessionRealizationControlFailure::Invalid(String::new()),
         _ => SessionRealizationControlFailure::Unavailable(String::new()),
     };
     let expected_retirement = matches!(
@@ -79,6 +80,7 @@ mod realization_renewal_tests {
         // effect still interrupts and revokes only this local Session.
         for error in [
             SessionRealizationControlFailure::NotFound,
+            SessionRealizationControlFailure::Retired,
             SessionRealizationControlFailure::Terminal,
             SessionRealizationControlFailure::Invalid("bad target".into()),
         ] {

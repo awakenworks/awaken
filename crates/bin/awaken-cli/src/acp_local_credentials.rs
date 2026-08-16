@@ -25,9 +25,11 @@ pub struct PreparedLocalAcp {
 
 /// The AllInOne process's canonical registered Worker. ACP observations are an
 /// optional capability of this Worker, never the condition that creates it.
+#[derive(Clone)]
 pub struct PreparedLocalWorker {
     resolver: Option<Arc<AcpLocalCredentialResolver>>,
     stores: awaken_control::InferenceMaterializationStores,
+    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
 /// Prepare the one embedded Worker for every AllInOne deployment. Host ACP
@@ -42,6 +44,7 @@ pub async fn prepare_local_worker(
         Some(prepared) => PreparedLocalWorker {
             resolver: Some(prepared.resolver),
             stores: prepared.stores,
+            admin_tools: Vec::new(),
         },
         None => PreparedLocalWorker {
             resolver: None,
@@ -50,6 +53,7 @@ pub async fn prepare_local_worker(
                 seal_key,
             )
             .await,
+            admin_tools: Vec::new(),
         },
     };
     // One registered Worker claims Native, ACP, and outbound A2A attempts. The
@@ -234,14 +238,22 @@ impl PreparedLocalAcp {
 }
 
 impl PreparedLocalWorker {
+    pub fn with_admin_tools(
+        mut self,
+        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    ) -> Self {
+        self.admin_tools = tools;
+        self
+    }
+
     pub fn build_worker(
-        self,
+        &self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            self.stores.credentials,
-            self.stores.secrets,
+            self.stores.credentials.clone(),
+            self.stores.secrets.clone(),
         );
         let mut builder = configured_worker_builder(
             awaken_worker_transport_security::WorkerUpstream::new(upstream)
@@ -249,11 +261,12 @@ impl PreparedLocalWorker {
             deployment,
             credentials,
         )
+        .with_admin_tools(self.admin_tools.clone())
         .without_admin_surface();
-        if let Some(resolver) = self.resolver {
+        if let Some(resolver) = &self.resolver {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
-                .with_acp_capability_observation_source(resolver);
+                .with_acp_capability_observation_source(resolver.clone());
         }
         builder.build().map_err(|error| error.to_string())
     }
@@ -669,6 +682,7 @@ mod tests {
                 credentials: Arc::new(InMemoryCredentialRepo::new()),
                 secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             },
+            admin_tools: Vec::new(),
         };
         let worker = prepared
             .build_worker("http://127.0.0.1:1", &deployment)
