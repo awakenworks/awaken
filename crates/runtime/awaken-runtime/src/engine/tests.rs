@@ -864,6 +864,63 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
 }
 
 #[tokio::test]
+async fn logical_model_request_observations_cover_success_without_usage_and_failure() {
+    use awaken_runtime_contract::llm::ModelRequestObservation;
+
+    let observations = Arc::new(std::sync::Mutex::new(Vec::<ModelRequestObservation>::new()));
+    let success: Arc<dyn LlmExecutor> = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "ok",
+    });
+    infer_with_retry_observed(
+        &success,
+        one_step_request(),
+        &policy(0),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
+        Some(&observations),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let failure: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
+    let mut timeout_policy = policy(0);
+    timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
+    assert!(
+        infer_with_retry_observed(
+            &failure,
+            one_step_request(),
+            &timeout_policy,
+            &crate::circuit_breaker::CircuitBreaker::default(),
+            &recording(),
+            None,
+            None,
+            &awaken_runtime_contract::CaptureDecision::default(),
+            None,
+            &awaken_runtime_contract::metrics::NoopRecorder,
+            None,
+            Some(&observations),
+            None,
+        )
+        .await
+        .is_err()
+    );
+
+    let observed = observations.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0], ModelRequestObservation::default());
+    assert!(observed[1].is_error);
+    assert_eq!(observed[1].usage, Default::default());
+}
+
+#[tokio::test]
 async fn interrupted_text_stream_is_continued_from_the_partial() {
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
@@ -876,8 +933,10 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     let sink = recording();
     // The transient-retry counter the host reads to surface session.status_rescheduled.
     let reschedules = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let rescheduled_runs = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let run_id = RunId("child-run-retried".into());
 
-    let response = infer_with_retry(
+    let response = infer_with_retry_observed(
         &llm,
         one_step_request(),
         &policy(2),
@@ -889,6 +948,8 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         Some(&reschedules),
+        None,
+        Some((&rescheduled_runs, &run_id)),
     )
     .await
     .expect("continues past the drop");
@@ -900,6 +961,11 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         reschedules.load(std::sync::atomic::Ordering::Relaxed),
         1,
         "one transparent retry is counted for session.status_rescheduled"
+    );
+    assert_eq!(
+        *rescheduled_runs.lock().unwrap(),
+        std::collections::BTreeSet::from(["child-run-retried".to_string()]),
+        "the retry is attributed only to the exact Run"
     );
 
     let requests = flaky.requests.lock().unwrap();

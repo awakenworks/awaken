@@ -1088,6 +1088,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "ureq",
+ "uuid",
 ]
 
 [[package]]

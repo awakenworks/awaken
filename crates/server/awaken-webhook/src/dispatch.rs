@@ -200,6 +200,11 @@ impl WebhookDispatcher {
         event: &WebhookEvent,
         timestamp: i64,
     ) -> Result<DispatchReport, DispatchError> {
+        event.validate().map_err(|message| DispatchError {
+            operation: "event validation",
+            subscription_id: None,
+            message: message.to_string(),
+        })?;
         let body = event.to_body();
         let subs = self
             .source
@@ -451,6 +456,28 @@ mod tests {
             crate::signing::verify(SECRET, "event_1", 1_700_000_000, body, &sig).unwrap(),
             "delivered signature verifies against the payload"
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_thread_event_is_rejected_before_subscription_lookup() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = ScriptedSender::new(0);
+        let dispatcher = WebhookDispatcher::new(source, sender.clone());
+        let malformed = WebhookEvent::new(
+            "event_bad_thread",
+            "2026-07-09T00:00:00Z",
+            "session.thread_idled",
+            "sesn_1",
+            "wrkspc_a",
+            None,
+        );
+
+        let error = dispatcher
+            .dispatch(&malformed, 1_700_000_000)
+            .await
+            .unwrap_err();
+        assert_eq!(error.operation, "event validation");
+        assert_eq!(*sender.calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]

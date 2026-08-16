@@ -14,7 +14,8 @@ mod web;
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashTool, DeleteArgs, DeleteTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
-    GrepTool, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool, executable_hand_tools,
+    GrepTool, HandToolContext, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool,
+    executable_hand_tools, executable_hand_tools_in,
 };
 pub use task::{
     CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSendRequest, MessageSender,
@@ -34,7 +35,13 @@ pub use web::{
 /// `web_search` is deliberately absent because its configured plugin is the
 /// sole execution owner; all other built-in Sandbox tools live here.
 pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-    executable_hand_tools()
+    all_hand_tools_in(HandToolContext::default())
+}
+
+pub fn all_hand_tools_in(
+    context: HandToolContext,
+) -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    executable_hand_tools_in(context)
         .into_iter()
         .chain(web_hand_tools())
         .collect()

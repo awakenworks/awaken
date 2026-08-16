@@ -31,6 +31,8 @@ pub struct CommittedStepReceipt {
     /// `true` when the runtime transparently retried a transient inference failure
     /// during this turn (auto-recovery), read from the run's reschedule counter.
     pub rescheduled: bool,
+    pub model_requests: Vec<awaken_runtime_contract::llm::ModelRequestObservation>,
+    pub rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
     pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
     proof: CommittedStepProof,
 }
@@ -51,6 +53,8 @@ pub(super) struct VerifiedStepProjection {
     pub pending: Option<PendingTool>,
     pub compacted: bool,
     pub rescheduled: bool,
+    pub model_requests: Vec<awaken_runtime_contract::llm::ModelRequestObservation>,
+    pub rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
     pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
 }
 
@@ -76,6 +80,8 @@ impl CommittedStepReceipt {
             pending: projected.pending,
             compacted: projected.compacted,
             rescheduled: projected.rescheduled,
+            model_requests: projected.model_requests,
+            rescheduled_delegated_run_ids: projected.rescheduled_delegated_run_ids,
             delegated_runs: projected.delegated_runs,
             proof: CommittedStepProof {
                 thread_id: committed.thread_id.clone(),

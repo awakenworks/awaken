@@ -180,6 +180,13 @@ pub struct RuntimeRunContext {
     /// observability). Absent means retries are not counted — optional wiring, like
     /// the stream sink; the retry behavior itself is unchanged either way.
     pub reschedules: Option<Arc<std::sync::atomic::AtomicU32>>,
+    /// Completed logical model requests for this live attempt. This
+    /// process-local observability seam is inherited by in-process delegated
+    /// children so their requests are visible at the owning Session boundary.
+    pub model_requests: Option<Arc<std::sync::Mutex<Vec<crate::llm::ModelRequestObservation>>>>,
+    /// Stable Run ids that performed at least one transparent provider retry.
+    /// In-process delegated children inherit this shared set.
+    pub rescheduled_runs: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
     /// Claim-bound live authority for this execution attempt. Application
     /// decorators may recheck it immediately before an external side effect.
     /// Absence means the ingress topology has no dispatch ownership concept.
@@ -323,6 +330,25 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_reschedules(mut self, counter: Arc<std::sync::atomic::AtomicU32>) -> Self {
         self.reschedules = Some(counter);
+        self
+    }
+
+    /// Collect completed logical model requests for protocol observability.
+    #[must_use]
+    pub fn with_model_requests(
+        mut self,
+        observations: Arc<std::sync::Mutex<Vec<crate::llm::ModelRequestObservation>>>,
+    ) -> Self {
+        self.model_requests = Some(observations);
+        self
+    }
+
+    #[must_use]
+    pub fn with_rescheduled_runs(
+        mut self,
+        runs: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    ) -> Self {
+        self.rescheduled_runs = Some(runs);
         self
     }
 

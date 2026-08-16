@@ -1547,6 +1547,8 @@ impl SharedHost {
             cancel: Arc::new(std::sync::Mutex::new(None)),
             active_run: std::sync::Mutex::new(None),
             reschedule: std::sync::Mutex::new(None),
+            model_requests: std::sync::Mutex::new(None),
+            rescheduled_runs: std::sync::Mutex::new(None),
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             state: tokio::sync::Mutex::new(state),
             outcome: tokio::sync::Mutex::new(()),
