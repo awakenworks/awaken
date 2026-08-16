@@ -236,6 +236,7 @@ pub awaken_control::ControlDependencies::resource_store: alloc::sync::Arc<dyn aw
 pub awaken_control::ControlDependencies::runtimes: alloc::sync::Arc<dyn awaken_config_service::capabilities::RuntimeCapabilitySource>
 pub awaken_control::ControlDependencies::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_control::ControlDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
+pub awaken_control::ControlDependencies::vaults: alloc::sync::Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>
 pub awaken_control::ControlDependencies::webhook_store: alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>
 pub struct awaken_control::ControlRouterInput
 pub awaken_control::ControlRouterInput::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>

@@ -142,6 +142,7 @@ pub struct SessionApplication {
     local_realization_owner: String,
     runtime_incarnation: String,
     lifecycle_supervisor_started: AtomicBool,
+    lifecycle_wakeup: tokio::sync::Notify,
 }
 
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -210,6 +211,7 @@ impl SessionApplication {
                 APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
             lifecycle_supervisor_started: AtomicBool::new(false),
+            lifecycle_wakeup: tokio::sync::Notify::new(),
         }
     }
 
@@ -235,6 +237,10 @@ impl SessionApplication {
     /// Claim the one lifecycle supervisor for this application instance.
     pub fn claim_lifecycle_supervisor(&self) -> bool {
         claim_once(&self.lifecycle_supervisor_started)
+    }
+
+    pub(crate) fn wake_lifecycle_supervisor(&self) {
+        self.lifecycle_wakeup.notify_one();
     }
 
     #[must_use]
@@ -610,10 +616,10 @@ async fn dispatch_session_work(
         return Ok(false);
     }
     if session.is_terminal() {
-        environments
-            .retire_session_work(&baseline.environment.environment_id, &session.session_id)
-            .await?;
-        return Ok(true);
+        // Terminal Work retirement belongs exclusively to the recoverable
+        // resource cleanup driver. A second reconciler would duplicate the
+        // external attempt and obscure its durable completion boundary.
+        return Ok(false);
     }
     environments
         .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)

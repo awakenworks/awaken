@@ -177,9 +177,6 @@ impl SessionRuntime for RehydrateFake {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 

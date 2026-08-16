@@ -179,9 +179,6 @@ impl SessionRuntime for NoopRuntime {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 
@@ -320,9 +317,6 @@ impl SessionRuntime for RecordingCleanupRuntime {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &intent,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 
@@ -531,7 +525,7 @@ impl McpAttachmentRealizer for NoopMcpRealizer {
 struct RecordingEnvironmentSource {
     dispatched: Mutex<BTreeSet<String>>,
     awakened: Mutex<BTreeSet<String>>,
-    retired: Mutex<BTreeSet<String>>,
+    retired: Mutex<Vec<String>>,
     failures: Mutex<BTreeSet<String>>,
 }
 
@@ -609,7 +603,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         Option<awaken_session_contract::work_queue::WorkItem>,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
-        self.retired.lock().unwrap().insert(session_id.to_string());
+        self.retired.lock().unwrap().push(session_id.to_string());
         Ok(None)
     }
 

@@ -300,7 +300,7 @@ pub(crate) async fn wire_skills(
         // cache. Clear it before every rebuild so a retired Skill or a file removed
         // by a newer immutable version cannot remain reachable through read/bash.
         if let Some(env) = &env {
-            env.remove_workspace_path(DELIVERED_SKILLS_SUBDIR)
+            env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
                 .await
                 .map_err(|error| error.to_string())?;
         }

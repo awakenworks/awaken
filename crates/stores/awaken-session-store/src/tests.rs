@@ -393,15 +393,9 @@ fn make_deletable(session: &mut PersistedSession) {
         .terminal_cleanup
         .command_for(&session_id, &session_id)
         .unwrap();
-    let receipt = awaken_session_contract::SessionCleanupCompletion::new(
-        &command,
-        Vec::new(),
-        true,
-        true,
-        true,
-    )
-    .verify(&command)
-    .unwrap();
+    let receipt = awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new())
+        .verify(&command)
+        .unwrap();
     session
         .terminal_cleanup
         .complete(&session_id, &[receipt])
@@ -730,20 +724,9 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
             .terminal_cleanup
             .command_for("sesn_cleanup", "child-cleanup")
             .expect("child cleanup intent survives restart");
-        let receipt = awaken_session_contract::SessionCleanupCompletion::new(
-            &intent,
-            Vec::new(),
-            true,
-            true,
-            true,
-        );
-        let child_receipt = awaken_session_contract::SessionCleanupCompletion::new(
-            &child_intent,
-            Vec::new(),
-            true,
-            true,
-            true,
-        );
+        let receipt = awaken_session_contract::SessionCleanupCompletion::new(&intent, Vec::new());
+        let child_receipt =
+            awaken_session_contract::SessionCleanupCompletion::new(&child_intent, Vec::new());
         let receipt = receipt.verify(&intent).unwrap();
         let child_receipt = child_receipt.verify(&child_intent).unwrap();
         recovered

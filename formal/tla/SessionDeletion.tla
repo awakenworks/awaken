@@ -11,11 +11,13 @@ ASSUME MaxCleanupFailures \in Nat
 \* and every retry must reuse the operation's original effect identity.
 VARIABLES disposition, executionState, cleanupPhase, visible,
           cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
-          cleanupFailures, workRetired, deletedFactCount, revision, processUp
+          cleanupFailures, workRetired, resourceReleaseRequested,
+          deletedFactCount, revision, processUp
 
 vars == <<disposition, executionState, cleanupPhase, visible,
           cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
-          cleanupFailures, workRetired, deletedFactCount, revision, processUp>>
+          cleanupFailures, workRetired, resourceReleaseRequested,
+          deletedFactCount, revision, processUp>>
 
 NoEffect == "none"
 DeleteEffect == "session-cleanup:session-1"
@@ -30,6 +32,7 @@ Init ==
     /\ cleanupAttempts = 0
     /\ cleanupFailures = 0
     /\ workRetired = FALSE
+    /\ resourceReleaseRequested = FALSE
     /\ deletedFactCount = 0
     /\ revision = 0
     /\ processUp = TRUE
@@ -48,7 +51,7 @@ CommitDeleteIntent ==
     /\ deletedFactCount' = deletedFactCount + 1
     /\ revision' = revision + 1
     /\ UNCHANGED <<lastAttemptEffectId, cleanupAttempts,
-                    cleanupFailures, workRetired, processUp>>
+                    cleanupFailures, workRetired, resourceReleaseRequested, processUp>>
 
 \* Reissuing DELETE after the fence is a semantic replay: it cannot publish
 \* another fact, replace the effect identity, or reopen the Session.
@@ -63,6 +66,7 @@ FreezeCleanupTargets ==
     /\ cleanupPhase = "fenced"
     /\ revision < MaxRevision
     /\ cleanupPhase' = "requested"
+    /\ resourceReleaseRequested' = TRUE
     /\ revision' = revision + 1
     /\ UNCHANGED <<disposition, executionState, visible, cleanupEffectId,
                     lastAttemptEffectId, cleanupAttempts, cleanupFailures,
@@ -79,7 +83,8 @@ RetireWork ==
     /\ workRetired' = TRUE
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
-                    cleanupFailures, deletedFactCount, revision, processUp>>
+                    cleanupFailures, resourceReleaseRequested,
+                    deletedFactCount, revision, processUp>>
 
 \* A failed external attempt records no completion authority. Failures are
 \* bounded only so TLC can also check eventual recovery under fairness.
@@ -92,7 +97,8 @@ CleanupFails ==
     /\ cleanupAttempts' = cleanupAttempts + 1
     /\ lastAttemptEffectId' = cleanupEffectId
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
-                    cleanupEffectId, workRetired, deletedFactCount, revision, processUp>>
+                    cleanupEffectId, workRetired, resourceReleaseRequested,
+                    deletedFactCount, revision, processUp>>
 
 \* Only an exact successful cleanup attempt advances durable completion.
 CleanupSucceeds ==
@@ -100,13 +106,15 @@ CleanupSucceeds ==
     /\ disposition = "deleting"
     /\ cleanupPhase = "requested"
     /\ workRetired
+    /\ resourceReleaseRequested
     /\ revision < MaxRevision
     /\ cleanupPhase' = "completed"
     /\ cleanupAttempts' = cleanupAttempts + 1
     /\ lastAttemptEffectId' = cleanupEffectId
     /\ revision' = revision + 1
     /\ UNCHANGED <<disposition, executionState, visible, cleanupEffectId,
-                    cleanupFailures, workRetired, deletedFactCount, processUp>>
+                    cleanupFailures, workRetired, resourceReleaseRequested,
+                    deletedFactCount, processUp>>
 
 \* Physical deletion is a separate durable CAS and is forbidden until the
 \* verified cleanup completion is committed.
@@ -119,7 +127,7 @@ CommitTombstone ==
     /\ revision' = revision + 1
     /\ UNCHANGED <<executionState, cleanupPhase, visible, cleanupEffectId,
                     lastAttemptEffectId, cleanupAttempts, cleanupFailures,
-                    workRetired, deletedFactCount, processUp>>
+                    workRetired, resourceReleaseRequested, deletedFactCount, processUp>>
 
 Crash ==
     /\ processUp
@@ -127,14 +135,16 @@ Crash ==
     /\ processUp' = FALSE
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
-                    cleanupFailures, workRetired, deletedFactCount, revision>>
+                    cleanupFailures, workRetired, resourceReleaseRequested,
+                    deletedFactCount, revision>>
 
 Restart ==
     /\ ~processUp
     /\ processUp' = TRUE
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
-                    cleanupFailures, workRetired, deletedFactCount, revision>>
+                    cleanupFailures, workRetired, resourceReleaseRequested,
+                    deletedFactCount, revision>>
 
 Next ==
     \/ CommitDeleteIntent
@@ -170,6 +180,7 @@ TypeOK ==
     /\ cleanupAttempts \in 0..(MaxCleanupFailures + 1)
     /\ cleanupFailures \in 0..MaxCleanupFailures
     /\ workRetired \in BOOLEAN
+    /\ resourceReleaseRequested \in BOOLEAN
     /\ deletedFactCount \in 0..1
     /\ revision \in 0..MaxRevision
     /\ processUp \in BOOLEAN
@@ -185,7 +196,10 @@ TombstoneRequiresCompletedCleanup ==
     disposition = "tombstoned" => (cleanupPhase = "completed" /\ workRetired)
 
 CompletedCleanupRequiresRetiredWork ==
-    cleanupPhase = "completed" => workRetired
+    cleanupPhase = "completed" => (workRetired /\ resourceReleaseRequested)
+
+FrozenTargetsOwnResourceRelease ==
+    cleanupPhase \in {"requested", "completed"} => resourceReleaseRequested
 
 CleanupUsesStableEffectId ==
     /\ cleanupPhase # "not_requested" => cleanupEffectId = DeleteEffect
@@ -201,6 +215,7 @@ DeleteSafety ==
     /\ VisibilityMatchesDurableDisposition
     /\ TombstoneRequiresCompletedCleanup
     /\ CompletedCleanupRequiresRetiredWork
+    /\ FrozenTargetsOwnResourceRelease
     /\ CleanupUsesStableEffectId
     /\ DeletedFactIsCommittedAtMostOnce
 

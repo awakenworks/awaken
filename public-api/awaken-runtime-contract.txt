@@ -1284,6 +1284,13 @@ pub awaken_runtime_contract::tool::ToolOperationContext::operation_id: alloc::st
 pub awaken_runtime_contract::tool::ToolOperationContext::run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
 impl awaken_runtime_contract::tool::ToolOperationContext
 pub fn awaken_runtime_contract::tool::ToolOperationContext::for_run(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_runtime_contract::tool::ToolOperationToken
+impl awaken_runtime_contract::tool::ToolOperationToken
+pub fn awaken_runtime_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_tenancy::ExecutionScopeRef>
+pub fn awaken_runtime_contract::tool::ToolOperationToken::from_context(&awaken_runtime_contract::tool::ToolOperationContext) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::tool::ToolOperationToken::ledger_id(&self, core::option::Option<&str>) -> alloc::string::String
+pub fn awaken_runtime_contract::tool::ToolOperationToken::operation_id(&self) -> &str
+pub fn awaken_runtime_contract::tool::ToolOperationToken::run_id(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Id>
 pub struct awaken_runtime_contract::tool::ToolOutput
 pub awaken_runtime_contract::tool::ToolOutput::call_id: alloc::string::String
 pub awaken_runtime_contract::tool::ToolOutput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -1326,6 +1333,7 @@ pub trait awaken_runtime_contract::tool::ToolOutputSpiller: core::marker::Send +
 pub fn awaken_runtime_contract::tool::ToolOutputSpiller::spill<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::current_tool_operation_context() -> core::option::Option<awaken_runtime_contract::tool::ToolOperationContext>
 pub fn awaken_runtime_contract::tool::current_tool_operation_id() -> core::option::Option<alloc::string::String>
+pub fn awaken_runtime_contract::tool::current_tool_operation_token() -> core::option::Option<awaken_runtime_contract::tool::ToolOperationToken>
 pub async fn awaken_runtime_contract::tool::invoke_raw_tool(&dyn awaken_runtime_contract::tool::RawTool, awaken_runtime_contract::llm::ToolCall, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_runtime_contract::tool::parse_tool_args<A: serde_core::de::DeserializeOwned>(serde_json::value::Value) -> core::result::Result<A, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_runtime_contract::tool::parse_tool_args_or_error_output<A: serde_core::de::DeserializeOwned>(&str, serde_json::value::Value) -> core::result::Result<A, awaken_runtime_contract::tool::ToolOutput>
@@ -1997,6 +2005,13 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core
 pub struct awaken_runtime_contract::ToolBatchId(pub alloc::string::String)
 impl awaken_runtime_contract::tool_batch::ToolBatchId
 pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_contract::agent::run::Id, usize) -> Self
+pub struct awaken_runtime_contract::ToolOperationToken
+impl awaken_runtime_contract::tool::ToolOperationToken
+pub fn awaken_runtime_contract::tool::ToolOperationToken::execution_scope(&self) -> core::option::Option<&awaken_tenancy::ExecutionScopeRef>
+pub fn awaken_runtime_contract::tool::ToolOperationToken::from_context(&awaken_runtime_contract::tool::ToolOperationContext) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::tool::ToolOperationToken::ledger_id(&self, core::option::Option<&str>) -> alloc::string::String
+pub fn awaken_runtime_contract::tool::ToolOperationToken::operation_id(&self) -> &str
+pub fn awaken_runtime_contract::tool::ToolOperationToken::run_id(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Id>
 pub struct awaken_runtime_contract::ToolOutput
 pub awaken_runtime_contract::ToolOutput::call_id: alloc::string::String
 pub awaken_runtime_contract::ToolOutput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>

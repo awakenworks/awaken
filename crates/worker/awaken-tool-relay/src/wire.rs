@@ -13,9 +13,25 @@ use serde::{Deserialize, Serialize};
 /// its [`HandRequest`]. It is not an effect identity.
 pub type CorrelationId = u64;
 
+pub const CURRENT_HAND_PROTOCOL_VERSION: u16 = 2;
+
+#[must_use]
+pub(crate) const fn hand_protocol_envelope_admitted(
+    protocol_version: u16,
+    has_operation_id: bool,
+) -> bool {
+    protocol_version >= 1
+        && protocol_version <= CURRENT_HAND_PROTOCOL_VERSION
+        && (protocol_version == 1 || has_operation_id)
+}
+
 /// One tool call framed for a hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandRequest {
+    /// Version of the operation-identity contract. Legacy peers deserialize to
+    /// v1; v2 requires an explicit stable operation id for every request.
+    #[serde(default = "legacy_hand_protocol_version")]
+    pub protocol_version: u16,
     /// Matches one transport reply. A re-drive normally receives a fresh value.
     pub correlation_id: CorrelationId,
     /// Stable effect identity. Every transport retry of the same logical tool
@@ -27,8 +43,9 @@ pub struct HandRequest {
     /// the runtime's own fingerprint discipline, G4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_fingerprint: Option<String>,
-    /// Absolute wall-clock deadline hint (unix ms). Carried for the hand to abort
-    /// a doomed call; enforcement is a later slice.
+    /// Absolute wall-clock deadline hint (unix ms). The Hand rejects an already
+    /// expired request before ledger admission so it cannot consume or poison an
+    /// operation identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_unix_ms: Option<u64>,
     /// The already-authorized, already-gated call to run.
@@ -46,7 +63,8 @@ pub struct HandReply {
 ///
 /// `Indeterminate` is a first-class value (ADR-0044 D4 / G26): a call that may or
 /// may not have run is never silently coerced to success or failure. It is
-/// produced brain-side when the channel drops mid-flight, not sent by the hand.
+/// produced brain-side when a request write or reply read is uncertain, not sent
+/// by the hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum HandResult {
@@ -56,7 +74,8 @@ pub enum HandResult {
     /// mismatch). Distinct from a `ToolOutput` with `is_error`, which *did* run.
     Err { error: HandError },
     /// The call's outcome is unknown (channel lost after dispatch). Resolvable by
-    /// an idempotent re-drive with the same `correlation_id`.
+    /// an idempotent re-drive with the same stable `operation_id`; the transport
+    /// correlation id may be fresh.
     Indeterminate,
 }
 
@@ -103,12 +122,35 @@ impl HandRequest {
     /// A request with no fingerprint/deadline constraints.
     pub fn new(correlation_id: CorrelationId, call: ToolCall) -> Self {
         Self {
+            protocol_version: CURRENT_HAND_PROTOCOL_VERSION,
             correlation_id,
             operation_id: call.call_id.clone(),
             catalog_fingerprint: None,
             deadline_unix_ms: None,
             call,
         }
+    }
+}
+
+const fn legacy_hand_protocol_version() -> u16 {
+    1
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn hand_protocol_requires_supported_version_and_v2_operation_identity() {
+        let protocol_version = kani::any();
+        let has_operation_id = kani::any();
+        let admitted = hand_protocol_envelope_admitted(protocol_version, has_operation_id);
+        assert_eq!(
+            admitted,
+            protocol_version >= 1
+                && protocol_version <= CURRENT_HAND_PROTOCOL_VERSION
+                && (protocol_version == 1 || has_operation_id)
+        );
     }
 }
 

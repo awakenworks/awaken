@@ -501,6 +501,53 @@ impl PersistedSession {
         true
     }
 
+    /// Install the durable admission fence required by terminal recovery.
+    ///
+    /// New Archive/Delete commands establish this fence in their root mutation.
+    /// The explicit method exists for legacy terminal rows discovered by the
+    /// reconciler, so no external cleanup effect needs to infer authority from a
+    /// protocol projection.
+    pub fn ensure_terminal_cleanup_fence(&mut self) -> bool {
+        self.terminal_cleanup.request(&self.session_id)
+    }
+
+    /// Freeze the exact Runtime target set and begin release of the currently
+    /// committed Resource generation in the same aggregate mutation.
+    pub fn freeze_terminal_cleanup_targets(
+        &mut self,
+        thread_ids: impl IntoIterator<Item = String>,
+        delegation_watermark: u64,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        let mut changed = self.terminal_cleanup.freeze_targets(
+            &self.session_id,
+            thread_ids,
+            delegation_watermark,
+        )?;
+        if self.resources.pending.is_none() {
+            let before = self.resources.clone();
+            self.resources
+                .begin_release()
+                .expect("terminal release has no pending Resource generation");
+            changed |= self.resources != before;
+        }
+        Ok(changed)
+    }
+
+    /// Accept the exact per-thread cleanup evidence and retire the Resource
+    /// projection atomically with the cleanup completion fact.
+    pub fn complete_terminal_cleanup(
+        &mut self,
+        receipts: &[crate::VerifiedSessionCleanupReceipt],
+        release_reason: impl Into<String>,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        let changed = self.terminal_cleanup.complete(&self.session_id, receipts)?;
+        if changed {
+            self.resources.complete_terminal_release(release_reason);
+            self.environment = crate::SessionEnvironmentState::Unmaterialized;
+        }
+        Ok(changed)
+    }
+
     /// Whether the root Session state forbids every new realization effect.
     /// Keep this classification on the aggregate so API rehydration, MCP recovery,
     /// and later reconcilers cannot grow different terminal-status lists.

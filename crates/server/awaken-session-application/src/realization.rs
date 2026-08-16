@@ -250,6 +250,16 @@ impl SessionApplication {
         loop {
             tokio::select! {
                 () = cancellation.cancelled() => break,
+                _ = self.lifecycle_wakeup.notified() => {
+                    let cycle = self.reconcile_pending_session_state().await;
+                    recovery_failure_streak = if cycle.retryable_failures == 0 {
+                        0
+                    } else {
+                        recovery_failure_streak.saturating_add(1)
+                    };
+                    next_recovery = tokio::time::Instant::now()
+                        + session_recovery_delay(recovery_failure_streak);
+                }
                 _ = tokio::time::sleep_until(next_recovery) => {
                     let cycle = self.reconcile_pending_session_state().await;
                     recovery_failure_streak = if cycle.retryable_failures == 0 {

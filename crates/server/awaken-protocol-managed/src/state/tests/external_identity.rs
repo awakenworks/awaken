@@ -11,7 +11,11 @@ pub(in crate::state) fn bare_create_params() -> SessionCreateParams {
 
 #[tokio::test]
 async fn delete_broadcasts_session_deleted_then_removes_the_record() {
-    let state = ManagedState::new_with_mcp(RehydrateFake::default());
+    let runtime = EndSessionRecorder::default();
+    runtime
+        .block_quiesce
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state
         .create_session(bare_create_params(), None)
         .await
@@ -27,7 +31,12 @@ async fn delete_broadcasts_session_deleted_then_removes_the_record() {
         "a fresh session has no committed events"
     );
 
-    state.delete_session(&id).await.expect("delete");
+    let deletion = {
+        let state = state.clone();
+        let id = id.clone();
+        tokio::spawn(async move { state.delete_session(&id).await })
+    };
+    runtime.quiesce_entered.notified().await;
 
     // The terminal frame reached the open stream before the record was dropped.
     match rx
@@ -55,4 +64,20 @@ async fn delete_broadcasts_session_deleted_then_removes_the_record() {
         ),
         "events.list on a deleted session is a 404, not a replay"
     );
+
+    // Cancelling the HTTP-side waiter after the durable fence cannot abandon
+    // application-owned cleanup or make the removed projection visible again.
+    deletion.abort();
+    runtime.quiesce_release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if runtime.ended.lock().unwrap().as_slice() == [id.as_str()] {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached cleanup survives Delete waiter cancellation");
+    assert!(matches!(state.get_session(&id), Err(StateError::NotFound)));
 }
