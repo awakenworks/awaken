@@ -251,7 +251,79 @@ pub struct CredentialSource {
     pub version: i64,
 }
 
+/// Canonical provider authorization carried by a credential source.
+///
+/// The persisted representation retains two optional fields for wire/storage
+/// compatibility, but consumers must not independently assign semantics to
+/// their combinations. This projection is the single domain interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialAuthorizationScope<'a> {
+    /// Material that is not authorized for any model provider.
+    Generic,
+    /// Material authorized for every endpoint owned by one provider.
+    Provider { provider_id: &'a str },
+    /// Material authorized only for one provider endpoint.
+    ProtocolEndpoint {
+        provider_id: &'a str,
+        protocol_endpoint_id: &'a str,
+    },
+    /// An endpoint without its owning provider is malformed and fails closed.
+    Invalid,
+}
+
+impl CredentialAuthorizationScope<'_> {
+    /// Whether this scope authorizes the exact provider/endpoint identity.
+    #[must_use]
+    pub fn authorizes(&self, provider_id: &str, protocol_endpoint_id: Option<&str>) -> bool {
+        match self {
+            Self::Generic | Self::Invalid => false,
+            Self::Provider {
+                provider_id: scoped_provider,
+            } => *scoped_provider == provider_id,
+            Self::ProtocolEndpoint {
+                provider_id: scoped_provider,
+                protocol_endpoint_id: scoped_endpoint,
+            } => *scoped_provider == provider_id && protocol_endpoint_id == Some(*scoped_endpoint),
+        }
+    }
+
+    /// Whether this scope belongs to a provider, independent of endpoint.
+    #[must_use]
+    pub fn belongs_to_provider(&self, provider_id: &str) -> bool {
+        match self {
+            Self::Provider {
+                provider_id: scoped_provider,
+            }
+            | Self::ProtocolEndpoint {
+                provider_id: scoped_provider,
+                ..
+            } => *scoped_provider == provider_id,
+            Self::Generic | Self::Invalid => false,
+        }
+    }
+}
+
 impl CredentialSource {
+    /// Project compatibility fields into their authoritative authorization
+    /// meaning. Provider authorization decisions must use this method.
+    #[must_use]
+    pub fn authorization_scope(&self) -> CredentialAuthorizationScope<'_> {
+        match (
+            self.provider_id.as_deref(),
+            self.protocol_endpoint_id.as_deref(),
+        ) {
+            (None, None) => CredentialAuthorizationScope::Generic,
+            (Some(provider_id), None) => CredentialAuthorizationScope::Provider { provider_id },
+            (Some(provider_id), Some(protocol_endpoint_id)) => {
+                CredentialAuthorizationScope::ProtocolEndpoint {
+                    provider_id,
+                    protocol_endpoint_id,
+                }
+            }
+            (None, Some(_)) => CredentialAuthorizationScope::Invalid,
+        }
+    }
+
     /// Every sealed-material reference owned by this aggregate, including the
     /// compatibility primary slot and open extension-defined auxiliary slots.
     pub fn material_refs(&self) -> impl Iterator<Item = &SecretRef> {
@@ -1012,6 +1084,73 @@ mod tests {
             decoded.protocol_endpoint_id.as_deref(),
             Some("openai.open_ai_chat.primary"),
             "R2"
+        );
+    }
+
+    #[test]
+    fn authorization_scope_is_the_only_fail_closed_compatibility_projection() {
+        /* Cause/effect graph: C1=provider field present; C2=endpoint field
+         * present; C3=request provider matches; C4=request endpoint matches.
+         * Effects: E1=authorize; E2=deny. Decision rules: R1 !C1+!C2=>E2
+         * Generic; R2 C1+!C2=>E1 only for the same provider; R3 C1+C2=>E1
+         * only for the exact provider+endpoint; R4 !C1+C2=>E2 Invalid. */
+        let generic = bare_source(CredentialKind::Vault);
+        assert_eq!(
+            generic.authorization_scope(),
+            CredentialAuthorizationScope::Generic,
+            "R1"
+        );
+        assert!(
+            !generic.authorization_scope().authorizes("openai", None),
+            "R1"
+        );
+
+        let provider = CredentialSource {
+            provider_id: Some("openai".into()),
+            ..generic.clone()
+        };
+        assert!(
+            provider
+                .authorization_scope()
+                .authorizes("openai", Some("any-endpoint")),
+            "R2"
+        );
+        assert!(
+            !provider.authorization_scope().authorizes("anthropic", None),
+            "R2"
+        );
+
+        let endpoint = CredentialSource {
+            protocol_endpoint_id: Some("openai.primary".into()),
+            ..provider
+        };
+        assert!(
+            endpoint
+                .authorization_scope()
+                .authorizes("openai", Some("openai.primary")),
+            "R3"
+        );
+        assert!(
+            !endpoint
+                .authorization_scope()
+                .authorizes("openai", Some("openai.backup")),
+            "R3"
+        );
+
+        let invalid = CredentialSource {
+            provider_id: None,
+            ..endpoint
+        };
+        assert_eq!(
+            invalid.authorization_scope(),
+            CredentialAuthorizationScope::Invalid,
+            "R4"
+        );
+        assert!(
+            !invalid
+                .authorization_scope()
+                .authorizes("openai", Some("openai.primary")),
+            "R4"
         );
     }
 

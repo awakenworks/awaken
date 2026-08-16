@@ -23,7 +23,9 @@ pub(crate) fn select(
     if detected("claude")
         && credentials.iter().filter(active).any(|source| {
             source.is_claude_code_setup_token()
-                && source.provider_id.as_deref() == Some("anthropic")
+                && source
+                    .authorization_scope()
+                    .belongs_to_provider("anthropic")
         })
         && let Some(offering) = catalog.offerings.iter().find(|offering| {
             offering.status == OfferingStatus::Active

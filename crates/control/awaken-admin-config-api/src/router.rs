@@ -1526,7 +1526,9 @@ fn hosted_credential_matches(
     provider_ref: &str,
 ) -> bool {
     source.workspace_id == workspace_id
-        && source.provider_id.as_deref() == Some(provider_ref)
+        && source
+            .authorization_scope()
+            .belongs_to_provider(provider_ref)
         && source.kind == CredentialKind::Vault
         && source.status == CredentialStatus::Active
         && source.material_ref.is_some()
