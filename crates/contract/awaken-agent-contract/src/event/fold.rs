@@ -71,15 +71,15 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
                 let text: Vec<ContentBlock> = message
                     .content
                     .iter()
-                    .filter(|b| matches!(b, ContentBlock::Text { .. }))
+                    .filter(|b| matches!(b, ContentBlock::Text { .. } | ContentBlock::Redacted))
                     .cloned()
                     .collect();
                 // Emit only when there is *visible* text — an assistant message whose
                 // only text block is empty is a useless empty wire event, and the
-                // history fold ([`text_is_empty`]) already drops it. Both folds share
+                // history fold ([`visible_content_is_empty`]) already drops it. Both folds share
                 // the one predicate so the "matching the streaming projection"
                 // invariant holds by construction, not by two divergent inline tests.
-                if !text_is_empty(&message.content) {
+                if !visible_content_is_empty(&message.content) {
                     out.push(Fact::AssistantMessage {
                         id: message.id.0.clone(),
                         content: text,
@@ -164,12 +164,19 @@ pub trait HistorySink {
     );
 }
 
-/// True when a block list carries no text (text blocks only) — the fold's
-/// skip-empty test, matching the streaming projection.
-fn text_is_empty(content: &[ContentBlock]) -> bool {
-    !content
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()))
+/// True when a block list carries no visible user/assistant content — the
+/// fold's skip-empty test, matching the streaming projection.
+fn visible_content_is_empty(content: &[ContentBlock]) -> bool {
+    !content.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.is_empty(),
+        ContentBlock::Image { .. }
+        | ContentBlock::Document { .. }
+        | ContentBlock::SearchResult { .. }
+        | ContentBlock::Redacted => true,
+        ContentBlock::ToolUse { .. }
+        | ContentBlock::ToolResult { .. }
+        | ContentBlock::Thinking { .. } => false,
+    })
 }
 
 /// Walk a thread's committed messages (oldest-first) into `sink`, owning the
@@ -179,7 +186,7 @@ pub fn fold_history(messages: &[Message], sink: &mut impl HistorySink) {
     for message in messages {
         match message.role {
             Role::User | Role::System => {
-                if text_is_empty(&message.content) {
+                if visible_content_is_empty(&message.content) {
                     continue;
                 }
                 sink.user_or_system(&message.id.0, message.role, &message.content);
@@ -197,7 +204,7 @@ pub fn fold_history(messages: &[Message], sink: &mut impl HistorySink) {
                         _ => None,
                     })
                     .collect();
-                if text_is_empty(&message.content) && tools.is_empty() {
+                if visible_content_is_empty(&message.content) && tools.is_empty() {
                     continue;
                 }
                 sink.assistant(&message.id.0, &message.content, &tools);
@@ -488,7 +495,7 @@ mod tests {
     // INVARIANT: the two projections agree on the skip-empty test. An assistant
     // message whose only block is an empty-string Text is a useless empty wire
     // event, so BOTH the streaming fold (fold_messages) and the static-history
-    // fold (fold_history) drop it. They share the one `text_is_empty` predicate,
+    // fold (fold_history) drop it. They share `visible_content_is_empty`,
     // so this parity holds by construction — flipping it flips this named test.
     #[test]
     fn assistant_all_empty_text_is_dropped_by_both_projections() {
@@ -505,6 +512,26 @@ mod tests {
             sink.calls.is_empty(),
             "history fold drops the same all-empty-text assistant message"
         );
+    }
+
+    /// Cause/effect rule R1: a payloadless redaction is visible protocol content
+    /// even though `extract_text` is empty, so both projections must preserve the
+    /// turn. FMECA: dropping it can reorder later tool correlation/history replay
+    /// (high severity); the shared visibility predicate is the mitigation.
+    #[test]
+    fn assistant_redaction_only_is_preserved_by_both_projections() {
+        let msg = assistant("a1", vec![ContentBlock::Redacted]);
+        assert_eq!(
+            fold_messages(&[msg], None),
+            vec![Fact::AssistantMessage {
+                id: "a1".into(),
+                content: vec![ContentBlock::Redacted],
+            }],
+            "R1 streaming"
+        );
+        let mut sink = RecordingSink::default();
+        fold_history(&[assistant("a1", vec![ContentBlock::Redacted])], &mut sink);
+        assert!(!sink.calls.is_empty(), "R1 history");
     }
 
     #[test]

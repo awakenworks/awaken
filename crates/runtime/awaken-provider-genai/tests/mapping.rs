@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{
+    ContentBlock, DocumentSource, SearchResultCitations, SearchResultContent,
+};
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
     AdapterKind, GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call,
@@ -360,6 +362,152 @@ fn image_block_maps_to_a_binary_part() {
     let binaries = content.binaries();
     assert_eq!(binaries.len(), 1);
     assert_eq!(binaries[0].content_type, "image/png");
+}
+
+#[test]
+fn anthropic_documents_and_rich_tool_results_preserve_typed_parts() {
+    // Cause/effect graph: C1 the selected dialect is Anthropic; C2 a user
+    // document has an Anthropic-native text source plus title/context; C3 a
+    // correlated tool result contains text, image, document, and search-result
+    // blocks; C4 the result is an error. Effects: E1 retain the document's exact
+    // typed source and metadata; E2 retain every nested block in order without
+    // flattening it to text; E3 retain correlation and error state. Constraint:
+    // these raw custom parts are emitted only on the explicit Anthropic dialect;
+    // the neutral ContentBlock remains the source of truth.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects    |
+    // | R1   | Y  | Y  | Y  | Y  | E1+E2+E3 |
+    let request = ChatRequest {
+        model_binding: binding("claude-sonnet-4"),
+        inference: Default::default(),
+        messages: vec![
+            ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Document {
+                    source: DocumentSource::Text {
+                        media_type: "text/plain".into(),
+                        data: "managed document".into(),
+                    },
+                    title: Some("fixture".into()),
+                    context: Some("test context".into()),
+                }],
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    "call-1",
+                    "read_fixture",
+                    serde_json::json!({"id":"fixture"}),
+                )],
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result_with_error(
+                    "call-1",
+                    vec![
+                        ContentBlock::text("tool text"),
+                        ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
+                        ContentBlock::Document {
+                            source: DocumentSource::Url {
+                                url: "https://example.test/report.pdf".into(),
+                            },
+                            title: Some("report".into()),
+                            context: None,
+                        },
+                        ContentBlock::SearchResult {
+                            source: "https://example.test/result".into(),
+                            title: "Result".into(),
+                            content: vec![SearchResultContent::text("answer")],
+                            citations: SearchResultCitations { enabled: true },
+                        },
+                    ],
+                    true,
+                )],
+            },
+        ],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request_for_adapter(&request, AdapterKind::Anthropic).unwrap();
+    let ContentPart::Custom(document) = &genai.messages[0].content.parts()[0] else {
+        panic!("R1/E1: Anthropic document must remain a typed custom part");
+    };
+    assert_eq!(
+        document.data(),
+        &serde_json::json!({
+            "type": "document",
+            "source": {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": "managed document",
+            },
+            "title": "fixture",
+            "context": "test context",
+        }),
+        "R1/E1"
+    );
+
+    let ContentPart::Custom(tool_result) = &genai.messages[2].content.parts()[0] else {
+        panic!("R1/E2: Anthropic tool result must remain a typed custom part");
+    };
+    assert_eq!(tool_result.data()["type"], "tool_result", "R1/E2");
+    assert_eq!(tool_result.data()["tool_use_id"], "call-1", "R1/E3");
+    assert_eq!(tool_result.data()["is_error"], true, "R1/E3");
+    assert_eq!(
+        tool_result.data()["content"]
+            .as_array()
+            .expect("R1/E2 typed content")
+            .iter()
+            .map(|part| part["type"].as_str().expect("R1/E2 block type"))
+            .collect::<Vec<_>>(),
+        vec!["text", "image", "document", "search_result"],
+        "R1/E2 preserves order and block kinds"
+    );
+    assert_eq!(
+        tool_result.data()["content"][1]["source"]["media_type"],
+        "image/png",
+        "R1/E2 image source"
+    );
+    assert_eq!(
+        tool_result.data()["content"][2]["source"]["url"],
+        "https://example.test/report.pdf",
+        "R1/E2 document source"
+    );
+    assert_eq!(
+        tool_result.data()["content"][3]["citations"]["enabled"],
+        true,
+        "R1/E2 search citations"
+    );
+}
+
+#[test]
+fn anthropic_tool_results_reject_non_wire_nested_blocks() {
+    // Cause/effect decision table for the fail-closed branch: C1 is a redacted
+    // or thinking block; C2 is a nested tool-use/result protocol block. E1 is an
+    // InvalidRequest before provider I/O. R1=C1,!C2 -> E1; R2=!C1,C2 -> E1.
+    // These blocks have no legal Anthropic tool_result content representation,
+    // so silently dropping or flattening either class would change semantics.
+    for forbidden in [
+        ContentBlock::Redacted,
+        ContentBlock::thinking("private"),
+        ContentBlock::tool_use("nested", "tool", serde_json::json!({})),
+        ContentBlock::tool_result("nested", vec![ContentBlock::text("result")]),
+    ] {
+        let request = ChatRequest {
+            model_binding: binding("claude-sonnet-4"),
+            inference: Default::default(),
+            messages: vec![ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result("call-1", vec![forbidden])],
+            }],
+            tools: Vec::new(),
+        };
+
+        assert!(
+            to_genai_request_for_adapter(&request, AdapterKind::Anthropic).is_err(),
+            "R1/R2/E1"
+        );
+    }
 }
 
 #[test]

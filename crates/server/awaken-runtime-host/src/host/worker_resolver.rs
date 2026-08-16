@@ -1147,9 +1147,12 @@ mod tests {
                 &self,
                 workspace_id: &str,
                 file_id: &str,
+                _purpose: &awaken_resource_contract::FileReadPurpose,
                 claim: Option<&awaken_run_ingress::RunClaim>,
-            ) -> Result<Option<(String, Vec<u8>)>, awaken_resource_contract::FileContentSourceError>
-            {
+            ) -> Result<
+                Option<awaken_resource_contract::ResolvedFileContent>,
+                awaken_resource_contract::FileContentSourceError,
+            > {
                 let Some(claim) = claim else {
                     return Ok(None);
                 };
@@ -1162,7 +1165,13 @@ mod tests {
                     return Ok(None);
                 }
                 let bytes = b"remote immutable File".to_vec();
-                Ok(Some((awaken_resource_contract::content_id(&bytes), bytes)))
+                Ok(Some(awaken_resource_contract::ResolvedFileContent {
+                    file_id: file_id.into(),
+                    content_id: awaken_resource_contract::content_id(&bytes),
+                    filename: "remote.txt".into(),
+                    media_type: "text/plain".into(),
+                    bytes,
+                }))
             }
         }
 

@@ -4,12 +4,12 @@
 // key, injects retryable faults on demand, and — the point of the `behavior`
 // option — reproduces each deterministic scenario model's reply *on the wire*, so
 // an e2e that used to boot an in-process stub model now runs the same scenario
-// through GenaiExecutor + a real socket. `behavior` names the reproduced model
+// through the selected provider executor + a real socket. `behavior` names the reproduced model
 // (default = the historic `FAKE:<text>` echo + `use-tool:` round-trip).
 //
 // The behaviors read the Anthropic *wire* request (`system` top-level field,
 // `messages` with user/assistant roles, tool results as `tool_result` blocks
-// inside user messages, `tools` list), which is what GenaiExecutor emits from the
+// inside user messages, `tools` list), which is what the Anthropic Messages ACL emits from the
 // neutral `ChatRequest` — so each behavior is a faithful port of the matching
 // `awaken-server` model reading the neutral request.
 
@@ -105,6 +105,42 @@ function lastUserImages(parsed) {
   return last.content
     .filter((b) => b.type === 'image')
     .map((b) => (b.source?.type === 'url' ? 'image/url' : b.source?.media_type ?? 'image/*'));
+}
+
+// Return only structural content evidence. E2Es need to prove that logical
+// Files ids were materialized before provider I/O, but retaining base64 payloads
+// in the fixture would create a second, potentially sensitive transcript.
+function contentShape(content) {
+  if (!Array.isArray(content)) return [];
+  const shapes = [];
+  for (const block of content) {
+    if (block.type === 'tool_result') {
+      shapes.push({
+        type: 'tool_result',
+        content: contentShape(block.content),
+        content_container: Array.isArray(block.content) ? 'array' : typeof block.content,
+        content_length: Array.isArray(block.content) ? block.content.length : undefined,
+        is_error: block.is_error ?? false,
+      });
+      continue;
+    }
+    const shape = { type: block.type };
+    if (block.source?.type) shape.source_type = block.source.type;
+    if (block.source?.media_type) shape.media_type = block.source.media_type;
+    if (block.type === 'search_result') {
+      shape.citations_enabled = block.citations?.enabled ?? false;
+      shape.result_parts = Array.isArray(block.content) ? block.content.length : 0;
+    }
+    shapes.push(shape);
+  }
+  return shapes;
+}
+
+function requestContentShape(parsed) {
+  return (parsed.messages ?? []).map((message) => ({
+    role: message.role,
+    content: contentShape(message.content),
+  }));
 }
 
 function hasTool(parsed, name) {
@@ -524,6 +560,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         model: parsed.model,
         stream: !!parsed.stream,
         memoryExtractor: systemText(parsed).includes('memory extraction Agent'),
+        contentShape: requestContentShape(parsed),
       });
       const reply = reply_of(parsed);
       const id = `msg_${state.requests.length}`;
@@ -605,7 +642,7 @@ function chunkString(s, n) {
 }
 
 // The Anthropic streaming wire: the fixed event ladder around one text or tool_use
-// block, so GenaiExecutor's streaming path assembles the same response as `infer`.
+// block, so the provider executor's streaming path assembles the same response as `infer`.
 function emitStream(res, { id, model, reply }) {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

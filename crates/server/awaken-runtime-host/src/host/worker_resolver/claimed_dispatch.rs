@@ -99,8 +99,23 @@ impl HostWorkerResolver {
             worker = worker.with_inference_materializer(materializer);
         }
         worker.install_attempt_executor(attempt);
+        let workspace_id = claimed.request.execution_scope.as_ref().map_or_else(
+            || host.local_workspace().to_owned(),
+            |scope| scope.0.0.clone(),
+        );
+        let child_context = parent
+            .attempt_context
+            .clone()
+            .with_model_content_materializer(Arc::new(
+                crate::model_content_materializer::ResourceModelContentMaterializer::new(
+                    host.file_content_source.clone(),
+                    workspace_id,
+                    claimed.request.thread_id().0.clone(),
+                    Some(awaken_run_ingress::RunClaim::from(&claimed.lease)),
+                ),
+            ));
         worker = worker
-            .with_context(parent.attempt_context.clone())
+            .with_context(child_context)
             .with_local_credential_capabilities(adapters.remote_credentials);
         Ok(Arc::new(worker))
     }

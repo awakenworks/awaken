@@ -166,6 +166,10 @@ pub struct RuntimeRunContext {
     /// `tool_executor`: a per-run egress override the kernel consults without learning
     /// why it was chosen.
     pub model_executor: Option<Arc<dyn crate::llm::LlmExecutor>>,
+    /// Attempt-bound resolver for logical model-visible content such as Files
+    /// catalog ids. It runs once per candidate request before provider retry,
+    /// so retries reuse the exact immutable bytes and cannot race later reads.
+    pub model_content_materializer: Option<Arc<dyn crate::llm::ModelContentMaterializer>>,
     /// The content-capture wiring for this attempt (ADR-0050 D5): the resolved
     /// decision (level + redactor) gating what prompt/completion/tool content the
     /// engine records, plus the subject + sink it is attributed to and written to.
@@ -233,6 +237,7 @@ impl RuntimeRunContext {
         // A delegated child owns another Run/claim epoch and must receive its own
         // bindings from ingress rather than inheriting the parent's authority.
         child.credential_realization = None;
+        child.model_content_materializer = None;
         child
     }
 
@@ -250,6 +255,16 @@ impl RuntimeRunContext {
         realization: crate::AttemptCredentialRealization,
     ) -> Self {
         self.credential_realization = Some(realization);
+        self
+    }
+
+    /// Bind the one model-content resolution boundary for this attempt.
+    #[must_use]
+    pub fn with_model_content_materializer(
+        mut self,
+        materializer: Arc<dyn crate::llm::ModelContentMaterializer>,
+    ) -> Self {
+        self.model_content_materializer = Some(materializer);
         self
     }
 

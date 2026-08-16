@@ -2,7 +2,12 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{FileContentSource, FileContentSourceError, content_id};
+use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
+use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_resource_contract::{
+    FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
+};
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
@@ -18,7 +23,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
-const FILE_CONTENT_DIGEST_HEADER: &str = "x-awaken-file-content-digest";
+const FILE_CONTENT_METADATA_HEADER: &str = "x-awaken-file-content-metadata";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +33,16 @@ struct FileContentRequest {
     identity: Option<WorkerIdentity>,
     workspace_id: String,
     file_id: String,
+    purpose: FileReadPurpose,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileContentMetadata {
+    file_id: String,
+    content_id: String,
+    filename: String,
+    media_type: String,
 }
 
 pub struct WorkerFileContentService {
@@ -36,6 +51,7 @@ pub struct WorkerFileContentService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     session_repository: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
+    recovery: Option<Arc<dyn RunRecoverySource>>,
 }
 
 impl WorkerFileContentService {
@@ -51,6 +67,7 @@ impl WorkerFileContentService {
             authenticator,
             directory: None,
             session_repository: None,
+            recovery: None,
         }
     }
 
@@ -69,6 +86,12 @@ impl WorkerFileContentService {
         sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
     ) -> Self {
         self.session_repository = Some(sessions);
+        self
+    }
+
+    #[must_use]
+    pub fn with_recovery(mut self, recovery: Arc<dyn RunRecoverySource>) -> Self {
+        self.recovery = Some(recovery);
         self
     }
 }
@@ -92,8 +115,9 @@ impl FileContentSource<RunClaim> for HttpFileContentSource {
         &self,
         workspace_id: &str,
         file_id: &str,
+        purpose: &FileReadPurpose,
         claim: Option<&RunClaim>,
-    ) -> Result<Option<(String, Vec<u8>)>, FileContentSourceError> {
+    ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
         let claim = claim.ok_or_else(|| {
             FileContentSourceError::new("remote File materialization requires a dispatch claim")
         })?;
@@ -111,6 +135,7 @@ impl FileContentSource<RunClaim> for HttpFileContentSource {
                 identity: self.upstream.worker_identity().cloned(),
                 workspace_id: workspace_id.to_owned(),
                 file_id: file_id.to_owned(),
+                purpose: purpose.clone(),
             });
         let request = self
             .upstream
@@ -129,25 +154,48 @@ impl FileContentSource<RunClaim> for HttpFileContentSource {
                 response.status()
             )));
         }
-        let digest = response
+        use base64::Engine as _;
+        let metadata = response
             .headers()
-            .get(FILE_CONTENT_DIGEST_HEADER)
+            .get(FILE_CONTENT_METADATA_HEADER)
             .and_then(|value| value.to_str().ok())
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| FileContentSourceError::new("File response has no content digest"))?
-            .to_string();
+            .ok_or_else(|| FileContentSourceError::new("File response has no content metadata"))?;
+        let metadata = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(metadata)
+            .map_err(|error| {
+                FileContentSourceError::new(format!("invalid File metadata: {error}"))
+            })?;
+        let metadata: FileContentMetadata = serde_json::from_slice(&metadata).map_err(|error| {
+            FileContentSourceError::new(format!("invalid File metadata: {error}"))
+        })?;
+        if metadata.file_id != file_id
+            || metadata.content_id.trim().is_empty()
+            || metadata.media_type.trim().is_empty()
+        {
+            return Err(FileContentSourceError::new(
+                "File response metadata does not match the requested File",
+            ));
+        }
         let bytes = response
             .bytes()
             .await
             .map_err(|error| FileContentSourceError::new(error.to_string()))?
             .to_vec();
         let actual = content_id(&bytes);
-        if actual != digest {
+        if actual != metadata.content_id {
             return Err(FileContentSourceError::new(format!(
-                "File response digest mismatch: expected {digest}, received {actual}"
+                "File response digest mismatch: expected {}, received {actual}",
+                metadata.content_id
             )));
         }
-        Ok(Some((digest, bytes)))
+        Ok(Some(ResolvedFileContent {
+            file_id: metadata.file_id,
+            content_id: metadata.content_id,
+            filename: metadata.filename,
+            media_type: metadata.media_type,
+            bytes,
+        }))
     }
 }
 
@@ -204,28 +252,101 @@ async fn read_file_content(
             )
         })
     });
-    let file_is_frozen = if file_is_frozen {
-        true
-    } else {
-        application_session_file_is_frozen(&service, dispatch, &request, unix_now_ms()).await
+    let file_is_authorized = match &request.purpose {
+        FileReadPurpose::SessionResource => {
+            if file_is_frozen {
+                true
+            } else {
+                application_session_file_is_frozen(&service, dispatch, &request, unix_now_ms())
+                    .await
+            }
+        }
+        FileReadPurpose::ModelContent { thread_id } => {
+            model_content_file_is_authorized(&service, dispatch, thread_id, &request.file_id).await
+        }
     };
-    if !scope_matches || !file_is_frozen {
+    if !scope_matches || !file_is_authorized {
         return StatusCode::FORBIDDEN.into_response();
     }
     match service
         .source
-        .read(&request.workspace_id, &request.file_id, None)
+        .read(
+            &request.workspace_id,
+            &request.file_id,
+            &request.purpose,
+            None,
+        )
         .await
     {
-        Ok(Some((digest, bytes))) => Response::builder()
-            .status(StatusCode::OK)
-            .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
-            .header(FILE_CONTENT_DIGEST_HEADER, digest)
-            .body(Body::from(bytes))
-            .expect("static File content response is valid"),
+        Ok(Some(resolved)) => {
+            use base64::Engine as _;
+            let metadata = FileContentMetadata {
+                file_id: resolved.file_id,
+                content_id: resolved.content_id,
+                filename: resolved.filename,
+                media_type: resolved.media_type,
+            };
+            let metadata = serde_json::to_vec(&metadata)
+                .map(|value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value));
+            match metadata {
+                Ok(metadata) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(FILE_CONTENT_METADATA_HEADER, metadata)
+                    .body(Body::from(resolved.bytes))
+                    .expect("validated File content response is valid"),
+                Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
+}
+
+async fn model_content_file_is_authorized(
+    service: &WorkerFileContentService,
+    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    thread_id: &str,
+    file_id: &str,
+) -> bool {
+    if dispatch.activation.thread_id.0 != thread_id {
+        return false;
+    }
+    if messages_reference_file(&dispatch.activation.input, file_id) {
+        return true;
+    }
+    let Some(recovery) = &service.recovery else {
+        return false;
+    };
+    recovery
+        .recovery_snapshot(&dispatch.activation.thread_id, &dispatch.activation.run_id)
+        .await
+        .is_ok_and(|snapshot| messages_reference_file(&snapshot.messages, file_id))
+}
+
+fn messages_reference_file(messages: &[Message], file_id: &str) -> bool {
+    messages
+        .iter()
+        .any(|message| blocks_reference_file(&message.content, file_id))
+}
+
+fn blocks_reference_file(blocks: &[ContentBlock], file_id: &str) -> bool {
+    blocks.iter().any(|block| match block {
+        ContentBlock::Image {
+            source: ImageSource::File { file_id: candidate },
+        }
+        | ContentBlock::Document {
+            source: DocumentSource::File { file_id: candidate },
+            ..
+        } => candidate == file_id,
+        ContentBlock::ToolResult { content, .. } => blocks_reference_file(content, file_id),
+        ContentBlock::Text { .. }
+        | ContentBlock::Image { .. }
+        | ContentBlock::Document { .. }
+        | ContentBlock::SearchResult { .. }
+        | ContentBlock::Redacted
+        | ContentBlock::ToolUse { .. }
+        | ContentBlock::Thinking { .. } => false,
+    })
 }
 
 async fn application_session_file_is_frozen(
@@ -295,6 +416,7 @@ mod tests {
             identity: None,
             workspace_id: "workspace".into(),
             file_id: "file".into(),
+            purpose: FileReadPurpose::SessionResource,
         };
         let encoded = serde_json::to_value(&request).expect("W1 encode");
         let decoded: FileContentRequest =

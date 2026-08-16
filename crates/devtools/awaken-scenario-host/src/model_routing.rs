@@ -7,7 +7,7 @@ use awaken_runtime_contract::resolved::ModelProvisioning;
 use axum::Router;
 
 use super::{
-    LabelModel, default_anthropic_compatible_model, mount, normalize_anthropic_compatible_base,
+    LabelModel, anthropic_messages_executor, default_anthropic_compatible_model, mount,
     resource_host,
 };
 
@@ -26,14 +26,10 @@ pub fn scenario_model(
             let base = std::env::var("ANTHROPIC_BASE_URL")
                 .or_else(|_| std::env::var("KIMI_BASE_URL"))
                 .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
-            let base = normalize_anthropic_compatible_base(base);
             let model = std::env::var("ANTHROPIC_MODEL")
                 .or_else(|_| std::env::var("KIMI_MODEL"))
                 .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-            (
-                Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
-                model,
-            )
+            (anthropic_messages_executor(&base, key), model)
         }
         Ok("gemini") => {
             let key = std::env::var("GEMINI_API_KEY")

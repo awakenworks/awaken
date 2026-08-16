@@ -11,6 +11,9 @@
 pub(crate) enum NeutralPartKind {
     Text,
     Image,
+    Document,
+    SearchResult,
+    Redacted,
     ToolUse,
     ToolResult,
     Thinking,
@@ -25,12 +28,19 @@ pub(crate) enum ProviderPartKind {
     ToolResponse,
     Reasoning,
     SignedThinking,
+    Omitted,
 }
 
 impl ProviderPartKind {
     #[must_use]
     pub(crate) const fn is_reasoning_like(self) -> bool {
         matches!(self, Self::Reasoning | Self::SignedThinking)
+    }
+
+    #[must_use]
+    #[cfg(kani)]
+    pub(crate) const fn completes_row(self) -> bool {
+        !matches!(self, Self::Reasoning | Self::SignedThinking | Self::Omitted)
     }
 }
 
@@ -52,6 +62,9 @@ pub(crate) const fn project_part_kind(
     match (dialect, kind) {
         (_, NeutralPartKind::Text) => ProviderPartKind::Text,
         (_, NeutralPartKind::Image) => ProviderPartKind::Binary,
+        (_, NeutralPartKind::Document) => ProviderPartKind::Binary,
+        (_, NeutralPartKind::SearchResult) => ProviderPartKind::Text,
+        (_, NeutralPartKind::Redacted) => ProviderPartKind::Omitted,
         (_, NeutralPartKind::ToolUse) => ProviderPartKind::ToolCall,
         (_, NeutralPartKind::ToolResult) => ProviderPartKind::ToolResponse,
         (TranscriptDialect::Anthropic, NeutralPartKind::Thinking) => {
@@ -102,6 +115,7 @@ impl ReplayRowState {
     #[must_use]
     pub(crate) const fn absorb(self, part: ProviderPartKind) -> Self {
         match (self, part) {
+            (state, ProviderPartKind::Omitted) => state,
             (Self::Replay, _) => Self::Replay,
             (Self::Empty | Self::ReasoningOnly, part) if part.is_reasoning_like() => {
                 Self::ReasoningOnly
@@ -191,6 +205,35 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn managed_blocks_reuse_the_canonical_row_projection() {
+        // Causes: C1 document; C2 search result; C3 redacted placeholder.
+        // Effects: E1/E2 keep the row replayable through existing binary/text
+        // categories; E3 contributes no provider token and cannot fabricate a
+        // complete turn. Rules M1=C1=>E1, M2=C2=>E2, M3=C3=>E3.
+        assert_eq!(
+            ReplayRowState::Empty.absorb(project_part_kind(
+                TranscriptDialect::Anthropic,
+                NeutralPartKind::Document,
+            )),
+            ReplayRowState::Replay
+        );
+        assert_eq!(
+            ReplayRowState::Empty.absorb(project_part_kind(
+                TranscriptDialect::Other,
+                NeutralPartKind::SearchResult,
+            )),
+            ReplayRowState::Replay
+        );
+        assert_eq!(
+            ReplayRowState::Empty.absorb(project_part_kind(
+                TranscriptDialect::Other,
+                NeutralPartKind::Redacted,
+            )),
+            ReplayRowState::Empty
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -246,7 +289,7 @@ mod proofs {
         kani::assume(prior_tag <= 4);
         let prior = project_part_kind(dialect, symbolic_neutral_part(prior_tag));
         let state = ReplayRowState::Empty.absorb(prior).absorb(projected);
-        let has_complete_part = !prior.is_reasoning_like() || !projected.is_reasoning_like();
+        let has_complete_part = prior.completes_row() || projected.completes_row();
         assert_eq!(state.should_replay(), has_complete_part);
 
         let state_tag: u8 = kani::any();

@@ -21,6 +21,28 @@ pub enum ContentBlock {
     Image {
         source: ImageSource,
     },
+    /// A model-visible document. `File` is a logical Resources identity and is
+    /// resolved by the attempt-bound content materializer before provider I/O;
+    /// it is never interpreted as a local path or a provider-owned file id.
+    Document {
+        source: DocumentSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
+    /// A citation-capable search result returned by a tool. Its body is
+    /// deliberately text-only: arbitrary nested blocks would create another
+    /// message grammar inside a content block.
+    SearchResult {
+        source: String,
+        title: String,
+        content: Vec<SearchResultContent>,
+        citations: SearchResultCitations,
+    },
+    /// Content withheld by model policy. It is intentionally payloadless so
+    /// secret or encrypted provider data cannot leak through neutral replay.
+    Redacted,
     /// A model's request to invoke a tool, interleaved with text in the same
     /// assistant turn. `input` is the only place untyped JSON is unavoidable: a
     /// tool's arguments are shaped by that tool's own schema, not by any type the
@@ -62,6 +84,47 @@ pub enum ContentBlock {
 pub enum ImageSource {
     Base64 { media_type: String, data: String },
     Url { url: String },
+    File { file_id: String },
+}
+
+/// Provider-neutral document source. Inline text retains its required media
+/// type so protocol adapters can validate an exact wire contract rather than
+/// silently normalizing an unsupported value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DocumentSource {
+    Base64 { media_type: String, data: String },
+    Text { media_type: String, data: String },
+    Url { url: String },
+    File { file_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResultContent {
+    #[serde(rename = "type")]
+    pub kind: SearchResultContentType,
+    pub text: String,
+}
+
+impl SearchResultContent {
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            kind: SearchResultContentType::Text,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchResultContentType {
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResultCitations {
+    pub enabled: bool,
 }
 
 impl ContentBlock {
@@ -81,6 +144,24 @@ impl ContentBlock {
                 media_type: media_type.into(),
                 data: data.into(),
             },
+        }
+    }
+
+    pub fn image_file(file_id: impl Into<String>) -> Self {
+        Self::Image {
+            source: ImageSource::File {
+                file_id: file_id.into(),
+            },
+        }
+    }
+
+    pub fn document_file(file_id: impl Into<String>) -> Self {
+        Self::Document {
+            source: DocumentSource::File {
+                file_id: file_id.into(),
+            },
+            title: None,
+            context: None,
         }
     }
 
@@ -133,6 +214,9 @@ pub fn extract_text(blocks: &[ContentBlock]) -> String {
             ContentBlock::Text { text } => out.push_str(text),
             ContentBlock::ToolResult { content, .. } => out.push_str(&extract_text(content)),
             ContentBlock::Image { .. }
+            | ContentBlock::Document { .. }
+            | ContentBlock::SearchResult { .. }
+            | ContentBlock::Redacted
             | ContentBlock::ToolUse { .. }
             | ContentBlock::Thinking { .. } => {}
         }
@@ -155,6 +239,14 @@ mod tests {
             ContentBlock::text("look:"),
             ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
             ContentBlock::image_url("https://example.test/a.jpg"),
+            ContentBlock::document_file("file-doc"),
+            ContentBlock::SearchResult {
+                source: "https://example.test/result".into(),
+                title: "Result".into(),
+                content: vec![SearchResultContent::text("answer")],
+                citations: SearchResultCitations { enabled: true },
+            },
+            ContentBlock::Redacted,
             ContentBlock::signed_thinking("check", Some("proof".to_string())),
             ContentBlock::thinking("unsigned"),
         ];
@@ -164,8 +256,12 @@ mod tests {
         assert_eq!(json[1]["source"]["type"], "base64");
         assert_eq!(json[1]["source"]["media_type"], "image/png");
         assert_eq!(json[2]["source"]["type"], "url");
-        assert_eq!(json[3]["signature"], "proof", "T1/E1");
-        assert!(json[4].get("signature").is_none(), "T1/E2");
+        assert_eq!(json[3]["source"]["type"], "file");
+        assert_eq!(json[4]["type"], "search_result");
+        assert_eq!(json[4]["content"][0]["type"], "text");
+        assert_eq!(json[5]["type"], "redacted");
+        assert_eq!(json[6]["signature"], "proof", "T1/E1");
+        assert!(json[7].get("signature").is_none(), "T1/E2");
 
         let back: Vec<ContentBlock> = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, blocks);

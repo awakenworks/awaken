@@ -8,6 +8,7 @@ use awaken_file_store::FileStore as _;
 use awaken_resource_application::ApplicationFileContentSource;
 use awaken_resource_contract::FileCatalog as _;
 use awaken_resource_contract::FileContentSource as _;
+use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
 use awaken_run_ingress::{
@@ -63,6 +64,34 @@ async fn claimed_application_dispatch(
             awaken_tenancy::ScopeId::from("workspace-file"),
         ))
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
+    dispatch.enqueue(request).await.unwrap();
+    let claimed = dispatch
+        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    RunClaim::from(&claimed.lease)
+}
+
+async fn claimed_model_dispatch(
+    dispatch: &Arc<MemoryDispatchStore>,
+    file_id: &str,
+    owner: &str,
+) -> RunClaim {
+    let mut activation = support::activation("model-content");
+    activation.input = vec![awaken_agent_contract::agent::message::Message::new(
+        awaken_agent_contract::agent::message::Id("message-model-content".into()),
+        awaken_agent_contract::agent::message::Role::User,
+        vec![
+            awaken_agent_contract::agent::content::ContentBlock::tool_result(
+                "call-model-content",
+                vec![awaken_agent_contract::agent::content::ContentBlock::document_file(file_id)],
+            ),
+        ],
+    )];
+    let request = RunDispatch::new(activation).with_execution_scope(
+        awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from("workspace-file")),
+    );
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
         .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
@@ -198,14 +227,34 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     );
 
     let exact = source
-        .read("workspace-file", "file-public", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect("F1 exact File read")
         .expect("F1 existing File");
-    assert_eq!(exact, (digest.clone(), b"exact-file".to_vec()), "F1");
+    assert_eq!(
+        exact,
+        ResolvedFileContent {
+            file_id: "file-public".into(),
+            content_id: digest.clone(),
+            filename: "input.txt".into(),
+            media_type: "text/plain".into(),
+            bytes: b"exact-file".to_vec(),
+        },
+        "F1"
+    );
 
     let denied = source
-        .read("workspace-file", "file-other", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-other",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("F2 non-frozen File must be denied");
     assert!(denied.to_string().contains("403"), "F2: {denied}");
@@ -235,7 +284,12 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
                 .with_worker_identity(WorkerIdentity::new("worker-file", "worker-file-stale", 2)),
         );
     let stale_identity = stale_source
-        .read("workspace-file", "file-public", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("F6 stale incarnation must be denied");
     assert!(stale_identity.to_string().contains("403"), "F6");
@@ -250,16 +304,31 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .await
         .unwrap();
     let stale = source
-        .read("workspace-file", "file-public", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("F4 stale claim must be rejected");
     assert!(stale.to_string().contains("409"), "F4: {stale}");
 
+    use base64::Engine as _;
+    let substituted_metadata = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "file_id": "file-public",
+            "content_id": digest,
+            "filename": "input.txt",
+            "media_type": "text/plain"
+        }))
+        .unwrap(),
+    );
     let substituted = axum::Router::new().route(
         "/v1/worker/resources/files/content",
         axum::routing::post(move || async move {
             (
-                [("x-awaken-file-content-digest", digest)],
+                [("x-awaken-file-content-metadata", substituted_metadata)],
                 b"different-file".to_vec(),
             )
         }),
@@ -270,7 +339,12 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     );
     assert!(
         substituted_source
-            .read("workspace-file", "file-public", Some(&claim))
+            .read(
+                "workspace-file",
+                "file-public",
+                &FileReadPurpose::SessionResource,
+                Some(&claim),
+            )
             .await
             .is_err(),
         "F5"
@@ -286,20 +360,30 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             .with_worker_id("worker-file"),
     );
     let missing_digest_error = missing_digest_source
-        .read("workspace-file", "file-public", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("F7 digest header is mandatory");
     assert!(
         missing_digest_error
             .to_string()
-            .contains("no content digest"),
+            .contains("no content metadata"),
         "F7: {missing_digest_error}"
     );
 
     let missing_claim = claimed_dispatch(&dispatch, "file-missing", &identity.lease_owner()).await;
     assert_eq!(
         source
-            .read("workspace-file", "file-missing", Some(&missing_claim))
+            .read(
+                "workspace-file",
+                "file-missing",
+                &FileReadPurpose::SessionResource,
+                Some(&missing_claim),
+            )
             .await
             .expect("F8 not-found response"),
         None,
@@ -334,7 +418,12 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .unwrap();
     let broken_claim = claimed_dispatch(&dispatch, "file-broken", &identity.lease_owner()).await;
     let broken = source
-        .read("workspace-file", "file-broken", Some(&broken_claim))
+        .read(
+            "workspace-file",
+            "file-broken",
+            &FileReadPurpose::SessionResource,
+            Some(&broken_claim),
+        )
         .await
         .expect_err("F9 missing blob must fail closed");
     assert!(broken.to_string().contains("503"), "F9: {broken}");
@@ -410,17 +499,128 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
     );
 
     let exact = source
-        .read("workspace-file", "file-application", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-application",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect("frozen application File read")
         .expect("existing application File");
-    assert_eq!(exact, (digest, b"application-file".to_vec()));
+    assert_eq!(
+        exact,
+        ResolvedFileContent {
+            file_id: "file-application".into(),
+            content_id: digest,
+            filename: "input.bin".into(),
+            media_type: "application/octet-stream".into(),
+            bytes: b"application-file".to_vec(),
+        }
+    );
 
     let unfrozen = source
-        .read("workspace-file", "file-other", Some(&claim))
+        .read(
+            "workspace-file",
+            "file-other",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("a File outside the frozen generation must be denied");
     assert!(unfrozen.to_string().contains("403"), "{unfrozen}");
+}
+
+/// Model-content authorization cause graph and FMECA:
+/// C1=live exact claim; C2=request thread equals activation thread; C3=File is
+/// strongly referenced in activation input (including nested ToolResult); C4=
+/// Workspace matches dispatch scope. All C1-C4 -> return verified immutable
+/// content (rule M1). !C2 -> deny (M2); !C3 -> deny before catalog read (M3).
+/// Existing transport rules own !C1/!C4. FMECA: accepting a caller-supplied File
+/// id without a trusted transcript edge is an authority escalation (critical;
+/// strong recursive reference check); trusting a foreign thread is cross-run
+/// disclosure (critical; exact activation-thread equality).
+#[tokio::test]
+async fn model_content_file_requires_its_claimed_thread_and_strong_input_reference() {
+    let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let digest = store.put(b"model-file").await.unwrap();
+    store
+        .create_file(awaken_resource_contract::FileRecord {
+            id: "file-model".into(),
+            workspace_id: "workspace-file".into(),
+            blob_id: digest,
+            filename: "model.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 10,
+            created_at: "2026-08-16T00:00:00Z".into(),
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let (directory, identity) = support::ready_worker("worker-model-content").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_model_dispatch(&dispatch, "file-model", &identity.lease_owner()).await;
+    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
+        store.clone(),
+        store,
+        lifecycle,
+    ));
+    let service = Arc::new(
+        WorkerFileContentService::new(
+            Arc::new(ApplicationFileContentSource::new(application)),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory),
+    );
+    let address = support::serve(worker_file_content_router(service)).await;
+    let source = HttpFileContentSource::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+    let exact = source
+        .read(
+            "workspace-file",
+            "file-model",
+            &FileReadPurpose::ModelContent {
+                thread_id: "thread-model-content".into(),
+            },
+            Some(&claim),
+        )
+        .await
+        .expect("M1 authorized read")
+        .expect("M1 existing file");
+    assert_eq!(exact.bytes, b"model-file", "M1");
+
+    let wrong_thread = source
+        .read(
+            "workspace-file",
+            "file-model",
+            &FileReadPurpose::ModelContent {
+                thread_id: "thread-foreign".into(),
+            },
+            Some(&claim),
+        )
+        .await
+        .expect_err("M2 foreign thread");
+    assert!(wrong_thread.to_string().contains("403"), "M2");
+
+    let unreferenced = source
+        .read(
+            "workspace-file",
+            "file-other",
+            &FileReadPurpose::ModelContent {
+                thread_id: "thread-model-content".into(),
+            },
+            Some(&claim),
+        )
+        .await
+        .expect_err("M3 unreferenced File");
+    assert!(unreferenced.to_string().contains("403"), "M3");
 }
 
 /// Cause/effect rationale: a remote source without the exact claim has no
@@ -430,7 +630,12 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
 async fn remote_file_source_requires_claim() {
     let source = HttpFileContentSource::new(WorkerUpstream::new("http://127.0.0.1:1"));
     let error = source
-        .read("workspace-file", "file-public", None)
+        .read(
+            "workspace-file",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            None,
+        )
         .await
         .expect_err("claim is mandatory");
     assert!(error.to_string().contains("requires a dispatch claim"));
@@ -441,7 +646,12 @@ async fn remote_file_source_requires_claim() {
         epoch: 1,
     };
     let empty = source
-        .read("", "file-public", Some(&claim))
+        .read(
+            "",
+            "file-public",
+            &FileReadPurpose::SessionResource,
+            Some(&claim),
+        )
         .await
         .expect_err("empty Workspace is rejected locally");
     assert!(empty.to_string().contains("must not be empty"));

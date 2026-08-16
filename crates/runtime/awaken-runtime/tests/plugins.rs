@@ -575,6 +575,14 @@ async fn duplicate_selected_plugin_identity_fails_closed_before_resolution() {
 
 #[tokio::test]
 async fn out_of_bound_plugin_fails_the_run_closed() {
+    // Cause/effect graph: C1=accepted activation has user input; C2=selected
+    // plugin violates its capability bound before inference. E1=terminal
+    // CapabilityBound; E2=no model/tool call; E3=input and terminal state commit
+    // atomically. Decision rule P1 C1+C2 -> E1+E2+E3.
+    // FMECA: committing only the error loses the accepted user message and makes
+    // Host completion proof replace the domain error with missing-input
+    // (critical). Mitigation: every pre-inference terminal commit carries the
+    // activation input through the same `finish` boundary.
     let runtime = Runtime::new()
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(OutOfBoundPlugin));
@@ -590,5 +598,15 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
         outcome,
         RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
         "a contribution outside the declared bound fails closed (G30)"
+    );
+    assert_eq!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .map(|message| message.id.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m1"],
+        "P1"
     );
 }

@@ -46,6 +46,7 @@ mod mcp;
 mod mcp_relay;
 mod memory;
 mod memory_stores;
+mod model_content_materializer;
 mod no_model;
 mod outcome_controller;
 mod provisioning;

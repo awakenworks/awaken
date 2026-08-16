@@ -11,6 +11,8 @@
 //! domain state — projecting engine events into [`OutboundKind`], building a
 //! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
+mod content;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 
@@ -946,7 +948,22 @@ impl SessionCreateParams {
                 max_outcomes: Some(1),
                 outcome_iterations: Some(1..=20),
             },
-        )
+        )?;
+        let file_documents = self
+            .initial_events
+            .iter()
+            .map(InboundEvent::validate_content)
+            .try_fold(0usize, |total, count| {
+                count.and_then(|count| {
+                    total
+                        .checked_add(count)
+                        .ok_or_else(|| "too many file-sourced documents".to_string())
+                })
+            })?;
+        if file_documents > 100 {
+            return Err("initial_events supports at most 100 file-sourced document blocks".into());
+        }
+        Ok(())
     }
 }
 

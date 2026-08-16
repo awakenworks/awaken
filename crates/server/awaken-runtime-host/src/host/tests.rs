@@ -634,11 +634,20 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
             &self,
             workspace_id: &str,
             file_id: &str,
+            _purpose: &awaken_resource_contract::FileReadPurpose,
             _claim: Option<&awaken_run_ingress::RunClaim>,
-        ) -> Result<Option<(String, Vec<u8>)>, awaken_resource_contract::FileContentSourceError>
-        {
+        ) -> Result<
+            Option<awaken_resource_contract::ResolvedFileContent>,
+            awaken_resource_contract::FileContentSourceError,
+        > {
             let bytes = format!("{workspace_id}/{file_id}").into_bytes();
-            Ok(Some((awaken_resource_contract::content_id(&bytes), bytes)))
+            Ok(Some(awaken_resource_contract::ResolvedFileContent {
+                file_id: file_id.into(),
+                content_id: awaken_resource_contract::content_id(&bytes),
+                filename: "input.txt".into(),
+                media_type: "text/plain".into(),
+                bytes,
+            }))
         }
     }
 
@@ -658,14 +667,19 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         SharedHost::test_memory_extraction_repository(None),
         crate::DeploymentConfig::ephemeral(),
     );
-    let (_, bytes) = host
+    let resolved = host
         .worker_file_content_source()
-        .read("workspace-runtime", "file-runtime", None)
+        .read(
+            "workspace-runtime",
+            "file-runtime",
+            &awaken_resource_contract::FileReadPurpose::SessionResource,
+            None,
+        )
         .await
         .expect("read through exact constructor port")
         .expect("constructor source returns one File");
 
-    assert_eq!(bytes, b"workspace-runtime/file-runtime");
+    assert_eq!(resolved.bytes, b"workspace-runtime/file-runtime");
 }
 
 #[tokio::test]
