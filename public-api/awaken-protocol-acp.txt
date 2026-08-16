@@ -160,6 +160,8 @@ pub awaken_protocol_acp::SessionMcpServer::auth: core::option::Option<(alloc::st
 pub awaken_protocol_acp::SessionMcpServer::command: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::SessionMcpServer::name: alloc::string::String
 pub awaken_protocol_acp::SessionMcpServer::url: core::option::Option<alloc::string::String>
+impl core::fmt::Debug for awaken_protocol_acp::SessionMcpServer
+pub fn awaken_protocol_acp::SessionMcpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_protocol_acp::SupervisePolicy
 pub awaken_protocol_acp::SupervisePolicy::reap_grace: core::time::Duration
 pub awaken_protocol_acp::SupervisePolicy::turn_deadline: core::option::Option<core::time::Duration>

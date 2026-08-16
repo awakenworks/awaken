@@ -498,10 +498,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 324/324 formalizable obligations model-linked or
-kernel-proved, plus 10 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 194
-model-checked, 27 model-proved, 159 Kani-kernel-proved, and 6 linked to the
+checkpoint the ledger is 330/330 formalizable obligations model-linked or
+kernel-proved, plus 11 explicitly external obligations, for 100% formal
+evidence coverage. The evidence dimensions are reported independently: 196
+model-checked, 27 model-proved, 163 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -513,7 +513,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 295 and now 324 as new obligations were discovered)
+The denominator (previously 295 and now 330 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -521,16 +521,16 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 586 candidate modules: all 586 are classified,
-334 have checked formal evidence associated with the production file, 211 have
-a direct Kani/trace proof link, and 195 are linked to an explicit product
+source-oriented inventory finds 590 candidate modules: all 590 are classified,
+340 have checked formal evidence associated with the production file, 216 have
+a direct Kani/trace proof link, and 192 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 209 unique Kani harnesses; repeated
+The source tree and strict CI name the same 220 unique Kani harnesses; repeated
 ledger references are allowed only when one production proof supports more than
 one precisely stated obligation.
 
@@ -595,6 +595,15 @@ remain outside the state-machine proof. They require idempotency contracts,
 adapter integration tests, fault injection, real-runtime isolation tests,
 k6/soak tests, and operational reconciliation; a larger finite TLC bound alone
 cannot prove them.
+
+`McpCredentialDelivery` proves the local post-adoption boundary: once a
+revocation transition removes the accepting attachment generation, no later MCP
+call can use that revision, and a replacement generation must rebuild the ACP
+process before it is accepted. It does not prove that a provider revocation is
+delivered promptly, or that an already-busy third-party ACP call is interrupted
+and its process terminated. Immediate busy-call revocation propagation is not
+implemented as a repository-guaranteed protocol; it remains an explicit
+external operational boundary rather than an overclaimed formal theorem.
 
 `MountCoordinator` proves the in-process registry and reference-count protocol,
 including concurrent serialization and rejection at the finite counter bound.

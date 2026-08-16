@@ -24,7 +24,7 @@ pub(crate) struct BoundLocalChannelSource {
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
-    mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
+    mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
 }
 
 impl BoundLocalChannelSource {
@@ -32,7 +32,7 @@ impl BoundLocalChannelSource {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         launch: LaunchSource,
         backend: awaken_runtime_contract::resolved::Backend,
-        mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
+        mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
@@ -156,7 +156,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
         }
         let injection = match cli {
             Some(cli) => {
-                awaken_run_executor_acp::mcp_injection_from_servers(cli, &self.mcp_servers)?
+                awaken_run_executor_acp::mcp_injection_from_session_servers(cli, &self.mcp_servers)?
             }
             None => awaken_run_executor_acp::McpInjection::default(),
         };
@@ -911,10 +911,16 @@ mod tests {
                 }] }),
             )]),
         );
-        source.mcp_servers = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
+        let routes = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
             activation.snapshot.resolved_spec.plugin_config.plugins(),
         )
         .mcp_servers;
+        source.mcp_servers = awaken_run_executor_acp::mcp_injection_from_servers(
+            awaken_run_executor_acp::acp_cli("claude").unwrap(),
+            &routes,
+        )
+        .unwrap()
+        .session_servers;
 
         let session = source
             .open(

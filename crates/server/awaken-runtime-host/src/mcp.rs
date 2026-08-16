@@ -76,49 +76,124 @@ impl McpTransportMaterial {
     }
 }
 
-/// Project private Worker material to ACP configuration. A real bearer is never
-/// projected inline: ACP receives an exact-generation loopback route and the
-/// Worker retains plaintext.
-pub(crate) fn project_mcp_transport(
+/// Project private Runtime material to ACP configuration. Worker-held material
+/// becomes an exact-generation loopback route; an explicitly admitted
+/// workload-held credential crosses only the process-local ACP Session field.
+pub(crate) fn project_mcp_session_transport(
     prepared: &McpTransportMaterial,
-    generation: &awaken_session_contract::McpGenerationRef,
+    request: &awaken_session_contract::StageMcpAttachment,
     relay: Option<&crate::mcp_relay::McpRelay>,
-) -> Result<awaken_run_executor_acp::McpServerConfig, HostError> {
-    use awaken_run_executor_acp::{McpServerConfig, McpTransport};
+    receipt: &awaken_session_contract::McpRealizationReceipt,
+    adapter: &awaken_run_executor_acp::AcpCli,
+) -> Result<awaken_run_executor_acp::SessionMcpServer, HostError> {
+    let generation = &request.generation;
     if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
-        return Ok(McpServerConfig {
+        if receipt.actual_realization_kind
+            == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField)
+        {
+            return Err(HostError::internal(
+                "process-private MCP credentials require an HTTP Session transport",
+            ));
+        }
+        receipt.verify(request).map_err(|_| {
+            HostError::internal("MCP realization receipt does not match its exact stage request")
+        })?;
+        return Ok(awaken_run_executor_acp::SessionMcpServer {
             name: prepared.name.clone(),
-            transport: McpTransport::Stdio {
-                command: command.clone(),
-                args: args.clone(),
-            },
+            command: Some(command.clone()),
+            args: args.clone(),
+            url: None,
+            auth: None,
         });
     }
     let (original_url, bearer, _) = prepared.http().expect("HTTP material checked above");
-    let url = match (bearer, relay) {
+    let process_protocol_field = receipt.actual_realization_kind
+        == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField);
+    if process_protocol_field {
+        if bearer.is_none() {
+            return Err(HostError::internal(
+                "process-private MCP credential projection has no material",
+            ));
+        }
+        receipt
+            .verify_for_delivery(
+                request,
+                awaken_credential_contract::McpCredentialDelivery::ClientInjection,
+                awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+            )
+            .map_err(|_| {
+                HostError::internal(
+                    "MCP client-injection receipt does not match its exact stage request",
+                )
+            })?;
+    } else {
+        receipt.verify(request).map_err(|_| {
+            HostError::internal("MCP realization receipt does not match its exact stage request")
+        })?;
+    }
+    let (url, auth) = match bearer {
+        Some(bearer) if process_protocol_field => {
+            let admitted = adapter.admits_mcp_client_credential(
+                Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
+                true,
+            );
+            if !admitted {
+                return Err(HostError::internal(
+                    "ACP adapter does not admit process-private MCP client injection",
+                ));
+            }
+            (
+                original_url.to_string(),
+                Some((
+                    "Authorization".to_string(),
+                    format!("Bearer {}", bearer.expose_secret()),
+                )),
+            )
+        }
         // A sandboxed run dials the host's loopback relay, which injects the real
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
-        (Some(_), Some(relay)) => relay.route_url(generation).ok_or_else(|| {
-            HostError::internal(format!(
-                "authenticated MCP generation {}:{} has no staged relay capability",
-                generation.attachment_id.0, generation.generation.0
-            ))
-        })?,
+        Some(_)
+            if receipt.actual_realization_kind
+                == Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+                || receipt.actual_realization_kind.is_none() =>
+        {
+            // `None` is the persisted pre-discriminator receipt. Exact request
+            // verification plus an already-staged generation route preserves
+            // its WorkerRelay behavior without permitting client injection.
+            let relay = relay.ok_or_else(|| {
+                HostError::internal(format!(
+                    "authenticated MCP generation {}:{} requires the Worker relay",
+                    generation.attachment_id.0, generation.generation.0
+                ))
+            })?;
+            (
+                relay.route_url(generation).ok_or_else(|| {
+                    HostError::internal(format!(
+                        "authenticated MCP generation {}:{} has no staged relay capability",
+                        generation.attachment_id.0, generation.generation.0
+                    ))
+                })?,
+                None,
+            )
+        }
         // There is no ACP-side credential resolver. Returning
         // the original URL plus a placeholder would report false success and send
         // an unusable bearer to the target. Fail closed until an explicit mediated
         // endpoint has actually been realized.
-        (Some(_), None) => {
+        Some(_) => {
             return Err(HostError::internal(format!(
-                "authenticated MCP generation {}:{} requires the Worker relay",
+                "authenticated MCP generation {}:{} has no admitted delivery",
                 generation.attachment_id.0, generation.generation.0
             )));
         }
-        (None, _) => original_url.to_string(),
+        None => (original_url.to_string(), None),
     };
-    Ok(McpServerConfig {
+    Ok(awaken_run_executor_acp::SessionMcpServer {
         name: prepared.name.clone(),
-        transport: McpTransport::Http { url },
+        command: None,
+        args: Vec::new(),
+        url: Some(url),
+        auth,
     })
 }
 
@@ -350,13 +425,29 @@ impl crate::SharedHost {
                 && server.bearer().is_some()
                 && projection.native_wiring.is_none()
             {
-                let relay = self.mcp_relay.get().ok_or_else(|| {
-                    HostError::internal("authenticated MCP generation has no staged relay")
-                })?;
-                if !relay.update_staged_route(generation, server) {
-                    return Err(HostError::internal(
-                        "authenticated MCP generation has no exact staged relay route",
-                    ));
+                match projection.receipt.actual_realization_kind {
+                    // `None` is the pre-receipt-discriminator legacy form. It
+                    // remains safe only through the same exact staged relay;
+                    // it can never fall through to process injection.
+                    Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+                    | None => {
+                        let relay = self.mcp_relay.get().ok_or_else(|| {
+                            HostError::internal("authenticated MCP generation has no staged relay")
+                        })?;
+                        if !relay.update_staged_route(generation, server) {
+                            return Err(HostError::internal(
+                                "authenticated MCP generation has no exact staged relay route",
+                            ));
+                        }
+                    }
+                    Some(
+                        awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                    ) => {}
+                    _ => {
+                        return Err(HostError::internal(
+                            "authenticated MCP generation has no admitted delivery",
+                        ));
+                    }
                 }
             }
         }
@@ -595,6 +686,140 @@ mod acp_projection_tests {
         }
     }
 
+    fn request(
+        boundary: awaken_runtime_contract::PlaintextBoundary,
+    ) -> awaken_session_contract::StageMcpAttachment {
+        let holder = awaken_runtime_contract::PlaintextHolder::new(boundary, "test-holder");
+        awaken_session_contract::StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation(),
+            realization_id: "realize-gh".into(),
+            stage_idempotency_key: "stage-gh".into(),
+            name: "gh".into(),
+            target: awaken_session_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
+            prompts_as_skills: false,
+            credential: Some(awaken_credential_contract::CredentialAccess::new(
+                awaken_credential_contract::CredentialRef {
+                    id: "credential-gh".into(),
+                    revision: 2,
+                },
+                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_credential_contract::CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_credential_contract::ModelExposurePolicy::VirtualOnly,
+                ),
+            )),
+            selected_plaintext_holder: Some(holder),
+        }
+    }
+
+    fn receipt(
+        request: &awaken_session_contract::StageMcpAttachment,
+        realization: awaken_runtime_contract::CredentialRealizationKind,
+    ) -> awaken_session_contract::McpRealizationReceipt {
+        awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+            actual_realization_kind: Some(realization),
+            receipt_fingerprint: request.fingerprint(),
+        }
+    }
+
+    fn legacy_receipt(
+        request: &awaken_session_contract::StageMcpAttachment,
+    ) -> awaken_session_contract::McpRealizationReceipt {
+        awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+            actual_realization_kind: None,
+            receipt_fingerprint: request.fingerprint(),
+        }
+    }
+
+    #[test]
+    fn client_injection_uses_only_the_exact_process_protocol_field() {
+        use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
+        let prepared = prepared(Some("raw-secret"));
+        let exact_request = request(PlaintextBoundary::Workload);
+        let exact = receipt(
+            &exact_request,
+            CredentialRealizationKind::ProcessProtocolField,
+        );
+        let projected = project_mcp_session_transport(
+            &prepared,
+            &exact_request,
+            None,
+            &exact,
+            awaken_run_executor_acp::acp_cli("claude").unwrap(),
+        )
+        .expect("exact ClientInjection");
+        assert_eq!(projected.url.as_deref(), Some("https://mcp.gh"));
+        assert_eq!(
+            projected
+                .auth
+                .as_ref()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+            Some(("Authorization", "Bearer raw-secret"))
+        );
+        assert!(!format!("{projected:?}").contains("raw-secret"));
+
+        for (boundary, realization) in [
+            (
+                PlaintextBoundary::Workload,
+                CredentialRealizationKind::ProcessSecretEnvironment,
+            ),
+            (
+                PlaintextBoundary::Workload,
+                CredentialRealizationKind::PrivateSecretFile,
+            ),
+            (
+                PlaintextBoundary::Platform,
+                CredentialRealizationKind::PlatformRelay,
+            ),
+        ] {
+            let rejected_request = request(boundary);
+            let rejected = receipt(&rejected_request, realization);
+            assert!(
+                project_mcp_session_transport(
+                    &prepared,
+                    &rejected_request,
+                    None,
+                    &rejected,
+                    awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            project_mcp_session_transport(
+                &prepared,
+                &exact_request,
+                None,
+                &exact,
+                awaken_run_executor_acp::acp_cli("codex").unwrap(),
+            )
+            .is_err()
+        );
+        let mut tampered = exact;
+        tampered.receipt_fingerprint = "different-stage".into();
+        assert!(
+            project_mcp_session_transport(
+                &prepared,
+                &exact_request,
+                None,
+                &tampered,
+                awaken_run_executor_acp::acp_cli("claude").unwrap(),
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn mcp_transport_faults_have_stable_origin_classification() {
         // Cause/effect decision table: R1 auth challenge => permanent classified
@@ -638,12 +863,21 @@ mod acp_projection_tests {
     #[test]
     fn acp_projection_never_contains_the_real_bearer() {
         let p = prepared(Some("sk-RAW-SECRET"));
-        let generation = generation();
+        let request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        let receipt = legacy_receipt(&request);
+        let adapter = awaken_run_executor_acp::acp_cli("codex").unwrap();
         // Without a live relay, fail closed: this process has no alternate
         // reference resolver and may not report a non-functional projection.
-        assert!(project_mcp_transport(&p, &generation, None).is_err());
+        assert!(project_mcp_session_transport(&p, &request, None, &receipt, adapter).is_err());
         // Anonymous access remains a direct secret-free route.
-        assert!(project_mcp_transport(&prepared(None), &generation, None).is_ok());
+        let mut anonymous = request;
+        anonymous.credential = None;
+        anonymous.selected_plaintext_holder = None;
+        let receipt = legacy_receipt(&anonymous);
+        assert!(
+            project_mcp_session_transport(&prepared(None), &anonymous, None, &receipt, adapter,)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -656,28 +890,49 @@ mod acp_projection_tests {
                 args: vec!["--headless".into()],
             },
         };
-        let projected = project_mcp_transport(&prepared, &generation(), None).unwrap();
-        assert!(matches!(
-            projected.transport,
-            awaken_run_executor_acp::McpTransport::Stdio { command, args }
-                if command == "playwright-mcp" && args == ["--headless"]
-        ));
+        let mut request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        request.name = "playwright".into();
+        request.target = awaken_session_contract::McpTarget::sandbox_stdio(
+            "playwright-mcp",
+            vec!["--headless".into()],
+        )
+        .unwrap();
+        request.credential = None;
+        request.selected_plaintext_holder = None;
+        let receipt = legacy_receipt(&request);
+        let projected = project_mcp_session_transport(
+            &prepared,
+            &request,
+            None,
+            &receipt,
+            awaken_run_executor_acp::acp_cli("codex").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(projected.command.as_deref(), Some("playwright-mcp"));
+        assert_eq!(projected.args, ["--headless"]);
+        assert!(projected.url.is_none());
     }
 
     #[tokio::test]
     async fn a_relay_projects_a_loopback_url_with_no_sandbox_credential() {
         let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
         let p = prepared(Some("sk-RAW-SECRET"));
-        let generation = generation();
-        relay.set_route(&generation, &p);
+        let request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        let receipt = legacy_receipt(&request);
+        relay.set_route(&request.generation, &p);
         // Sandboxed + relay: the projected server dials the relay (loopback), holds NO
         // credential (the relay injects the real bearer host-side), never the raw secret.
-        let s = project_mcp_transport(&p, &generation, Some(&relay)).unwrap();
+        let s = project_mcp_session_transport(
+            &p,
+            &request,
+            Some(&relay),
+            &receipt,
+            awaken_run_executor_acp::acp_cli("codex").unwrap(),
+        )
+        .unwrap();
         assert!(!format!("{s:?}").contains("sk-RAW-SECRET"));
-        let url = match &s.transport {
-            awaken_run_executor_acp::McpTransport::Http { url } => url.clone(),
-            other => panic!("expected http transport, got {other:?}"),
-        };
+        assert!(s.auth.is_none());
+        let url = s.url.expect("expected HTTP transport");
         assert!(
             url.starts_with("http://127.0.0.1:"),
             "dials the loopback relay: {url}"
@@ -690,7 +945,6 @@ mod acp_projection_tests {
                     .is_some_and(|token| token.len() == 32),
             "routed by exact generation: {url}"
         );
-        assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
     }
 }
 

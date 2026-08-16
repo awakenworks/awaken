@@ -337,7 +337,7 @@ impl PermissionResolver for AllowAll {
 /// shape the executor projects `McpServerConfig` into (keeping this crate free of the
 /// executor's config vocab), mapped to `agent_client_protocol::McpServer` under
 /// `real-acp`. A stdio child carries `command`+`args`; an HTTP endpoint carries `url`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionMcpServer {
     pub name: String,
     /// Stdio transport: the child command + args (`url` is then `None`).
@@ -349,6 +349,19 @@ pub struct SessionMcpServer {
     /// α: a broker reference the gateway resolves; β: a raw secret on a trusted launch.
     /// `None` for an unauthenticated server.
     pub auth: Option<(String, String)>,
+}
+
+impl std::fmt::Debug for SessionMcpServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionMcpServer")
+            .field("name", &self.name)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("url", &self.url)
+            .field("auth", &self.auth.as_ref().map(|(name, _)| (name, "***")))
+            .finish()
+    }
 }
 
 /// One exact backend-owned model selection delivered through ACP after a
@@ -815,6 +828,21 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+
+    #[test]
+    fn session_mcp_debug_redacts_process_private_auth_material() {
+        let server = SessionMcpServer {
+            name: "docs".into(),
+            command: None,
+            args: Vec::new(),
+            url: Some("https://mcp.example".into()),
+            auth: Some(("Authorization".into(), "Bearer raw-secret".into())),
+        };
+        let debug = format!("{server:?}");
+        assert!(debug.contains("Authorization"));
+        assert!(!debug.contains("raw-secret"));
+        assert!(debug.contains("***"));
+    }
 
     /// An in-memory sink that enforces monotonic seq and records the projected events.
     #[derive(Default)]

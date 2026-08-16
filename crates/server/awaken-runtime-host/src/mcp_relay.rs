@@ -2,7 +2,8 @@
 //!
 //! A sandboxed ACP agent's MCP client must authenticate to a real HTTP MCP server (e.g. the
 //! GitHub MCP) without the raw token ever entering the sandbox. Instead of handing the CLI
-//! the real URL + the secret, [`project_mcp_transport`](crate::mcp::project_mcp_transport) points a
+//! the real URL + the secret,
+//! [`project_mcp_session_transport`](crate::mcp::project_mcp_session_transport) points a
 //! sandboxed server at an opaque exact-generation capability URL on this relay. The relay
 //! holds the host-side bearer from private exact-generation transport material,
 //! looks it up by `(session, attachment, generation)`, strips any workload-supplied `Authorization`,

@@ -4,13 +4,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{CredentialMaterialSource, PlaintextHolder};
+use super::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialRealizationKind {
     ProcessSecretEnvironment,
     PrivateSecretFile,
+    /// Material crosses only an already-confined process protocol channel and
+    /// is consumed as a typed field; it is neither an OS environment variable
+    /// nor a durable/config-file projection.
+    ProcessProtocolField,
     WorkerProviderAdapter,
     WorkerRelay,
     /// A trusted downstream platform adapter consumes the exact published
@@ -21,6 +25,128 @@ pub enum CredentialRealizationKind {
     /// executing a target-bound effect. The caller receives the upstream result
     /// and secret-free receipt, never the credential material.
     PlatformRelay,
+}
+
+/// How an authenticated MCP client receives access to its upstream server.
+///
+/// This is a derived, secret-free execution fact. It deliberately does not add
+/// a field to the persisted Session or Worker-manifest wire: retained rows keep
+/// their existing holder and realization-kind encoding, while new admission
+/// code can classify that exact pair without an implicit migration default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum McpCredentialDelivery {
+    /// The selected trusted MCP client boundary receives credential material
+    /// and injects it into the upstream protocol request.
+    ClientInjection,
+    /// A Platform-held egress mediator injects credential material; Runtime and
+    /// workload receive only the mediated route.
+    GatewayMediation,
+}
+
+/// Derive the sole MCP delivery mode represented by an exact holder/mechanism
+/// pair. Every cross-boundary or nonsensical pairing fails closed.
+///
+/// `WorkerRelay` remains readable on the existing wire, but is intentionally
+/// not reclassified as client injection. A future migration may replace that
+/// legacy mechanism only through an explicit Session generation change.
+#[must_use]
+pub const fn select_mcp_credential_delivery(
+    boundary: PlaintextBoundary,
+    realization: CredentialRealizationKind,
+) -> Option<McpCredentialDelivery> {
+    match (boundary, realization) {
+        (PlaintextBoundary::Workload, CredentialRealizationKind::ProcessProtocolField) => {
+            Some(McpCredentialDelivery::ClientInjection)
+        }
+        (PlaintextBoundary::Platform, CredentialRealizationKind::PlatformRelay) => {
+            Some(McpCredentialDelivery::GatewayMediation)
+        }
+        _ => None,
+    }
+}
+
+const fn delivery_is(
+    selected: Option<McpCredentialDelivery>,
+    expected: McpCredentialDelivery,
+) -> bool {
+    matches!(
+        (selected, expected),
+        (
+            Some(McpCredentialDelivery::ClientInjection),
+            McpCredentialDelivery::ClientInjection
+        ) | (
+            Some(McpCredentialDelivery::GatewayMediation),
+            McpCredentialDelivery::GatewayMediation
+        )
+    )
+}
+
+const fn same_boundary(left: PlaintextBoundary, right: PlaintextBoundary) -> bool {
+    matches!(
+        (left, right),
+        (PlaintextBoundary::Workload, PlaintextBoundary::Workload)
+            | (PlaintextBoundary::Worker, PlaintextBoundary::Worker)
+            | (PlaintextBoundary::Platform, PlaintextBoundary::Platform)
+    )
+}
+
+const fn same_realization(
+    left: CredentialRealizationKind,
+    right: CredentialRealizationKind,
+) -> bool {
+    matches!(
+        (left, right),
+        (
+            CredentialRealizationKind::ProcessSecretEnvironment,
+            CredentialRealizationKind::ProcessSecretEnvironment
+        ) | (
+            CredentialRealizationKind::PrivateSecretFile,
+            CredentialRealizationKind::PrivateSecretFile
+        ) | (
+            CredentialRealizationKind::ProcessProtocolField,
+            CredentialRealizationKind::ProcessProtocolField
+        ) | (
+            CredentialRealizationKind::WorkerProviderAdapter,
+            CredentialRealizationKind::WorkerProviderAdapter
+        ) | (
+            CredentialRealizationKind::WorkerRelay,
+            CredentialRealizationKind::WorkerRelay
+        ) | (
+            CredentialRealizationKind::PlatformProviderAdapter,
+            CredentialRealizationKind::PlatformProviderAdapter
+        ) | (
+            CredentialRealizationKind::PlatformRelay,
+            CredentialRealizationKind::PlatformRelay
+        )
+    )
+}
+
+/// Representation-free kernel for delivery-aware MCP realization receipts.
+///
+/// Complete Session request/receipt identity is supplied as `exact_binding` by
+/// the Session contract. This kernel additionally requires the exact holder,
+/// exact realization mechanism, and their one valid delivery classification;
+/// matching only a broader delivery category can never authorize a receipt.
+#[must_use]
+pub const fn mcp_credential_delivery_receipt_matches(
+    expected_delivery: McpCredentialDelivery,
+    expected_boundary: PlaintextBoundary,
+    expected_realization: CredentialRealizationKind,
+    actual_boundary: PlaintextBoundary,
+    actual_realization: CredentialRealizationKind,
+    exact_binding: bool,
+) -> bool {
+    exact_binding
+        && same_boundary(expected_boundary, actual_boundary)
+        && same_realization(expected_realization, actual_realization)
+        && delivery_is(
+            select_mcp_credential_delivery(expected_boundary, expected_realization),
+            expected_delivery,
+        )
+        && delivery_is(
+            select_mcp_credential_delivery(actual_boundary, actual_realization),
+            expected_delivery,
+        )
 }
 
 /// Installed last-mile capabilities.  This is evidence, not preference policy.
@@ -196,5 +322,183 @@ impl CredentialRealizationCapabilities {
         }
         serde_json::from_str(payload)
             .map_err(|error| format!("invalid credential realization capability: {error}"))
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn boundary(tag: u8) -> PlaintextBoundary {
+        match tag % 3 {
+            0 => PlaintextBoundary::Workload,
+            1 => PlaintextBoundary::Worker,
+            _ => PlaintextBoundary::Platform,
+        }
+    }
+
+    fn realization(tag: u8) -> CredentialRealizationKind {
+        match tag % 7 {
+            0 => CredentialRealizationKind::ProcessSecretEnvironment,
+            1 => CredentialRealizationKind::PrivateSecretFile,
+            2 => CredentialRealizationKind::ProcessProtocolField,
+            3 => CredentialRealizationKind::WorkerProviderAdapter,
+            4 => CredentialRealizationKind::WorkerRelay,
+            5 => CredentialRealizationKind::PlatformProviderAdapter,
+            _ => CredentialRealizationKind::PlatformRelay,
+        }
+    }
+
+    fn delivery(tag: bool) -> McpCredentialDelivery {
+        if tag {
+            McpCredentialDelivery::GatewayMediation
+        } else {
+            McpCredentialDelivery::ClientInjection
+        }
+    }
+
+    #[kani::proof]
+    fn mcp_delivery_selection_has_only_the_explicit_pair_classes() {
+        let boundary = boundary(kani::any());
+        let realization = realization(kani::any());
+        let selected = select_mcp_credential_delivery(boundary, realization);
+        assert_eq!(
+            selected,
+            match (boundary, realization) {
+                (PlaintextBoundary::Workload, CredentialRealizationKind::ProcessProtocolField) => {
+                    Some(McpCredentialDelivery::ClientInjection)
+                }
+                (PlaintextBoundary::Platform, CredentialRealizationKind::PlatformRelay) => {
+                    Some(McpCredentialDelivery::GatewayMediation)
+                }
+                _ => None,
+            }
+        );
+    }
+
+    #[kani::proof]
+    fn mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism() {
+        let expected_delivery = delivery(kani::any());
+        let expected_boundary = boundary(kani::any());
+        let expected_realization = realization(kani::any());
+        let actual_boundary = boundary(kani::any());
+        let actual_realization = realization(kani::any());
+        let exact_binding = kani::any();
+        let matches = mcp_credential_delivery_receipt_matches(
+            expected_delivery,
+            expected_boundary,
+            expected_realization,
+            actual_boundary,
+            actual_realization,
+            exact_binding,
+        );
+        if matches {
+            assert!(exact_binding);
+            assert_eq!(expected_boundary, actual_boundary);
+            assert_eq!(expected_realization, actual_realization);
+            assert_eq!(
+                select_mcp_credential_delivery(actual_boundary, actual_realization),
+                Some(expected_delivery)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    #[test]
+    fn process_protocol_field_wire_is_explicit_and_round_trips() {
+        assert_eq!(
+            serde_json::to_string(&CredentialRealizationKind::ProcessProtocolField).unwrap(),
+            "\"process_protocol_field\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CredentialRealizationKind>("\"process_protocol_field\"")
+                .unwrap(),
+            CredentialRealizationKind::ProcessProtocolField
+        );
+    }
+
+    #[test]
+    fn delivery_selection_is_a_closed_holder_mechanism_matrix() {
+        let boundaries = [
+            PlaintextBoundary::Workload,
+            PlaintextBoundary::Worker,
+            PlaintextBoundary::Platform,
+        ];
+        let realizations = [
+            CredentialRealizationKind::ProcessSecretEnvironment,
+            CredentialRealizationKind::PrivateSecretFile,
+            CredentialRealizationKind::ProcessProtocolField,
+            CredentialRealizationKind::WorkerProviderAdapter,
+            CredentialRealizationKind::WorkerRelay,
+            CredentialRealizationKind::PlatformProviderAdapter,
+            CredentialRealizationKind::PlatformRelay,
+        ];
+        for boundary in boundaries {
+            for realization in realizations {
+                let expected = match (boundary, realization) {
+                    (
+                        PlaintextBoundary::Workload,
+                        CredentialRealizationKind::ProcessProtocolField,
+                    ) => Some(McpCredentialDelivery::ClientInjection),
+                    (PlaintextBoundary::Platform, CredentialRealizationKind::PlatformRelay) => {
+                        Some(McpCredentialDelivery::GatewayMediation)
+                    }
+                    _ => None,
+                };
+                assert_eq!(
+                    select_mcp_credential_delivery(boundary, realization),
+                    expected,
+                    "boundary={boundary:?}, realization={realization:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_matching_rejects_partial_reclassified_and_legacy_relay_matches() {
+        assert!(mcp_credential_delivery_receipt_matches(
+            McpCredentialDelivery::GatewayMediation,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            true,
+        ));
+        assert!(!mcp_credential_delivery_receipt_matches(
+            McpCredentialDelivery::ClientInjection,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            true,
+        ));
+        assert!(!mcp_credential_delivery_receipt_matches(
+            McpCredentialDelivery::GatewayMediation,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            PlaintextBoundary::Worker,
+            CredentialRealizationKind::PlatformRelay,
+            true,
+        ));
+        assert!(!mcp_credential_delivery_receipt_matches(
+            McpCredentialDelivery::GatewayMediation,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            PlaintextBoundary::Platform,
+            CredentialRealizationKind::PlatformRelay,
+            false,
+        ));
+        assert_eq!(
+            select_mcp_credential_delivery(
+                PlaintextBoundary::Worker,
+                CredentialRealizationKind::WorkerRelay,
+            ),
+            None,
+            "retained WorkerRelay wire is never silently reclassified"
+        );
     }
 }

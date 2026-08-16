@@ -27,6 +27,7 @@ use awaken_credential_vault::repo::{
     CredentialMutationIntent, CredentialRepo, ManagedCredentialMutationPhase,
     ManagedCredentialOperation, ManagedCredentialRepository, ManagedCredentialRollout,
     PendingManagedCredentialMutation, managed_retirement_parent_admitted,
+    managed_rollout_from_committed,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -692,7 +693,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        if let Some(rollout) = ManagedCredentialRollout::from_committed(pending) {
+        if let Some(rollout) = managed_rollout_from_committed(pending) {
             sqlx::query(&format!(
                 "INSERT INTO {p}_managed_credential_rollout (event_id, data) VALUES ($1, $2) \
                  ON CONFLICT (event_id) DO NOTHING"

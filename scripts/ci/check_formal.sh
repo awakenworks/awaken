@@ -128,6 +128,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
   run_kani awaken-credential-vault \
+    --harness provider_scope_never_widens_endpoint_scope \
     --harness disabled_credential_pool_members_are_never_eligible \
     --harness credential_cooldown_boundary_is_exact_and_inclusive \
     --harness exhausted_credentials_are_unavailable_at_every_time \
@@ -144,13 +145,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_creation_begin_rejects_every_published_identity \
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
     --harness managed_material_attempt_requires_owner_and_exact_physical_namespace \
-    --harness managed_rollout_never_precedes_exact_pair_publication
+    --harness managed_rollout_never_precedes_exact_pair_publication \
+    --harness managed_rollout_ack_requires_converged_progress
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
     --harness hand_protocol_requires_supported_version_and_v2_operation_identity
   run_kani awaken-config-resolver \
-    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
-    --harness provider_scope_never_widens_endpoint_scope
+    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence
   run_kani awaken-agent-config \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
@@ -158,7 +159,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness environment_credential_custody_selects_exactly_one_authorized_profile \
     --harness http_effect_material_shape_is_exact_and_non_widening \
+    --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
+    --harness mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
+  run_kani awaken-run-executor-acp \
+    --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
     --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
@@ -488,6 +493,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/mcp-server" \
     -config formal/tla/McpServer.cfg formal/tla/McpServer.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/mcp-credential-delivery" \
+    -config formal/tla/McpCredentialDelivery.cfg \
+    formal/tla/McpCredentialDelivery.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-replacement" \
     -config formal/tla/WorkerReplacement.cfg formal/tla/WorkerReplacement.tla

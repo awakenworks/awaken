@@ -14,13 +14,16 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 mod http_effect;
 pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
+mod managed_rollout;
+pub use managed_rollout::{ManagedCredentialOperation, ManagedCredentialRollout};
 #[cfg(kani)]
 mod formal;
 mod realization_capabilities;
 pub use realization_capabilities::{
     ACP_CREDENTIAL_CONSUMER_PREFIX, CREDENTIAL_REALIZATION_CAPABILITY_PREFIX,
-    CredentialRealizationCapabilities, CredentialRealizationKind,
+    CredentialRealizationCapabilities, CredentialRealizationKind, McpCredentialDelivery,
     PRIVATE_SECRET_FILE_MATERIAL_TYPE, PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+    mcp_credential_delivery_receipt_matches, select_mcp_credential_delivery,
 };
 
 /// Stable built-in trust domains used by the self-hosted execution profile.
@@ -280,16 +283,16 @@ impl CredentialRealizationProfile {
         }
     }
 
-    /// Canonical self-hosted profile for an ACP workload. MCP remains mediated by
-    /// the Worker until a distinct trusted workload MCP client is installed.
+    /// Canonical self-hosted profile for an ACP workload. The exact ACP adapter
+    /// must still declare its process-private MCP credential channel and the
+    /// selected sandbox must prove no-bypass egress before realization.
     #[must_use]
     pub fn self_hosted_acp() -> Self {
+        let workload =
+            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN);
         Self {
-            inference_holder: PlaintextHolder::new(
-                PlaintextBoundary::Workload,
-                SELF_HOSTED_ACP_TRUST_DOMAIN,
-            ),
-            mcp_holder: self_hosted_worker_holder(),
+            inference_holder: workload.clone(),
+            mcp_holder: workload,
             resource_holder: self_hosted_worker_holder(),
         }
     }

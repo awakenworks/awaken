@@ -28,6 +28,7 @@ use awaken_credential_vault::repo::{
     CredentialMutationIntent, CredentialRepo, ManagedCredentialMutationPhase,
     ManagedCredentialOperation, ManagedCredentialRepository, ManagedCredentialRollout,
     PendingManagedCredentialMutation, managed_retirement_parent_admitted,
+    managed_rollout_from_committed,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,

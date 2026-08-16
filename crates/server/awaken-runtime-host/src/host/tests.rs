@@ -4708,6 +4708,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
+    acp_host.register_thread_backend_projection("mcp-acp-client-basic", "acp:claude");
     // Deliberately install no credential resolver: the no-bypass failure must mask
     // material-source availability and prove no secret lookup was attempted.
     let acp_managed = crate::ManagedHost::new(acp_host.clone());
@@ -4738,6 +4739,26 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .mcp_projection(&generation("mcp-acp-protected"))
             .is_none(),
         "H12"
+    );
+
+    let workload_holder = PlaintextHolder::new(
+        PlaintextBoundary::Workload,
+        awaken_credential_contract::SELF_HOSTED_ACP_TRUST_DOMAIN,
+    );
+    let basic_client = crate::ManagedHost::new(acp_host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
+    let mut basic_client_request = request("mcp-acp-client-basic", "workspace-a", 1);
+    basic_client_request.selected_plaintext_holder = Some(workload_holder.clone());
+    basic_client_request.credential.as_mut().unwrap().policy =
+        CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::Forbidden);
+    let basic_client_receipt = basic_client
+        .stage_mcp_attachment(basic_client_request)
+        .await
+        .expect("H23 client injection does not require WorkerRelay provider custody");
+    assert_eq!(
+        basic_client_receipt.actual_realization_kind,
+        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField),
+        "H23"
     );
 
     let mut anonymous = request("mcp-acp-anonymous", "workspace-a", 1);
@@ -4850,6 +4871,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             ),
     );
     secure_acp_host.register_thread_backend_projection("mcp-acp-secure", "acp:test");
+    secure_acp_host.register_thread_backend_projection("mcp-acp-client", "acp:claude");
+    secure_acp_host.register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
     let secure_managed =
         crate::ManagedHost::new(secure_acp_host.clone()).with_credentials(credentials, secrets);
     let secure_generation = generation("mcp-acp-secure");
@@ -4869,16 +4892,16 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let projection = secure_acp_host
         .mcp_projection(&secure_generation)
         .expect("H20 exact projection");
-    let projected = crate::mcp::project_mcp_transport(
+    let projected = crate::mcp::project_mcp_session_transport(
         projection.server.as_ref().expect("H20 private material"),
-        &secure_generation,
+        &projection.request,
         secure_acp_host.mcp_relay.get(),
+        &projection.receipt,
+        awaken_run_executor_acp::acp_cli("codex").unwrap(),
     )
     .expect("H20 project opaque route");
-    let route = match projected.transport {
-        awaken_run_executor_acp::McpTransport::Http { url } => url,
-        other => panic!("H20 expected HTTP relay route, got {other:?}"),
-    };
+    let route = projected.url.expect("H20 expected HTTP relay route");
+    assert!(projected.auth.is_none(), "H20 relay owns auth");
     assert!(
         !route.contains("published-mcp-token"),
         "H20 secret-free route"
@@ -4903,6 +4926,87 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         serde_json::to_value(result).unwrap()["content"][0]["text"],
         "worker-held",
         "H20"
+    );
+
+    // H23 proves the distinct ClientInjection branch. The holder and mechanism
+    // are exact, no relay route is manufactured, and raw material exists only
+    // in the process-local Session field consumed by the declared ACP adapter.
+    let mut refreshable = request("mcp-acp-refresh", "workspace-a", 1);
+    refreshable.selected_plaintext_holder = Some(workload_holder.clone());
+    let access = refreshable.credential.take().unwrap();
+    refreshable.credential = Some(access.with_refresh(
+        awaken_runtime_contract::CredentialRefreshAccess::new(
+            1,
+            "https://auth.example/token".into(),
+            "client".into(),
+            awaken_runtime_contract::TokenEndpointAuth::None,
+            None,
+            "refresh-ref".into(),
+            "access-ref".into(),
+            None,
+            None,
+        ),
+    ));
+    refreshable.credential.as_mut().unwrap().policy =
+        CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::VirtualOnly);
+    assert_eq!(
+        secure_managed
+            .stage_mcp_attachment(refreshable)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_client_refresh_unsupported",
+        "H24 refresh is never silently discarded"
+    );
+    assert!(
+        secure_acp_host
+            .mcp_projection(&generation("mcp-acp-refresh"))
+            .is_none(),
+        "H24"
+    );
+    let mut client_request = request("mcp-acp-client", "workspace-a", 1);
+    client_request.selected_plaintext_holder = Some(workload_holder.clone());
+    client_request.credential.as_mut().unwrap().policy =
+        CredentialExecutionPolicy::exact(workload_holder, ModelExposurePolicy::VirtualOnly);
+    let client_receipt = secure_managed
+        .stage_mcp_attachment(client_request)
+        .await
+        .expect("H23 exact process-protocol client injection");
+    assert_eq!(
+        client_receipt.actual_realization_kind,
+        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField),
+        "H23"
+    );
+    secure_managed
+        .publish_mcp_generation(client_receipt.generation.clone())
+        .await
+        .expect("H23 publish");
+    let client_projection = secure_acp_host
+        .mcp_projection(&client_receipt.generation)
+        .expect("H23 projection");
+    let client_server = crate::mcp::project_mcp_session_transport(
+        client_projection
+            .server
+            .as_ref()
+            .expect("H23 private material"),
+        &client_projection.request,
+        secure_acp_host.mcp_relay.get(),
+        &client_projection.receipt,
+        awaken_run_executor_acp::acp_cli("claude").unwrap(),
+    )
+    .expect("H23 exact ACP Session projection");
+    assert_eq!(client_server.url.as_deref(), Some(mcp_url.as_str()), "H23");
+    assert_eq!(
+        client_server
+            .auth
+            .as_ref()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+        Some(("Authorization", "Bearer published-mcp-token")),
+        "H23"
+    );
+    assert!(
+        !format!("{client_server:?}").contains("published-mcp-token"),
+        "H23"
     );
     let seen = seen.lock().unwrap();
     assert!(seen.len() > seen_before, "H20 route reached upstream");
@@ -5159,9 +5263,8 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
 /// change which generation is visible.
 #[tokio::test]
 async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
-    use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_transport};
+    use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_session_transport};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_run_executor_acp::McpTransport;
     use awaken_session_contract::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
     };
@@ -5175,8 +5278,8 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         lease_epoch: 7,
         lease_expires_at_unix_ms: u64::MAX,
     };
-    let projection = |number: u64, secret: &str| McpGenerationProjection {
-        request: awaken_session_contract::StageMcpAttachment {
+    let projection = |number: u64, secret: &str| {
+        let request = awaken_session_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation(number),
             realization_id: format!("realize-{number}"),
@@ -5189,30 +5292,33 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
             prompts_as_skills: false,
             credential: None,
             selected_plaintext_holder: None,
-        },
-        receipt: McpRealizationReceipt {
-            generation: generation(number),
-            realization_id: format!("realize-{number}"),
-            selected_plaintext_holder: None,
-            actual_realization_kind: None,
-            receipt_fingerprint: format!("fingerprint-{number}"),
-        },
-        server: Some(McpTransportMaterial {
-            name: "docs".into(),
-            prompts_as_skills: false,
-            transport: crate::mcp::McpTransportMaterialKind::Http {
-                url: format!("https://mcp-{number}.example.test"),
-                bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
-                refresh: None,
+        };
+        McpGenerationProjection {
+            receipt: McpRealizationReceipt {
+                generation: request.generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: None,
+                actual_realization_kind: None,
+                receipt_fingerprint: request.fingerprint(),
             },
-        }),
-        native_wiring: Some(McpWiring {
-            plugins: Vec::new(),
-            tool_ids: vec![format!("docs-generation-{number}")],
-            skill_registries: Vec::new(),
-        }),
-        mcp_process: None,
-        state: McpProjectionState::Staged,
+            request,
+            server: Some(McpTransportMaterial {
+                name: "docs".into(),
+                prompts_as_skills: false,
+                transport: crate::mcp::McpTransportMaterialKind::Http {
+                    url: format!("https://mcp-{number}.example.test"),
+                    bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
+                    refresh: None,
+                },
+            }),
+            native_wiring: Some(McpWiring {
+                plugins: Vec::new(),
+                tool_ids: vec![format!("docs-generation-{number}")],
+                skill_registries: Vec::new(),
+            }),
+            mcp_process: None,
+            state: McpProjectionState::Staged,
+        }
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     assert!(
@@ -5247,16 +5353,16 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         "docs-generation-1",
         "P2"
     );
-    let acp = project_mcp_transport(
+    let acp = project_mcp_session_transport(
         visible[0].server.as_ref().unwrap(),
-        &visible[0].request.generation,
+        &visible[0].request,
         Some(&relay),
+        &visible[0].receipt,
+        awaken_run_executor_acp::acp_cli("codex").unwrap(),
     )
     .unwrap();
-    let old_route = match acp.transport {
-        McpTransport::Http { url } => url,
-        other => panic!("P2 expected HTTP transport, got {other:?}"),
-    };
+    assert!(acp.auth.is_none(), "P2 legacy route remains secret-free");
+    let old_route = acp.url.expect("P2 expected HTTP transport");
     assert_eq!(old_route, staged_route, "P2 publish reuses staged effect");
     assert!(old_route.contains("/mcp-parity/mcp-docs/1/"), "P2");
 
@@ -5281,16 +5387,19 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         "docs-generation-2",
         "P4"
     );
-    let replacement = project_mcp_transport(
+    let replacement = project_mcp_session_transport(
         visible[0].server.as_ref().unwrap(),
-        &visible[0].request.generation,
+        &visible[0].request,
         Some(&relay),
+        &visible[0].receipt,
+        awaken_run_executor_acp::acp_cli("codex").unwrap(),
     )
     .unwrap();
-    let new_route = match replacement.transport {
-        McpTransport::Http { url } => url,
-        other => panic!("P4 expected HTTP transport, got {other:?}"),
-    };
+    assert!(
+        replacement.auth.is_none(),
+        "P4 legacy route remains secret-free"
+    );
+    let new_route = replacement.url.expect("P4 expected HTTP transport");
     assert!(new_route.contains("/mcp-parity/mcp-docs/2/"), "P4");
     assert_ne!(old_route, new_route, "P4");
 

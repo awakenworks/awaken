@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use awaken_credential_vault::repo::{
-    ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutTarget,
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
+    ManagedCredentialRollout, ManagedCredentialRolloutTarget,
 };
 use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionUpdateCommand,
@@ -29,13 +30,16 @@ fn rollout_update_revision_is_monotonic_and_covers_event() {
 }
 
 impl ManagedState {
-    async fn apply_vault_rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String> {
+    async fn apply_vault_rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         let sessions = self
             .application
             .session_repository_handle()
             .sessions_referencing_vault(&event.workspace_id, &event.vault_id)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
         let mut pending = Vec::new();
         for session in sessions {
             if session.execution != SessionExecutionState::Idle {
@@ -148,25 +152,27 @@ impl ManagedState {
             match result {
                 Ok(outcome) => {
                     self.refresh_cached_projection(&outcome.session)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| {
+                            ManagedCredentialAdoptionError::Unavailable(error.to_string())
+                        })?;
                 }
                 Err(error) => pending.push(format!("{} ({error})", session.session_id)),
             }
         }
         if pending.is_empty() {
-            Ok(())
+            Ok(ManagedCredentialAdoptionProgress::Converged)
         } else {
-            Err(format!(
-                "Vault rollout remains pending for Sessions: {}",
-                pending.join(", ")
-            ))
+            Ok(ManagedCredentialAdoptionProgress::Pending)
         }
     }
 }
 
 #[async_trait::async_trait]
 impl ManagedCredentialRolloutTarget for ManagedState {
-    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String> {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         self.apply_vault_rollout(event).await
     }
 }

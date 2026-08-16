@@ -1469,16 +1469,17 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             }
         }
 
-        let is_acp = self
+        let execution_backend = self
             .host
             .session_slots
             .read(&request.generation.session_id, |slot| {
                 slot.backend_ref.clone()
             })
             .flatten()
-            .is_some_and(|backend_ref| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
-            });
+            .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref));
+        let is_acp = execution_backend
+            .as_ref()
+            .is_some_and(|backend| backend.is_acp());
 
         let sandbox_stdio = request.target.sandbox_stdio_target().cloned();
         if sandbox_stdio.is_some()
@@ -1496,10 +1497,61 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         ) {
             (None, None) => (None, None, None),
             (Some(access), Some(holder)) => {
-                if holder.boundary != PlaintextBoundary::Worker {
+                let realization_kind = match holder.boundary {
+                    PlaintextBoundary::Worker => CredentialRealizationKind::WorkerRelay,
+                    PlaintextBoundary::Workload if is_acp => {
+                        let Some(awaken_runtime_contract::resolved::Backend::Acp { cli }) =
+                            execution_backend.as_ref()
+                        else {
+                            return Err(RunError::classified(
+                                "mcp_holder_unsupported",
+                                "Workload-held MCP credentials require an ACP backend",
+                            ));
+                        };
+                        let Some(adapter) = awaken_run_executor_acp::acp_cli(cli) else {
+                            return Err(RunError::classified(
+                                "mcp_client_injection_unsupported",
+                                format!(
+                                    "ACP adapter `{cli}` has no credential delivery declaration"
+                                ),
+                            ));
+                        };
+                        let delivery = awaken_credential_contract::select_mcp_credential_delivery(
+                            holder.boundary,
+                            CredentialRealizationKind::ProcessProtocolField,
+                        );
+                        if !adapter.admits_mcp_client_credential(
+                            delivery,
+                            request.target.http_url().is_some(),
+                        ) {
+                            return Err(RunError::classified(
+                                "mcp_client_injection_unsupported",
+                                format!(
+                                    "ACP adapter `{cli}` cannot consume this MCP credential through its process-private channel"
+                                ),
+                            ));
+                        }
+                        CredentialRealizationKind::ProcessProtocolField
+                    }
+                    PlaintextBoundary::Workload => {
+                        return Err(RunError::classified(
+                            "mcp_holder_unsupported",
+                            "Workload-held MCP credentials require an ACP backend",
+                        ));
+                    }
+                    PlaintextBoundary::Platform => {
+                        return Err(RunError::classified(
+                            "mcp_gateway_provisioner_required",
+                            "Platform-held MCP credentials require an external gateway provisioner",
+                        ));
+                    }
+                };
+                if realization_kind == CredentialRealizationKind::ProcessProtocolField
+                    && access.refresh.is_some()
+                {
                     return Err(RunError::classified(
-                        "mcp_holder_unsupported",
-                        "MCP Runtime supports only the Worker-held relay boundary",
+                        "mcp_client_refresh_unsupported",
+                        "ACP process-protocol MCP credentials require a new Session generation; dynamic refresh cannot be silently discarded",
                     ));
                 }
                 match &access.usage {
@@ -1516,6 +1568,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     }
                 }
                 if is_acp
+                    && realization_kind == CredentialRealizationKind::WorkerRelay
                     && access.policy.model_exposure
                         != awaken_runtime_contract::ModelExposurePolicy::VirtualOnly
                 {
@@ -1525,6 +1578,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     ));
                 }
                 if is_acp
+                    && realization_kind == CredentialRealizationKind::WorkerRelay
                     && !self
                         .host
                         .session_provider
@@ -1547,13 +1601,11 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 access
                     .admit(
                         holder,
-                        CredentialRealizationKind::WorkerRelay,
+                        realization_kind,
                         &CredentialRealizationCapabilities {
                             holders: BTreeSet::from([holder.clone()]),
                             material_sources,
-                            realization_kinds: BTreeSet::from([
-                                CredentialRealizationKind::WorkerRelay,
-                            ]),
+                            realization_kinds: BTreeSet::from([realization_kind]),
                             recipient_bound_envelopes,
                             extension_consumers: Default::default(),
                             alternatives: Vec::new(),
@@ -1567,7 +1619,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     .resolve_for_workspace(
                         access,
                         holder,
-                        CredentialRealizationKind::WorkerRelay,
+                        realization_kind,
                         &request.workspace_id,
                         exact_credential_realization_target(&request.target),
                     )
@@ -1598,37 +1650,37 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             error.to_string(),
                         )
                     })?;
-                let refresh = match access.refresh.as_ref() {
-                    Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
-                        self.credential_refresh_factory
-                            .as_ref()
-                            .ok_or_else(|| {
-                                RunError::unavailable_classified(
-                                    "mcp_credential_refresh_unavailable",
-                                    "MCP credential refresh requires a Coordinator refresh adapter",
-                                )
-                            })?
-                            .refresher(
+                let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
+                    match access.refresh.as_ref() {
+                        Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
+                            self.credential_refresh_factory
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    RunError::unavailable_classified(
+                                        "mcp_credential_refresh_unavailable",
+                                        "MCP credential refresh requires a Coordinator refresh adapter",
+                                    )
+                                })?
+                                .refresher(
+                                    awaken_credential_contract::CredentialSourceId(
+                                        access.credential.id.clone(),
+                                    ),
+                                    refresh.clone(),
+                                ),
+                        ))),
+                        None => self.credential_refresh_factory.as_ref().map(|factory| {
+                            Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
                                 awaken_credential_contract::CredentialSourceId(
                                     access.credential.id.clone(),
                                 ),
-                                refresh.clone(),
-                            ),
-                    ))),
-                    None => self.credential_refresh_factory.as_ref().map(|factory| {
-                        Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
-                            awaken_credential_contract::CredentialSourceId(
-                                access.credential.id.clone(),
-                            ),
-                            access.credential.revision,
-                        )))
-                    }),
+                                access.credential.revision,
+                            )))
+                        }),
+                    }
+                } else {
+                    None
                 };
-                (
-                    Some(bearer),
-                    refresh,
-                    Some(CredentialRealizationKind::WorkerRelay),
-                )
+                (Some(bearer), refresh, Some(realization_kind))
             }
             _ => {
                 return Err(RunError::classified(
@@ -1778,28 +1830,29 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         // Staging is the sole route-creation boundary.  Runtime construction is
         // a projection reader and must never repair or recreate credential-
         // bearing effects behind the durable realization protocol's back.
-        let staged_relay = if is_acp && server.bearer().is_some() {
-            let relay = self
-                .host
-                .mcp_relay
-                .get_or_try_init(crate::mcp_relay::McpRelay::start)
-                .await
-                .map_err(|error| {
-                    RunError::classified(
-                        "mcp_relay_unavailable",
-                        format!("could not stage Worker-held MCP route: {error}"),
-                    )
-                })?;
-            if !relay.stage_route(&request.generation, &server) {
-                return Err(RunError::classified(
-                    "mcp_stale_generation",
-                    "MCP generation already has a staged relay route",
-                ));
-            }
-            Some(relay)
-        } else {
-            None
-        };
+        let staged_relay =
+            if is_acp && actual_realization_kind == Some(CredentialRealizationKind::WorkerRelay) {
+                let relay = self
+                    .host
+                    .mcp_relay
+                    .get_or_try_init(crate::mcp_relay::McpRelay::start)
+                    .await
+                    .map_err(|error| {
+                        RunError::classified(
+                            "mcp_relay_unavailable",
+                            format!("could not stage Worker-held MCP route: {error}"),
+                        )
+                    })?;
+                if !relay.stage_route(&request.generation, &server) {
+                    return Err(RunError::classified(
+                        "mcp_stale_generation",
+                        "MCP generation already has a staged relay route",
+                    ));
+                }
+                Some(relay)
+            } else {
+                None
+            };
         let receipt = awaken_session_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),

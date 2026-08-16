@@ -14,6 +14,11 @@ pub struct ManagedServiceAdapters {
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub credential_envelope_issuer:
         Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
+    /// Hosted delivery of the durable Managed Credential outbox. The open
+    /// Control remains the publication authority; a hosted composition may
+    /// replace only the target-side rollout mechanism.
+    pub credential_rollout_target:
+        Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
     /// The browser-serving origin routes Awaken's exported Managed-runtime
     /// families to the canonical Coordinator. This changes presentation only;
     /// it never mounts runtime state or handlers in Control.
@@ -57,6 +62,17 @@ impl ManagedServiceAdapters {
         issuer: Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>,
     ) -> Self {
         self.credential_envelope_issuer = Some(issuer);
+        self
+    }
+
+    /// Install one hosted target for the existing durable credential outbox.
+    /// This does not add a second event store or acknowledgement protocol.
+    #[must_use]
+    pub fn with_credential_rollout_target(
+        mut self,
+        target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
+    ) -> Self {
+        self.credential_rollout_target = Some(target);
         self
     }
 
@@ -109,5 +125,35 @@ impl CoordinatorServiceAdapters {
     ) -> Self {
         self.cloud_native_credential_realization = Some(profile);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_credential_vault::repo::{
+        ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
+        ManagedCredentialRollout, ManagedCredentialRolloutTarget,
+    };
+
+    struct HostedRolloutTarget;
+
+    #[async_trait::async_trait]
+    impl ManagedCredentialRolloutTarget for HostedRolloutTarget {
+        async fn rollout(
+            &self,
+            _event: &ManagedCredentialRollout,
+        ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
+            Ok(ManagedCredentialAdoptionProgress::Converged)
+        }
+    }
+
+    #[test]
+    fn hosted_rollout_target_is_an_explicit_optional_seam() {
+        let defaults = ManagedServiceAdapters::default();
+        assert!(defaults.credential_rollout_target.is_none());
+
+        let hosted = defaults.with_credential_rollout_target(Arc::new(HostedRolloutTarget));
+        assert!(hosted.credential_rollout_target.is_some());
     }
 }

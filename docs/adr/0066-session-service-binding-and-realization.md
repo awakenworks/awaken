@@ -61,14 +61,14 @@ leases, MCP generations, root CAS, and recovery remain unchanged. Worker
 placement and the relationship between Work leases and Run claims are now owned
 by ADR-0075.
 
-## 2026-08-13 amendment: hosted application MCP credential admission
+## 2026-08-13 amendment: application MCP credential admission
 
-A trusted hosted application that contributes an authenticated MCP endpoint
+A trusted application that contributes an authenticated MCP endpoint
 must author that bearer through the existing Credential/Vault aggregate before
 it creates the Managed Session. The identity is the exact
 `(Workspace, application authority, normalized MCP target)` tuple. Control
 derives stable opaque Vault and credential-source ids; callers cannot supply a
-second identity or persist a Flow-local credential mirror.
+second identity or persist an application-local credential mirror.
 
 The command reuses the Managed `Idempotency-Key` contract. Its payload is
 write-only and the durable credential row remains secret-free. A replay of the
@@ -82,7 +82,7 @@ with `409`.
 Static ownership remains:
 
 ```text
-hosted application -> Managed credential command (wire only)
+application -> Managed credential command (wire only)
                    -> VaultState (normalization/projection)
                    -> CredentialRepo + SecretStore (identity, CAS, custody)
                    -> SessionApplication (exact source/revision pin only)
@@ -103,6 +103,33 @@ Failure before Session creation creates no Session. A lost credential-command
 response replays the same key. A lost Session response replays the Session's own
 independent idempotency key. Neither failure falls back to an embedded/local
 credential or a second Session implementation.
+
+## 2026-08-16 amendment: authenticated MCP credential delivery
+
+Authenticated MCP freezes one delivery mode into each exact attachment
+generation. The two supported intents are:
+
+```text
+ClientInjection   -> an explicitly authorized MCP client process receives the
+                     credential through its declared private delivery field
+GatewayMediation  -> an installed egress mediator receives the credential
+                     reference and the workload sees only a mediated route
+```
+
+The mode is selected before materialization from the exact plaintext holder and
+installed realization mechanism. It is never inferred from route availability
+and never changes as a runtime fallback. `ClientInjection` accepts only an
+authorized Workload holder combined with `ProcessProtocolField`: material is
+placed in the process-private ACP `session/new` field and never represented as
+an OS environment variable, private file, durable ACP configuration, or URL.
+`GatewayMediation` accepts only a Platform holder combined with `PlatformRelay`.
+Historical environment/file/relay/provider wire values remain readable but are
+not reclassified into either mode.
+
+The Session aggregate remains secret-free. Stage receipts must match the exact
+generation binding, selected holder, realization mechanism and delivery mode
+before activation. Deployment-specific egress mediation is supplied through
+the existing realization port and cannot become another desired-state owner.
 
 ## Static boundaries
 

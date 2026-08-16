@@ -21,11 +21,40 @@ fn pre_authorized_tool_ids(
 
 fn merge_acp_mcp_servers(
     publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
-    staged: impl IntoIterator<Item = awaken_runtime_contract::resolved::AcpMcpServer>,
-) -> Result<Vec<awaken_runtime_contract::resolved::AcpMcpServer>, HostError> {
+    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
+) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
+    let publication = publication
+        .into_iter()
+        .map(|server| match server.transport {
+            awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
+                awaken_run_executor_acp::SessionMcpServer {
+                    name: server.name,
+                    command: Some(command),
+                    args,
+                    url: None,
+                    auth: None,
+                }
+            }
+            awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
+                awaken_run_executor_acp::SessionMcpServer {
+                    name: server.name,
+                    command: None,
+                    args: Vec::new(),
+                    url: Some(url),
+                    auth: None,
+                }
+            }
+        });
+    merge_process_local_mcp_servers(publication.collect(), staged)
+}
+
+fn merge_process_local_mcp_servers(
+    existing: Vec<awaken_run_executor_acp::SessionMcpServer>,
+    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
+) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
     let mut names = std::collections::BTreeSet::new();
     let mut merged = Vec::new();
-    for server in publication.into_iter().chain(staged) {
+    for server in existing.into_iter().chain(staged) {
         if !names.insert(server.name.clone()) {
             return Err(HostError::bad_request(format!(
                 "duplicate ACP MCP server name `{}`",
@@ -1263,6 +1292,14 @@ impl SharedHost {
         // after restart, durable rehydration stages and publishes them first.
         let relay = self.mcp_relay.get();
         let mut acp_mcp_servers = if is_acp {
+            let adapter = match &execution_backend {
+                awaken_runtime_contract::resolved::Backend::Acp { cli } => {
+                    awaken_run_executor_acp::acp_cli(cli).ok_or_else(|| {
+                        HostError::internal(format!("unknown ACP adapter `{cli}`"))
+                    })?
+                }
+                _ => unreachable!("is_acp is derived from the execution backend"),
+            };
             let publication = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
                 config.resolved_spec.plugin_config.plugins(),
             )
@@ -1276,7 +1313,13 @@ impl SharedHost {
                         .map(|server| (projection, server))
                 })
                 .map(|(projection, server)| {
-                    crate::mcp::project_mcp_transport(server, &projection.request.generation, relay)
+                    crate::mcp::project_mcp_session_transport(
+                        server,
+                        &projection.request,
+                        relay,
+                        &projection.receipt,
+                        adapter,
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             merge_acp_mcp_servers(publication, staged)?
@@ -1297,8 +1340,29 @@ impl SharedHost {
                         .export("awaken_web_search", descriptor, tool)
                         .await
                         .map_err(HostError::internal)?;
+                    let export_server = match export.server.transport.clone() {
+                        awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
+                            command,
+                            args,
+                        } => awaken_run_executor_acp::SessionMcpServer {
+                            name: export.server.name.clone(),
+                            command: Some(command),
+                            args,
+                            url: None,
+                            auth: None,
+                        },
+                        awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
+                            awaken_run_executor_acp::SessionMcpServer {
+                                name: export.server.name.clone(),
+                                command: None,
+                                args: Vec::new(),
+                                url: Some(url),
+                                auth: None,
+                            }
+                        }
+                    };
                     acp_mcp_servers =
-                        merge_acp_mcp_servers(acp_mcp_servers, [export.server.clone()])?;
+                        merge_process_local_mcp_servers(acp_mcp_servers, [export_server])?;
                     Some(export)
                 }
                 None => None,
@@ -1761,13 +1825,23 @@ mod permission_projection_tests {
     use super::{merge_acp_mcp_servers, pre_authorized_tool_ids};
     use awaken_runtime_contract::resolved::{AcpMcpServer, AcpMcpTransport};
 
-    fn stdio(name: &str) -> AcpMcpServer {
+    fn published_stdio(name: &str) -> AcpMcpServer {
         AcpMcpServer {
             name: name.into(),
             transport: AcpMcpTransport::Stdio {
                 command: "playwright-mcp".into(),
                 args: vec!["--headless".into()],
             },
+        }
+    }
+
+    fn staged_stdio(name: &str) -> awaken_run_executor_acp::SessionMcpServer {
+        awaken_run_executor_acp::SessionMcpServer {
+            name: name.into(),
+            command: Some("playwright-mcp".into()),
+            args: vec!["--headless".into()],
+            url: None,
+            auth: None,
         }
     }
 
@@ -1788,8 +1862,11 @@ mod permission_projection_tests {
 
     #[test]
     fn publication_stdio_and_session_mcp_routes_merge_without_shadowing() {
-        let merged = merge_acp_mcp_servers(vec![stdio("playwright")], [stdio("session")])
-            .expect("distinct routes");
+        let merged = merge_acp_mcp_servers(
+            vec![published_stdio("playwright")],
+            [staged_stdio("session")],
+        )
+        .expect("distinct routes");
         assert_eq!(
             merged
                 .iter()
@@ -1798,8 +1875,11 @@ mod permission_projection_tests {
             ["playwright", "session"]
         );
 
-        let error = merge_acp_mcp_servers(vec![stdio("playwright")], [stdio("playwright")])
-            .expect_err("duplicate names must not silently shadow a publication route");
+        let error = merge_acp_mcp_servers(
+            vec![published_stdio("playwright")],
+            [staged_stdio("playwright")],
+        )
+        .expect_err("duplicate names must not silently shadow a publication route");
         assert!(
             error
                 .to_string()
