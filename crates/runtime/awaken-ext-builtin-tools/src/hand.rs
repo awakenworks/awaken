@@ -4,17 +4,279 @@
 //! makes a descriptor model-visible can register the matching implementation.
 //! Network fetch and the separately configured search plugin live in [`crate::web`].
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::erasure::erase_for;
 
+const DEFAULT_MAX_FILE_BYTES: u64 = 256 * 1024;
+const BASH_OUTPUT_LIMIT: usize = 100 * 1024;
+const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const GREP_OUTPUT_LIMIT: usize = 100 * 1024;
+const GREP_MAX_LINE_LENGTH: usize = 2_000;
+const GLOB_RESULT_LIMIT: usize = 200;
+const WALK_MAX_DEPTH: usize = 40;
+const WALK_MAX_ENTRIES: usize = 50_000;
+
+/// Trusted host configuration for one Managed Agent toolset instance.
+/// Instances are scoped to a Hand connection, so Bash state cannot cross Sessions.
+#[derive(Clone, Debug)]
+pub struct HandToolContext {
+    workdir: PathBuf,
+    allowed_roots: Vec<PathBuf>,
+    max_file_bytes: Option<u64>,
+    bash_env: Option<BTreeMap<String, String>>,
+}
+
+impl HandToolContext {
+    pub fn new(workdir: impl Into<PathBuf>) -> Self {
+        Self {
+            workdir: workdir.into(),
+            allowed_roots: Vec::new(),
+            max_file_bytes: Some(DEFAULT_MAX_FILE_BYTES),
+            bash_env: None,
+        }
+    }
+
+    /// Permit an Awaken-owned mount (not a model-selected arbitrary host path).
+    #[must_use]
+    pub fn with_allowed_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.allowed_roots.push(root.into());
+        self
+    }
+
+    /// Fully replace the inherited Bash environment, matching the SDK helper.
+    #[must_use]
+    pub fn with_bash_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.bash_env = Some(env);
+        self
+    }
+}
+
+impl Default for HandToolContext {
+    fn default() -> Self {
+        Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+}
+
+#[derive(Clone)]
+struct FileContext(Arc<HandToolContext>);
+
+impl FileContext {
+    fn new(context: &HandToolContext) -> Self {
+        Self(Arc::new(context.clone()))
+    }
+
+    fn resolve(&self, input: &str) -> Result<PathBuf, ToolError> {
+        if input.is_empty() {
+            return Err(ToolError::InvalidArguments("file path is required".into()));
+        }
+        let root = canonicalize_or_absolute(&self.0.workdir)?;
+        let candidate = if Path::new(input).is_absolute() {
+            lexical_normalize(Path::new(input))
+        } else {
+            lexical_normalize(&root.join(input))
+        };
+        let resolved = canonicalize_with_missing(&candidate)
+            .map_err(|error| file_error("path", input, &error))?;
+        let mut roots = Vec::with_capacity(self.0.allowed_roots.len() + 1);
+        roots.push(root);
+        for allowed in &self.0.allowed_roots {
+            roots.push(canonicalize_or_absolute(allowed)?);
+        }
+        if roots.iter().any(|root| path_is_within(root, &resolved)) {
+            Ok(resolved)
+        } else {
+            Err(ToolError::Execution(format!(
+                "path {input:?} escapes workdir"
+            )))
+        }
+    }
+
+    fn max_file_bytes(&self) -> Option<u64> {
+        self.0.max_file_bytes
+    }
+}
+
+fn canonicalize_or_absolute(path: &Path) -> Result<PathBuf, ToolError> {
+    std::fs::canonicalize(path)
+        .or_else(|_| {
+            if path.is_absolute() {
+                Ok(lexical_normalize(path))
+            } else {
+                std::env::current_dir().map(|cwd| lexical_normalize(&cwd.join(path)))
+            }
+        })
+        .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+}
+
+fn canonicalize_with_missing(path: &Path) -> std::io::Result<PathBuf> {
+    let mut prefix = lexical_normalize(path);
+    let mut tail = Vec::new();
+    let mut hops = 0;
+    loop {
+        match std::fs::canonicalize(&prefix) {
+            Ok(mut real) => {
+                for part in tail.iter().rev() {
+                    real.push(part);
+                }
+                return Ok(lexical_normalize(&real));
+            }
+            Err(realpath_error) => match std::fs::symlink_metadata(&prefix) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    hops += 1;
+                    if hops > 40 {
+                        return Err(std::io::Error::from_raw_os_error(40));
+                    }
+                    let target = std::fs::read_link(&prefix)?;
+                    prefix = lexical_normalize(&if target.is_absolute() {
+                        target
+                    } else {
+                        prefix.parent().unwrap_or(Path::new("/")).join(target)
+                    });
+                }
+                Ok(_) => return Err(realpath_error),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    let Some(name) = prefix.file_name().map(ToOwned::to_owned) else {
+                        return Err(error);
+                    };
+                    let Some(parent) = prefix.parent() else {
+                        return Err(error);
+                    };
+                    tail.push(name);
+                    prefix = parent.to_path_buf();
+                }
+                Err(error) => return Err(error),
+            },
+        }
+    }
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+fn path_is_within(root: &Path, path: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn file_error(operation: &str, input: &str, error: &std::io::Error) -> ToolError {
+    let message = match error.kind() {
+        std::io::ErrorKind::NotFound => "no such file or directory",
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        std::io::ErrorKind::NotADirectory => "not a directory",
+        _ if error.raw_os_error() == Some(40) => "too many levels of symbolic links",
+        _ => "i/o error",
+    };
+    ToolError::Execution(format!("{operation}: {input}: {message}"))
+}
+
+fn regular_file(
+    path: &Path,
+    input: &str,
+    operation: &str,
+    limit: Option<u64>,
+) -> Result<(), ToolError> {
+    let metadata = std::fs::metadata(path).map_err(|error| file_error(operation, input, &error))?;
+    if !metadata.is_file() {
+        return Err(ToolError::Execution(format!(
+            "{operation}: {input} is not a regular file"
+        )));
+    }
+    if let Some(limit) = limit
+        && metadata.len() > limit
+    {
+        let advice = if operation == "read" {
+            "Use bash (head/tail/sed) to read a slice."
+        } else {
+            "Use bash (sed/awk) to edit a large file."
+        };
+        return Err(ToolError::Execution(format!(
+            "{operation}: {input} is {} bytes, exceeds {limit}-byte limit. {advice}",
+            metadata.len()
+        )));
+    }
+    Ok(())
+}
+
+fn create_parent_dirs(path: &Path) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o755);
+    }
+    builder.create(parent)
+}
+
+fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    create_parent_dirs(path)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let temporary = parent.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o644);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Read a UTF-8 file and return its contents.
-pub struct ReadTool;
+pub struct ReadTool(FileContext);
+
+impl ReadTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize)]
 pub struct ReadArgs {
@@ -32,42 +294,45 @@ impl Tool for ReadTool {
         "read"
     }
     async fn call(&self, args: ReadArgs) -> Result<String, ToolError> {
-        let content = std::fs::read_to_string(&args.path)
-            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
+        if args.path.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "read: file_path is required".into(),
+            ));
+        }
+        let path = self.0.resolve(&args.path)?;
+        regular_file(&path, &args.path, "read", self.0.max_file_bytes())?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| file_error("read", &args.path, &error))?;
         let Some(range) = args.view_range else {
             return Ok(content);
         };
-        if range.len() != 2 || range[0] < 1 {
+        if range.len() != 2 {
             return Err(ToolError::InvalidArguments(
-                "read view_range must be [start_line, end_line] with start_line >= 1".into(),
+                "read: view_range must be [start_line, end_line]".into(),
             ));
         }
-        let start = usize::try_from(range[0] - 1).map_err(|_| {
-            ToolError::InvalidArguments("read view_range start is too large".into())
-        })?;
-        let end = if range[1] <= 0 {
-            usize::MAX
+        let lines = content.split('\n').collect::<Vec<_>>();
+        let start = usize::try_from((range[0] - 1).max(0)).unwrap_or(usize::MAX);
+        let end = if range[1] > 0 {
+            usize::try_from(range[1]).unwrap_or(usize::MAX)
         } else {
-            usize::try_from(range[1]).map_err(|_| {
-                ToolError::InvalidArguments("read view_range end is too large".into())
-            })?
+            lines.len()
         };
-        if end <= start {
-            return Err(ToolError::InvalidArguments(
-                "read view_range end must be at least start_line".into(),
-            ));
-        }
-        Ok(content
-            .lines()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect::<Vec<_>>()
+        Ok(lines
+            .get(start..end.min(lines.len()))
+            .unwrap_or(&[])
             .join("\n"))
     }
 }
 
 /// List the paths matching a glob pattern, newline-joined.
-pub struct GlobTool;
+pub struct GlobTool(FileContext);
+
+impl GlobTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize)]
 pub struct GlobArgs {
@@ -84,28 +349,63 @@ impl Tool for GlobTool {
         "glob"
     }
     async fn call(&self, args: GlobArgs) -> Result<String, ToolError> {
-        let pattern = args.path.as_ref().map_or_else(
-            || args.pattern.clone(),
-            |root| {
-                std::path::Path::new(root)
-                    .join(&args.pattern)
-                    .display()
-                    .to_string()
-            },
-        );
+        if args.pattern.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "glob: pattern is required".into(),
+            ));
+        }
+        if Path::new(&args.pattern).is_absolute() {
+            return Err(ToolError::Execution(
+                "glob: absolute pattern not permitted".into(),
+            ));
+        }
+        if args
+            .pattern
+            .split(['/', '\\'])
+            .any(|component| component == "..")
+        {
+            return Err(ToolError::Execution(
+                "glob: \"..\" is not permitted in the pattern".into(),
+            ));
+        }
+        let root_input = args.path.as_deref().unwrap_or(".");
+        let root = self.0.resolve(root_input)?;
+        let pattern = root.join(&args.pattern).display().to_string();
         let entries = glob::glob(&pattern)
             .map_err(|err| ToolError::InvalidArguments(format!("glob {pattern}: {err}")))?;
         let mut paths = Vec::new();
         for entry in entries {
             let path = entry.map_err(|err| ToolError::Execution(format!("glob walk: {err}")))?;
-            let modified = std::fs::metadata(&path)
-                .and_then(|metadata| metadata.modified())
+            if path
+                .components()
+                .any(|component| matches!(component, Component::Normal(name) if name == ".git" || name == "node_modules"))
+            {
+                continue;
+            }
+            let Ok(real) = std::fs::canonicalize(&path) else {
+                continue;
+            };
+            if !path_is_within(&root, &real) {
+                continue;
+            }
+            let Ok(metadata) = std::fs::metadata(&real) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let modified = metadata
+                .modified()
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             paths.push((modified, path.display().to_string()));
         }
         paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        if paths.is_empty() {
+            return Ok("no matches".into());
+        }
         Ok(paths
             .into_iter()
+            .take(GLOB_RESULT_LIMIT)
             .map(|(_, path)| path)
             .collect::<Vec<_>>()
             .join("\n"))
@@ -113,7 +413,13 @@ impl Tool for GlobTool {
 }
 
 /// Search a file's lines for a regex, returning `path:line:text` for each match.
-pub struct GrepTool;
+pub struct GrepTool(FileContext);
+
+impl GrepTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize)]
 pub struct GrepArgs {
@@ -130,49 +436,86 @@ impl Tool for GrepTool {
         "grep"
     }
     async fn call(&self, args: GrepArgs) -> Result<String, ToolError> {
+        if args.pattern.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "grep: pattern is required".into(),
+            ));
+        }
         let re = regex::Regex::new(&args.pattern)
-            .map_err(|err| ToolError::InvalidArguments(format!("grep pattern: {err}")))?;
-        let root = if args.path.is_empty() {
-            std::path::Path::new(".")
+            .map_err(|err| ToolError::InvalidArguments(format!("grep: invalid regex: {err}")))?;
+        let root = self.0.resolve(if args.path.is_empty() {
+            "."
         } else {
-            std::path::Path::new(&args.path)
-        };
+            &args.path
+        })?;
         let mut files = Vec::new();
-        collect_files(root, &mut files)?;
+        let mut remaining = WALK_MAX_ENTRIES;
+        collect_files(&root, &mut files, 0, &mut remaining)?;
         files.sort();
         let mut hits = Vec::new();
+        let mut output_bytes = 0;
         for path in files {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            for (index, line) in content.lines().enumerate() {
+            for (index, line) in content.split('\n').enumerate() {
+                if line.len() > GREP_MAX_LINE_LENGTH {
+                    continue;
+                }
                 if re.is_match(line) {
-                    hits.push(format!("{}:{}:{}", path.display(), index + 1, line));
+                    let hit = format!("{}:{}:{}", path.display(), index + 1, line);
+                    if output_bytes + hit.len() + 1 > GREP_OUTPUT_LIMIT {
+                        hits.push(format!("[output truncated at {GREP_OUTPUT_LIMIT} bytes]"));
+                        return Ok(hits.join("\n"));
+                    }
+                    output_bytes += hit.len() + 1;
+                    hits.push(hit);
                 }
             }
         }
-        Ok(hits.join("\n"))
+        if hits.is_empty() {
+            Ok("no matches".into())
+        } else {
+            Ok(hits.join("\n"))
+        }
     }
 }
 
 fn collect_files(
-    path: &std::path::Path,
-    files: &mut Vec<std::path::PathBuf>,
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+    depth: usize,
+    remaining: &mut usize,
 ) -> Result<(), ToolError> {
-    if path.is_file() {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|err| file_error("grep", &path.display().to_string(), &err))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_file() {
         files.push(path.to_path_buf());
+        return Ok(());
+    }
+    if !metadata.is_dir() || depth > WALK_MAX_DEPTH {
         return Ok(());
     }
     let entries = std::fs::read_dir(path)
         .map_err(|err| ToolError::Execution(format!("read directory {}: {err}", path.display())))?;
     for entry in entries {
+        if *remaining == 0 {
+            break;
+        }
+        *remaining -= 1;
         let entry =
             entry.map_err(|err| ToolError::Execution(format!("walk {}: {err}", path.display())))?;
+        if matches!(entry.file_name().to_str(), Some(".git" | "node_modules")) {
+            continue;
+        }
         let file_type = entry.file_type().map_err(|err| {
             ToolError::Execution(format!("stat {}: {err}", entry.path().display()))
         })?;
         if file_type.is_dir() {
-            collect_files(&entry.path(), files)?;
+            collect_files(&entry.path(), files, depth + 1, remaining)?;
         } else if file_type.is_file() {
             files.push(entry.path());
         }
@@ -181,7 +524,13 @@ fn collect_files(
 }
 
 /// Write `content` to a file, creating or truncating it. Returns a confirmation.
-pub struct WriteTool;
+pub struct WriteTool(FileContext);
+
+impl WriteTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize)]
 pub struct WriteArgs {
@@ -198,16 +547,14 @@ impl Tool for WriteTool {
         "write"
     }
     async fn call(&self, args: WriteArgs) -> Result<String, ToolError> {
-        // Create parent directories so a write to a nested path (e.g. `outputs/x.txt`)
-        // succeeds without a prior mkdir — matching editor/`write`-tool expectations.
-        if let Some(parent) = std::path::Path::new(&args.path).parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+        if args.path.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "write: file_path is required".into(),
+            ));
         }
-        std::fs::write(&args.path, &args.content)
-            .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+        let path = self.0.resolve(&args.path)?;
+        atomic_write(&path, &args.content)
+            .map_err(|error| file_error("write", &args.path, &error))?;
         Ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
@@ -219,7 +566,13 @@ impl Tool for WriteTool {
 /// Replace one exact occurrence of `old` with `new` in a file. Fails closed when
 /// `old` is absent or ambiguous, so an edit never silently changes the wrong
 /// span.
-pub struct EditTool;
+pub struct EditTool(FileContext);
+
+impl EditTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize)]
 pub struct EditArgs {
@@ -245,35 +598,41 @@ impl Tool for EditTool {
         // empty file the "exactly one occurrence" arm would silently *insert*
         // `new`. Reject it up front so an edit always replaces a real, located
         // substring rather than mutating on a no-op anchor.
-        if args.old.is_empty() {
-            return Err(ToolError::InvalidArguments(format!(
-                "edit {}: `old` must be a non-empty substring to locate",
-                args.path
-            )));
+        if args.path.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "edit: file_path is required".into(),
+            ));
         }
-        let content = std::fs::read_to_string(&args.path)
-            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
+        if args.old.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "edit: old_string is required".into(),
+            ));
+        }
+        let path = self.0.resolve(&args.path)?;
+        regular_file(&path, &args.path, "edit", self.0.max_file_bytes())?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| file_error("edit", &args.path, &error))?;
         let matches = content.matches(&args.old).count();
         match matches {
             0 => Err(ToolError::Execution(format!(
-                "edit {}: `old` text not found",
+                "edit: old_string not found in {}",
                 args.path
             ))),
             1 => {
                 let updated = content.replacen(&args.old, &args.new, 1);
-                std::fs::write(&args.path, &updated)
-                    .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
-                Ok(format!("edited {}", args.path))
+                atomic_write(&path, &updated)
+                    .map_err(|error| file_error("edit: write", &args.path, &error))?;
+                Ok(format!("edited {} (1 replacement(s))", args.path))
             }
             n if args.replace_all => {
                 let updated = content.replace(&args.old, &args.new);
-                std::fs::write(&args.path, &updated)
-                    .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+                atomic_write(&path, &updated)
+                    .map_err(|error| file_error("edit: write", &args.path, &error))?;
                 Ok(format!("edited {} ({n} replacements)", args.path))
             }
             n => Err(ToolError::Execution(format!(
-                "edit {}: `old` text is ambiguous ({n} occurrences); add context to make it unique",
-                args.path
+                "edit: old_string appears {n} times in {} (must be unique)",
+                args.path,
             ))),
         }
     }
@@ -349,9 +708,20 @@ impl Tool for DeleteTool {
     }
 }
 
-/// Run a command via the platform shell and return its output. A non-zero exit
-/// is a model-visible error result carrying stdout/stderr, not a run abort.
-pub struct BashTool;
+/// A persistent Bash scoped to one Hand/toolset instance.
+pub struct BashTool {
+    context: HandToolContext,
+    session: tokio::sync::Mutex<Option<BashSession>>,
+}
+
+impl BashTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self {
+            context: context.clone(),
+            session: tokio::sync::Mutex::new(None),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 pub struct BashArgs {
@@ -371,96 +741,258 @@ impl Tool for BashTool {
         "bash"
     }
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
+        let mut session = self.session.lock().await;
         if args.restart {
-            if !args.command.is_empty() {
-                return Err(ToolError::InvalidArguments(
-                    "bash restart must not include command".into(),
-                ));
+            session.take();
+            if args.command.is_empty() {
+                return Ok("bash session restarted".into());
             }
-            return Ok("bash session restarted".into());
         }
         if args.command.is_empty() {
             return Err(ToolError::InvalidArguments(
-                "bash command is required unless restart is true".into(),
+                "bash: command is required".into(),
             ));
         }
-        // The async child wait yields to authority heartbeats and, unlike a
-        // `spawn_blocking(Command::output)` task, remains cancellation-safe. Each
-        // shell leads a private process group: finishing or dropping this tool call
-        // kills the entire group, so neither a successful `cmd &` nor WorkUnit
-        // cancellation can orphan servers, approval prompts, compilers, or other
-        // descendants under the Worker service. A background service that must live
-        // for several checks belongs inside one bounded shell call with a trap.
-        let mut command = platform_shell_command(&args.command);
-        let shell = command
-            .as_std()
-            .get_program()
-            .to_string_lossy()
-            .into_owned();
-        configure_process_group(&mut command);
+        if session
+            .as_ref()
+            .is_some_and(|existing| existing.invalidated.load(Ordering::SeqCst))
+        {
+            session.take();
+        }
+        if session.is_none() {
+            *session = Some(BashSession::spawn(&self.context)?);
+        }
+        let timeout_ms = args
+            .timeout_ms
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(BASH_DEFAULT_TIMEOUT_MS);
+        let result = session
+            .as_mut()
+            .expect("Bash session was initialized")
+            .exec(&args.command, timeout_ms)
+            .await;
+        let (output, exit_code) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                session.take();
+                return Err(error);
+            }
+        };
+        if exit_code == 0 {
+            Ok(output)
+        } else {
+            Err(ToolError::Execution(if output.is_empty() {
+                format!("exit {exit_code}")
+            } else {
+                output
+            }))
+        }
+    }
+}
+
+struct BashSession {
+    _child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::process::ChildStdout,
+    stderr: Option<tokio::process::ChildStderr>,
+    invalidated: Arc<AtomicBool>,
+    process_group: ProcessGroupGuard,
+}
+
+impl BashSession {
+    fn spawn(context: &HandToolContext) -> Result<Self, ToolError> {
+        let mut command = persistent_bash_command();
         command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .current_dir(&context.workdir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(env) = &context.bash_env {
+            command.env_clear().envs(env);
+        } else {
+            for key in std::env::vars_os()
+                .map(|(key, _)| key)
+                .filter(|key| key.to_string_lossy().starts_with("ANTHROPIC_"))
+            {
+                command.env_remove(key);
+            }
+        }
+        command.env("PS1", "").env("PS2", "").env("TERM", "dumb");
+        configure_process_group(&mut command);
         let mut child = command
             .spawn()
-            .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))?;
+            .map_err(|error| ToolError::Execution(format!("spawn /bin/bash: {error}")))?;
         let process_group = ProcessGroupGuard::new(child.id());
-        let mut child_stdout = child
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ToolError::Execution("capture /bin/bash stdin".into()))?;
+        let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| ToolError::Execution(format!("capture {shell} stdout")))?;
-        let mut child_stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ToolError::Execution(format!("capture {shell} stderr")))?;
-        let stdout_reader = tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            child_stdout.read_to_end(&mut bytes).await.map(|_| bytes)
-        });
-        let stderr_reader = tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
-        });
-        let status = if let Some(timeout_ms) = args.timeout_ms.filter(|value| *value > 0) {
-            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait())
-                .await
-                .map_err(|_| {
-                    ToolError::Execution(format!("bash command timed out after {timeout_ms} ms"))
-                })?
-                .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?
-        } else {
-            child
-                .wait()
-                .await
-                .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?
+            .ok_or_else(|| ToolError::Execution("capture /bin/bash stdout".into()))?;
+        let stderr = child.stderr.take();
+        Ok(Self {
+            _child: child,
+            stdin,
+            stdout,
+            stderr,
+            invalidated: Arc::new(AtomicBool::new(false)),
+            process_group,
+        })
+    }
+
+    async fn exec(&mut self, command: &str, timeout_ms: u64) -> Result<(String, i32), ToolError> {
+        let sentinel = format!("__ANT_CMD_{}_DONE__", uuid::Uuid::new_v4());
+        let split = format!("{}''{}", &sentinel[..8], &sentinel[8..]);
+        let wrapped = format!("{{ {command}\n}} </dev/null 2>&1; printf '\\n{split}%d\\n' $?\n");
+        self.stdin
+            .write_all(wrapped.as_bytes())
+            .await
+            .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+
+        let invalidated = self.invalidated.clone();
+        let mut cancellation_guard =
+            InvocationProcessGuard::new(self.process_group.pid(), invalidated.clone());
+        let read = async {
+            let mut collected = Vec::new();
+            let mut truncated = false;
+            let mut stdout_chunk = [0_u8; 8192];
+            let mut stderr_chunk = [0_u8; 8192];
+            loop {
+                let (read, bytes) = if let Some(stderr) = self.stderr.as_mut() {
+                    tokio::select! {
+                        result = self.stdout.read(&mut stdout_chunk) => {
+                            result.map(|read| (read, &stdout_chunk[..read]))
+                        },
+                        result = stderr.read(&mut stderr_chunk) => {
+                            result.map(|read| (read, &stderr_chunk[..read]))
+                        },
+                    }
+                } else {
+                    self.stdout
+                        .read(&mut stdout_chunk)
+                        .await
+                        .map(|read| (read, &stdout_chunk[..read]))
+                }
+                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+                if read == 0 {
+                    return Err(ToolError::Execution("bash: bash session terminated".into()));
+                }
+                collected.extend_from_slice(bytes);
+                if collected.len() > BASH_OUTPUT_LIMIT {
+                    let drain = collected.len() - BASH_OUTPUT_LIMIT;
+                    collected.drain(..drain);
+                    truncated = true;
+                }
+                if let Some(index) = find_bytes(&collected, sentinel.as_bytes()) {
+                    let tail = &collected[index + sentinel.len()..];
+                    let digits = tail
+                        .iter()
+                        .take_while(|byte| byte.is_ascii_digit() || **byte == b'-')
+                        .copied()
+                        .collect::<Vec<_>>();
+                    let exit_code = String::from_utf8_lossy(&digits).parse().unwrap_or(-1);
+                    let mut output = strip_ansi(&String::from_utf8_lossy(&collected[..index]));
+                    while output.ends_with('\n') {
+                        output.pop();
+                    }
+                    if truncated {
+                        output.insert_str(0, "[output truncated]\n");
+                    }
+                    return Ok((output, exit_code));
+                }
+            }
         };
-        // `wait_with_output` waits for pipe EOF as well as the foreground shell.
-        // An unredirected `server &` keeps both pipes open indefinitely even
-        // after that shell has exited. Reap the private process group as soon as
-        // the foreground status is known; only then can the readers observe EOF.
-        drop(process_group);
-        let stdout = stdout_reader
-            .await
-            .map_err(|err| ToolError::Execution(format!("join {shell} stdout reader: {err}")))?
-            .map_err(|err| ToolError::Execution(format!("read {shell} stdout: {err}")))?;
-        let stderr = stderr_reader
-            .await
-            .map_err(|err| ToolError::Execution(format!("join {shell} stderr reader: {err}")))?
-            .map_err(|err| ToolError::Execution(format!("read {shell} stderr: {err}")))?;
-        let stdout = String::from_utf8_lossy(&stdout);
-        let stderr = String::from_utf8_lossy(&stderr);
-        if status.success() {
-            Ok(stdout.into_owned())
-        } else {
-            let code = status
-                .code()
-                .map_or_else(|| "signal".to_string(), |c| c.to_string());
-            Err(ToolError::Execution(format!(
-                "command exited {code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-            )))
+        let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), read).await;
+        match result {
+            Ok(result) => {
+                cancellation_guard.disarm();
+                result
+            }
+            Err(_) => {
+                invalidated.store(true, Ordering::SeqCst);
+                Err(ToolError::Execution(format!(
+                    "bash: bash command timed out after {timeout_ms}ms"
+                )))
+            }
         }
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    break;
+                }
+            }
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+struct InvocationProcessGuard {
+    #[cfg(unix)]
+    group: Option<nix::unistd::Pid>,
+    invalidated: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+impl InvocationProcessGuard {
+    fn new(group: Option<nix::unistd::Pid>, invalidated: Arc<AtomicBool>) -> Self {
+        Self { group, invalidated }
+    }
+
+    fn disarm(&mut self) {
+        self.group.take();
+    }
+}
+
+#[cfg(windows)]
+impl InvocationProcessGuard {
+    fn new(_group: Option<()>, invalidated: Arc<AtomicBool>) -> Self {
+        Self { invalidated }
+    }
+
+    fn disarm(&mut self) {}
+}
+
+#[cfg(unix)]
+impl Drop for InvocationProcessGuard {
+    fn drop(&mut self) {
+        if let Some(group) = self.group.take() {
+            self.invalidated.store(true, Ordering::SeqCst);
+            let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for InvocationProcessGuard {
+    fn drop(&mut self) {
+        self.invalidated.store(true, Ordering::SeqCst);
     }
 }
 
@@ -485,7 +1017,7 @@ mod bash_tests {
             observed.store(true, Ordering::SeqCst);
         });
 
-        BashTool
+        BashTool::new(&HandToolContext::default())
             .call(BashArgs {
                 command: "sleep 0.15".into(),
                 restart: false,
@@ -513,11 +1045,15 @@ mod bash_tests {
             ready.display(),
             leaked.display()
         );
-        let call = tokio::spawn(BashTool.call(BashArgs {
-            command,
-            restart: false,
-            timeout_ms: None,
-        }));
+        let tool = BashTool::new(&HandToolContext::new(directory.path()));
+        let call = tokio::spawn(async move {
+            tool.call(BashArgs {
+                command,
+                restart: false,
+                timeout_ms: None,
+            })
+            .await
+        });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !ready.is_file() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -538,12 +1074,10 @@ mod bash_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn completed_bash_call_kills_background_descendants() {
-        // A successful shell used to disarm the process-group guard. `server &`
-        // therefore escaped the tool boundary and accumulated in a reusable K8s
-        // Session even though the Agent had already returned an approved verdict.
+    async fn completed_bash_call_keeps_background_jobs_until_restart() {
         let directory = tempfile::tempdir().expect("temporary marker directory");
         let leaked = directory.path().join("leaked");
+        let tool = BashTool::new(&HandToolContext::new(directory.path()));
         let command = format!(
             "sh -c 'sleep 0.4; printf leaked > {}' & printf done",
             leaked.display()
@@ -551,7 +1085,7 @@ mod bash_tests {
 
         let output = tokio::time::timeout(
             std::time::Duration::from_millis(200),
-            BashTool.call(BashArgs {
+            tool.call(BashArgs {
                 command,
                 restart: false,
                 timeout_ms: None,
@@ -564,20 +1098,27 @@ mod bash_tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         assert!(
-            !leaked.exists(),
-            "a successful bash tool call must reap its background process group"
+            leaked.exists(),
+            "persistent Bash must preserve background jobs across calls"
         );
+        tool.call(BashArgs {
+            command: String::new(),
+            restart: true,
+            timeout_ms: None,
+        })
+        .await
+        .expect("restart closes the old process group");
     }
 }
 
 #[cfg(windows)]
-fn platform_shell_command(command: &str) -> tokio::process::Command {
+fn persistent_bash_command() -> tokio::process::Command {
     let shell = windows_posix_shell();
     let mut process = tokio::process::Command::new(shell.as_deref().unwrap_or("cmd.exe"));
     if shell.is_some() {
-        process.args(["-c", command]);
+        process.args(["--noprofile", "--norc"]);
     } else {
-        process.args(["/D", "/S", "/C", command]);
+        process.args(["/D", "/Q"]);
     }
     process
 }
@@ -605,9 +1146,9 @@ fn windows_posix_shell() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn platform_shell_command(command: &str) -> tokio::process::Command {
-    let mut process = tokio::process::Command::new("sh");
-    process.args(["-c", command]);
+fn persistent_bash_command() -> tokio::process::Command {
+    let mut process = tokio::process::Command::new("/bin/bash");
+    process.args(["--noprofile", "--norc"]);
     process
 }
 
@@ -634,6 +1175,16 @@ impl ProcessGroupGuard {
             group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
         }
     }
+
+    #[cfg(unix)]
+    fn pid(&self) -> Option<nix::unistd::Pid> {
+        self.group
+    }
+
+    #[cfg(windows)]
+    fn pid(&self) -> Option<()> {
+        None
+    }
 }
 
 impl Drop for ProcessGroupGuard {
@@ -649,15 +1200,21 @@ impl Drop for ProcessGroupGuard {
 /// network tool `web_fetch` is added by `web_hand_tools`; `web_search` is owned
 /// exclusively by the separately configured plugin path.
 pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
+    executable_hand_tools_in(HandToolContext::default())
+}
+
+/// Create a fresh, environment-scoped toolset. The Bash session and filesystem
+/// confinement share this trusted workdir.
+pub fn executable_hand_tools_in(context: HandToolContext) -> Vec<Arc<dyn RawTool>> {
     vec![
-        erase_for(ReadTool, ToolExecutionTarget::Sandbox),
-        erase_for(WriteTool, ToolExecutionTarget::Sandbox),
-        erase_for(EditTool, ToolExecutionTarget::Sandbox),
+        erase_for(ReadTool::new(&context), ToolExecutionTarget::Sandbox),
+        erase_for(WriteTool::new(&context), ToolExecutionTarget::Sandbox),
+        erase_for(EditTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(MoveTool, ToolExecutionTarget::Sandbox),
         erase_for(DeleteTool, ToolExecutionTarget::Sandbox),
-        erase_for(GlobTool, ToolExecutionTarget::Sandbox),
-        erase_for(GrepTool, ToolExecutionTarget::Sandbox),
-        erase_for(BashTool, ToolExecutionTarget::Sandbox),
+        erase_for(GlobTool::new(&context), ToolExecutionTarget::Sandbox),
+        erase_for(GrepTool::new(&context), ToolExecutionTarget::Sandbox),
+        erase_for(BashTool::new(&context), ToolExecutionTarget::Sandbox),
     ]
 }
 
@@ -672,7 +1229,7 @@ mod write_tests {
         let base = std::env::temp_dir().join(format!("awaken-write-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let path = base.join("outputs/deep/result.txt");
-        let out = WriteTool
+        let out = WriteTool::new(&HandToolContext::new(&base))
             .call(WriteArgs {
                 path: path.to_string_lossy().into_owned(),
                 content: "artifact-bytes".into(),
