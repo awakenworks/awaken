@@ -32,11 +32,6 @@ pub awaken_runtime_host::HostResume::ClientResult::is_error: bool
 pub awaken_runtime_host::HostResume::ToolPermission
 pub awaken_runtime_host::HostResume::ToolPermission::allow: bool
 pub awaken_runtime_host::HostResume::ToolPermission::note: core::option::Option<alloc::string::String>
-pub enum awaken_runtime_host::K8sNetworkPolicyEnforcement
-pub awaken_runtime_host::K8sNetworkPolicyEnforcement::AwakenRestrictedEgressV1
-impl core::str::traits::FromStr for awaken_runtime_host::K8sNetworkPolicyEnforcement
-pub type awaken_runtime_host::K8sNetworkPolicyEnforcement::Err = alloc::string::String
-pub fn awaken_runtime_host::K8sNetworkPolicyEnforcement::from_str(&str) -> core::result::Result<Self, Self::Err>
 pub enum awaken_runtime_host::LaunchSource
 pub awaken_runtime_host::LaunchSource::Fixed(awaken_run_executor_acp::subprocess::AcpLaunch)
 pub awaken_runtime_host::LaunchSource::FixedAcp(alloc::boxed::Box<awaken_run_executor_acp::subprocess::AcpLaunch>)
@@ -312,7 +307,6 @@ pub awaken_runtime_host::SandboxSettings::k8s_buildkit_image: alloc::string::Str
 pub awaken_runtime_host::SandboxSettings::k8s_continuation_volume: core::option::Option<awaken_sandbox_container::runtime::K8sContinuationVolume>
 pub awaken_runtime_host::SandboxSettings::k8s_image_pull_secrets: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_host::SandboxSettings::k8s_namespace: alloc::string::String
-pub awaken_runtime_host::SandboxSettings::k8s_network_policy_enforcement: core::option::Option<awaken_runtime_host::K8sNetworkPolicyEnforcement>
 pub awaken_runtime_host::SandboxSettings::package_image_builder: core::option::Option<awaken_runtime_host::PackageImageBuilder>
 pub awaken_runtime_host::SandboxSettings::package_image_registry: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::SandboxSettings::package_local_cache_ttl_secs: u64

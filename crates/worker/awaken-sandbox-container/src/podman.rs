@@ -529,6 +529,10 @@ impl PodmanRuntime {
 
 #[async_trait]
 impl ContainerRuntime for PodmanRuntime {
+    async fn probe_ready(&self) -> Result<(), RuntimeError> {
+        self.ping().await
+    }
+
     fn enforces_network_none(&self) -> bool {
         true
     }

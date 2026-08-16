@@ -56,7 +56,7 @@ pub fn awaken_worker::WorkerCredentialFileResolver::supports_recipient_bound_env
 pub struct awaken_worker::WorkerDaemonConfig
 pub awaken_worker::WorkerDaemonConfig::worker: awaken_worker::WorkerBootstrap
 impl awaken_worker::WorkerDaemonConfig
-pub fn awaken_worker::WorkerDaemonConfig::build(&self) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
+pub async fn awaken_worker::WorkerDaemonConfig::build(&self) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub fn awaken_worker::WorkerDaemonConfig::load(&std::path::Path, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_worker::WorkerNode
 impl awaken_worker::WorkerNode
@@ -71,6 +71,7 @@ pub struct awaken_worker::WorkerNodeBuilder
 impl awaken_worker::WorkerNodeBuilder
 pub fn awaken_worker::WorkerNodeBuilder::build(self) -> core::result::Result<awaken_worker::WorkerNode, awaken_worker::WorkerNodeBuildError>
 pub fn awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream) -> Self
+pub async fn awaken_worker::WorkerNodeBuilder::prepare_session_environment_from_deployment(self) -> core::result::Result<Self, awaken_worker::WorkerNodeBuildError>
 pub fn awaken_worker::WorkerNodeBuilder::with_acp_capability_observation_source(self, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_admin_listen(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self

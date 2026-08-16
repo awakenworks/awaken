@@ -132,6 +132,10 @@ impl ContainerEnvironment for ReadyEnvironment {
 
 #[async_trait]
 impl ContainerEnvironmentProvider for RecordingProvider {
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Container,

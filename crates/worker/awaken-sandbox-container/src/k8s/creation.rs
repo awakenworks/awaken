@@ -104,7 +104,6 @@ pub(super) async fn create(
     id: &str,
     plan: &ContainerPlan,
 ) -> Result<String, RuntimeError> {
-    admit_network(&plan.network, runtime.restricted_egress_policy)?;
     if let Some(limit) = unenforceable_k8s_limit(&plan.limits) {
         return Err(RuntimeError::Backend(format!(
             "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \

@@ -1,0 +1,21 @@
+# Canonical NetworkPolicy graph attested by K8sRuntime before Ready and before
+# every restricted Pod creation. Overlays import this base and do not copy it.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: awaken-sandbox-default-deny }
+spec:
+  podSelector: { matchLabels: { app: awaken-sandbox } }
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: awaken-sandbox-open-egress }
+spec:
+  podSelector:
+    matchLabels: { app: awaken-sandbox, awaken-egress: open }
+  policyTypes: [Egress]
+  egress:
+    - {}

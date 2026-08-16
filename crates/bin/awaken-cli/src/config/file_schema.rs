@@ -86,7 +86,6 @@ pub(super) struct FileConfig {
     pub(super) sandbox_warm_pool_idle_ttl_secs: Option<u64>,
     pub(super) container_forward_proxy: Option<String>,
     pub(super) k8s_namespace: Option<String>,
-    pub(super) k8s_network_policy_enforcement: Option<String>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,
     pub(super) container_hand_bin: Option<String>,
     pub(super) container_hand_residency: Option<String>,

@@ -126,6 +126,7 @@ mod tests {
             identity: awaken_worker_contract::WorkerIdentity::new("admin-test", "boot", 1),
             credential_observation_resolver: None,
             acp_capability_observation_source: None,
+            session_environment_provider: None,
             observations: Arc::new(crate::WorkerObservationCache::default()),
             observation_ttl: std::time::Duration::from_secs(30),
             warm_environments: Default::default(),

@@ -44,34 +44,13 @@ pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use resident_hand::ResidentHandConfig;
+use runtime::container_capabilities;
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
     RuntimeAgentProcess, RuntimeError,
 };
 pub use secret::SecretBytes;
 pub use writable::{checkpoint_writable_roots, validate_checkpoint_writable_roots, writable_dirs};
-
-/// Capabilities common to one concrete container runtime. Network denial is
-/// runtime evidence rather than an isolation-class assumption: Docker/Podman
-/// implement `network none`; Kubernetes reports it only when composition supplies
-/// the exact versioned restricted-egress policy evidence used by Pod admission.
-fn container_capabilities(
-    network_isolation: bool,
-    package_provisioning: bool,
-) -> pc::SandboxCapabilities {
-    pc::SandboxCapabilities {
-        isolation: pc::IsolationClass::Container,
-        tool_transparent: true,
-        path_fidelity: true,
-        enforced_readonly: true,
-        network_isolation,
-        enforced_network_allowlist: false,
-        secret_egress_substitution: false,
-        resource_limits: true,
-        custom_rootfs: true,
-        package_provisioning,
-    }
-}
 
 // ── Pure planners ─────────────────────────────────────────────────────────────
 
@@ -1126,6 +1105,10 @@ pub struct ContainerProvider<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
+    async fn probe_runtime_ready(&self) -> Result<(), pc::SandboxError> {
+        self.runtime.probe_ready().await.map_err(err)
+    }
+
     pub fn new(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
         Self {
             runtime,
@@ -1484,6 +1467,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         self.install_secret_broker(broker);
     }
 
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        self.probe_runtime_ready().await
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -1506,6 +1493,10 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             self.runtime.enforces_network_none(),
             self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
         )
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        self.probe_runtime_ready().await
     }
 
     async fn create(
@@ -1700,6 +1691,11 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
     fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
 
     fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
+
+    /// Revalidate mutable provider-side evidence used by Worker placement.
+    /// The Worker calls this before Ready and on every heartbeat; failure
+    /// drains the incarnation through the existing authority-loss path.
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError>;
 
     async fn create_environment(
         &self,

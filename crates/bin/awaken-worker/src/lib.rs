@@ -450,6 +450,27 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Construct the deployment-selected provider before deriving the immutable
+    /// Worker manifest. The resulting instance is shared by capability evidence,
+    /// readiness probes, capacity lifecycle, and Runtime Host realization.
+    pub async fn prepare_session_environment_from_deployment(
+        self,
+    ) -> Result<Self, WorkerNodeBuildError> {
+        if !self.deployment.sandbox_tier.is_container() || self.session_container_provider.is_some()
+        {
+            return Ok(self);
+        }
+        let backend = self.deployment.sandbox_support().1;
+        let components = awaken_runtime_host::build_container_environment(
+            self.deployment.sandbox_tier,
+            self.deployment.container_image.as_deref(),
+            &self.deployment.sandbox,
+        )
+        .await
+        .map_err(WorkerNodeBuildError)?;
+        Ok(self.with_session_container_environment_components(backend, components))
+    }
+
     /// Install the one checkpoint-byte custody adapter used by the selected
     /// Session environment provider. Lifecycle truth remains in the Session;
     /// this dependency stores bytes only.
@@ -537,6 +558,13 @@ impl WorkerNodeBuilder {
         if self.session_container_provider.is_some() && self.enclosing_sandbox_boundary.is_some() {
             return Err(WorkerNodeBuildError(
                 "Session container provider and enclosing sandbox boundary are mutually exclusive"
+                    .to_string(),
+            ));
+        }
+        if self.deployment.sandbox_tier.is_container() && self.session_container_provider.is_none()
+        {
+            return Err(WorkerNodeBuildError(
+                "container deployment must prepare its canonical Session provider before Worker build"
                     .to_string(),
             ));
         }
@@ -836,7 +864,10 @@ async fn build_secretless_worker(
     builder = builder
         .with_inference_materializer(materializer)
         .with_standard_manifest(Default::default());
-    Ok(builder.build()?)
+    Ok(builder
+        .prepare_session_environment_from_deployment()
+        .await?
+        .build()?)
 }
 
 fn configured_container_acp_targets(
@@ -1090,6 +1121,10 @@ impl WorkerNode {
             host.install_memory_mounter(memory_mounter);
         }
 
+        let session_environment_provider = self
+            .session_container_provider
+            .as_ref()
+            .map(|installed| installed.provider.clone());
         if let Some(installed) = self.session_container_provider {
             let hand_factory = self
                 .hand_executor_factory
@@ -1142,6 +1177,7 @@ impl WorkerNode {
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,
             acp_capability_observation_source,
+            session_environment_provider,
             observations,
             observation_ttl: self.credential_observation_ttl,
             warm_environments: Default::default(),
@@ -1152,6 +1188,15 @@ impl WorkerNode {
         // them off this boundary prevents an unavailable Sandbox backend from
         // making the Worker itself permanently Starting while claim admission
         // still fails closed for any Run that needs their evidence.
+        if let Some(provider) = &lifecycle.session_environment_provider
+            && let Err(error) = provider.probe_ready().await
+        {
+            let _ = control.deregister(&lifecycle.identity).await;
+            return Err(std::io::Error::other(format!(
+                "sandbox readiness evidence failed before Ready: {error}"
+            ))
+            .into());
+        }
         let initial = control
             .heartbeat(
                 &lifecycle.identity,

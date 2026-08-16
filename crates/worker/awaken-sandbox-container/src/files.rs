@@ -151,6 +151,10 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for ScanRuntime {
+        async fn probe_ready(&self) -> Result<(), crate::RuntimeError> {
+            Ok(())
+        }
+
         async fn create(
             &self,
             _id: &str,

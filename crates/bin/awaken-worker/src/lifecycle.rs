@@ -99,6 +99,8 @@ pub(crate) struct WorkerSupervisor {
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     pub(crate) acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
+    pub(crate) session_environment_provider:
+        Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>>,
     pub(crate) observations: Arc<WorkerObservationCache>,
     pub(crate) observation_ttl: std::time::Duration,
     pub(crate) warm_environments: Arc<
@@ -260,6 +262,13 @@ pub(crate) fn spawn_heartbeat(
         interval.tick().await;
         loop {
             interval.tick().await;
+            if let Some(provider) = &lifecycle.session_environment_provider
+                && let Err(error) = provider.probe_ready().await
+            {
+                eprintln!("worker sandbox evidence no longer holds: {error}; draining locally");
+                revoke_worker_session_authority(&lifecycle).await;
+                break;
+            }
             let mutation = tokio::time::timeout(
                 std::time::Duration::from_secs(8),
                 lifecycle.control.heartbeat(

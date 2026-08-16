@@ -76,6 +76,11 @@ done
 [ "$node_registered" = 1 ] || { echo "k3d node never registered" >&2; exit 1; }
 kubectl --request-timeout=10s wait --for=condition=Ready nodes --all --timeout=120s
 
+# Install the exact graph production imports so the live suite exercises the
+# same source attested by Worker readiness and restricted Pod admission.
+log "installing canonical Sandbox NetworkPolicy graph"
+kubectl apply -k deploy/k3d/bases/sandbox-network-policy
+
 # The Hand-expiry rule needs the production binary; the canonical importer also
 # loads the cluster's exact Pause/CoreDNS prerequisites into every node.
 log "loading images through the shared k3d harness"
@@ -84,6 +89,8 @@ k3d_import_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE"
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e -- --nocapture
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+  --test k8s_policy_drift -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-runtime-host --features container-k8s --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
 

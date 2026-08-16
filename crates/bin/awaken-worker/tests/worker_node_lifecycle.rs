@@ -66,7 +66,16 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
     false
 }
 
-struct ExternalSessionProvider;
+#[derive(Default)]
+struct ExternalSessionProvider {
+    ready: Option<Arc<AtomicBool>>,
+}
+
+impl ExternalSessionProvider {
+    fn with_readiness(ready: Arc<AtomicBool>) -> Self {
+        Self { ready: Some(ready) }
+    }
+}
 
 #[derive(Default)]
 struct RecordingCapacity {
@@ -147,6 +156,20 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
             resource_limits: true,
             custom_rootfs: true,
             package_provisioning: false,
+        }
+    }
+
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        if self
+            .ready
+            .as_ref()
+            .is_none_or(|ready| ready.load(Ordering::SeqCst))
+        {
+            Ok(())
+        } else {
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "injected provider evidence drift",
+            ))
         }
     }
 
@@ -245,7 +268,10 @@ fn external_session_provider_requires_its_hand_channel_port() {
     // hand factory fails during build; E2 an empty backend fails on identity
     // before runtime. Capability advertisement cannot outpace executable wiring.
     let missing_hand = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
-        .with_session_container_provider("external-secure", Arc::new(ExternalSessionProvider))
+        .with_session_container_provider(
+            "external-secure",
+            Arc::new(ExternalSessionProvider::default()),
+        )
         .with_standard_manifest(Default::default())
         .build()
         .err()
@@ -253,12 +279,33 @@ fn external_session_provider_requires_its_hand_channel_port() {
     assert!(missing_hand.to_string().contains("hand executor factory"));
 
     let empty_backend = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
-        .with_session_container_provider(" ", Arc::new(ExternalSessionProvider))
+        .with_session_container_provider(" ", Arc::new(ExternalSessionProvider::default()))
         .with_standard_manifest(Default::default())
         .build()
         .err()
         .expect("E2 provider identity is required");
     assert!(empty_backend.to_string().contains("backend"));
+}
+
+#[test]
+fn container_deployment_cannot_bypass_canonical_provider_preparation() {
+    /* FMECA / cause-effect graph for Worker assembly: C1=container tier;
+     * C2=canonical provider prepared; C3=explicit substitute installed.
+     * E1=manifest, Host, and heartbeat share one instance; E2=build fails.
+     * S=10/O=4/D=1, RPN=40. Rules A1 !C1=>normal; A2 C1&&(C2||C3)=>E1;
+     * A3 C1&&!C2&&!C3=>E2. This case owns A3; provider drift owns A2. */
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::K8s;
+    let error = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_deployment_config(deployment)
+        .with_standard_manifest(Default::default())
+        .build()
+        .err()
+        .expect("A3 must reject an unprepared container deployment");
+    assert!(
+        error.to_string().contains("canonical Session provider"),
+        "A3: {error}"
+    );
 }
 
 #[test]
@@ -390,7 +437,7 @@ async fn worker_publishes_ready_then_warms_and_drains_capacity_on_shutdown() {
     .with_deployment_config(deployment)
     .with_session_container_provider_and_capacity(
         "external-secure",
-        Arc::new(ExternalSessionProvider),
+        Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
     .with_hand_executor_factory(Arc::new(NoHandFactory))
@@ -498,7 +545,7 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
     .with_deployment_config(deployment)
     .with_session_container_provider_and_capacity(
         "external-secure",
-        Arc::new(ExternalSessionProvider),
+        Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
     .with_hand_executor_factory(Arc::new(NoHandFactory))
@@ -579,7 +626,7 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
     .with_deployment_config(deployment)
     .with_session_container_provider_and_capacity(
         "external-secure",
-        Arc::new(ExternalSessionProvider),
+        Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
     .with_hand_executor_factory(Arc::new(NoHandFactory))
@@ -608,6 +655,75 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
     .expect("cold path remains available");
 
     assert!(capacity.shut_down.load(Ordering::SeqCst), "E3");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_evidence_drift_drains_before_the_next_heartbeat() {
+    // Cause/effect graph: C1 provider evidence holds before initial Ready; C2
+    // the same evidence fails before a periodic heartbeat; C3 no user shutdown.
+    // Effects: E1 initial Ready; E2 no heartbeat from stale evidence; E3 the
+    // existing authority-loss path drains and asks the supervisor to restart.
+    // Rules P1 C1&&!C2=>normal (covered elsewhere); P2 !C1=>startup rejection;
+    // P3 C1+C2+C3=>E1+E2+E3 (this test).
+    let upstream = FakeWorkerUpstream::start();
+    let ready = Arc::new(AtomicBool::new(true));
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-drift-test"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_session_container_provider(
+            "external-secure",
+            Arc::new(ExternalSessionProvider::with_readiness(ready.clone())),
+        )
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
+        .with_manifest(manifest())
+        .with_graceful_drain(Duration::ZERO)
+        .without_admin_surface()
+        .build()
+        .expect("valid provider-evidence topology")
+        .run_until(async {
+            for _ in 0..300 {
+                if upstream
+                    .requests()
+                    .iter()
+                    .any(|path| path == "/v1/worker/heartbeat")
+                {
+                    ready.store(false, Ordering::SeqCst);
+                    return std::future::pending::<
+                        Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+                    >()
+                    .await;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("P3 initial Ready was not published")
+        }),
+    )
+    .await
+    .expect("P3 drift terminates without a user signal")
+    .expect_err("P3 supervisor must restart the drained incarnation");
+    assert!(
+        result.to_string().contains("supervisor restart required"),
+        "E3"
+    );
+    assert_eq!(
+        upstream
+            .requests()
+            .iter()
+            .filter(|path| path.as_str() == "/v1/worker/heartbeat")
+            .count(),
+        1,
+        "E2 stale evidence is fenced before the next heartbeat"
+    );
+    assert!(
+        upstream
+            .requests()
+            .iter()
+            .any(|path| path == "/v1/worker/drain"),
+        "E3"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

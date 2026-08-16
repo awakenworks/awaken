@@ -313,12 +313,14 @@ async fn serve_prepared_process(
         // Validate the reusable composition before advertising readiness. The
         // supervisor constructs a fresh incarnation from this same secret-safe
         // composition whenever registry authority is lost.
-        prepared.build_worker(
-            worker_url
-                .clone()
-                .expect("AllInOne always binds its private Worker surface"),
-            &deployment,
-        )?;
+        prepared
+            .build_worker(
+                worker_url
+                    .clone()
+                    .expect("AllInOne always binds its private Worker surface"),
+                &deployment,
+            )
+            .await?;
     }
     if role == ServiceRole::AllInOne {
         eprintln!("\n  Awaken is ready\n");
@@ -569,7 +571,7 @@ async fn supervise_local_worker(
         if shutdown.borrow().is_some() {
             return Ok(());
         }
-        let worker = prepared.build_worker(upstream.clone(), &deployment)?;
+        let worker = prepared.build_worker(upstream.clone(), &deployment).await?;
         let mut run_shutdown = shutdown.clone();
         let result = worker
             .run_until(async move {

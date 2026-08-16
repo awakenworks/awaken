@@ -190,15 +190,6 @@ pub enum PackageImageBuilder {
     Kubernetes,
 }
 
-/// Versioned operator evidence that the Kubernetes startup enforces the
-/// egress-posture labels emitted by the canonical K8s sandbox adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum K8sNetworkPolicyEnforcement {
-    /// `app=awaken-sandbox` is ingress-denied; `awaken-egress=open` alone may
-    /// egress, while `awaken-egress=restricted` is denied all egress.
-    AwakenRestrictedEgressV1,
-}
-
 /// Lifetime of the Session container's Hand role. One enum drives both the Pod
 /// process and the Runtime Host binding, preventing parallel Hand owners.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -237,19 +228,6 @@ impl std::str::FromStr for ContainerHandResidency {
             "resident" => Ok(Self::Resident),
             other => Err(format!(
                 "invalid container_hand_residency={other:?}: expected attached_exec or resident"
-            )),
-        }
-    }
-}
-
-impl std::str::FromStr for K8sNetworkPolicyEnforcement {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "awaken-restricted-egress-v1" => Ok(Self::AwakenRestrictedEgressV1),
-            other => Err(format!(
-                "invalid k8s_network_policy_enforcement={other:?}: expected awaken-restricted-egress-v1"
             )),
         }
     }
@@ -301,10 +279,6 @@ pub struct SandboxSettings {
     pub container_forward_proxy: Option<String>,
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
-    /// Exact external NetworkPolicy contract installed by the Kubernetes
-    /// startup. Absence means the adapter may not claim or realize network
-    /// isolation even though it still emits posture labels.
-    pub k8s_network_policy_enforcement: Option<K8sNetworkPolicyEnforcement>,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
     /// Optional retained active-filesystem PVC policy. Association is derived
@@ -354,7 +328,6 @@ impl Default for SandboxSettings {
             warm_pool_idle_ttl_secs: 300,
             container_forward_proxy: None,
             k8s_namespace: "default".to_owned(),
-            k8s_network_policy_enforcement: None,
             k8s_image_pull_secrets: Vec::new(),
             k8s_continuation_volume: None,
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
@@ -503,7 +476,6 @@ struct SandboxSupportProjection {
 #[must_use]
 const fn sandbox_support_projection(
     tier: SandboxTier,
-    has_k8s_network_policy: bool,
     has_package_registry: bool,
     has_package_builder: bool,
 ) -> SandboxSupportProjection {
@@ -530,7 +502,10 @@ const fn sandbox_support_projection(
         },
         SandboxTier::K8s => SandboxSupportProjection {
             backend: SandboxBackend::K8s,
-            network_isolation: has_k8s_network_policy,
+            // Configuration cannot prove live cluster policy. The constructed
+            // provider replaces this conservative projection with attested
+            // runtime evidence before Worker registration.
+            network_isolation: false,
             package_provisioning: has_package_registry && has_package_builder,
         },
     }
@@ -552,7 +527,6 @@ impl DeploymentConfig {
 
         let projection = sandbox_support_projection(
             self.sandbox_tier,
-            self.sandbox.k8s_network_policy_enforcement.is_some(),
             self.sandbox.package_image_registry.is_some(),
             self.sandbox.package_image_builder.is_some(),
         );
@@ -754,11 +728,9 @@ mod verification {
     #[kani::proof]
     fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
         let tier = symbolic_sandbox_tier(kani::any());
-        let network_policy: bool = kani::any();
         let package_registry: bool = kani::any();
         let package_builder: bool = kani::any();
-        let projection =
-            sandbox_support_projection(tier, network_policy, package_registry, package_builder);
+        let projection = sandbox_support_projection(tier, package_registry, package_builder);
 
         match tier {
             SandboxTier::Local => {
@@ -783,7 +755,7 @@ mod verification {
             }
             SandboxTier::K8s => {
                 assert_eq!(projection.backend, SandboxBackend::K8s);
-                assert_eq!(projection.network_isolation, network_policy);
+                assert!(!projection.network_isolation);
                 assert_eq!(
                     projection.package_provisioning,
                     package_registry && package_builder
@@ -865,7 +837,6 @@ mod tests {
     /// | namespace | 1 | 0 | deny-all only |
     /// | docker/podman | 1 | 0 | deny-all only |
     /// | k8s, no policy evidence | 0 | 0 | neither |
-    /// | k8s, restricted-egress-v1 | 1 | 0 | deny-all only |
     #[test]
     fn sandbox_support_reports_adapter_evidence_not_isolation_class() {
         for (tier, deny_all, package_provisioning, backend) in [
@@ -899,39 +870,18 @@ mod tests {
             "Kubernetes may advertise packages only with an independent builder and shared registry"
         );
 
-        let mut k8s_with_policy = base();
-        k8s_with_policy.sandbox_tier = SandboxTier::K8s;
-        k8s_with_policy.sandbox.k8s_network_policy_enforcement =
-            Some(K8sNetworkPolicyEnforcement::AwakenRestrictedEgressV1);
-        let support = k8s_with_policy.sandbox_support().0;
-        assert!(support.network_isolation, "K8s exact policy evidence");
-        assert!(
-            !support.enforced_network_allowlist,
-            "binary posture is not an allowlist"
-        );
-
         for (registry, builder, expected) in [
             (false, false, false),
             (true, false, false),
             (false, true, false),
             (true, true, true),
         ] {
-            let projection = sandbox_support_projection(SandboxTier::K8s, false, registry, builder);
+            let projection = sandbox_support_projection(SandboxTier::K8s, registry, builder);
             assert_eq!(
                 projection.package_provisioning, expected,
                 "Kubernetes requires both registry and builder evidence"
             );
         }
-
-        assert_eq!(
-            "awaken-restricted-egress-v1".parse(),
-            Ok(K8sNetworkPolicyEnforcement::AwakenRestrictedEgressV1)
-        );
-        assert!(
-            "labels-only"
-                .parse::<K8sNetworkPolicyEnforcement>()
-                .is_err()
-        );
     }
 
     #[test]

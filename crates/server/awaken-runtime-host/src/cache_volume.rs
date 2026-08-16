@@ -511,6 +511,10 @@ mod tests {
     ))]
     #[async_trait]
     impl awaken_sandbox_container::ContainerEnvironmentProvider for RecordingProvider {
+        async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+            Ok(())
+        }
+
         async fn create_environment(
             &self,
             spec: &pc::SandboxSpec,

@@ -33,7 +33,8 @@ async fn run() -> Result<(), String> {
     let deployment = awaken_worker::WorkerDaemonConfig::load(&config, server)?;
     awaken_observability::init(&Default::default());
     let result = deployment
-        .build()?
+        .build()
+        .await?
         .run_until_shutdown()
         .await
         .map_err(|error| error.to_string());

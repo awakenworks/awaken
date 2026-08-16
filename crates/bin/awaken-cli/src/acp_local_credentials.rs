@@ -213,7 +213,7 @@ impl PreparedLocalAcp {
     /// Build the canonical registered Worker against this process's control
     /// URL. The Runtime Host selects trusted Workdir only for BackendOwned
     /// Sessions and retains this deployment's isolation tier for Provider runs.
-    pub fn build_worker(
+    pub async fn build_worker(
         self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
@@ -232,6 +232,9 @@ impl PreparedLocalAcp {
         .with_worker_local_credential_resolver(resolver.clone())
         .with_acp_capability_observation_source(resolver)
         .without_admin_surface()
+        .prepare_session_environment_from_deployment()
+        .await
+        .map_err(|error| error.to_string())?
         .build()
         .map_err(|error| error.to_string())
     }
@@ -246,7 +249,7 @@ impl PreparedLocalWorker {
         self
     }
 
-    pub fn build_worker(
+    pub async fn build_worker(
         &self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
@@ -268,7 +271,12 @@ impl PreparedLocalWorker {
                 .with_worker_local_credential_resolver(resolver.clone())
                 .with_acp_capability_observation_source(resolver.clone());
         }
-        builder.build().map_err(|error| error.to_string())
+        builder
+            .prepare_session_environment_from_deployment()
+            .await
+            .map_err(|error| error.to_string())?
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -665,8 +673,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn all_in_one_worker_exists_without_an_acp_capability() {
+    #[tokio::test]
+    async fn all_in_one_worker_exists_without_an_acp_capability() {
         // Cause/effect graph: C1=AllInOne; C2=local ACP resolver absent.
         // Effects: E1=the canonical WorkerNode still exists; E2=Native and generic
         // outbound A2A capabilities are advertised; E3=no invented ACP capability.
@@ -686,6 +694,7 @@ mod tests {
         };
         let worker = prepared
             .build_worker("http://127.0.0.1:1", &deployment)
+            .await
             .expect("W1 WorkerNode");
         assert!(
             worker.manifest().capabilities.contains("native-runtime"),
@@ -782,6 +791,7 @@ mod tests {
         );
         let worker = prepared
             .build_worker("http://127.0.0.1:1", &deployment)
+            .await
             .unwrap();
         assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");
         assert!(

@@ -737,6 +737,10 @@ impl DockerRuntime {
 
 #[async_trait]
 impl ContainerRuntime for DockerRuntime {
+    async fn probe_ready(&self) -> Result<(), RuntimeError> {
+        self.ping().await
+    }
+
     fn enforces_network_none(&self) -> bool {
         true
     }

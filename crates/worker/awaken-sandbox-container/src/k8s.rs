@@ -46,6 +46,7 @@ mod error;
 mod live_inputs;
 mod memory;
 mod names;
+mod network_policy;
 mod pod_projection;
 mod pod_security;
 mod process;
@@ -91,9 +92,9 @@ pub struct K8sRuntime {
     /// the host direct-dials `agent_addr` (a published Service) instead.
     rendezvous: Option<SocketAddr>,
     image_pull_secrets: Vec<String>,
-    /// Exact external `awaken-egress=open|restricted` enforcement evidence;
-    /// labels alone never imply a boundary.
-    restricted_egress_policy: bool,
+    /// Live apiserver evidence for the canonical sandbox NetworkPolicy graph.
+    /// The same fact drives capability projection and restricted-Pod admission.
+    network_policy_attestation: network_policy::Attestation,
     /// Private resident-process port reached only through the authenticated Pod
     /// port-forward subresource. `None` preserves the legacy channel topology.
     pod_channel_port: Option<u16>,
@@ -110,18 +111,24 @@ impl K8sRuntime {
         // once (idempotent — a prior install by the host is fine).
         install_rustls_crypto_provider();
         let clients = K8sClients::infer().await?;
-        Ok(Self {
+        let namespace = namespace.into();
+        let runtime = Self {
             clients,
-            namespace: namespace.into(),
+            namespace,
             agent_addr,
             owner: None,
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
-            restricted_egress_policy: false,
+            network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
             continuation_volume: None,
-        })
+        };
+        runtime
+            .network_policy_attestation
+            .refresh(&runtime.clients.control, &runtime.namespace)
+            .await?;
+        Ok(runtime)
     }
 
     /// Set the GC owner (e.g. a Lease/ConfigMap) whose deletion reaps orphan Pods.
@@ -149,14 +156,6 @@ impl K8sRuntime {
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty())
             .collect();
-        self
-    }
-
-    /// Attest that the cluster denies all Session ingress and restricted egress,
-    /// while only `awaken-egress=open` may egress.
-    #[must_use]
-    pub fn with_restricted_egress_policy(mut self, installed: bool) -> Self {
-        self.restricted_egress_policy = installed;
         self
     }
 
@@ -189,7 +188,7 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
-            restricted_egress_policy: false,
+            network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
             continuation_volume: None,
         }
@@ -601,7 +600,13 @@ async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, Runti
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     fn enforces_network_none(&self) -> bool {
-        self.restricted_egress_policy
+        self.network_policy_attestation.current()
+    }
+
+    async fn probe_ready(&self) -> Result<(), RuntimeError> {
+        self.network_policy_attestation
+            .refresh(&self.clients.control, &self.namespace)
+            .await
     }
 
     fn has_native_memory_mounts(&self) -> bool {
@@ -634,6 +639,10 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
+        if matches!(plan.network, crate::NetworkMode::None) {
+            self.probe_ready().await?;
+        }
+        admit_network(&plan.network, self.network_policy_attestation.current())?;
         creation::create(self, id, plan).await
     }
     async fn handle_extra(
@@ -922,16 +931,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn restricted_egress_evidence_is_the_single_network_capability_source() {
-        // Cause/effect decision table: C1=the exact external restricted-egress
-        // policy is attested by composition. R1 !C1 => the runtime neither
-        // admits network-none plans nor advertises network isolation; R2 C1 =>
-        // the same field admits those plans and advertises the capability.
-        // This prevents placement and creation from consulting parallel facts.
+    async fn labels_without_live_policy_evidence_never_create_a_capability() {
+        // Cause/effect rule: a test runtime has no live apiserver attestation;
+        // posture labels alone therefore leave network isolation false. The
+        // positive and additive-widening rules live beside the sole attestor in
+        // `network_policy::tests`.
         let absent = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
-        assert!(!absent.enforces_network_none(), "R1");
-        let installed = absent.with_restricted_egress_policy(true);
-        assert!(installed.enforces_network_none(), "R2");
+        assert!(!absent.enforces_network_none());
     }
 
     #[tokio::test]

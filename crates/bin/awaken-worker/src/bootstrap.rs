@@ -105,7 +105,6 @@ struct WorkerFileConfig {
     sandbox_dir: Option<PathBuf>,
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
-    k8s_network_policy_enforcement: Option<String>,
     acp_clis: Option<Vec<String>>,
     acp_default_cli: Option<String>,
     container_image: Option<String>,
@@ -170,11 +169,6 @@ impl WorkerDaemonConfig {
             }
             runtime.sandbox.k8s_namespace = namespace;
         }
-        runtime.sandbox.k8s_network_policy_enforcement = file
-            .k8s_network_policy_enforcement
-            .as_deref()
-            .map(str::parse)
-            .transpose()?;
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
             .then(|| awaken_runtime_host::AcpWorkerProfile::new(acp_clis, file.acp_default_cli))
@@ -187,7 +181,7 @@ impl WorkerDaemonConfig {
         })
     }
 
-    pub fn build(&self) -> Result<crate::WorkerNode, String> {
+    pub async fn build(&self) -> Result<crate::WorkerNode, String> {
         let resolver = Arc::new(crate::WorkerCredentialFileResolver::new(
             &self.worker.credential_material_root,
             &self.worker.credential_trust_domain,
@@ -251,7 +245,12 @@ impl WorkerDaemonConfig {
             Some(address) => builder.with_admin_listen(address),
             None => builder.without_admin_surface(),
         };
-        builder.build().map_err(|error| error.to_string())
+        builder
+            .prepare_session_environment_from_deployment()
+            .await
+            .map_err(|error| error.to_string())?
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -310,8 +309,8 @@ mod tests {
     /// !C1/!C2/!C4/!C5/!C7 -> config validation failure; R3 !C3 -> serde rejects the
     /// unknown authority field; R4 !C6 -> startup fails before any network
     /// activity. The built manifest is the terminal startup effect.
-    #[test]
-    fn standalone_config_boundary_decision_table() {
+    #[tokio::test]
+    async fn standalone_config_boundary_decision_table() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("worker.toml");
         let write = |source: &str| std::fs::write(&path, source).unwrap();
@@ -328,7 +327,10 @@ mod tests {
         let resolved = WorkerDaemonConfig::load(&path, None).expect("R1");
         assert!(resolved.runtime.database_url.is_none(), "R1");
         assert!(resolved.runtime.storage_dir.is_none(), "R1");
-        let worker = resolved.build().expect("R1 canonical Worker assembly");
+        let worker = resolved
+            .build()
+            .await
+            .expect("R1 canonical Worker assembly");
         assert!(
             worker
                 .manifest()
@@ -337,15 +339,13 @@ mod tests {
             "R1"
         );
 
-        // Sandbox configuration cause/effect decision table:
-        // S1 K8s tier + non-empty namespace + image + exact policy evidence ->
-        // preserve all four inputs for the canonical container provider; S2 an
-        // empty namespace -> reject before provider construction; S3 unknown
-        // evidence -> reject; S4 omission -> no network-isolation claim. These
-        // rules keep the strict database-less Worker boundary on the same K8s
-        // adapter as all-in-one.
+        // Sandbox configuration cause/effect decision table: S1 K8s tier plus
+        // non-empty namespace and image preserves configuration but makes no
+        // isolation claim before live provider attestation; S2 empty namespace
+        // rejects; S3 the removed operator-evidence key rejects as unknown.
+        // The canonical K8s adapter is therefore the only evidence owner.
         write(&format!(
-            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\ncontainer_image='awaken-sandbox:local'\n",
+            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\ncontainer_image='awaken-sandbox:local'\n",
             credential.display()
         ));
         let k8s = WorkerDaemonConfig::load(&path, None).expect("S1");
@@ -355,14 +355,14 @@ mod tests {
             Some("awaken-sandbox:local"),
             "S1"
         );
-        assert!(k8s.runtime.sandbox_support().0.network_isolation, "S1");
+        assert!(!k8s.runtime.sandbox_support().0.network_isolation, "S1");
 
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_namespace='  '\n",
         );
         assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S2");
         write(
-            "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_network_policy_enforcement='labels-only'\n",
+            "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\n",
         );
         assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S3");
         assert!(
@@ -397,6 +397,7 @@ mod tests {
         let error = WorkerDaemonConfig::load(&path, None)
             .expect("R4 config syntax remains valid")
             .build()
+            .await
             .err()
             .expect("R4 mismatched signer must fail startup");
         assert!(error.contains("configured worker_id"), "R4: {error}");
@@ -409,6 +410,7 @@ mod tests {
         let error = WorkerDaemonConfig::load(&path, None)
             .expect("R4 missing projection is a startup-time cause")
             .build()
+            .await
             .err()
             .expect("R4 missing signer must fail startup");
         assert!(

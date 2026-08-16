@@ -584,6 +584,12 @@ impl LocalProvider {
 
 #[async_trait]
 impl pc::SandboxProvider for LocalProvider {
+    /// Workdir isolation has no external daemon or kernel feature to attest;
+    /// construction already owns and validates its filesystem root.
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         Self::capabilities()
     }
