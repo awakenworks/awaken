@@ -233,10 +233,9 @@ impl ProviderConnectionService {
                 if credential.status != CredentialStatus::Active {
                     return Err(CredentialError::NotActive(credential.id.0).into());
                 }
-                if credential
-                    .provider_id
-                    .as_deref()
-                    .is_some_and(|provider_id| provider_id != command.provider_id)
+                if !credential
+                    .authorization_scope()
+                    .belongs_to_provider(&command.provider_id)
                 {
                     return Err(CredentialError::NoCredential.into());
                 }

@@ -1225,6 +1225,11 @@ mod tests {
 
     #[tokio::test]
     async fn can_consume_gates_a_scoped_key_to_its_provider() {
+        // Cause/effect rules: C1=provider scope present; C2=provider matches;
+        // C3=provider scope absent; C4=Worker-local origin. Effects are E1
+        // eligible and E2 denied. R1 C1+C2=>E1; R2 C1+!C2=>E2;
+        // R3 C3=>E2; R4 C4+C3=>E2. Endpoint combinations are owned by the
+        // credential-selection decision table.
         let store = InMemorySecretStore::new();
         let scoped = create_source(
             CredentialCreateParams {
@@ -1255,9 +1260,9 @@ mod tests {
         )
         .await
         .unwrap();
-        // An explicitly unscoped persisted source consumes any provider.
-        assert!(can_consume("anthropic", None, &unscoped));
-        assert!(can_consume("openai", None, &unscoped));
+        // Provider-less material is generic, not a provider wildcard.
+        assert!(!can_consume("anthropic", None, &unscoped));
+        assert!(!can_consume("openai", None, &unscoped));
 
         let backend_login = ensure_worker_local(
             &InMemoryCredentialRepo::new(),
@@ -1358,7 +1363,7 @@ mod tests {
             id: CredentialSourceId(id.into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
-            provider_id: None,
+            provider_id: Some("anthropic".into()),
             protocol_endpoint_id: None,
             env_key: None,
             material_ref: None,
@@ -1441,7 +1446,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_credential_exact_materialize_failure_propagates_credential_error() {
-        // R4: the source is present and compatible (unscoped) so the gate passes, but
+        // R4: the source is present and compatible (provider-scoped) so the gate passes, but
         // materialize fails — the vault CredentialError is propagated transparently,
         // never remapped to SourceMissing / IncompatibleCredential.
         let store = InMemorySecretStore::new();

@@ -891,7 +891,9 @@ impl RepositoryCredentialIngress for VaultState {
             .await
             .map_err(|error| error.to_string())?;
         if current.workspace_id != workspace_id
-            || current.provider_id.as_deref() != Some("github_repository")
+            || !current
+                .authorization_scope()
+                .belongs_to_provider("github_repository")
         {
             return Err("repository credential binding is unavailable in this Workspace".into());
         }
