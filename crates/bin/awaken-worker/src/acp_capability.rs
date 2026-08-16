@@ -50,6 +50,9 @@ pub(crate) struct ConfiguredAcpCapabilityObservationSource {
     targets: Vec<ConfiguredAcpCapabilityTarget>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     cwd: PathBuf,
+    // The source is rebuilt with the Worker/image incarnation, so one complete
+    // successful batch is immutable for exactly that bounded lifetime.
+    successful_observations: tokio::sync::OnceCell<Vec<AcpCapabilityObservation>>,
 }
 
 impl ConfiguredAcpCapabilityObservationSource {
@@ -63,13 +66,11 @@ impl ConfiguredAcpCapabilityObservationSource {
             targets,
             negotiator,
             cwd,
+            successful_observations: tokio::sync::OnceCell::new(),
         }
     }
-}
 
-#[async_trait]
-impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource {
-    async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+    async fn probe_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
         let mut probes = tokio::task::JoinSet::new();
         for (index, target) in self.targets.iter().cloned().enumerate() {
             let negotiator = self.negotiator.clone();
@@ -118,13 +119,44 @@ impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource
     }
 }
 
+#[async_trait]
+impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource {
+    async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+        self.successful_observations
+            .get_or_try_init(|| self.probe_observations())
+            .await
+            .cloned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_acp_contract::NegotiatedAcpCapabilities;
 
     use super::*;
+
+    fn negotiated_capabilities() -> NegotiatedAcpCapabilities {
+        NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: true,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: false,
+            mcp_http: true,
+            mcp_sse: false,
+            session_list: false,
+            modes: Vec::new(),
+            config_options: Vec::new(),
+        }
+    }
+
+    fn configured_target(id: &str, argv: &str) -> ConfiguredAcpCapabilityTarget {
+        ConfiguredAcpCapabilityTarget::new(id, "container-image:immutable", vec![argv.into()], None)
+            .unwrap()
+    }
 
     struct Probe;
 
@@ -137,18 +169,7 @@ mod tests {
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
             (argv[0] == "verified")
-                .then(|| NegotiatedAcpCapabilities {
-                    protocol_version: "1".into(),
-                    load_session: true,
-                    prompt_image: false,
-                    prompt_audio: false,
-                    prompt_embedded_context: false,
-                    mcp_http: true,
-                    mcp_sse: false,
-                    session_list: false,
-                    modes: Vec::new(),
-                    config_options: Vec::new(),
-                })
+                .then(negotiated_capabilities)
                 .ok_or_else(|| "probe failed".to_string())
         }
     }
@@ -224,18 +245,7 @@ mod tests {
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
             self.barrier.wait().await;
-            Ok(NegotiatedAcpCapabilities {
-                protocol_version: "1".into(),
-                load_session: true,
-                prompt_image: false,
-                prompt_audio: false,
-                prompt_embedded_context: false,
-                mcp_http: true,
-                mcp_sse: false,
-                session_list: false,
-                modes: Vec::new(),
-                config_options: Vec::new(),
-            })
+            Ok(negotiated_capabilities())
         }
     }
 
@@ -247,15 +257,7 @@ mod tests {
         let source = ConfiguredAcpCapabilityObservationSource::new(
             ["second", "first"]
                 .into_iter()
-                .map(|id| {
-                    ConfiguredAcpCapabilityTarget::new(
-                        id,
-                        "image:immutable",
-                        vec!["probe".into()],
-                        None,
-                    )
-                    .unwrap()
-                })
+                .map(|id| configured_target(id, "probe"))
                 .collect(),
             Arc::new(ConcurrentProbe {
                 barrier: Arc::new(tokio::sync::Barrier::new(2)),
@@ -271,5 +273,112 @@ mod tests {
         .unwrap();
         assert_eq!(observations[0].backend_ref, "acp:first");
         assert_eq!(observations[1].backend_ref, "acp:second");
+    }
+
+    #[derive(Default)]
+    struct CountingLifecycleProbe {
+        creates: AtomicUsize,
+        disposes: AtomicUsize,
+        failures_left: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for CountingLifecycleProbe {
+        async fn negotiate(
+            &self,
+            _argv: &[String],
+            _cwd: &Path,
+            _auth_method_id: Option<&str>,
+        ) -> Result<NegotiatedAcpCapabilities, String> {
+            // One production negotiation owns one ephemeral provider create and
+            // its matching dispose. Model those physical effects separately so
+            // cache behavior cannot regress into hidden Sandbox churn.
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            let failed = self
+                .failures_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            self.disposes.fetch_add(1, Ordering::SeqCst);
+            if failed {
+                Err("injected capability failure".into())
+            } else {
+                Ok(negotiated_capabilities())
+            }
+        }
+    }
+
+    /// Configured capability batch cause/effect graph:
+    /// C1=the incarnation-local cache is empty; C2=the complete ordered batch
+    /// succeeds; C3=refreshes overlap or repeat; C4=a physical probe batch fails;
+    /// C5=the source is rebuilt for a new Worker/image incarnation.
+    /// Effects: E1=C1+C2 probes every target once and caches only the complete
+    /// ordered result; E2=C1+C2+C3 joins or reuses E1 with no extra provider
+    /// create/dispose; E3=C1+C4 publishes and caches nothing; E4=the next call
+    /// after E3 retries physical create/dispose; E5=C5 owns a fresh cache and
+    /// probes once. Decision rules covered here: R1(C1,C2), R2(C1,C2,C3),
+    /// R3(C5,C2). The failure rules R4-R5 are covered by the following test.
+    #[tokio::test]
+    async fn successful_batch_is_single_flight_reused_and_incarnation_scoped() {
+        let probe = Arc::new(CountingLifecycleProbe::default());
+        let source = ConfiguredAcpCapabilityObservationSource::new(
+            ["second", "first"]
+                .into_iter()
+                .map(|id| configured_target(id, "probe"))
+                .collect(),
+            probe.clone(),
+            PathBuf::from("/workspace"),
+        );
+
+        let (first, joined) = tokio::join!(
+            source.capability_observations(),
+            source.capability_observations(),
+        );
+        let first = first.unwrap();
+        assert_eq!(joined.unwrap(), first, "R2");
+        assert_eq!(source.capability_observations().await.unwrap(), first, "R2");
+        assert_eq!(probe.creates.load(Ordering::SeqCst), 2, "R1-R2");
+        assert_eq!(probe.disposes.load(Ordering::SeqCst), 2, "R1-R2");
+
+        let rebuilt = ConfiguredAcpCapabilityObservationSource::new(
+            ["second", "first"]
+                .into_iter()
+                .map(|id| configured_target(id, "probe"))
+                .collect(),
+            probe.clone(),
+            PathBuf::from("/workspace"),
+        );
+        rebuilt.capability_observations().await.unwrap();
+        assert_eq!(probe.creates.load(Ordering::SeqCst), 4, "R3");
+        assert_eq!(probe.disposes.load(Ordering::SeqCst), 4, "R3");
+    }
+
+    /// R4(C1,C4)->E3 and R5(C1,C4,then C2)->E4: a failed batch,
+    /// including any partial observations completed before its error, never
+    /// initializes the success cell. The next refresh performs one new provider
+    /// create/dispose; after that complete success, later refreshes reuse it.
+    #[tokio::test]
+    async fn failed_batch_is_not_cached_and_complete_retry_is_reused() {
+        let probe = Arc::new(CountingLifecycleProbe {
+            failures_left: AtomicUsize::new(1),
+            ..Default::default()
+        });
+        let source = ConfiguredAcpCapabilityObservationSource::new(
+            vec![configured_target("retry", "probe")],
+            probe.clone(),
+            PathBuf::from("/workspace"),
+        );
+
+        assert!(source.capability_observations().await.is_err(), "R4");
+        let retried = source.capability_observations().await.unwrap();
+        assert_eq!(
+            source.capability_observations().await.unwrap(),
+            retried,
+            "R5"
+        );
+        assert_eq!(probe.creates.load(Ordering::SeqCst), 2, "R4-R5");
+        assert_eq!(probe.disposes.load(Ordering::SeqCst), 2, "R4-R5");
     }
 }
