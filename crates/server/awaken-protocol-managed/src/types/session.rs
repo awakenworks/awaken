@@ -750,14 +750,13 @@ pub struct Usage {
     pub server_tool_use: Option<ServerToolUsage>,
 }
 
-/// `BetaManagedAgentsSpanModelUsage` — token usage for a *single* model request
-/// (as opposed to the session's accumulated [`Usage`]). Carried by
-/// `span.model_request_end`; reuses [`Usage`]'s four token fields (flattened) and
-/// adds the optional inference-speed mode.
+/// BetaManagedAgentsSpanModelUsage: required token counters for one request.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SpanModelUsage {
-    #[serde(flatten)]
-    pub usage: Usage,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
     /// Inference speed mode (`standard`/`fast`); omitted when the model reports none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<String>,
@@ -1167,6 +1166,14 @@ pub enum OutboundKind {
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
     SessionStatusIdle { stop_reason: StopReason },
+    /// Periodic point-in-time snapshot of cumulative Session usage and its
+    /// optional hard budget, matching `BetaManagedAgentsSessionUsageEvent`.
+    #[serde(rename = "session.usage")]
+    SessionUsage {
+        usage: Usage,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<BudgetLimit>,
+    },
     /// The session is recovering from a transient error and is rescheduled for
     /// execution (`session.status_rescheduled`) — `{id, type, processed_at}`, no
     /// payload. Wire type defined for catalog completeness; not yet emitted — the
@@ -1211,9 +1218,7 @@ pub enum OutboundKind {
     },
     /// A subagent child thread hit a transient error and is retrying
     /// (`session.thread_status_rescheduled`) — same identity shape as the other
-    /// thread-status events. Wire type defined for catalog completeness; not yet
-    /// emitted — the thread rescheduled fact isn't surfaced (see the conformance
-    /// matrix's `thread_status_rescheduled` gap).
+    /// thread-status events.
     #[serde(rename = "session.thread_status_rescheduled")]
     SessionThreadStatusRescheduled {
         session_thread_id: String,
@@ -1263,15 +1268,11 @@ pub enum OutboundKind {
     ThreadContextCompacted {},
     /// A model request was initiated (`span.model_request_start`) — `{id, type,
     /// processed_at}`, no payload; its `id` is referenced by the paired
-    /// `span.model_request_end`. Wire type defined for catalog completeness; not
-    /// yet emitted — the model call sits below the runtime seam (see the
-    /// conformance matrix's `span.model_request_*` gap).
+    /// `span.model_request_end`.
     #[serde(rename = "span.model_request_start")]
     SpanModelRequestStart {},
     /// A model request completed (`span.model_request_end`), carrying the paired
     /// start id, a nullable error flag, and this single request's token usage.
-    /// Wire type defined for catalog completeness; not yet emitted (same gap as
-    /// `span.model_request_start`).
     #[serde(rename = "span.model_request_end")]
     SpanModelRequestEnd {
         model_request_start_id: String,
@@ -1315,6 +1316,7 @@ impl OutboundKind {
             OutboundKind::SessionError { .. } => "session.error",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
+            OutboundKind::SessionUsage { .. } => "session.usage",
             OutboundKind::SessionStatusRescheduled {} => "session.status_rescheduled",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
             OutboundKind::SessionDeleted {} => "session.deleted",
@@ -1851,18 +1853,10 @@ mod tests {
             model_request_start_id: "evt_start".to_string(),
             is_error: None,
             model_usage: SpanModelUsage {
-                usage: Usage {
-                    active_seconds: None,
-                    input_tokens: Some(10),
-                    output_tokens: Some(20),
-                    cache_read_input_tokens: Some(0),
-                    cache_creation: Some(SessionThreadCacheCreationUsage {
-                        ephemeral_1h_input_tokens: None,
-                        ephemeral_5m_input_tokens: Some(0),
-                    }),
-                    list_cost: None,
-                    server_tool_use: None,
-                },
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
                 speed: None,
             },
         }))
@@ -1875,10 +1869,29 @@ mod tests {
         );
         assert_eq!(v["model_usage"]["input_tokens"], 10);
         assert_eq!(v["model_usage"]["output_tokens"], 20);
+        assert_eq!(v["model_usage"]["cache_read_input_tokens"], 0);
+        assert_eq!(v["model_usage"]["cache_creation_input_tokens"], 0);
         assert!(
             v["model_usage"].get("speed").is_none(),
             "speed is omitted when None"
         );
+
+        // session.usage carries the cumulative snapshot under `usage`; a missing
+        // budget is omitted (the SDK accepts optional/null) and zero counters stay
+        // representable rather than making the event malformed.
+        let v = serde_json::to_value(ev(OutboundKind::SessionUsage {
+            usage: Usage {
+                input_tokens: Some(0),
+                output_tokens: Some(0),
+                ..Default::default()
+            },
+            budget: None,
+        }))
+        .unwrap();
+        assert_eq!(v["type"], "session.usage");
+        assert_eq!(v["usage"]["input_tokens"], 0);
+        assert_eq!(v["usage"]["output_tokens"], 0);
+        assert!(v.get("budget").is_none());
     }
 
     #[test]

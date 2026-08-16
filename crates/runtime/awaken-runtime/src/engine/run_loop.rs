@@ -217,7 +217,7 @@ async fn infer_step(
         if let Some(materializer) = &context.model_content_materializer {
             request = materializer.materialize(request).await?;
         }
-        match infer_with_retry(
+        match infer_with_retry_observed(
             llm,
             request,
             runtime.retry_policy(),
@@ -229,6 +229,8 @@ async fn infer_step(
             context.content_sink(),
             runtime.metrics(),
             context.reschedules.as_ref(),
+            context.model_requests.as_ref(),
+            context.rescheduled_runs.as_ref().map(|runs| (runs, run_id)),
         )
         .await
         {

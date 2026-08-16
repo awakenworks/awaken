@@ -91,6 +91,7 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
     )
 )]
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
@@ -103,6 +104,47 @@ pub(super) async fn infer_with_retry(
     content_sink: content::SinkTarget<'_>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
+) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    infer_with_retry_observed(
+        llm,
+        request,
+        policy,
+        breaker,
+        sink,
+        checkpoint,
+        resume,
+        capture,
+        content_sink,
+        metrics,
+        reschedules,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn infer_with_retry_observed(
+    llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    request: ChatRequest,
+    policy: &crate::retry::LlmRetryPolicy,
+    breaker: &crate::circuit_breaker::CircuitBreaker,
+    sink: &dyn DeltaSink,
+    checkpoint: Option<&CheckpointCtx<'_>>,
+    resume: Option<StreamCheckpoint>,
+    capture: &awaken_runtime_contract::CaptureDecision,
+    content_sink: content::SinkTarget<'_>,
+    metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
+    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    model_requests: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<Vec<awaken_runtime_contract::llm::ModelRequestObservation>>,
+        >,
+    >,
+    rescheduled_run: Option<(
+        &std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+        &RunId,
+    )>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let span = tracing::Span::current();
     // The routing model id, captured before `request` moves into the retry loop —
@@ -133,6 +175,7 @@ pub(super) async fn infer_with_retry(
         resume,
         metrics,
         reschedules,
+        rescheduled_run,
     )
     .await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
@@ -187,6 +230,20 @@ pub(super) async fn infer_with_retry(
         input_tokens,
         output_tokens,
     });
+    if let Some(observations) = model_requests {
+        let observation = awaken_runtime_contract::llm::ModelRequestObservation {
+            is_error: result.is_err(),
+            usage: result
+                .as_ref()
+                .ok()
+                .and_then(|response| response.usage)
+                .unwrap_or_default(),
+        };
+        observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(observation);
+    }
     result
 }
 
@@ -201,6 +258,10 @@ async fn infer_with_retry_inner(
     resume: Option<StreamCheckpoint>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    rescheduled_run: Option<(
+        &std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+        &RunId,
+    )>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
@@ -301,6 +362,11 @@ async fn infer_with_retry_inner(
                     // `session.status_rescheduled` (auto-recovery observability).
                     if let Some(c) = reschedules {
                         c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some((runs, run_id)) = rescheduled_run {
+                        runs.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(run_id.0.clone());
                     }
                     tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
                     attempt += 1;

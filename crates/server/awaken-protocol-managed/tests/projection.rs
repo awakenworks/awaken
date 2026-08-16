@@ -237,7 +237,8 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
             "session.status_running",
             "session.error",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ],
         "the fault surfaces as session.error, the turn still idles"
     );
@@ -254,7 +255,12 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
         "the neutral fault message is carried through"
     );
     // The idle and error event derive from the same terminal authority.
-    let idle = list["data"].as_array().unwrap().last().unwrap();
+    let idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "session.status_idle")
+        .unwrap();
     assert_eq!(idle["stop_reason"]["type"], "retries_exhausted");
 }
 
@@ -308,6 +314,7 @@ async fn a_rescheduled_turn_projects_the_rescheduled_status() {
             "session.status_rescheduled",
             "agent.message",
             "session.status_idle",
+            "session.usage",
         ],
         "the transient retry surfaces as session.status_rescheduled before the output"
     );
@@ -332,7 +339,8 @@ async fn a_compacted_turn_projects_the_compaction_marker() {
             "session.status_running",
             "agent.thread_context_compacted",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     // Exactly one marker (emit-once upstream).
@@ -390,6 +398,44 @@ async fn session_usage_reflects_the_runtime_tally() {
         after["usage"]["cache_creation"]["ephemeral_5m_input_tokens"],
         12
     );
+    let events = list_events(&app, &id).await;
+    let usage_event = events["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "session.usage")
+        .expect("a cumulative usage snapshot is emitted after reconciliation");
+    assert_eq!(usage_event["usage"]["input_tokens"], 120);
+    assert_eq!(usage_event["usage"]["output_tokens"], 45);
+    assert!(usage_event.get("budget").is_none());
+}
+
+#[tokio::test]
+async fn session_usage_event_keeps_zero_counters_instead_of_omitting_the_snapshot() {
+    // Cause/effect graph: a completed request with no metered tokens still
+    // reconciles to a valid point-in-time snapshot; absence of a budget must not
+    // suppress the event or fabricate a limit.
+    let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
+        ended(vec![assistant_text("a", "unmetered")])
+    }))));
+    let id = create(&app).await;
+    send_user(&app, &id, "go").await;
+    let events = list_events(&app, &id).await;
+    let usage = events["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "session.usage")
+        .unwrap();
+    for field in [
+        "active_seconds",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+    ] {
+        assert_eq!(usage["usage"][field], 0, "{field}");
+    }
+    assert!(usage.get("budget").is_none());
 }
 
 // --- CE: all-empty-text assistant message dropped ----------------------------
@@ -411,7 +457,8 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
         vec![
             "user.message",
             "session.status_running",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ],
         "an empty assistant message projects no agent.message"
     );
@@ -464,7 +511,8 @@ async fn an_mcp_tool_call_projects_mcp_events() {
             "agent.message",
             "agent.mcp_tool_use",
             "agent.mcp_tool_result",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     let use_ev = list["data"]
@@ -560,6 +608,10 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
             agent_id: "researcher".into(),
             status: DelegationStatus::Completed,
         }])
+        .with_rescheduled_delegated_runs(std::collections::BTreeSet::from([
+            "child-run-stable".to_string(),
+            "unknown-child-must-not-project".to_string(),
+        ]))
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -576,8 +628,10 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
             "session.thread_created",
             "session.thread_status_running",
             "agent.thread_message_sent",
+            "session.thread_status_rescheduled",
             "agent.thread_message_received",
             "session.thread_status_idle",
+            "session.usage",
         ]
     );
     let created = list["data"]
@@ -589,6 +643,16 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     assert_eq!(created["agent_name"], "researcher");
     let child_thread_id = created["session_thread_id"].as_str().unwrap().to_string();
     assert_eq!(child_thread_id, "child-run-stable");
+    assert_eq!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "session.thread_status_rescheduled")
+            .count(),
+        1,
+        "only a known delegated Run may project a reschedule"
+    );
     // The input the coordinator sent and the reply it received are carried on the wire.
     let sent = list["data"]
         .as_array()
@@ -637,6 +701,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
         vec![
             "session.thread_status_running",
             "agent.thread_message_received",
+            "session.thread_status_rescheduled",
             "agent.thread_message_sent",
             "session.thread_status_idle",
         ],
@@ -646,7 +711,11 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     assert_eq!(received["from_session_thread_id"], format!("{id}:primary"));
     assert!(received.get("from_agent_name").is_none());
     assert_eq!(received["content"][0]["text"], "find the docs");
-    let sent = &child_events["data"][2];
+    assert_eq!(
+        child_events["data"][2]["session_thread_id"],
+        child_thread_id
+    );
+    let sent = &child_events["data"][3];
     assert_eq!(sent["to_session_thread_id"], format!("{id}:primary"));
     assert!(sent.get("to_agent_name").is_none());
     assert_eq!(sent["content"][0]["text"], "here are the docs");

@@ -182,6 +182,57 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
     );
 }
 
+/// Entering the network namespace happens once when the Bash process starts.
+/// Shell-local state must therefore survive successful calls, and a failed
+/// command must be reported without discarding that state.
+#[tokio::test]
+async fn deny_egress_bash_preserves_state_across_success_and_failure() {
+    if !bwrap_and_bash_available().await {
+        eprintln!("skipping: bwrap/userns or bash unavailable on this host");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let sandbox = provider
+        .create_sandbox(&spec("persistent-denied", true))
+        .await
+        .unwrap();
+    let tools = sandbox.rooted_tools();
+
+    invoke(
+        &tools,
+        "bash",
+        serde_json::json!({
+            "command": "mkdir nested && cd nested && export PERSISTED=available"
+        }),
+    )
+    .await
+    .unwrap();
+
+    let failed = invoke(&tools, "bash", serde_json::json!({ "command": "false" }))
+        .await
+        .unwrap();
+    assert!(
+        failed.is_error,
+        "a non-zero command must remain model-visible"
+    );
+
+    let state = invoke(
+        &tools,
+        "bash",
+        serde_json::json!({
+            "command": "printf '%s|%s' \"$PWD\" \"$PERSISTED\""
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        state.text().ends_with("/nested|available"),
+        "persistent state was lost: {}",
+        state.text()
+    );
+}
+
 /// bwrap userns works AND a real `bash` is on PATH (the loopback probe uses `bash`'s
 /// `/dev/tcp`, which `sh`/dash lacks). Both are needed; self-skips otherwise — same
 /// discipline as the DNS variant, but with NO external dependency (deterministic).
@@ -272,9 +323,9 @@ async fn deny_egress_blocks_a_host_loopback_listener_deterministically() {
 }
 
 /// CONTRACT (by design) — the Workdir tier's bash `cwd` is a *lexical convenience*, not
-/// a security boundary. `jail_args` prefixes `cd '<root>' && <cmd>` to set the working
-/// directory; it deliberately does NOT rebase paths inside an opaque shell command, so a
-/// `cd /` / `cd ..` reaches host paths above the root. That is intentional: the crate doc
+/// a security boundary. The persistent shell starts in the environment root, but commands
+/// can change that state; it deliberately does NOT rebase paths inside an opaque shell
+/// command, so a `cd /` / `cd ..` reaches host paths above the root. That is intentional: the crate doc
 /// states a launched process is "**not** OS-confined (a lexical jail cannot confine an
 /// opaque agent)", which is exactly why `prepare_environment` REFUSES a `Namespace` /
 /// `Container` (opaque-agent) workload on this tier and routes it to the OS-enforced
@@ -297,8 +348,7 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
     let sandbox = provider.create_sandbox(&spec("jail", false)).await.unwrap();
     let tools = sandbox.rooted_tools();
 
-    // `cd /` wins: the effective command is `cd '<base>/jail' && cd / && pwd`, so pwd is
-    // the host root, not the sandbox root — the lexical `cd` prefix is overridden.
+    // `cd /` wins, so pwd is the host root, not the sandbox root.
     let pwd = invoke(
         &tools,
         "bash",
@@ -318,10 +368,15 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
     // not (and by contract need not) confine an opaque shell the way the path-tools'
     // fail-closed `..` rejection confines `read`/`write`. Confinement of an opaque agent
     // is the namespace tier's job, which is why this tier refuses one.
+    // The Bash tool is persistent, so explicitly restart it before testing the initial
+    // workdir again; otherwise the preceding `cd /` correctly remains in effect.
     let leak = invoke(
         &tools,
         "bash",
-        serde_json::json!({ "command": "cat ../secret-above.txt" }),
+        serde_json::json!({
+            "restart": true,
+            "command": "cat ../secret-above.txt"
+        }),
     )
     .await
     .unwrap();

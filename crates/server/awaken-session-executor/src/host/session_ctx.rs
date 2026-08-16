@@ -70,6 +70,12 @@ pub(crate) struct SessionCtx {
     /// turn was auto-recovered (`session.status_rescheduled`). Same brief-lock
     /// discipline as `cancel`; a fresh counter is installed per run in `context`.
     pub(crate) reschedule: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicU32>>>,
+    /// The in-flight run's completed logical model-request observations.
+    pub(crate) model_requests: std::sync::Mutex<
+        Option<Arc<std::sync::Mutex<Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>>,
+    >,
+    pub(crate) rescheduled_runs:
+        std::sync::Mutex<Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>>,
     /// The in-flight run's live inbox plus the previous attempt's unconsumed
     /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
     /// live in [`crate::live_inbox`].
@@ -113,13 +119,25 @@ impl SessionCtx {
         // and `finish_step` reads it to report `session.status_rescheduled`.
         let reschedule = Arc::new(std::sync::atomic::AtomicU32::new(0));
         *self.reschedule.lock().expect("reschedule mutex poisoned") = Some(reschedule.clone());
+        let model_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        *self
+            .model_requests
+            .lock()
+            .expect("model requests mutex poisoned") = Some(model_requests.clone());
+        let rescheduled_runs = Arc::new(std::sync::Mutex::new(Default::default()));
+        *self
+            .rescheduled_runs
+            .lock()
+            .expect("rescheduled runs mutex poisoned") = Some(rescheduled_runs.clone());
         let context = self
             .attempt_context
             .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_cancellation(token)
-            .with_reschedules(reschedule);
+            .with_reschedules(reschedule)
+            .with_model_requests(model_requests)
+            .with_rescheduled_runs(rescheduled_runs);
         match &self.stream_checkpoint {
             Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
             None => context,

@@ -19,6 +19,7 @@ pub(super) async fn consult_advisor(
     transcript: &[Message],
     call: &ToolCall,
     context: &RuntimeRunContext,
+    run_id: &RunId,
 ) -> (
     ToolOutput,
     Option<(String, awaken_runtime_contract::llm::TokenUsage)>,
@@ -74,7 +75,7 @@ pub(super) async fn consult_advisor(
             None,
         );
     };
-    match infer_with_retry(
+    match infer_with_retry_observed(
         llm,
         request,
         runtime.retry_policy(),
@@ -86,6 +87,8 @@ pub(super) async fn consult_advisor(
         context.content_sink(),
         runtime.metrics(),
         None,
+        context.model_requests.as_ref(),
+        context.rescheduled_runs.as_ref().map(|runs| (runs, run_id)),
     )
     .await
     {
