@@ -43,6 +43,7 @@ mod client;
 mod continuation;
 mod creation;
 mod error;
+mod lifecycle;
 mod live_inputs;
 mod memory;
 mod names;
@@ -271,21 +272,21 @@ impl K8sRuntime {
             let uid = pod
                 .metadata
                 .uid
+                .clone()
                 .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
             let resource_version = pod
                 .metadata
                 .resource_version
+                .clone()
                 .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
-            match pods
-                .delete(
-                    container_id,
-                    &DeleteParams::default().preconditions(kube::api::Preconditions {
-                        uid: Some(uid),
-                        resource_version: Some(resource_version),
-                    }),
-                )
-                .await
-            {
+            let params = lifecycle::pod_delete_params(
+                &pod,
+                kube::api::Preconditions {
+                    uid: Some(uid),
+                    resource_version: Some(resource_version),
+                },
+            );
+            match pods.delete(container_id, &params).await {
                 Ok(_) => await_pod_deleted(&pods, container_id).await?,
                 Err(error) if api_not_found(&error) => {}
                 Err(error) => return Err(backend(error)),
@@ -559,6 +560,13 @@ fn build_pod_with_continuation(
                 }),
                 // a finished agent Pod is reaped, not looped.
                 restart_policy: Some("Never".into()),
+                // Disposable child/probe environments have no continuity to flush.
+                // Make their canonical Pod deletion complete inside the bounded
+                // provider-disposal contract; retained Sessions keep Kubernetes'
+                // normal graceful-termination default.
+                termination_grace_period_seconds: lifecycle::termination_grace_period(
+                    plan.filesystem_continuity,
+                ),
                 // The untrusted agent must NOT reach the kube API (no SA token): its
                 // only control-plane channel is the ACP data channel, nothing else.
                 automount_service_account_token: Some(false),
