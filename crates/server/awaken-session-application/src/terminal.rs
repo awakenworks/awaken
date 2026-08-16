@@ -87,24 +87,40 @@ impl SessionApplication {
             .begin_archive(session_id, archived_at, fact)
             .await
             .map_err(mutation_failure)?;
-        self.retire_terminal_work(&transition.session).await?;
-        let release_required = transition.transitioned
-            || transition.session.resources.pending.is_some()
-            || transition
-                .session
-                .resources
-                .activations
-                .iter()
-                .any(|activation| {
-                    activation.state == awaken_session_contract::ActivationState::Active
-                });
-        if release_required {
-            self.release_terminal_resources(&transition.owner_scope, session_id)
-                .await?;
-        }
+        self.release_terminal_resources(&transition.owner_scope, session_id)
+            .await?;
         if transition.transitioned {
             self.notify_lifecycle_fact();
         }
+        Ok(transition)
+    }
+
+    /// Commit one Delete transition, start one eager reconciliation attempt, and
+    /// wake the durable lifecycle driver for any retry. Cleanup is application
+    /// owned and detached: the caller observes the committed delete fence and
+    /// cannot cancel or join the external-effect lifecycle.
+    pub async fn delete_session(
+        self: &std::sync::Arc<Self>,
+        command: SessionDeleteCommand,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let transition = self.commit_delete_intent(command).await?;
+        self.notify_lifecycle_fact();
+        self.wake_lifecycle_supervisor();
+        let application = std::sync::Arc::clone(self);
+        let owner_scope = transition.owner_scope.clone();
+        let session_id = transition.session.session_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = application
+                .release_terminal_resources(&owner_scope, &session_id)
+                .await
+            {
+                tracing::warn!(
+                    session = session_id,
+                    error = ?error,
+                    "Session delete cleanup remains pending for lifecycle recovery"
+                );
+            }
+        });
         Ok(transition)
     }
 
@@ -194,18 +210,11 @@ impl SessionApplication {
                 .into_iter()
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact(&owner_scope));
-            if session.resources.pending.is_none() {
-                session
-                    .resources
-                    .begin_release()
-                    .map_err(super::resource_reconciliation::internal)?;
-            }
             match self
                 .commit_session_snapshot(&owner_scope, session, "delete-intent", facts)
                 .await
             {
                 Ok(session) => {
-                    self.retire_terminal_work(&session).await?;
                     return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,

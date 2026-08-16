@@ -1038,7 +1038,7 @@ mod tests {
             host.session_environment("thread-cold-resource")
                 .await
                 .expect("resident environment")
-                .list_files("/mnt/session/uploads")
+                .list_frozen_mount_files("/mnt/session/uploads")
                 .await
                 .expect("list live files")
                 .is_empty(),

@@ -17,7 +17,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::{ToolError, ToolExecutor};
+use awaken_runtime_contract::tool::{
+    ToolError, ToolExecutor, ToolOperationContext, with_tool_operation_context,
+};
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
     ContainerEnvironment, ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime,
@@ -1140,11 +1142,14 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         let operation = operation.clone();
         let scope = scope.clone();
         async move {
-            awaken_tool_relay::RemoteToolExecutor::new(channel_a)
+            let executor = awaken_tool_relay::RemoteToolExecutor::new(channel_a)
                 .with_operation_scope(scope)
-                .with_durable_request_recovery()
-                .invoke(&operation)
-                .await
+                .with_durable_request_recovery();
+            with_tool_operation_context(
+                ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+                executor.invoke(&operation),
+            )
+            .await
         }
     });
     let mut started = false;
@@ -1178,31 +1183,39 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         .expect("Worker B adopts the same Pod");
     assert_eq!(adopted.handle(), handle, "H2/E4");
     let channel_b = adopted.open_agent_channel().await.expect("RH1/C4");
-    let joined = awaken_tool_relay::RemoteToolExecutor::new(channel_b)
+    let joined_executor = awaken_tool_relay::RemoteToolExecutor::new(channel_b)
         .with_operation_scope(scope.clone())
-        .with_durable_request_recovery()
-        .invoke(&operation)
-        .await
-        .expect("H2/E1 replacement joins original operation");
+        .with_durable_request_recovery();
+    let joined = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+        joined_executor.invoke(&operation),
+    )
+    .await
+    .expect("H2/E1 replacement joins original operation");
     assert!(joined.text().contains("resident-result-1"), "H2/E1");
 
     let channel_c = adopted.open_agent_channel().await.expect("H3/C5");
     let cached_executor = awaken_tool_relay::RemoteToolExecutor::new(channel_c)
         .with_operation_scope(scope.clone())
         .with_durable_request_recovery();
-    let cached = cached_executor
-        .invoke(&operation)
-        .await
-        .expect("H3/E2 cached result");
+    let cached = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+        cached_executor.invoke(&operation),
+    )
+    .await
+    .expect("H3/E2 cached result");
     assert_eq!(cached, joined, "H3/E2");
-    let count = cached_executor
-        .invoke(&ToolCall {
-            call_id: "resident-effect-count".into(),
-            tool_id: "bash".into(),
-            arguments: serde_json::json!({"command": "cat /tmp/awaken-ha-count"}),
-        })
-        .await
-        .expect("inspect the real side effect");
+    let count_call = ToolCall {
+        call_id: "resident-effect-count".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({"command": "cat /tmp/awaken-ha-count"}),
+    };
+    let count = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-effect-count"),
+        cached_executor.invoke(&count_call),
+    )
+    .await
+    .expect("inspect the real side effect");
     assert_eq!(count.text().trim(), "1", "H2/H3 E3");
     drop(cached_executor);
 

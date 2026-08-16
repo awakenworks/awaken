@@ -17,7 +17,11 @@ use sqlx::types::Json;
 
 use crate::schema::credential_bundle;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_vault::catalog::{ManagedVault, ManagedVaultCredential, ManagedVaultRepo};
+use awaken_credential_vault::catalog::{
+    ManagedCredentialAdmissionError, ManagedVault, ManagedVaultCredential,
+    ManagedVaultMutationError, ManagedVaultRepo, admit_managed_credential_insert,
+    admit_managed_vault_replacement,
+};
 use awaken_credential_vault::repo::{CredentialMutationIntent, CredentialRepo};
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -106,20 +110,100 @@ pub struct PostgresCredentialRepo {
 
 #[async_trait::async_trait]
 impl ManagedVaultRepo for PostgresCredentialRepo {
-    async fn put_vault(&self, vault: ManagedVault) -> Result<(), CredentialError> {
+    async fn put_vault(
+        &self,
+        workspace_id: &str,
+        vault: ManagedVault,
+    ) -> Result<(), CredentialError> {
+        if vault.workspace_id != workspace_id {
+            return Err(CredentialError::InvalidSource(
+                "Managed Vault workspace does not match its authority".into(),
+            ));
+        }
         let p = NS;
-        sqlx::query(&format!("INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"))
-            .bind(&vault.id).bind(&vault.workspace_id).bind(Json(&vault)).execute(&self.pool).await.map_err(storage)?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let existing_owner = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT workspace_id FROM {p}_managed_vault WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&vault.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if existing_owner
+            .as_deref()
+            .is_some_and(|owner| owner != workspace_id)
+        {
+            return Err(CredentialError::InvalidSource(
+                "Managed Vault id belongs to another workspace".into(),
+            ));
+        }
+        let changed = sqlx::query(&format!("INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = excluded.data WHERE {p}_managed_vault.workspace_id = excluded.workspace_id"))
+            .bind(&vault.id).bind(&vault.workspace_id).bind(Json(&vault)).execute(&mut *tx).await.map_err(storage)?;
+        if changed.rows_affected() == 0 {
+            return Err(CredentialError::InvalidSource(
+                "Managed Vault id belongs to another workspace".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
-    async fn get_vault(&self, id: &str) -> Result<Option<ManagedVault>, CredentialError> {
+    async fn replace_vault(
+        &self,
+        workspace_id: &str,
+        expected_revision: u64,
+        vault: ManagedVault,
+    ) -> Result<(), ManagedVaultMutationError> {
         let p = NS;
-        let row = sqlx::query(&format!("SELECT data FROM {p}_managed_vault WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
             .await
-            .map_err(storage)?;
+            .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?;
+        let current = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
+        ))
+        .bind(workspace_id)
+        .bind(&vault.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?
+        .map(|row| {
+            row.try_get::<Json<ManagedVault>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(|error| ManagedVaultMutationError::Store(storage(error)))
+        })
+        .transpose()?;
+        admit_managed_vault_replacement(workspace_id, current.as_ref(), expected_revision, &vault)?;
+        sqlx::query(&format!(
+            "UPDATE {p}_managed_vault SET data = $1 WHERE workspace_id = $2 AND id = $3"
+        ))
+        .bind(Json(&vault))
+        .bind(workspace_id)
+        .bind(&vault.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?;
+        tx.commit()
+            .await
+            .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?;
+        Ok(())
+    }
+
+    async fn get_vault(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<ManagedVault>, CredentialError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
         row.map(|row| {
             row.try_get::<Json<ManagedVault>, _>("data")
                 .map(|Json(value)| value)
@@ -146,22 +230,38 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
             .collect()
     }
 
-    async fn delete_vault(&self, id: &str) -> Result<bool, CredentialError> {
+    async fn delete_vault(&self, workspace_id: &str, id: &str) -> Result<bool, CredentialError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_managed_vault_credential WHERE vault_id = $1"
+        let parent_exists = sqlx::query_scalar::<_, i32>(&format!(
+            "SELECT 1 FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
         ))
+        .bind(workspace_id)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .is_some();
+        if !parent_exists {
+            return Ok(false);
+        }
+        sqlx::query(&format!(
+            "DELETE FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND vault_id = $2"
+        ))
+        .bind(workspace_id)
         .bind(id)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let removed = sqlx::query(&format!("DELETE FROM {p}_managed_vault WHERE id = $1"))
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?
-            .rows_affected()
+        let removed = sqlx::query(&format!(
+            "DELETE FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?
+        .rows_affected()
             > 0;
         tx.commit().await.map_err(storage)?;
         Ok(removed)
@@ -169,22 +269,117 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
 
     async fn put_vault_credential(
         &self,
+        workspace_id: &str,
         credential: ManagedVaultCredential,
     ) -> Result<(), CredentialError> {
+        if credential.workspace_id != workspace_id {
+            return Err(CredentialError::InvalidSource(
+                "Managed credential workspace does not match its authority".into(),
+            ));
+        }
         let p = NS;
-        sqlx::query(&format!("INSERT INTO {p}_managed_vault_credential (id, vault_id, workspace_id, source_id, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET vault_id = excluded.vault_id, workspace_id = excluded.workspace_id, source_id = excluded.source_id, data = excluded.data"))
-            .bind(&credential.id).bind(&credential.vault_id).bind(&credential.workspace_id).bind(&credential.source_id.0).bind(Json(&credential)).execute(&self.pool).await.map_err(storage)?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        // Pair this shared parent lock with delete_vault's FOR UPDATE lock. The
+        // parent check and child upsert then form one atomic admission step, so
+        // a concurrent delete cannot leave an orphaned credential row.
+        let parent_exists = sqlx::query_scalar::<_, i32>(&format!(
+            "SELECT 1 FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2 FOR KEY SHARE"
+        ))
+        .bind(workspace_id)
+        .bind(&credential.vault_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .is_some();
+        if !parent_exists {
+            return Err(CredentialError::InvalidSource(
+                "Managed credential parent Vault is unavailable in this workspace".into(),
+            ));
+        }
+        let changed = sqlx::query(&format!("INSERT INTO {p}_managed_vault_credential (id, vault_id, workspace_id, source_id, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET vault_id = excluded.vault_id, source_id = excluded.source_id, data = excluded.data WHERE {p}_managed_vault_credential.workspace_id = excluded.workspace_id"))
+            .bind(&credential.id).bind(&credential.vault_id).bind(&credential.workspace_id).bind(&credential.source_id.0).bind(Json(&credential)).execute(&mut *tx).await.map_err(storage)?;
+        if changed.rows_affected() == 0 {
+            return Err(CredentialError::InvalidSource(
+                "Managed credential id belongs to another workspace".into(),
+            ));
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(())
+    }
+
+    async fn insert_vault_credential(
+        &self,
+        workspace_id: &str,
+        credential: ManagedVaultCredential,
+    ) -> Result<(), ManagedCredentialAdmissionError> {
+        if credential.workspace_id != workspace_id {
+            return Err(ManagedCredentialAdmissionError::WorkspaceMismatch);
+        }
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        // Every child insertion takes the parent write lock. Archive, update and
+        // delete use the same row lock, making aggregate admission serializable
+        // across replicas.
+        let vault = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
+        ))
+        .bind(workspace_id)
+        .bind(&credential.vault_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .map(|row| {
+            row.try_get::<Json<ManagedVault>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .transpose()?;
+        let existing = sqlx::query(&format!(
+            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND vault_id = $2 ORDER BY id"
+        ))
+        .bind(workspace_id)
+        .bind(&credential.vault_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|row| {
+            row.try_get::<Json<ManagedVaultCredential>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        admit_managed_credential_insert(workspace_id, vault.as_ref(), &existing, &credential)?;
+        let inserted = sqlx::query(&format!(
+            "INSERT INTO {p}_managed_vault_credential (id, vault_id, workspace_id, source_id, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING"
+        ))
+        .bind(&credential.id)
+        .bind(&credential.vault_id)
+        .bind(&credential.workspace_id)
+        .bind(&credential.source_id.0)
+        .bind(Json(&credential))
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if inserted.rows_affected() != 1 {
+            return Err(ManagedCredentialAdmissionError::Store(
+                CredentialError::InvalidSource("Managed credential id already exists".into()),
+            ));
+        }
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
     async fn get_vault_credential(
         &self,
+        workspace_id: &str,
         id: &str,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
         let p = NS;
         let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE id = $1"
+            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND id = $2"
         ))
+        .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -199,12 +394,14 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
 
     async fn get_vault_credential_by_source(
         &self,
+        workspace_id: &str,
         source_id: &CredentialSourceId,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
         let p = NS;
         let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE source_id = $1"
+            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND source_id = $2"
         ))
+        .bind(workspace_id)
         .bind(&source_id.0)
         .fetch_optional(&self.pool)
         .await
@@ -219,12 +416,14 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
 
     async fn list_vault_credentials(
         &self,
+        workspace_id: &str,
         vault_id: &str,
     ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE vault_id = $1 ORDER BY id"
+            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND vault_id = $2 ORDER BY id"
         ))
+        .bind(workspace_id)
         .bind(vault_id)
         .fetch_all(&self.pool)
         .await
@@ -238,11 +437,16 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
             .collect()
     }
 
-    async fn delete_vault_credential(&self, id: &str) -> Result<bool, CredentialError> {
+    async fn delete_vault_credential(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<bool, CredentialError> {
         let p = NS;
         Ok(sqlx::query(&format!(
-            "DELETE FROM {p}_managed_vault_credential WHERE id = $1"
+            "DELETE FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND id = $2"
         ))
+        .bind(workspace_id)
         .bind(id)
         .execute(&self.pool)
         .await

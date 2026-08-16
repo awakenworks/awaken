@@ -164,6 +164,16 @@ fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    call_in_workspace(app, None, method, uri, body).await
+}
+
+async fn call_in_workspace(
+    app: &Router,
+    workspace_id: Option<&str>,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(v) => {
@@ -172,7 +182,13 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let mut request = b.body(body).unwrap();
+    if let Some(workspace_id) = workspace_id {
+        request
+            .extensions_mut()
+            .insert(awaken_tenancy::WorkspaceScope(workspace_id.to_string()));
+    }
+    let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {
@@ -181,6 +197,72 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+#[tokio::test]
+async fn every_vault_and_credential_route_hides_another_workspaces_ids() {
+    let h = harness();
+    let create = json!({"display_name":"owned","metadata":{}});
+    let (status, vault) = call_in_workspace(
+        &h.app,
+        Some("workspace-a"),
+        "POST",
+        "/v1/vaults",
+        Some(create),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let vault_id = vault["id"].as_str().unwrap();
+    let create_credential = json!({
+        "type":"environment_variable",
+        "secret_name":"TOKEN",
+        "secret_value":"secret",
+        "networking":{"type":"unrestricted"},
+        "metadata":{}
+    });
+    let credential_uri = format!("/v1/vaults/{vault_id}/credentials");
+    let (status, credential) = call_in_workspace(
+        &h.app,
+        Some("workspace-a"),
+        "POST",
+        &credential_uri,
+        Some(create_credential.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let credential_id = credential["id"].as_str().unwrap();
+    let item_uri = format!("{credential_uri}/{credential_id}");
+
+    for (method, uri, body) in [
+        ("GET", format!("/v1/vaults/{vault_id}"), None),
+        ("POST", format!("/v1/vaults/{vault_id}"), Some(json!({}))),
+        ("POST", format!("/v1/vaults/{vault_id}/archive"), None),
+        ("DELETE", format!("/v1/vaults/{vault_id}"), None),
+        ("GET", credential_uri.clone(), None),
+        ("POST", credential_uri.clone(), Some(create_credential)),
+        ("GET", item_uri.clone(), None),
+        ("POST", item_uri.clone(), Some(json!({}))),
+        ("POST", format!("{item_uri}/archive"), None),
+        ("DELETE", item_uri.clone(), None),
+        ("POST", format!("{item_uri}/mcp_oauth_validate"), None),
+    ] {
+        let (status, _) = call_in_workspace(&h.app, Some("workspace-b"), method, &uri, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+
+    let (status, _) = call_in_workspace(
+        &h.app,
+        Some("workspace-a"),
+        "GET",
+        &format!("/v1/vaults/{vault_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cross-workspace attempts mutated owner data"
+    );
 }
 
 /// Session-selection decision rules after Control admission: C1 the requested

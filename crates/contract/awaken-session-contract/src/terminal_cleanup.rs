@@ -16,18 +16,12 @@ use std::collections::BTreeSet;
 #[must_use]
 pub(crate) const fn session_cleanup_completion_admitted(
     artifact_effects_unique: bool,
-    repositories_settled: bool,
-    skills_settled: bool,
-    environment_disposed: bool,
     session_matches: bool,
     thread_matches: bool,
     effect_matches: bool,
     canonical_receipt_matches: bool,
 ) -> bool {
     artifact_effects_unique
-        && repositories_settled
-        && skills_settled
-        && environment_disposed
         && session_matches
         && thread_matches
         && effect_matches
@@ -331,9 +325,6 @@ pub struct SessionCleanupCompletion {
     pub thread_id: String,
     pub effect_id: String,
     pub artifact_receipts: Vec<ArtifactPublicationReceipt>,
-    pub repositories_settled: bool,
-    pub skills_settled: bool,
-    pub environment_disposed: bool,
     pub receipt_fingerprint: String,
 }
 
@@ -342,9 +333,6 @@ impl SessionCleanupCompletion {
     pub fn new(
         command: &SessionCleanupCommand,
         mut artifact_receipts: Vec<ArtifactPublicationReceipt>,
-        repositories_settled: bool,
-        skills_settled: bool,
-        environment_disposed: bool,
     ) -> Self {
         artifact_receipts.sort_by(|left, right| left.effect_id.cmp(&right.effect_id));
         let receipt_fingerprint = crate::stable_fingerprint(&(
@@ -356,18 +344,12 @@ impl SessionCleanupCompletion {
                 .iter()
                 .map(|receipt| (receipt.effect_id.as_str(), receipt.content_id.as_str()))
                 .collect::<Vec<_>>(),
-            repositories_settled,
-            skills_settled,
-            environment_disposed,
         ));
         Self {
             session_id: command.session_id.clone(),
             thread_id: command.thread_id.clone(),
             effect_id: command.effect_id.clone(),
             artifact_receipts,
-            repositories_settled,
-            skills_settled,
-            environment_disposed,
             receipt_fingerprint,
         }
     }
@@ -380,18 +362,9 @@ impl SessionCleanupCompletion {
             .artifact_receipts
             .windows(2)
             .any(|pair| pair[0].effect_id == pair[1].effect_id);
-        let canonical = Self::new(
-            command,
-            self.artifact_receipts.clone(),
-            self.repositories_settled,
-            self.skills_settled,
-            self.environment_disposed,
-        );
+        let canonical = Self::new(command, self.artifact_receipts.clone());
         if !session_cleanup_completion_admitted(
             !duplicate_artifact,
-            self.repositories_settled,
-            self.skills_settled,
-            self.environment_disposed,
             self.session_id == command.session_id,
             self.thread_id == command.thread_id,
             self.effect_id == command.effect_id,
@@ -468,7 +441,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn verified(command: &SessionCleanupCommand) -> VerifiedSessionCleanupReceipt {
-        SessionCleanupCompletion::new(command, Vec::new(), true, true, true)
+        SessionCleanupCompletion::new(command, Vec::new())
             .verify(command)
             .unwrap()
     }
@@ -515,7 +488,7 @@ mod tests {
         state.request("session-1");
         state.freeze_targets("session-1", [], 0).unwrap();
         let command = state.command_for("session-1", "session-1").unwrap();
-        let mut completion = SessionCleanupCompletion::new(&command, Vec::new(), true, true, true);
+        let mut completion = SessionCleanupCompletion::new(&command, Vec::new());
         completion.effect_id.push_str("-stale");
         assert_eq!(
             completion.verify(&command),
@@ -598,34 +571,15 @@ mod tests {
     }
 
     #[test]
-    fn receipt_settlement_order_and_watermark_follow_the_decision_table() {
-        // Cause/effect graph: C1 Repository/Skill/Environment evidence is all
-        // true; C2 receipt arrival order varies; C3 the frozen watermark is
-        // replayed exactly. Effects: E1 any false evidence is rejected; E2 order
-        // is canonical; E3 a different watermark cannot rewrite frozen truth.
+    fn receipt_order_and_watermark_follow_the_decision_table() {
+        // Cause/effect graph: C1 receipt arrival order varies; C2 the frozen
+        // watermark is replayed exactly. Effects: E1 order is canonical; E2 a
+        // different watermark cannot rewrite frozen truth. Adapter completion is
+        // represented by returning this receipt, not by self-asserted booleans.
         //
-        // | Rule | settlement | order | watermark | Effect |
-        // | T08a-c | one false | any | exact | ReceiptMismatch |
-        // | T09 | all true | root/child or child/root | exact | same fingerprint |
-        // | T10 | all true | any | changed | FrozenTargetsMismatch |
-        for flags in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-        ] {
-            let mut state = SessionCleanupOperation::default();
-            state.request("session-flags");
-            state.freeze_targets("session-flags", [], 3).unwrap();
-            let command = state.command_for("session-flags", "session-flags").unwrap();
-            let completion =
-                SessionCleanupCompletion::new(&command, Vec::new(), flags.0, flags.1, flags.2);
-            assert_eq!(
-                completion.verify(&command),
-                Err(SessionCleanupError::ReceiptMismatch),
-                "T08 {flags:?}"
-            );
-            assert!(state.is_requested(), "T08 {flags:?}");
-        }
+        // | Rule | order | watermark | Effect |
+        // | T09 | root/child or child/root | exact | same fingerprint |
+        // | T10 | any | changed | FrozenTargetsMismatch |
 
         fn completed_with_order(reverse: bool) -> SessionCleanupOperation {
             let mut state = SessionCleanupOperation::default();
@@ -659,19 +613,17 @@ mod tests {
     }
 
     #[test]
-    fn every_terminal_cleanup_receipt_axis_is_mandatory() {
-        for missing in 0..8 {
-            let mut axes = [true; 8];
+    fn every_terminal_cleanup_receipt_identity_axis_is_mandatory() {
+        for missing in 0..5 {
+            let mut axes = [true; 5];
             axes[missing] = false;
             assert!(
-                !session_cleanup_completion_admitted(
-                    axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6], axes[7],
-                ),
+                !session_cleanup_completion_admitted(axes[0], axes[1], axes[2], axes[3], axes[4],),
                 "receipt axis {missing}"
             );
         }
         assert!(session_cleanup_completion_admitted(
-            true, true, true, true, true, true, true, true,
+            true, true, true, true, true
         ));
     }
 
@@ -714,13 +666,7 @@ mod tests {
                                     let command = state
                                         .command_for("model-session", thread_id)
                                         .unwrap();
-                                    SessionCleanupCompletion::new(
-                                        &command,
-                                        Vec::new(),
-                                        true,
-                                        true,
-                                        true,
-                                    )
+                                    SessionCleanupCompletion::new(&command, Vec::new())
                                     .verify(&command)
                                     .unwrap()
                                 })
@@ -775,20 +721,14 @@ mod verification {
     use super::*;
 
     #[kani::proof]
-    fn session_cleanup_completion_requires_every_identity_and_settlement_axis() {
+    fn session_cleanup_completion_requires_every_identity_axis() {
         let artifact_effects_unique = kani::any::<bool>();
-        let repositories_settled = kani::any::<bool>();
-        let skills_settled = kani::any::<bool>();
-        let environment_disposed = kani::any::<bool>();
         let session_matches = kani::any::<bool>();
         let thread_matches = kani::any::<bool>();
         let effect_matches = kani::any::<bool>();
         let canonical_receipt_matches = kani::any::<bool>();
         let admitted = session_cleanup_completion_admitted(
             artifact_effects_unique,
-            repositories_settled,
-            skills_settled,
-            environment_disposed,
             session_matches,
             thread_matches,
             effect_matches,
@@ -797,9 +737,6 @@ mod verification {
         assert_eq!(
             admitted,
             artifact_effects_unique
-                && repositories_settled
-                && skills_settled
-                && environment_disposed
                 && session_matches
                 && thread_matches
                 && effect_matches
