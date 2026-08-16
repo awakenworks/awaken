@@ -186,6 +186,8 @@ pub struct CoordinatorAuthorityHandles {
     pub runtime_authority: Arc<dyn awaken_runtime_host::RuntimeAuthority>,
     pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
     pub sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    /// The one process-owned Coordinator pool. Hosted adapters and the
+    /// process-readiness probe clone this handle rather than reconnecting.
     pub postgres_pool: Option<sqlx::PgPool>,
     pub run_recovery:
         Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>,
