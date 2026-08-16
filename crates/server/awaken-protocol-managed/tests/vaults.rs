@@ -12,7 +12,10 @@ use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::TokenEndpointAuth;
-use awaken_credential_vault::repo::InMemoryCredentialRepo;
+use awaken_credential_vault::catalog::{ManagedVaultDeletionPhase, ManagedVaultRepo};
+use awaken_credential_vault::repo::{
+    InMemoryCredentialRepo, ManagedCredentialRepository, reconcile_managed_vault_deletions,
+};
 use awaken_credential_vault::{
     CredentialBinding, CredentialSource, InMemorySecretStore, SecretStore,
 };
@@ -41,11 +44,7 @@ struct Harness {
 fn harness() -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(VaultState::new(
-        secrets.clone(),
-        credentials.clone(),
-        credentials.clone(),
-    ));
+    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -150,10 +149,7 @@ impl McpProbe for FakeProbe {
 fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(
-        VaultState::new(secrets.clone(), credentials.clone(), credentials.clone())
-            .with_probe(probe),
-    );
+    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -164,7 +160,7 @@ fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    call_in_workspace(app, None, method, uri, body).await
+    call_in_workspace(app, Some("default"), method, uri, body).await
 }
 
 async fn call_in_workspace(
@@ -393,11 +389,7 @@ async fn replacement_control_instance_reads_the_same_vault_authority() {
         .await
         .unwrap();
 
-    let replacement = Arc::new(VaultState::new(
-        h.secrets.clone(),
-        h.credentials.clone(),
-        h.credentials.clone(),
-    ));
+    let replacement = Arc::new(VaultState::new(h.secrets.clone(), h.credentials.clone()));
     let replacement_app = vault_router(replacement.clone());
     let (status, retrieved) = call(
         &replacement_app,
@@ -686,7 +678,7 @@ async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> St
 }
 
 #[tokio::test]
-async fn delete_vault_cascades_credentials() {
+async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
     let h = harness();
     let vault_id = create_vault(&h, "doomed").await;
     let cred_id = create_credential(&h, &vault_id, "K").await;
@@ -696,7 +688,8 @@ async fn delete_vault_cascades_credentials() {
     assert_eq!(deleted["type"], "vault_deleted");
     assert_eq!(deleted["id"], vault_id);
 
-    // The vault and its credential bookkeeping are gone.
+    // The durable root fence hides both aggregate surfaces immediately, before
+    // rollout delivery permits the root tombstone to complete.
     let (s, _) = call(&h.app, "GET", &format!("/v1/vaults/{vault_id}"), None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _) = call(
@@ -714,7 +707,100 @@ async fn delete_vault_cascades_credentials() {
             .is_none()
     );
 
-    // Deleting an unknown vault is a 404, not an idempotent 200.
+    let (s, listed) = call(&h.app, "GET", "/v1/vaults?include_archived=true", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        listed["data"]
+            .as_array()
+            .expect("vault page")
+            .iter()
+            .all(|vault| vault["id"] != vault_id),
+        "a requested deletion is hidden even from the archived projection"
+    );
+
+    // The fence rejects every later child creation; no new child can race the
+    // deletion supervisor after it observed the aggregate.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "environment_variable",
+            "secret_name": "AFTER_DELETE",
+            "secret_value": "sk-after-delete", // awaken-allow: secret
+            "networking": { "type": "unrestricted" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // A retry observes the same durable operation and remains a successful,
+    // idempotent DELETE while rollout acknowledgement is still pending.
+    let (s, retried) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(retried["type"], "vault_deleted");
+    assert_eq!(retried["id"], vault_id);
+
+    let requested = h
+        .credentials
+        .get_vault("default", &vault_id)
+        .await
+        .unwrap()
+        .expect("delete keeps the durable root tombstone");
+    assert_eq!(
+        requested.deletion.as_ref().map(|deletion| deletion.phase),
+        Some(ManagedVaultDeletionPhase::Requested),
+        "rollout must be acknowledged before root completion"
+    );
+    let pending_roots = h
+        .credentials
+        .pending_managed_vault_deletions()
+        .await
+        .unwrap();
+    assert_eq!(
+        pending_roots
+            .iter()
+            .map(|vault| vault.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![vault_id.as_str()]
+    );
+
+    let rollouts = h.credentials.pending_managed_rollouts().await.unwrap();
+    assert_eq!(rollouts.len(), 1, "the deleted child publishes one rollout");
+    assert_eq!(rollouts[0].vault_id, vault_id);
+    for rollout in &rollouts {
+        h.credentials
+            .complete_managed_rollout(rollout)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        reconcile_managed_vault_deletions(h.secrets.as_ref(), h.credentials.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "the supervisor completes the unblocked root"
+    );
+    let completed = h
+        .credentials
+        .get_vault("default", &vault_id)
+        .await
+        .unwrap()
+        .expect("completed deletion remains as a durable tombstone");
+    assert!(completed.is_deleted());
+    assert!(
+        h.credentials
+            .pending_managed_vault_deletions()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Completion is absorbing and remains idempotent at the HTTP boundary.
+    let (s, _) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A never-existing Vault is still distinct from a replayed deletion.
     let (s, _) = call(&h.app, "DELETE", "/v1/vaults/vlt_missing", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
@@ -793,6 +879,26 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(archived["type"], "vault");
     assert!(archived["archived_at"].is_string());
+    let archived_revision = h
+        .credentials
+        .get_vault("default", &gone)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let (s, replay) = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(replay, archived);
+    assert_eq!(
+        h.credentials
+            .get_vault("default", &gone)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        archived_revision,
+        "archive replay is a true no-op"
+    );
 
     // Default list excludes the archived vault; include_archived returns both.
     let (_, page) = call(&h.app, "GET", "/v1/vaults", None).await;
@@ -974,6 +1080,13 @@ async fn update_vault_replaces_name_and_patches_metadata() {
     assert_eq!(updated["metadata"]["b"], "2");
     assert_eq!(updated["metadata"]["keep"], "x");
     assert!(updated["metadata"].get("a").is_none());
+    let updated_revision = h
+        .credentials
+        .get_vault("default", &vault_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
 
     // An empty body is a no-op that echoes the (already-updated) vault.
     let (s, echo) = call(
@@ -985,6 +1098,16 @@ async fn update_vault_replaces_name_and_patches_metadata() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(echo["display_name"], "new");
+    assert_eq!(
+        h.credentials
+            .get_vault("default", &vault_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        updated_revision,
+        "empty update does not manufacture a revision"
+    );
 
     // A bad name is a 400; an unknown vault is a 404.
     let (s, _) = call(
@@ -1064,6 +1187,48 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
         .await
         .unwrap();
     assert_eq!(secret.expose_secret(), "rotated-secret");
+
+    let child_revision = h
+        .credentials
+        .get_vault_credential("default", &cred_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let rollout_count = h
+        .credentials
+        .pending_managed_rollouts()
+        .await
+        .unwrap()
+        .len();
+    let (s, replay) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(replay, updated);
+    assert_eq!(
+        h.credentials
+            .get_vault_credential("default", &cred_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        child_revision,
+        "empty update does not manufacture a child revision"
+    );
+    assert_eq!(
+        h.credentials
+            .pending_managed_rollouts()
+            .await
+            .unwrap()
+            .len(),
+        rollout_count,
+        "empty update does not manufacture a rollout"
+    );
 
     // Changing the credential's kind is rejected (kind is immutable).
     let (s, _) = call(
@@ -1671,12 +1836,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     use awaken_credential_vault::repo::CredentialRepo;
     let source_workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let issuer = Arc::new(RecordingEnvelopeIssuer::default());
-    let state = VaultState::new(
-        h.secrets.clone(),
-        h.credentials.clone(),
-        h.credentials.clone(),
-    )
-    .with_envelope_issuer(issuer.clone());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
+        .with_envelope_issuer(issuer.clone());
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
     let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
@@ -1799,12 +1960,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         AdversarialEnvelopeResponse::SubstitutedPayload,
         AdversarialEnvelopeResponse::Failure,
     ] {
-        let adversarial = VaultState::new(
-            h.secrets.clone(),
-            h.credentials.clone(),
-            h.credentials.clone(),
-        )
-        .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
+        let adversarial = VaultState::new(h.secrets.clone(), h.credentials.clone())
+            .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
         assert!(
             SessionCredentialSource::mcp_access_for_source(
                 &adversarial,
@@ -2298,14 +2455,13 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
     assert_eq!(binding.resource.as_deref(), Some("https://mcp.example.com"));
     assert_eq!(binding.token_endpoint_auth, TokenEndpointAuth::None);
     // The refresh token itself stays sealed: the binding carries only its ref.
-    assert_eq!(
-        binding.refresh_token_ref,
-        format!(
-            "sec:{}:r1:{}",
-            source_id.0,
-            awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
-        )
+    let logical_prefix = format!(
+        "sec:{}:r1:{}:attempt:",
+        source_id.0,
+        awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
     );
+    assert!(binding.refresh_token_ref.starts_with(&logical_prefix));
+    assert!(binding.refresh_token_ref.len() > logical_prefix.len());
     assert!(binding.has_valid_configuration_fingerprint());
 
     // An mcp_oauth credential entered WITHOUT a refresh object yields none.

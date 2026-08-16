@@ -11,7 +11,8 @@ use crate::schema::config_bundle;
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
-    ScopedConfigRegistry, StoredPublication,
+    PublicationRevisionDecision, ScopedConfigRegistry, StoredPublication,
+    publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -662,6 +663,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let state = publication.state.as_str().to_string();
         let record = serde_json::to_string(publication).map_err(reject)?;
         let source_revision = publication.source_revision;
+        let execution_workspace = publication.execution_workspace.clone();
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let tx = conn.transaction().map_err(reject)?;
@@ -676,20 +678,39 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             if current_revision != Some(expected_generation) {
                 return Ok(ConfigWrite::Conflict { current_revision });
             }
-            let conflicting_fingerprint = tx
-                .query_row(
-                    &format!(
-                        "SELECT fingerprint FROM {p}_publication \
-                         WHERE scope_id = ?1 AND agent_id = ?2 AND fingerprint <> ?3 \
-                         AND CAST(json_extract(record, '$.source_revision') AS INTEGER) = ?4 \
-                         LIMIT 1"
-                    ),
-                    params![scope, agent_id, fingerprint, source_revision],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            if conflicting_fingerprint.is_some() {
+            let existing = {
+                let mut statement = tx
+                    .prepare(&format!(
+                        "SELECT record FROM {p}_publication \
+                         WHERE scope_id = ?1 AND agent_id = ?2"
+                    ))
+                    .map_err(reject)?;
+                let rows = statement
+                    .query_map(params![scope, agent_id], |row| row.get::<_, String>(0))
+                    .map_err(reject)?;
+                let mut existing = Vec::new();
+                for row in rows {
+                    existing.push(
+                        serde_json::from_str::<StoredPublication>(&row.map_err(reject)?)
+                            .map_err(reject)?,
+                    );
+                }
+                existing
+            };
+            let decision = publication_revision_decision(
+                scope.as_str(),
+                execution_workspace.as_deref(),
+                source_revision,
+                fingerprint.as_str(),
+                existing.iter().map(|existing| {
+                    (
+                        existing.execution_workspace.as_deref(),
+                        existing.source_revision,
+                        existing.fingerprint.as_str(),
+                    )
+                }),
+            );
+            if decision == PublicationRevisionDecision::Conflict {
                 return Ok(ConfigWrite::Conflict { current_revision });
             }
             tx.execute(

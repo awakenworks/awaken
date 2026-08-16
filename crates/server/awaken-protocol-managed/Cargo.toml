@@ -64,6 +64,7 @@ awaken-tenancy.workspace = true
 # Managed vault/credential front door (ADR-0043): the neutral credential domain
 # and the ACL that maps its rows ⇄ the Anthropic Managed wire tags.
 awaken-credential-vault.workspace = true
+awaken-service-auth-contract.workspace = true
 # Neutral sandbox egress vocabulary (`NetworkPolicy`): the environments ACL maps
 # the Anthropic `BetaEnvironment.networking` wire config onto this typed policy, so
 # the egress decision is a shared neutral fact rather than an inline string match.
@@ -76,6 +77,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde"] }
 chrono-tz = "0.10"
 async-trait.workspace = true
 thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v7"] }
 # `sync` for the per-session live-SSE broadcast the preview sink and committed

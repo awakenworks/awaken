@@ -59,7 +59,12 @@ impl ConfigService {
         let publications = registry
             .list_published_scoped(configuration_scope)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|publication| {
+                publication
+                    .targets_execution_workspace(configuration_scope.as_str(), execution_workspace)
+            });
         // The store contract is oldest-first. Older releases allowed an exact
         // dependency rotation to persist a second fingerprint at the same
         // authored revision before executable registration rejected it. Keep

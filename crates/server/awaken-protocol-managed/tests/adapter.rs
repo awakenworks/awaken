@@ -231,6 +231,16 @@ static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+        ))
+    }
+
     async fn run(
         &self,
         _agent: &str,

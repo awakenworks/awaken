@@ -11,7 +11,8 @@ use crate::schema::config_bundle;
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
-    ScopedConfigRegistry, StoredPublication,
+    PublicationRevisionDecision, ScopedConfigRegistry, StoredPublication,
+    publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
@@ -640,14 +641,26 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
-        for row in existing {
-            let Json(existing): Json<StoredPublication> = row.try_get("record").map_err(reject)?;
-            if existing.source_revision == publication.source_revision
-                && existing.fingerprint != publication.fingerprint
-            {
-                tx.rollback().await.map_err(reject)?;
-                return Ok(ConfigWrite::Conflict { current_revision });
-            }
+        let existing = existing
+            .into_iter()
+            .map(|row| row.try_get("record").map_err(reject))
+            .collect::<Result<Vec<Json<StoredPublication>>, _>>()?;
+        let decision = publication_revision_decision(
+            scope.as_str(),
+            publication.execution_workspace.as_deref(),
+            publication.source_revision,
+            publication.fingerprint.as_str(),
+            existing.iter().map(|Json(existing)| {
+                (
+                    existing.execution_workspace.as_deref(),
+                    existing.source_revision,
+                    existing.fingerprint.as_str(),
+                )
+            }),
+        );
+        if decision == PublicationRevisionDecision::Conflict {
+            tx.rollback().await.map_err(reject)?;
+            return Ok(ConfigWrite::Conflict { current_revision });
         }
         sqlx::query(&format!(
             "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \

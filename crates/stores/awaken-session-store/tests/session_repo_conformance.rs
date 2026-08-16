@@ -299,6 +299,56 @@ async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionReposi
     assert_eq!(r.owner("sesn_bound").await.as_deref(), Ok("ws_a"));
 }
 
+async fn vault_reference_index_returns_only_live_scoped_sessions<R: ManagedSessionRepository>(
+    r: &R,
+) {
+    let with_vault = |id: &str, execution| {
+        let mut value = session(id, id);
+        value.execution = execution;
+        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut value.baseline
+        else {
+            unreachable!("fixture baseline is frozen")
+        };
+        baseline.mcp_authoring.ordered_vault_ids = vec!["vlt-live".into()];
+        value
+    };
+    let live = create_session(
+        r,
+        "ws_a",
+        with_vault("sesn_vault_live", SessionExecutionState::Idle),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws_a",
+        with_vault("sesn_vault_terminal", SessionExecutionState::Terminated),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws_b",
+        with_vault("sesn_vault_other_workspace", SessionExecutionState::Idle),
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(
+        r.sessions_referencing_vault("ws_a", "vlt-live")
+            .await
+            .unwrap(),
+        vec![live],
+        "rollout targets only live Sessions in the exact Workspace"
+    );
+    assert!(
+        r.sessions_referencing_vault("ws_a", "vlt-other")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
@@ -755,6 +805,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_is_idempotent_upsert(&fresh()).await;
     ownership_is_one_atomic_repository_fact(&fresh()).await;
     environment_state_is_atomic_and_non_destructive(&fresh()).await;
+    vault_reference_index_returns_only_live_scoped_sessions(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
     tombstone_requires_hidden_completed_cleanup(&fresh()).await;

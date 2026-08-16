@@ -69,7 +69,6 @@ pub(super) async fn control_component_for_process(
         enrollment_signing_key,
         catalog: control.catalog.clone(),
         credentials: control.credentials.clone(),
-        vaults: control.vaults.clone(),
         secrets: control.secrets.clone(),
         profiles: control.profiles.clone(),
         webhook_store: control.webhooks.clone(),
@@ -130,8 +129,15 @@ pub(super) async fn prepare_control_routers(
     process: ProcessStartup,
 ) -> ProcessRouters {
     debug_assert_eq!(process.role, config::Role::Control);
-    let (_, executable_agent_registrar, _, _, coordinator_content_eraser) =
-        executable_agent_registration::process_parts(process.executable_agent_wiring);
+    let (
+        _,
+        executable_agent_registrar,
+        _,
+        _,
+        coordinator_content_eraser,
+        credential_rollout_target,
+        _service_authenticator,
+    ) = executable_agent_registration::process_parts(process.executable_agent_wiring);
     let executable_environment_registrar = process
         .executable_environment_wiring
         .map(|wiring| wiring.registrar)
@@ -252,6 +258,9 @@ pub(super) async fn prepare_control_routers(
         remote_iam,
     )
     .await;
+    if let Some(target) = credential_rollout_target {
+        component.vault_state.set_rollout_target(target);
+    }
     let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> = {
         let control = stores
             .control

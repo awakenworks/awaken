@@ -353,8 +353,17 @@ async fn sqlite_repo_conforms() {
 mod postgres {
     use super::*;
     use awaken_credential_store::postgres::PostgresCredentialRepo;
+    use awaken_credential_vault::catalog::{
+        ManagedCredentialAuth, ManagedCredentialLifecycle, ManagedCredentialMutationError,
+        ManagedVault, ManagedVaultCredential, ManagedVaultRepo,
+    };
+    use awaken_credential_vault::repo::{
+        ManagedCredentialMutationPhase, ManagedCredentialRepository,
+        PendingManagedCredentialMutation,
+    };
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
+    use std::collections::BTreeMap;
 
     fn database_url() -> String {
         std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -383,6 +392,8 @@ mod postgres {
                 Box::pin(async move {
                     conn.execute(format!("SET search_path = {schema}").as_str())
                         .await?;
+                    conn.execute(format!("SET application_name = '{schema}'").as_str())
+                        .await?;
                     Ok(())
                 })
             })
@@ -398,6 +409,84 @@ mod postgres {
                 .await
                 .expect("store"),
         )
+    }
+
+    fn managed_source(id: &str, workspace_id: &str) -> CredentialSource {
+        CredentialSource {
+            id: CredentialSourceId(id.into()),
+            workspace_id: workspace_id.into(),
+            kind: CredentialKind::Vault,
+            provider_id: None,
+            protocol_endpoint_id: None,
+            env_key: None,
+            material_ref: None,
+            auxiliary_material_refs: BTreeMap::new(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        }
+    }
+
+    fn managed_child(
+        id: &str,
+        vault_id: &str,
+        workspace_id: &str,
+        source_id: CredentialSourceId,
+    ) -> ManagedVaultCredential {
+        ManagedVaultCredential {
+            id: id.into(),
+            vault_id: vault_id.into(),
+            workspace_id: workspace_id.into(),
+            source_id,
+            auth: ManagedCredentialAuth::StaticBearer {
+                mcp_server_url: "https://mcp.example.test".into(),
+            },
+            metadata: BTreeMap::new(),
+            display_name: None,
+            revision: 1,
+            lifecycle: ManagedCredentialLifecycle::Active,
+        }
+    }
+
+    fn managed_vault(id: &str, workspace_id: &str) -> ManagedVault {
+        ManagedVault {
+            id: id.into(),
+            workspace_id: workspace_id.into(),
+            display_name: id.into(),
+            metadata: BTreeMap::new(),
+            archived_at: None,
+            deletion: None,
+            revision: 1,
+        }
+    }
+
+    async fn ready_create(
+        repo: &PostgresCredentialRepo,
+        source: CredentialSource,
+        child: ManagedVaultCredential,
+    ) -> PendingManagedCredentialMutation {
+        let writing = PendingManagedCredentialMutation::create(source, child).unwrap();
+        repo.begin_managed_mutation(writing.clone()).await.unwrap();
+        repo.mark_managed_mutation_ready(&writing).await.unwrap()
+    }
+
+    async fn wait_for_lock_waiters(pool: &PgPool, application_name: &str, expected: i64) {
+        for _ in 0..200 {
+            let waiters = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pg_stat_activity \
+                 WHERE application_name = $1 AND wait_event_type = 'Lock'",
+            )
+            .bind(application_name)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if waiters >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("writers did not reach the expected PostgreSQL lock boundary");
     }
 
     #[tokio::test]
@@ -420,6 +509,341 @@ mod postgres {
         )
         .await;
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_managed_absent_child_cas_has_one_atomic_winner() {
+        const SCHEMA: &str = "t_cred_managed_absent_cas";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let vault = managed_vault("vault-shared", "ws");
+        repo.insert_vault("ws", vault.clone()).await.unwrap();
+
+        let left_source = managed_source("cred:left", "ws");
+        let right_source = managed_source("cred:right", "ws");
+        let left = ready_create(
+            &repo,
+            left_source.clone(),
+            managed_child("child-shared", &vault.id, "ws", left_source.id.clone()),
+        )
+        .await;
+        let right = ready_create(
+            &repo,
+            right_source.clone(),
+            managed_child("child-shared", &vault.id, "ws", right_source.id.clone()),
+        )
+        .await;
+
+        // Hold the root so both writers queue at the aggregate's first lock.
+        // Once released, the second writer must re-read the first writer's child,
+        // not continue from an absent-row snapshot and overwrite it.
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM credential_managed_vault WHERE id = $1 FOR UPDATE")
+            .bind(&vault.id)
+            .fetch_one(&mut *blocker)
+            .await
+            .unwrap();
+        let left_repo = repo.clone();
+        let left_pending = left.clone();
+        let left_task =
+            tokio::spawn(async move { left_repo.commit_managed_mutation(&left_pending).await });
+        let right_repo = repo.clone();
+        let right_pending = right.clone();
+        let right_task =
+            tokio::spawn(async move { right_repo.commit_managed_mutation(&right_pending).await });
+        wait_for_lock_waiters(&pool, SCHEMA, 2).await;
+        blocker.commit().await.unwrap();
+
+        let results = [left_task.await.unwrap(), right_task.await.unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(ManagedCredentialMutationError::RevisionConflict)
+                ))
+                .count(),
+            1
+        );
+        let winner = results
+            .iter()
+            .find_map(|result| result.as_ref().ok())
+            .expect("one winner");
+        let durable_child = repo
+            .get_vault_credential("ws", "child-shared")
+            .await
+            .unwrap()
+            .expect("winner child");
+        assert_eq!(durable_child, winner.after_credential);
+        assert_eq!(
+            repo.get(&winner.after_source.id).await.unwrap(),
+            winner.after_source
+        );
+        let loser_id = if winner.after_source.id == left_source.id {
+            right_source.id
+        } else {
+            left_source.id
+        };
+        assert!(matches!(
+            repo.get(&loser_id).await,
+            Err(CredentialError::SourceNotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn postgres_managed_absent_child_cas_never_cross_workspace_overwrites() {
+        const SCHEMA: &str = "t_cred_managed_cross_workspace_cas";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        repo.insert_vault("ws-a", managed_vault("vault-a", "ws-a"))
+            .await
+            .unwrap();
+        repo.insert_vault("ws-b", managed_vault("vault-b", "ws-b"))
+            .await
+            .unwrap();
+        let left_source = managed_source("cred:cross-left", "ws-a");
+        let right_source = managed_source("cred:cross-right", "ws-b");
+        let left = ready_create(
+            &repo,
+            left_source.clone(),
+            managed_child("child-global", "vault-a", "ws-a", left_source.id.clone()),
+        )
+        .await;
+        let right = ready_create(
+            &repo,
+            right_source.clone(),
+            managed_child("child-global", "vault-b", "ws-b", right_source.id.clone()),
+        )
+        .await;
+
+        // Different roots cannot serialize the globally unique child id for us.
+        // Holding both roots forces the old child-before-root ordering to retain
+        // two absent snapshots; root-first plus the child INSERT CAS must still
+        // admit only one workspace after both roots are released.
+        let mut blocker = pool.begin().await.unwrap();
+        for vault_id in ["vault-a", "vault-b"] {
+            sqlx::query("SELECT id FROM credential_managed_vault WHERE id = $1 FOR UPDATE")
+                .bind(vault_id)
+                .fetch_one(&mut *blocker)
+                .await
+                .unwrap();
+        }
+        let left_repo = repo.clone();
+        let left_pending = left.clone();
+        let left_task =
+            tokio::spawn(async move { left_repo.commit_managed_mutation(&left_pending).await });
+        let right_repo = repo.clone();
+        let right_pending = right.clone();
+        let right_task =
+            tokio::spawn(async move { right_repo.commit_managed_mutation(&right_pending).await });
+        wait_for_lock_waiters(&pool, SCHEMA, 2).await;
+        blocker.commit().await.unwrap();
+        let (left_result, right_result) = (left_task.await.unwrap(), right_task.await.unwrap());
+        let results = [left_result, right_result];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let winner = results
+            .iter()
+            .find_map(|result| result.as_ref().ok())
+            .expect("one winner");
+        assert_eq!(
+            repo.get_vault_credential(
+                &winner.after_credential.workspace_id,
+                &winner.after_credential.id,
+            )
+            .await
+            .unwrap(),
+            Some(winner.after_credential.clone())
+        );
+        assert_eq!(
+            repo.get(&winner.after_source.id).await.unwrap(),
+            winner.after_source
+        );
+        assert_eq!(
+            repo.list("ws-a").await.unwrap().len() + repo.list("ws-b").await.unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_expired_writer_claim_is_exact_snapshot_cas() {
+        let Some(pool) = schema_pool("t_cred_managed_writer_claim").await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let source = managed_source("cred:claim", "ws");
+        let writing = PendingManagedCredentialMutation::create(
+            source.clone(),
+            managed_child("child-claim", "vault-claim", "ws", source.id),
+        )
+        .unwrap();
+        repo.begin_managed_mutation(writing.clone()).await.unwrap();
+        let now = writing.writer_lease_expires_at_unix_ms;
+        let deadline = now.checked_add(10_000).unwrap();
+
+        let (left, right) = tokio::join!(
+            repo.claim_expired_managed_mutation(&writing, now, deadline),
+            repo.claim_expired_managed_mutation(&writing, now, deadline)
+        );
+        let claims = [left.unwrap(), right.unwrap()];
+        assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
+        let claimed = claims.into_iter().flatten().next().unwrap();
+        assert_eq!(claimed.writer_epoch, writing.writer_epoch + 1);
+        assert_ne!(claimed.writer_token, writing.writer_token);
+        assert_eq!(claimed.writer_lease_expires_at_unix_ms, deadline);
+        assert_eq!(
+            repo.pending_managed_mutations().await.unwrap(),
+            vec![claimed.clone()]
+        );
+        assert!(matches!(
+            repo.abort_managed_mutation(&writing).await,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        let reclaiming = repo.abort_managed_mutation(&claimed).await.unwrap();
+        assert_eq!(
+            reclaiming.phase,
+            ManagedCredentialMutationPhase::ReclaimingAbort
+        );
+        repo.complete_managed_mutation(&reclaiming).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_managed_abort_retains_exact_cleanup_authority_until_completion() {
+        let Some(pool) = schema_pool("t_cred_managed_abort_cleanup").await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let source = managed_source("cred:abort-cleanup", "ws");
+        let writing = PendingManagedCredentialMutation::create(
+            source.clone(),
+            managed_child(
+                "child-abort-cleanup",
+                "vault-abort-cleanup",
+                "ws",
+                source.id,
+            ),
+        )
+        .unwrap();
+        repo.begin_managed_mutation(writing.clone()).await.unwrap();
+
+        let reclaiming = repo.abort_managed_mutation(&writing).await.unwrap();
+        assert_eq!(
+            reclaiming.phase,
+            ManagedCredentialMutationPhase::ReclaimingAbort
+        );
+        assert_eq!(
+            repo.pending_managed_mutations().await.unwrap(),
+            vec![reclaiming.clone()]
+        );
+        assert!(matches!(
+            repo.abort_managed_mutation(&writing).await,
+            Err(CredentialError::MutationConflict(_))
+        ));
+
+        repo.put(reclaiming.after_source.clone()).await.unwrap();
+        assert!(matches!(
+            repo.complete_managed_mutation(&reclaiming).await,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        sqlx::query("DELETE FROM credential_source WHERE id = $1")
+            .bind(&reclaiming.after_source.id.0)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // A restarted worker resumes from the exact durable cleanup fact. The
+        // fact disappears only after completion verifies the unpublished
+        // before-pair truth.
+        repo.complete_managed_mutation(&reclaiming).await.unwrap();
+        assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+        assert!(matches!(
+            repo.get(&reclaiming.after_source.id).await,
+            Err(CredentialError::SourceNotFound(_))
+        ));
+        assert_eq!(
+            repo.get_vault_credential("ws", &reclaiming.after_credential.id)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_plain_absent_source_cas_does_not_overwrite_concurrent_winner() {
+        const SCHEMA: &str = "t_cred_plain_absent_cas";
+        const ADVISORY_KEY: i64 = 8_216_041;
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let mut proposed = source("cred:plain-race", "ws-proposed");
+        proposed.provider_id = Some("blocked-proposal".into());
+        let intent = CredentialMutationIntent {
+            before: None,
+            after: proposed.clone(),
+        };
+        repo.begin_mutation(intent.clone()).await.unwrap();
+
+        sqlx::query(
+            "CREATE FUNCTION block_proposed_source() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN \
+               IF NEW.data->>'provider_id' = 'blocked-proposal' THEN \
+                 PERFORM pg_advisory_xact_lock(8216041); \
+               END IF; \
+               RETURN NEW; \
+             END $$",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER block_proposed_source_before_insert \
+             BEFORE INSERT ON credential_source FOR EACH ROW \
+             EXECUTE FUNCTION block_proposed_source()",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut blocker = pool.acquire().await.unwrap();
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(ADVISORY_KEY)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let apply_repo = repo.clone();
+        let apply_intent = intent.clone();
+        let apply_task =
+            tokio::spawn(async move { apply_repo.apply_mutation(&apply_intent).await });
+        wait_for_lock_waiters(&pool, SCHEMA, 1).await;
+
+        let mut winner = source("cred:plain-race", "ws-winner");
+        winner.provider_id = Some("winner".into());
+        repo.put(winner.clone()).await.unwrap();
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(ADVISORY_KEY)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            apply_task.await.unwrap(),
+            Err(CredentialError::MutationConflict(_))
+        ));
+        assert_eq!(repo.get(&winner.id).await.unwrap(), winner);
     }
 
     /// The durable secret path on Postgres: AEAD sealing composed over the

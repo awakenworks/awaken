@@ -665,12 +665,14 @@ async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revis
         compile(&first_config, &tool_catalog()).expect("first compile"),
         "agent",
         1,
-    );
+    )
+    .with_execution_workspace("runtime-a");
     let second = StoredPublication::published_at_revision(
         compile(&second_config, &tool_catalog()).expect("second compile"),
         "agent",
         1,
-    );
+    )
+    .with_execution_workspace("runtime-a");
     assert_ne!(first.fingerprint, second.fingerprint);
     assert_eq!(
         store
@@ -691,6 +693,49 @@ async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revis
     let durable = store.list_published_scoped(&scope).await.unwrap();
     assert_eq!(durable.len(), 1);
     assert_eq!(durable[0].fingerprint, first.fingerprint);
+}
+
+#[tokio::test]
+async fn conditional_publication_allows_one_source_revision_in_distinct_execution_workspaces() {
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let scope = ScopeId::from("reserved_authoring_scope");
+    let first_config = agent_with("assistant", "workspace-a behavior");
+    let second_config = agent_with("assistant", "workspace-b behavior");
+    store
+        .put_config_scoped(&scope, &first_config)
+        .await
+        .expect("draft");
+    let first = StoredPublication::published_at_revision(
+        compile(&first_config, &tool_catalog()).expect("first compile"),
+        "assistant",
+        1,
+    )
+    .with_execution_workspace("workspace-a");
+    let second = StoredPublication::published_at_revision(
+        compile(&second_config, &tool_catalog()).expect("second compile"),
+        "assistant",
+        1,
+    )
+    .with_execution_workspace("workspace-b");
+    assert_ne!(first.fingerprint, second.fingerprint);
+
+    for publication in [&first, &second] {
+        assert_eq!(
+            store
+                .put_publication_if_config_revision_scoped(&scope, publication, 1)
+                .await
+                .expect("targeted publication"),
+            ConfigWrite::Applied { revision: 1 }
+        );
+    }
+    let durable = store.list_published_scoped(&scope).await.unwrap();
+    assert_eq!(durable.len(), 2);
+    assert!(durable.iter().any(|publication| {
+        publication.targets_execution_workspace(scope.as_str(), "workspace-a")
+    }));
+    assert!(durable.iter().any(|publication| {
+        publication.targets_execution_workspace(scope.as_str(), "workspace-b")
+    }));
 }
 
 #[tokio::test]

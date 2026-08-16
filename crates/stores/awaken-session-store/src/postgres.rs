@@ -465,6 +465,37 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(scan)
     }
 
+    async fn sessions_referencing_vault(
+        &self,
+        workspace_id: &str,
+        vault_id: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "SELECT session_id FROM managed_session WHERE scope_id = $1 ORDER BY session_id",
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let session_id: String = row.try_get("session_id").map_err(storage)?;
+            let session = self.get(&session_id).await?;
+            if !session.is_terminal()
+                && session.frozen_baseline().is_some_and(|baseline| {
+                    baseline
+                        .mcp_authoring
+                        .ordered_vault_ids
+                        .iter()
+                        .any(|id| id == vault_id)
+                })
+            {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
     async fn idempotency_receipt(
         &self,
         session_id: &str,

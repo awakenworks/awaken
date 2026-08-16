@@ -87,6 +87,10 @@ The named harnesses in the strict gate invoke production pure functions directly
     remaining aggregate capacity, and no duplicate active environment key;
   - Managed Vault replacement requires the exact observed revision and its
     strict successor, so stale writers cannot silently overwrite each other.
+  - Managed Vault delete selectors require a stable monotonic root identity,
+    an absorbing completed tombstone, and an absorbing child delete shape.
+    The multi-step workflow is model-linked below; these Kani selectors do not
+    prove its database, SecretStore, or rollout adapters.
 - `awaken-credential-contract`
   - an issued recipient-bound envelope is accepted exactly when its reference,
     payload fingerprint, recipient, and plaintext boundary all match the
@@ -267,10 +271,23 @@ production logic.
   dispatch-time pinning across route change, revocation, and fallback.
 - `McpServer.tla` covers request/notification response cardinality,
   cancellation, progress finality, and sessionless stream lifecycle.
-- `ManagementAuditIntent.tla`, `CredentialInventory.tla`, and
+- `ManagementAuditIntent.tla`, `CredentialInventory.tla`,
+  `ManagedCredentialCreation.tla`, `RolloutEventIdentity.tla`, and
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
-  cannot share the config transaction, namespace-fenced orphan cleanup, and the
-  durable external-effect journal used for resource bindings.
+  cannot share the config transaction, ownership-fenced orphan detection,
+  atomic Managed Source/child publication with abstract crash ownership
+  transfer, exact event-id replay/collision decisions, and the durable
+  external-effect journal used for resource bindings.
+  Current-format Managed production commands construct an attempt-suffixed
+  physical SecretRef. The Kani harness proves the bounded admission selector
+  requires a declared owner and namespace match; it does not prove suffix
+  uniqueness, UUID entropy, or SecretStore conditional writes. A takeover can
+  reject a stale durable transition. When attempt namespaces are distinct, a
+  delayed old write is isolated from later attempts and reported by inventory
+  inspection. Physical GC requires a backend-specific durable orphan claim
+  before deletion. The
+  bounded model proves publication ownership, not SecretStore conditional-write
+  semantics, database clock accuracy, or an upper bound on external-call delay.
 - `AgentInputRevision.tla` covers the resource-plane revision protocol for an
   Agent's input configuration: a changed configuration must be the exact next
   revision, an identical current revision is an idempotent replay, and every
@@ -394,6 +411,10 @@ graphs with zero invariant violations and zero states left on the queue:
 | ResourceReclamation | 11,156 | 2,514 | 17 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
+| ManagedCredentialCreation | 8,918 | 1,298 | 11 |
+| ManagedCredentialRollout | 234,903 | 28,492 | 20 |
+| RolloutEventIdentity | 42 | 17 | 6 |
+| ManagedVaultDeletion | 682,436 | 36,840 | 20 |
 | SkillVersionPin | 747 | 184 | 8 |
 | McpServer | 15 | 15 | 6 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |
@@ -477,10 +498,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 308/308 formalizable obligations model-linked or
+checkpoint the ledger is 324/324 formalizable obligations model-linked or
 kernel-proved, plus 10 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 186
-model-checked, 27 model-proved, 148 Kani-kernel-proved, and 6 linked to the
+evidence coverage. The evidence dimensions are reported independently: 194
+model-checked, 27 model-proved, 159 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -492,7 +513,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 295 and now 308 as new obligations were discovered)
+The denominator (previously 295 and now 324 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -500,16 +521,16 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 583 candidate modules: all 583 are classified,
-329 have checked formal evidence associated with the production file, 202 have
-a direct Kani/trace proof link, and 197 are linked to an explicit product
+source-oriented inventory finds 586 candidate modules: all 586 are classified,
+334 have checked formal evidence associated with the production file, 211 have
+a direct Kani/trace proof link, and 195 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 203 unique Kani harnesses; repeated
+The source tree and strict CI name the same 209 unique Kani harnesses; repeated
 ledger references are allowed only when one production proof supports more than
 one precisely stated obligation.
 
@@ -613,9 +634,64 @@ durable pending audit followed by the config store's atomic business commit and
 pending→committed transition; stable committed-call replay is a no-op. Tracing is
 an observability projection rather than the durable audit authority.
 
-These proofs still depend on the storage engines honoring their documented
-transaction and durability contracts. They do not establish eventual delivery or
-exactly-once effects in a third-party system.
+`ManagedCredentialCreation` adds a bounded abstract Managed Agents creation
+protocol.
+One stable intent identity admits duplicate replay and rejects a conflicting
+begin. A durable writer token plus monotonic epoch abstracts the Rust owner
+fence; within the model an unexpired live lease cannot be claimed, while
+cancellation/crash and deadline expiry enable one atomic recovery takeover.
+Stale abstract material/ready and commit transitions cannot mutate either half
+of the pair after that takeover.
+Ready work remains recoverable without changing its already-durable token, and
+an abort first enters durable `ReclaimingAbort`; crash/restart can interleave
+before retryable external deletion, and only exact cleanup completion reaches
+the clean `Aborted` state. An abandoned Writing intent eventually publishes or
+aborts under the explicit expiry, restart, claim, material, cleanup, and commit
+fairness assumptions. Source plus Vault child publish in one abstract commit.
+
+Create enters `Writing` and produces no rollout. An update enters `Writing`
+only when it writes new material; metadata-only update, archive, and delete
+enter `Ready`. `ManagedCredentialRollout` begins after a non-create pair commit
+and abstracts one configured consumer, extending that boundary across
+update/archive/delete:
+the Source/child pair and exact rollout event appear atomically, stale writer
+CAS is rejected, and Archived may progress to Deleted. Attempt, adoption, and
+ack commit are separate states, including failure, crash after adoption but
+before ack, duplicate delivery, and reordered stale delivery that reselects
+current durable truth. Acknowledgement requires an equal-or-newer adopted fence.
+`RolloutEventIdentity` separately checks that an exact replay is harmless, a
+different payload with the same event id cannot replace the durable row, and a
+colliding acknowledgement cannot delete it. Eventual acknowledgement in the
+rollout model is conditional on restart, the one abstract target becoming
+available, and commit/delivery/adoption/ack fairness. The production adapter's
+Session query, idle transition, repeated supervisor scheduling, concurrent
+Session discovery, and fleet-wide fan-out are not established by that property.
+
+`ManagedVaultDeletion` uses two bounded child slots whose `Absent` values also
+cover empty and one-child Vaults. It admits deletion from an Active or Archived
+root and tracks Active, Archived, and already-Deleted children, exact
+Source/child successor fences, a prepared stale writer, root revision CAS and
+stable delete identity, and separate rollout attempt, adoption, and ack sets.
+Completion universally requires every real child to be Deleted and every
+required exact rollout to be adopted and acknowledged. Crash clears only
+process-local attempts; durable adoption, ack, child tombstones, and the root
+request survive. Under explicit restart, stale-writer rejection,
+reconciliation, adoption, acknowledgement, and final-CAS fairness assumptions a
+requested root eventually reaches its absorbing tombstone.
+
+These are bounded protocol models: creation checks one live owner and bounded
+recovery-owner epochs after an abstract durable lease expiry, rollout checks
+one consumer and revisions through three, and root deletion checks two child
+slots and revisions through four. They do not prove
+that the Rust adapters refine the abstract atomic commits. Storage engines,
+SecretStore durability, lease-clock truth/renewal, Session-idle fairness,
+provider revocation, multi-consumer delivery, and third-party effects remain
+external; liveness holds only under the fairness assumptions named above.
+
+These models start from well-formed durable facts. SQLite/PostgreSQL recovery
+scans separately retain and isolate undecodable or unsupported-version rows so
+one poison record cannot starve healthy work, but schema migration and repair of
+the isolated record remain operational obligations rather than model claims.
 
 `RunIngress.tla` models claim fencing as one atomic state transition. Production
 now keeps the exact epoch guard live across the actual `ThreadCommit` for the
