@@ -4770,6 +4770,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     #[async_trait::async_trait]
     impl awaken_sandbox_container::ContainerEnvironmentProvider for SecureExternalProvider {
+        async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Ok(())
+        }
+
         fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
             awaken_provisioning_contract::SandboxCapabilities {
                 isolation: awaken_provisioning_contract::IsolationClass::Container,

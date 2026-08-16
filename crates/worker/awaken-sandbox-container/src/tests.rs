@@ -807,6 +807,10 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    async fn probe_ready(&self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     fn enforces_network_none(&self) -> bool {
         true
     }

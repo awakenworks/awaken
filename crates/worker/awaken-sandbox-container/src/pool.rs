@@ -466,6 +466,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         self.inner.install_secret_broker(broker);
     }
 
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        self.inner.probe_ready().await
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -527,6 +531,13 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
+        async fn probe_ready(&self) -> Result<(), crate::RuntimeError> {
+            self.ready
+                .load(Ordering::SeqCst)
+                .then_some(())
+                .ok_or_else(|| crate::RuntimeError::Backend("not ready".into()))
+        }
+
         fn enforces_network_none(&self) -> bool {
             true
         }

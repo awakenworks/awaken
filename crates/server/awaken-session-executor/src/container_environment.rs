@@ -272,7 +272,6 @@ pub async fn build_container_environment(
             let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, inert)
                 .await
                 .map_err(|error| format!("k8s runtime: {error}"))?
-                .with_restricted_egress_policy(settings.k8s_network_policy_enforcement.is_some())
                 .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
             if let Some(continuation) = settings.k8s_continuation_volume.clone() {
                 runtime = runtime.with_continuation_volume(continuation);
