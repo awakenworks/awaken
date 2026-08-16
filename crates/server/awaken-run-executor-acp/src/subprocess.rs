@@ -426,6 +426,67 @@ pub fn mcp_injection_from_servers(
     })
 }
 
+/// Admit an already-realized, process-local MCP projection for one exact ACP
+/// adapter. Credential material may remain only in the in-band Session form;
+/// config-file adapters fail closed rather than serializing it.
+pub fn mcp_injection_from_session_servers(
+    cli: &AcpCli,
+    servers: &[awaken_protocol_acp::SessionMcpServer],
+) -> std::result::Result<McpInjection, OpenError> {
+    if servers.is_empty() {
+        return Ok(McpInjection::default());
+    }
+    if matches!(cli.mcp_interface, crate::McpInterface::AcpSession) {
+        for server in servers.iter().filter(|server| server.auth.is_some()) {
+            let admitted = cli.admits_mcp_client_credential(
+                Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
+                server.url.is_some() && server.command.is_none(),
+            );
+            if !admitted {
+                return Err(OpenError(format!(
+                    "mcp_client_injection_unsupported: {}",
+                    cli.id
+                )));
+            }
+        }
+        return Ok(McpInjection {
+            session_servers: servers.to_vec(),
+            config_file: None,
+        });
+    }
+    if servers.iter().any(|server| server.auth.is_some()) {
+        return Err(OpenError(format!(
+            "mcp_client_injection_unsupported: {}",
+            cli.id
+        )));
+    }
+    let routes = servers
+        .iter()
+        .map(|server| {
+            let transport = match (&server.command, &server.url) {
+                (Some(command), None) => crate::McpTransport::Stdio {
+                    command: command.clone(),
+                    args: server.args.clone(),
+                },
+                (None, Some(url)) if server.args.is_empty() => {
+                    crate::McpTransport::Http { url: url.clone() }
+                }
+                _ => {
+                    return Err(OpenError(format!(
+                        "invalid process-local MCP route `{}`",
+                        server.name
+                    )));
+                }
+            };
+            Ok(crate::McpServerConfig {
+                name: server.name.clone(),
+                transport,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    mcp_injection_from_servers(cli, &routes)
+}
+
 /// Admit one already-projected MCP delivery against the launch identity. A
 /// backend-owned CLI must keep its host config home intact, so only in-band ACP
 /// Session delivery is compatible. All channel sources share this one rule.
@@ -544,6 +605,37 @@ mod mcp_wiring_tests {
         assert!(http.command.is_none(), "P2");
         assert_eq!(http.url.as_deref(), Some("https://mcp.open/sse"), "P2");
         assert!(http.auth.is_none(), "P2");
+    }
+
+    #[test]
+    fn process_private_mcp_auth_requires_an_explicit_http_session_adapter() {
+        let authenticated = awaken_protocol_acp::SessionMcpServer {
+            name: "github".into(),
+            command: None,
+            args: Vec::new(),
+            url: Some("https://mcp.example".into()),
+            auth: Some(("Authorization".into(), "Bearer raw-secret".into())),
+        };
+        let admitted = mcp_injection_from_session_servers(
+            crate::acp_cli("claude").unwrap(),
+            std::slice::from_ref(&authenticated),
+        )
+        .expect("declared ACP Session auth adapter");
+        assert_eq!(admitted.session_servers, [authenticated.clone()]);
+        assert!(admitted.config_file.is_none());
+
+        let unsupported = *crate::acp_cli("codex").expect("codex fixture");
+        assert!(
+            mcp_injection_from_session_servers(&unsupported, &[authenticated.clone()]).is_err()
+        );
+
+        let mut stdio = authenticated;
+        stdio.url = None;
+        stdio.command = Some("mcp-server".into());
+        assert!(
+            mcp_injection_from_session_servers(crate::acp_cli("claude").unwrap(), &[stdio])
+                .is_err()
+        );
     }
 
     #[test]

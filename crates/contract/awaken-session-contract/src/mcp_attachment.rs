@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use awaken_credential_contract::{CredentialAccess, CredentialRealizationKind, PlaintextHolder};
+use awaken_credential_contract::{
+    CredentialAccess, CredentialRealizationKind, McpCredentialDelivery, PlaintextHolder,
+};
 use serde::{Deserialize, Serialize};
 
 pub use awaken_agent_contract::{McpTarget, McpTargetError, McpTargetIdentity};
@@ -218,6 +220,41 @@ impl McpRealizationReceipt {
             && self.selected_plaintext_holder == request.selected_plaintext_holder
             && self.receipt_fingerprint == request.fingerprint()
         {
+            Ok(())
+        } else {
+            Err(McpRealizationReceiptError::Mismatch)
+        }
+    }
+
+    /// Verify an authenticated realization against its exact, preselected MCP
+    /// credential delivery mode and mechanism.
+    ///
+    /// The existing wire remains unchanged: delivery is derived from the exact
+    /// holder already present on both request and receipt plus the Runtime's
+    /// actual realization kind. Credentialless attachments must use [`verify`]
+    /// instead and cannot manufacture a delivery receipt.
+    pub fn verify_for_delivery(
+        &self,
+        request: &StageMcpAttachment,
+        expected_delivery: McpCredentialDelivery,
+        expected_realization: CredentialRealizationKind,
+    ) -> Result<(), McpRealizationReceiptError> {
+        let exact_binding = request.credential.is_some() && self.verify(request).is_ok();
+        let (Some(expected_holder), Some(actual_holder), Some(actual_realization)) = (
+            request.selected_plaintext_holder.as_ref(),
+            self.selected_plaintext_holder.as_ref(),
+            self.actual_realization_kind,
+        ) else {
+            return Err(McpRealizationReceiptError::Mismatch);
+        };
+        if awaken_credential_contract::mcp_credential_delivery_receipt_matches(
+            expected_delivery,
+            expected_holder.boundary,
+            expected_realization,
+            actual_holder.boundary,
+            actual_realization,
+            exact_binding,
+        ) {
             Ok(())
         } else {
             Err(McpRealizationReceiptError::Mismatch)
@@ -976,6 +1013,96 @@ mod tests {
         }
     }
 
+    #[test]
+    fn delivery_receipt_requires_an_authenticated_exact_mode_and_mechanism() {
+        // | Rule | binding | holder/mechanism class | expected mode | Effect |
+        // |---|---|---|---|---|
+        // | D1 | exact | Workload + process protocol field | client injection | accept |
+        // | D2 | exact | Platform + platform relay | gateway mediation | accept |
+        // | D3 | exact | Worker + legacy relay | client injection | reject |
+        // | D4 | exact | Platform + platform relay | client injection | reject |
+        // | D5 | inexact | otherwise valid | gateway mediation | reject |
+        for (rule, boundary, realization, delivery, tamper, accepted) in [
+            (
+                "D1",
+                PlaintextBoundary::Workload,
+                CredentialRealizationKind::ProcessProtocolField,
+                McpCredentialDelivery::ClientInjection,
+                false,
+                true,
+            ),
+            (
+                "D2",
+                PlaintextBoundary::Platform,
+                CredentialRealizationKind::PlatformRelay,
+                McpCredentialDelivery::GatewayMediation,
+                false,
+                true,
+            ),
+            (
+                "D3",
+                PlaintextBoundary::Worker,
+                CredentialRealizationKind::WorkerRelay,
+                McpCredentialDelivery::ClientInjection,
+                false,
+                false,
+            ),
+            (
+                "D4",
+                PlaintextBoundary::Platform,
+                CredentialRealizationKind::PlatformRelay,
+                McpCredentialDelivery::ClientInjection,
+                false,
+                false,
+            ),
+            (
+                "D5",
+                PlaintextBoundary::Platform,
+                CredentialRealizationKind::PlatformRelay,
+                McpCredentialDelivery::GatewayMediation,
+                true,
+                false,
+            ),
+        ] {
+            let selected = PlaintextHolder::new(boundary, format!("{rule}.holder"));
+            let request = StageMcpAttachment {
+                workspace_id: "workspace-a".into(),
+                generation: McpGenerationRef {
+                    session_id: "session-a".into(),
+                    attachment_id: McpAttachmentId("mcp-docs".into()),
+                    generation: McpGeneration(3),
+                    runtime_incarnation: "runtime-a".into(),
+                    lease_epoch: 7,
+                    lease_expires_at_unix_ms: u64::MAX,
+                },
+                realization_id: "realization-a".into(),
+                stage_idempotency_key: "stage-a".into(),
+                name: "docs".into(),
+                target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
+                credential: Some(credential(selected.clone())),
+                prompts_as_skills: false,
+                selected_plaintext_holder: Some(selected.clone()),
+            };
+            let mut receipt = McpRealizationReceipt {
+                generation: request.generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: Some(selected),
+                actual_realization_kind: Some(realization),
+                receipt_fingerprint: request.fingerprint(),
+            };
+            if tamper {
+                receipt.generation.lease_epoch += 1;
+            }
+            assert_eq!(
+                receipt
+                    .verify_for_delivery(&request, delivery, realization)
+                    .is_ok(),
+                accepted,
+                "{rule}"
+            );
+        }
+    }
+
     fn holder(domain: &str) -> PlaintextHolder {
         PlaintextHolder::new(PlaintextBoundary::Worker, domain)
     }
@@ -1494,6 +1621,7 @@ mod tests {
         // | D6 | equal | present | T | Failed | add retry generation N+1 |
         // | D7 | changed | remove+add | - | Active | keep old visible until switch |
         // | D8 | changed | present | prompts flag changed | Active | add gen 2 |
+        // | D9 | changed | present | credential revision changed | Active | add gen 2 |
         let mut add = SessionMcpAttachmentSet::default();
         let plan = add
             .request_full_replacement(vec![draft("a", "https://a.test/mcp", None)], None)
@@ -1533,6 +1661,34 @@ mod tests {
             "D8"
         );
         assert!(prompt_policy.attachments[1].prompts_as_skills, "D8");
+
+        let workload = PlaintextHolder::new(PlaintextBoundary::Workload, "awaken.workload.acp");
+        let mut credential_policy = SessionMcpAttachmentSet::from_initial(
+            vec![draft(
+                "secured",
+                "https://secured.test/mcp",
+                Some(credential(workload.clone())),
+            )],
+            Some(workload.clone()),
+        )
+        .expect("D9 initial");
+        credential_policy.attachments[0].state = McpAttachmentState::Active;
+        let mut revised = draft(
+            "secured",
+            "https://secured.test/mcp",
+            Some(credential(workload.clone())),
+        );
+        revised.credential.as_mut().unwrap().credential.revision += 1;
+        let credential_replaced = credential_policy
+            .request_full_replacement(vec![revised], Some(workload))
+            .expect("D9");
+        assert!(credential_replaced.changed, "D9");
+        assert_eq!(credential_policy.attachments.len(), 2, "D9");
+        assert_eq!(
+            credential_policy.attachments[1].generation,
+            McpGeneration(2),
+            "D9"
+        );
 
         let count = add.attachments.len();
         let adopted = add

@@ -8,17 +8,26 @@ use awaken_agent_contract::RedactedString;
 #[derive(Default)]
 struct RecordingRolloutTarget {
     fail: AtomicBool,
+    pending: AtomicBool,
     events: std::sync::Mutex<Vec<ManagedCredentialRollout>>,
 }
 
 #[async_trait::async_trait]
 impl ManagedCredentialRolloutTarget for RecordingRolloutTarget {
-    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String> {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         if self.fail.load(Ordering::SeqCst) {
-            return Err("service controller unavailable".into());
+            return Err(ManagedCredentialAdoptionError::Unavailable(
+                "service controller unavailable".into(),
+            ));
         }
         self.events.lock().unwrap().push(event.clone());
-        Ok(())
+        if self.pending.load(Ordering::SeqCst) {
+            return Ok(ManagedCredentialAdoptionProgress::Pending);
+        }
+        Ok(ManagedCredentialAdoptionProgress::Converged)
     }
 }
 
@@ -294,6 +303,16 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
 
     target.fail.store(false, Ordering::SeqCst);
+    target.pending.store(true, Ordering::SeqCst);
+    assert_eq!(
+        reconcile_managed_credential_rollouts(&repo, &target)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
+
+    target.pending.store(false, Ordering::SeqCst);
     assert_eq!(
         reconcile_managed_credential_rollouts(&repo, &target)
             .await
@@ -301,7 +320,9 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         1
     );
     assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
-    assert_eq!(target.events.lock().unwrap().as_slice(), events.as_slice());
+    let attempts = target.events.lock().unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts.iter().all(|attempt| attempt == &events[0]));
 }
 
 #[tokio::test]
