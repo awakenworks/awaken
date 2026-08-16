@@ -8,6 +8,7 @@ impl ManagedState {
         match error {
             SessionRealizationControlFailure::NotFound => StateError::NotFound,
             SessionRealizationControlFailure::Conflict
+            | SessionRealizationControlFailure::Retired
             | SessionRealizationControlFailure::Terminal => StateError::Conflict,
             SessionRealizationControlFailure::Invalid(message) => {
                 StateError::Run(RunError::bad_request(message))

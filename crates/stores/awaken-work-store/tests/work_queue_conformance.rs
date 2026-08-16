@@ -353,13 +353,12 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
         renewed.expires_at_unix_ms > first.expires_at_unix_ms,
         "L2/E1"
     );
-    assert!(
-        q.acquire_session("env", "session", "owner-b", 11)
-            .await
-            .expect("L3")
-            .is_none(),
-        "L3/E2"
-    );
+    let fenced = q
+        .acquire_session("env", "session", "owner-b", 11)
+        .await
+        .expect("L3")
+        .expect("L3 returns the current lease for typed fencing");
+    assert_eq!(fenced.owner, "owner-a", "L3/E2");
     assert!(matches!(
         q.ack("env", &id, "owner-b").await.expect("L3 ack"),
         WorkMutationResult::PreconditionFailed
@@ -416,11 +415,13 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
 
 /// Graceful Worker teardown cause/effect graph: C1 exact incarnation owns active
 /// Session Work in two Environments; C2 another incarnation owns a third; C3 the
-/// exact owner deregisters. Effects: E1 all and only C1 rows stop atomically per
-/// backend; E2 C2 remains active; E3 queued successors become claimable. Decision
+/// exact owner loses authority. Effects: E1 all and only C1 rows return to the
+/// queue atomically per backend; E2 C2 remains active; E3 the same Sessions become
+/// claimable by a fresh incarnation before later queued work. Decision
 /// rules: G1=C1+C3->E1+E3, G2=C2+C3->E2. FMECA: retaining a graceful predecessor's
-/// 60-second lease stalls every restart; releasing by reusable worker id would
-/// instead revoke a replacement generation. Exact incarnation owner avoids both.
+/// 60-second lease stalls every restart; permanently stopping a non-terminal
+/// Session makes recovery impossible; releasing by reusable worker id would revoke
+/// a replacement generation. Exact incarnation requeue avoids all three.
 async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
     let first = q.enqueue_session("env-a", "first").await.expect("G1");
     q.enqueue_session("env-a", "next")
@@ -439,12 +440,12 @@ async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
     );
     assert_eq!(
         q.get("env-a", &first).await.unwrap().unwrap().state,
-        WorkState::Stopped,
+        WorkState::Queued,
         "G1/E1"
     );
     assert_eq!(
         q.get("env-b", &second).await.unwrap().unwrap().state,
-        WorkState::Stopped,
+        WorkState::Queued,
         "G1/E1"
     );
     assert_eq!(
@@ -453,7 +454,10 @@ async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
         "G2/E2"
     );
     assert!(
-        q.claim("env-a", "worker:2:new", 1).await.unwrap().is_some(),
+        q.claim("env-a", "worker:2:new", 1)
+            .await
+            .unwrap()
+            .is_some_and(|work| work.id == first),
         "G1/E3"
     );
     assert_eq!(

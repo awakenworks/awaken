@@ -661,6 +661,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let agent_id = publication.agent_id.clone();
         let state = publication.state.as_str().to_string();
         let record = serde_json::to_string(publication).map_err(reject)?;
+        let source_revision = publication.source_revision;
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let tx = conn.transaction().map_err(reject)?;
@@ -673,6 +674,22 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .optional()
                 .map_err(reject)?;
             if current_revision != Some(expected_generation) {
+                return Ok(ConfigWrite::Conflict { current_revision });
+            }
+            let conflicting_fingerprint = tx
+                .query_row(
+                    &format!(
+                        "SELECT fingerprint FROM {p}_publication \
+                         WHERE scope_id = ?1 AND agent_id = ?2 AND fingerprint <> ?3 \
+                         AND CAST(json_extract(record, '$.source_revision') AS INTEGER) = ?4 \
+                         LIMIT 1"
+                    ),
+                    params![scope, agent_id, fingerprint, source_revision],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            if conflicting_fingerprint.is_some() {
                 return Ok(ConfigWrite::Conflict { current_revision });
             }
             tx.execute(

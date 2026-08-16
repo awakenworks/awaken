@@ -125,6 +125,7 @@ pub struct WorkerNodeBuilder {
     mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
+    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
@@ -154,6 +155,7 @@ impl WorkerNodeBuilder {
             mcp_attachment_realizer: None,
             web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             memory_mounter_factory: None,
+            admin_tools: Vec::new(),
             admin_listen: Some("0.0.0.0:9090".to_string()),
             graceful_drain: std::time::Duration::from_secs(20),
             credential_probe_interval: std::time::Duration::from_secs(10),
@@ -175,6 +177,18 @@ impl WorkerNodeBuilder {
     pub fn with_manifest(mut self, manifest: WorkerManifest) -> Self {
         self.manifest
             .select(ManifestSource::Explicit(Box::new(manifest)));
+        self
+    }
+
+    /// Install process-local administration tools for a co-located all-in-one
+    /// Worker. Distributed Workers receive none: these executors close over
+    /// Control-owned stores and must never cross a process boundary.
+    #[must_use]
+    pub fn with_admin_tools(
+        mut self,
+        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    ) -> Self {
+        self.admin_tools = tools;
         self
     }
 
@@ -641,6 +655,7 @@ impl WorkerNodeBuilder {
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             web_search_providers: self.web_search_providers,
             memory_mounter_factory: self.memory_mounter_factory,
+            admin_tools: self.admin_tools,
             admin_listen: self.admin_listen,
             graceful_drain: self.graceful_drain,
             credential_probe_interval: self.credential_probe_interval,
@@ -710,6 +725,7 @@ pub struct WorkerNode {
     mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
+    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
@@ -1045,7 +1061,8 @@ impl WorkerNode {
         .with_worker_stream_publisher(stream_publisher)
         .with_worker_dispatch(dispatch)
         .with_skill_bundle_source(remote_skills)
-        .with_web_search_provider_registry(self.web_search_providers);
+        .with_web_search_provider_registry(self.web_search_providers)
+        .with_admin_tools(self.admin_tools);
         if let Some(remote_attempt) = self.remote_attempt {
             host = host.with_remote_attempt_executor(remote_attempt);
         }
@@ -1226,8 +1243,17 @@ impl WorkerNode {
             std::time::Duration::ZERO
         };
         let deadline_ms = wall_clock_ms().saturating_add(grace.as_millis() as u64);
-        if let Err(error) = lifecycle.begin_drain(Some(deadline_ms)).await {
-            eprintln!("awaken-worker drain registration failed closed: {error}");
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lifecycle.begin_drain(Some(deadline_ms)),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("awaken-worker drain registration failed closed: {error}"),
+            Err(_) => eprintln!(
+                "awaken-worker drain registration exceeded 5s; local admission remains closed"
+            ),
         }
         if !grace.is_zero() {
             eprintln!(
@@ -1244,10 +1270,21 @@ impl WorkerNode {
         }
         host.shutdown_environment_capacity().await;
         if host.pool_in_flight() == 0 {
-            let _ = control.mark_quiesced(&lifecycle.identity).await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                control.mark_quiesced(&lifecycle.identity),
+            )
+            .await;
         }
-        if let Err(error) = control.deregister(&lifecycle.identity).await {
-            eprintln!("awaken-worker deregistration failed: {error}");
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            control.deregister(&lifecycle.identity),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => eprintln!("awaken-worker deregistration failed: {error}"),
+            Err(_) => eprintln!("awaken-worker deregistration exceeded 5s"),
         }
         shutdown?;
         if authority_lost {

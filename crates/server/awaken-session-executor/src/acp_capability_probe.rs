@@ -76,15 +76,24 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
             .map_err(|_| "ACP capability probe timed out".to_string())
             .and_then(|result| result);
             drop(channel);
-            let _ = process.signal(pc::Signal::Kill).await;
+            // A runtime signal is external I/O. If it stalls, proceeding to
+            // environment disposal is the only path that can still reap the
+            // container and release Worker capacity.
+            let _ = tokio::time::timeout(Duration::from_secs(2), process.signal(pc::Signal::Kill))
+                .await;
             let _ = tokio::time::timeout(Duration::from_secs(2), process.wait()).await;
             negotiated
         }
         .await;
-        let dispose = environment
-            .dispose()
+        // Disposal itself crosses the container runtime boundary. Bound it so
+        // a wedged daemon cannot hold the capability refresh (and therefore a
+        // Worker heartbeat/lease) forever.
+        let dispose = tokio::time::timeout(Duration::from_secs(10), environment.dispose())
             .await
-            .map_err(|error| format!("dispose ACP capability probe environment: {error}"));
+            .map_err(|_| "dispose ACP capability probe environment timed out".to_string())
+            .and_then(|result| {
+                result.map_err(|error| format!("dispose ACP capability probe environment: {error}"))
+            });
         match (result, dispose) {
             (Ok(negotiated), Ok(())) => Ok(negotiated),
             (Err(error), _) | (Ok(_), Err(error)) => Err(error),

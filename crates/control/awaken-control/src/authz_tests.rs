@@ -854,6 +854,32 @@ async fn mg1_unmapped_route_is_403_no_action_mapped() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mg1b_only_the_read_only_a2a_well_known_card_bypasses_authentication() {
+    // Causal boundary: anonymous peer -> discovery card -> authenticated A2A
+    // operation. Making the whole A2A prefix public would turn discovery into
+    // execution authority; guarding the well-known card makes discovery fail.
+    let (_dir, iam) = fresh_iam();
+    let app = guarded_app(iam);
+    let (card_status, card) = call(&app, "GET", "/.well-known/agent-card.json", None, None).await;
+    assert_eq!(card_status, StatusCode::OK, "{card}");
+
+    let (run_status, run_error) =
+        call(&app, "POST", "/v1/a2a/message:send", None, Some(json!({}))).await;
+    assert_eq!(run_status, StatusCode::UNAUTHORIZED, "{run_error}");
+    assert_eq!(run_error["error"]["type"], json!("authentication_error"));
+
+    let (write_status, write_error) = call(
+        &app,
+        "POST",
+        "/.well-known/agent-card.json",
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(write_status, StatusCode::FORBIDDEN, "{write_error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mg2_missing_token_is_401() {
     let (_dir, iam) = fresh_iam();
     let app = guarded_app(iam);

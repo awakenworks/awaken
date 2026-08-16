@@ -293,6 +293,7 @@ pub(super) async fn prepare_control_routers(
         std::time::Duration::from_secs(5),
         &process.service_lifecycle,
     );
+    let admin_tools = component.admin_tools.clone();
     let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
@@ -309,6 +310,7 @@ pub(super) async fn prepare_control_routers(
         private_router,
         Some(component.registration_supervisor),
         process.service_lifecycle,
+        admin_tools,
     )
 }
 

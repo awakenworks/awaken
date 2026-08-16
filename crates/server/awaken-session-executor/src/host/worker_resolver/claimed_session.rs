@@ -136,6 +136,7 @@ mod tests {
         // | R1 | NotReady | ResolutionNotReady |
         // | R2 | Unavailable | Execution |
         // | R3 | Terminal | TerminalResolution |
+        // | R4 | Retired | TerminalResolution |
         let cases = [
             (
                 "R1",
@@ -152,6 +153,11 @@ mod tests {
             (
                 "R3",
                 awaken_session_contract::SessionRealizationControlFailure::Terminal,
+                "terminal_resolution",
+            ),
+            (
+                "R4",
+                awaken_session_contract::SessionRealizationControlFailure::Retired,
                 "terminal_resolution",
             ),
         ];

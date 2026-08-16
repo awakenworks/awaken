@@ -929,6 +929,8 @@ impl SharedHost {
         // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
+        let mut session_skill_plugin: Option<Arc<dyn awaken_runtime_contract::plugin::Plugin>> =
+            None;
         // A managed Session consumes its exact frozen Skill versions. An embedded
         // direct Session without a manifest reads its configured Skill catalog.
         let delivered = if frozen_skill_versions.is_some() {
@@ -993,6 +995,16 @@ impl SharedHost {
         .await
         .map_err(HostError::internal)?
         {
+            if installed.is_some() {
+                session_skill_plugin = Some(Arc::new(
+                    crate::skills::SessionSkillPlugin::new(
+                        wiring.descriptors.clone(),
+                        wiring.list_tool.clone(),
+                        wiring.activate_tool.clone(),
+                    )
+                    .map_err(HostError::internal)?,
+                ));
+            }
             runtime = runtime
                 .with_gate(wiring.gate)
                 .with_tool(wiring.list_tool)
@@ -1141,7 +1153,14 @@ impl SharedHost {
         // Authored/default Session configuration still advertises Skill tools.
         // MCP tools are live Session plugins and therefore do not rewrite either
         // this generated snapshot or an immutable published snapshot.
-        let dynamic_descriptors = skill_descriptors;
+        // A direct embedded Session may author its generated snapshot locally.
+        // A published snapshot is immutable, so its Resource-derived Skill
+        // descriptors enter through `session_skill_plugin` instead.
+        let dynamic_descriptors = if installed.is_some() {
+            Vec::new()
+        } else {
+            skill_descriptors
+        };
         let session_delegates: HashSet<String> = installed
             .as_ref()
             .map(|snapshot| {
@@ -1408,6 +1427,10 @@ impl SharedHost {
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
         );
+        let run_context = match session_skill_plugin {
+            Some(plugin) => run_context.with_session_plugin(plugin),
+            None => run_context,
+        };
         let run_context = match tool_executor.as_ref() {
             Some(executor) => run_context.with_tool_executor(executor.clone()),
             None => run_context,
@@ -1635,12 +1658,47 @@ impl SharedHost {
     /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
         self.stop_session_mcp_processes(thread).await;
-        let (ctx, env) = self.session_slots.update(thread, |slot| {
-            (slot.runtime.take(), slot.environment.take())
+        let (ctx, env, expected_binding) = self.session_slots.update(thread, |slot| {
+            (
+                slot.runtime.take(),
+                slot.environment.take(),
+                slot.expected_environment_binding.clone(),
+            )
         });
-        let dispose_result = if let Some(env) = env.or_else(|| ctx.and_then(|ctx| ctx.env.clone()))
-        {
-            if env.needs_recovered_memory_reconciliation() {
+        let mut adopted_for_cleanup = false;
+        let env = env.or_else(|| ctx.and_then(|ctx| ctx.env.clone()));
+        let env = if env.is_some() {
+            env
+        } else if let Some(binding) = expected_binding.as_deref() {
+            // A Runtime context can be evicted or move between all-in-one
+            // components while the durable Session still owns its Sandbox. A
+            // missing process-local Arc is therefore not evidence that cleanup
+            // is complete: adopt the exact fenced handle and reconcile writable
+            // Memory before issuing a successful terminal receipt.
+            let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(binding)
+                .map_err(|error| {
+                    HostError::internal(format!(
+                        "invalid terminal Session sandbox binding: {error}"
+                    ))
+                })?;
+            if handle.sandbox_id != thread {
+                return Err(HostError::internal(format!(
+                    "terminal sandbox {} does not belong to Session {thread}",
+                    handle.sandbox_id
+                )));
+            }
+            let adopted = self
+                .session_provider
+                .adopt(&handle)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            adopted_for_cleanup = true;
+            Some(Arc::new(adopted))
+        } else {
+            None
+        };
+        let dispose_result = if let Some(env) = env {
+            if adopted_for_cleanup || env.needs_recovered_memory_reconciliation() {
                 let mounter = self.memory_mounter().ok_or_else(|| {
                     HostError::internal("recovered Memory copy has no MemoryMounter")
                 })?;

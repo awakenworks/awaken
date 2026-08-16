@@ -321,5 +321,6 @@ async fn prepare_control_process_with_model_supply(
         registration_supervisor: prepared.registration_supervisor,
         service_lifecycle: prepared.service_lifecycle,
         coordinator_authorities: None,
+        admin_tools: prepared.admin_tools,
     })
 }

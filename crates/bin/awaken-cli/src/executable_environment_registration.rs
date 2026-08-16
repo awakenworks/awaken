@@ -24,6 +24,7 @@ pub(crate) struct ExecutableEnvironmentWiring {
 }
 
 impl ExecutableEnvironmentWiring {
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn local(work: Arc<dyn WorkQueue>) -> Result<Self, String> {
         Self::local_with_image_builds(work, None)
     }

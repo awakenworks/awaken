@@ -19,6 +19,9 @@ use awaken_ext_skills::{
 use awaken_resource_contract::SkillVersion;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
+use awaken_runtime_contract::plugin::{
+    CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
+};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
@@ -173,6 +176,68 @@ pub(crate) struct SkillWiring {
     pub list_tool: Arc<dyn RawTool>,
     pub activate_tool: Arc<dyn RawTool>,
     pub gate: Arc<dyn ToolGateHook>,
+}
+
+/// Session-scoped projection of delivered Skill tools. Published Agent
+/// snapshots remain immutable, so Resource-derived descriptors cannot be
+/// appended to their resolved spec. Runtime's existing session-plugin seam is
+/// the one model-visible/executable convergence point for those dynamic tools.
+pub(crate) struct SessionSkillPlugin {
+    tools: Vec<DynamicTool>,
+}
+
+impl SessionSkillPlugin {
+    pub(crate) fn new(
+        descriptors: Vec<ToolDescriptor>,
+        list_tool: Arc<dyn RawTool>,
+        activate_tool: Arc<dyn RawTool>,
+    ) -> Result<Self, String> {
+        let executors = [list_tool, activate_tool]
+            .into_iter()
+            .map(|tool| (tool.id().to_string(), tool))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut tools = Vec::with_capacity(descriptors.len());
+        for descriptor in descriptors {
+            let tool = executors.get(&descriptor.id).cloned().ok_or_else(|| {
+                format!(
+                    "Skill descriptor `{}` has no matching runtime executor",
+                    descriptor.id
+                )
+            })?;
+            tools.push(DynamicTool { descriptor, tool });
+        }
+        if tools.len() != executors.len() {
+            return Err("Skill runtime executor has no matching descriptor".into());
+        }
+        Ok(Self { tools })
+    }
+}
+
+impl Plugin for SessionSkillPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "awaken.session.skills".into(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                tools: IdBound::Exact(
+                    self.tools
+                        .iter()
+                        .map(|tool| tool.descriptor.id.clone())
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn resolve(&self) -> Contributions {
+        let mut contributions = Contributions::new("awaken.session.skills");
+        for tool in &self.tools {
+            contributions.register_dynamic_tool(tool.clone());
+        }
+        contributions
+    }
 }
 
 /// Assemble the skill surface for a thread, or `None` when no skills are offered.
@@ -354,6 +419,37 @@ fn skill_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_skill_plugin_fails_closed_when_descriptor_and_executor_sets_drift() {
+        use awaken_ext_skills::{ListSkillsTool, SkillTool};
+
+        let registry: Arc<dyn SkillRegistry> =
+            Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
+                "test", "Test", "test", "test",
+            )]));
+        let list: Arc<dyn RawTool> = Arc::new(ListSkillsTool::new(registry.clone()));
+        let activate: Arc<dyn RawTool> = Arc::new(SkillTool::new(registry));
+        let missing = SessionSkillPlugin::new(
+            vec![list_skills_descriptor()],
+            list.clone(),
+            activate.clone(),
+        )
+        .err()
+        .expect("an executor without its descriptor must fail closed");
+        assert!(missing.contains("no matching descriptor"));
+
+        let unknown = ToolDescriptor::pinned(
+            "test",
+            "unknown-skill-tool",
+            "unknown",
+            serde_json::json!({"type": "object"}),
+        );
+        let missing = SessionSkillPlugin::new(vec![unknown], list, activate)
+            .err()
+            .expect("a descriptor without its executor must fail closed");
+        assert!(missing.contains("no matching runtime executor"));
+    }
 
     fn version_with(files: Vec<awaken_skill_store::SkillBundleFile>) -> SkillVersion {
         SkillVersion {
