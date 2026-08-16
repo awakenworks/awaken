@@ -263,6 +263,7 @@ pub(super) async fn run_tool_calls(
                                             &ledger.transcript,
                                             &call,
                                             context,
+                                            run_id,
                                         )
                                         .await
                                     };

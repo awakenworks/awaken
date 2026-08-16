@@ -137,6 +137,7 @@ const OFFICIAL_EVENT_TYPES = new Set([
   'session.status_idle',
   'session.status_rescheduled',
   'session.status_terminated',
+  'session.usage',
   'session.thread_created',
   'session.thread_status_created',
   'session.thread_status_running',
@@ -471,6 +472,17 @@ function validateEvent(value: unknown, persisted = true): string[] {
     for (const key of ['is_error', 'model_request_start_id', 'model_usage']) {
       if (!Object.prototype.hasOwnProperty.call(event, key)) {
         issues.push(`span.model_request_end missing ${key}`);
+      }
+    }
+  }
+  if (event.type === 'session.usage') {
+    const usage = asObject(event.usage);
+    if (!Object.prototype.hasOwnProperty.call(event, 'usage')) {
+      issues.push('session.usage missing usage');
+    }
+    for (const key of ['input_tokens', 'output_tokens']) {
+      if (Object.prototype.hasOwnProperty.call(usage, key) && typeof usage[key] !== 'number') {
+        issues.push(`session.usage ${key} is not numeric`);
       }
     }
   }

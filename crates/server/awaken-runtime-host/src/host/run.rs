@@ -1090,6 +1090,32 @@ impl SharedHost {
             .expect("reschedule mutex poisoned")
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        let model_requests = ctx
+            .model_requests
+            .lock()
+            .expect("model requests mutex poisoned")
+            .as_ref()
+            .map(|observations| {
+                observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default();
+        let rescheduled_delegated_run_ids = ctx
+            .rescheduled_runs
+            .lock()
+            .expect("rescheduled runs mutex poisoned")
+            .as_ref()
+            .map(|runs| {
+                runs.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|run| *run != &run_id.0)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
         Ok(CommittedStepReceipt::from_verified(
             VerifiedStepProjection {
@@ -1099,6 +1125,8 @@ impl SharedHost {
                 pending,
                 compacted,
                 rescheduled,
+                model_requests,
+                rescheduled_delegated_run_ids,
                 delegated_runs,
             },
             &committed,
@@ -1317,6 +1345,8 @@ mod committed_step_proof_tests {
                 pending: None,
                 compacted: false,
                 rescheduled: false,
+                model_requests: Vec::new(),
+                rescheduled_delegated_run_ids: Default::default(),
                 delegated_runs: Vec::new(),
             },
             &snapshot(),

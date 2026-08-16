@@ -4,7 +4,7 @@
 //! makes a descriptor model-visible can register the matching implementation.
 //! Network fetch and the separately configured search plugin live in [`crate::web`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -26,6 +26,7 @@ const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const GREP_OUTPUT_LIMIT: usize = 100 * 1024;
 const GREP_MAX_LINE_LENGTH: usize = 2_000;
 const GLOB_RESULT_LIMIT: usize = 200;
+const GLOB_EXPANSION_LIMIT: usize = 256;
 const WALK_MAX_DEPTH: usize = 40;
 const WALK_MAX_ENTRIES: usize = 50_000;
 
@@ -37,6 +38,10 @@ pub struct HandToolContext {
     allowed_roots: Vec<PathBuf>,
     max_file_bytes: Option<u64>,
     bash_env: Option<BTreeMap<String, String>>,
+    /// Trusted launcher for the persistent shell. Providers use this to enter a
+    /// sandbox once when Bash starts instead of wrapping every command and
+    /// losing shell state between calls.
+    bash_launcher: Option<(PathBuf, Vec<String>)>,
 }
 
 impl HandToolContext {
@@ -46,6 +51,7 @@ impl HandToolContext {
             allowed_roots: Vec::new(),
             max_file_bytes: Some(DEFAULT_MAX_FILE_BYTES),
             bash_env: None,
+            bash_launcher: None,
         }
     }
 
@@ -60,6 +66,19 @@ impl HandToolContext {
     #[must_use]
     pub fn with_bash_env(mut self, env: BTreeMap<String, String>) -> Self {
         self.bash_env = Some(env);
+        self
+    }
+
+    /// Replace the default Bash launch with a trusted provider command. The
+    /// command must itself end in a persistent POSIX shell; model-authored
+    /// arguments never reach this configuration seam.
+    #[must_use]
+    pub fn with_bash_launcher(
+        mut self,
+        program: impl Into<PathBuf>,
+        args: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.bash_launcher = Some((program.into(), args.into_iter().collect()));
         self
     }
 }
@@ -370,34 +389,39 @@ impl Tool for GlobTool {
         }
         let root_input = args.path.as_deref().unwrap_or(".");
         let root = self.0.resolve(root_input)?;
-        let pattern = root.join(&args.pattern).display().to_string();
-        let entries = glob::glob(&pattern)
-            .map_err(|err| ToolError::InvalidArguments(format!("glob {pattern}: {err}")))?;
+        let patterns = expand_glob_alternatives(&args.pattern)?;
         let mut paths = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(|err| ToolError::Execution(format!("glob walk: {err}")))?;
-            if path
-                .components()
-                .any(|component| matches!(component, Component::Normal(name) if name == ".git" || name == "node_modules"))
-            {
-                continue;
+        let mut seen = BTreeSet::new();
+        for relative_pattern in patterns {
+            let pattern = root.join(&relative_pattern).display().to_string();
+            let entries = glob::glob(&pattern)
+                .map_err(|err| ToolError::InvalidArguments(format!("glob {pattern}: {err}")))?;
+            for entry in entries {
+                let path =
+                    entry.map_err(|err| ToolError::Execution(format!("glob walk: {err}")))?;
+                if path
+                    .components()
+                    .any(|component| matches!(component, Component::Normal(name) if name == ".git" || name == "node_modules"))
+                {
+                    continue;
+                }
+                let Ok(real) = std::fs::canonicalize(&path) else {
+                    continue;
+                };
+                if !path_is_within(&root, &real) || !seen.insert(real.clone()) {
+                    continue;
+                }
+                let Ok(metadata) = std::fs::metadata(&real) else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
+                let modified = metadata
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                paths.push((modified, path.display().to_string()));
             }
-            let Ok(real) = std::fs::canonicalize(&path) else {
-                continue;
-            };
-            if !path_is_within(&root, &real) {
-                continue;
-            }
-            let Ok(metadata) = std::fs::metadata(&real) else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-            let modified = metadata
-                .modified()
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            paths.push((modified, path.display().to_string()));
         }
         paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
         if paths.is_empty() {
@@ -410,6 +434,81 @@ impl Tool for GlobTool {
             .collect::<Vec<_>>()
             .join("\n"))
     }
+}
+
+/// Expand the alternation forms accepted by Node's native `fs.glob` but not by
+/// Rust's `glob` crate. The cap makes a model-authored combinatorial pattern a
+/// deterministic argument error instead of unbounded work.
+fn expand_glob_alternatives(pattern: &str) -> Result<Vec<String>, ToolError> {
+    fn first_alternation(pattern: &str) -> Option<(usize, usize, char, Vec<&str>)> {
+        let brace = pattern.find('{').map(|index| (index, '{', '}', ','));
+        let extglob = pattern.find("@(").map(|index| (index, '(', ')', '|'));
+        let (start, open, close, separator) = match (brace, extglob) {
+            (Some(left), Some(right)) => {
+                if left.0 <= right.0 {
+                    left
+                } else {
+                    right
+                }
+            }
+            (Some(found), None) | (None, Some(found)) => found,
+            (None, None) => return None,
+        };
+        let content_start = if open == '(' { start + 2 } else { start + 1 };
+        let mut depth = 0_usize;
+        let mut end = None;
+        for (offset, character) in pattern[content_start..].char_indices() {
+            if character == open {
+                depth += 1;
+            } else if character == close {
+                if depth == 0 {
+                    end = Some(content_start + offset);
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+        let end = end?;
+        let content = &pattern[content_start..end];
+        let mut choices = Vec::new();
+        let mut choice_start = 0;
+        depth = 0;
+        for (offset, character) in content.char_indices() {
+            if character == open {
+                depth += 1;
+            } else if character == close {
+                depth = depth.saturating_sub(1);
+            } else if character == separator && depth == 0 {
+                choices.push(&content[choice_start..offset]);
+                choice_start = offset + character.len_utf8();
+            }
+        }
+        choices.push(&content[choice_start..]);
+        (choices.len() > 1).then_some((start, end + 1, separator, choices))
+    }
+
+    fn visit(pattern: String, output: &mut Vec<String>) -> Result<(), ToolError> {
+        if output.len() >= GLOB_EXPANSION_LIMIT {
+            return Err(ToolError::InvalidArguments(format!(
+                "glob: pattern expands to more than {GLOB_EXPANSION_LIMIT} alternatives"
+            )));
+        }
+        let Some((start, end, _, choices)) = first_alternation(&pattern) else {
+            output.push(pattern);
+            return Ok(());
+        };
+        for choice in choices {
+            visit(
+                format!("{}{}{}", &pattern[..start], choice, &pattern[end..]),
+                output,
+            )?;
+        }
+        Ok(())
+    }
+
+    let mut expanded = Vec::new();
+    visit(pattern.to_string(), &mut expanded)?;
+    Ok(expanded)
 }
 
 /// Search a file's lines for a regex, returning `path:line:text` for each match.
@@ -441,13 +540,16 @@ impl Tool for GrepTool {
                 "grep: pattern is required".into(),
             ));
         }
-        let re = regex::Regex::new(&args.pattern)
-            .map_err(|err| ToolError::InvalidArguments(format!("grep: invalid regex: {err}")))?;
         let root = self.0.resolve(if args.path.is_empty() {
             "."
         } else {
             &args.path
         })?;
+        if let Some(output) = run_ripgrep(&args.pattern, &root).await? {
+            return Ok(output);
+        }
+        let re = regex::Regex::new(&args.pattern)
+            .map_err(|err| ToolError::InvalidArguments(format!("grep: invalid regex: {err}")))?;
         let mut files = Vec::new();
         let mut remaining = WALK_MAX_ENTRIES;
         collect_files(&root, &mut files, 0, &mut remaining)?;
@@ -477,6 +579,80 @@ impl Tool for GrepTool {
             Ok("no matches".into())
         } else {
             Ok(hits.join("\n"))
+        }
+    }
+}
+
+/// Match the official Node helper's preferred path: use ripgrep when it is on
+/// PATH, and return None only when the executable is absent so the bounded
+/// in-process walker can take over.
+async fn run_ripgrep(pattern: &str, path: &Path) -> Result<Option<String>, ToolError> {
+    let mut child = match tokio::process::Command::new("rg")
+        .args(["-n", "--no-heading", "-e", pattern, "--"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ToolError::Execution(format!("grep: rg failed: {error}")));
+        }
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout
+            .take((GREP_OUTPUT_LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map(|_| bytes)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr
+            .take((GREP_OUTPUT_LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map(|_| bytes)
+    });
+    let output = stdout_task
+        .await
+        .map_err(|error| ToolError::Execution(format!("grep: rg stdout: {error}")))?
+        .map_err(|error| ToolError::Execution(format!("grep: rg stdout: {error}")))?;
+    let truncated = output.len() > GREP_OUTPUT_LIMIT;
+    if truncated {
+        let _ = child.kill().await;
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| ToolError::Execution(format!("grep: rg failed: {error}")))?;
+    let error = stderr_task
+        .await
+        .map_err(|error| ToolError::Execution(format!("grep: rg stderr: {error}")))?
+        .map_err(|error| ToolError::Execution(format!("grep: rg stderr: {error}")))?;
+    if truncated {
+        let prefix = String::from_utf8_lossy(&output[..GREP_OUTPUT_LIMIT]);
+        return Ok(Some(format!(
+            "{prefix}\n[output truncated at {GREP_OUTPUT_LIMIT} bytes]"
+        )));
+    }
+    match status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&output).into_owned())),
+        Some(1) => Ok(Some("no matches".into())),
+        _ => {
+            let detail = String::from_utf8_lossy(&error);
+            let detail = if detail.is_empty() {
+                format!("exit {status}")
+            } else {
+                detail.into_owned()
+            };
+            Err(ToolError::Execution(format!("grep: rg failed: {detail}")))
         }
     }
 }
@@ -801,7 +977,13 @@ struct BashSession {
 
 impl BashSession {
     fn spawn(context: &HandToolContext) -> Result<Self, ToolError> {
-        let mut command = persistent_bash_command();
+        let mut command = if let Some((program, args)) = &context.bash_launcher {
+            let mut command = tokio::process::Command::new(program);
+            command.args(args);
+            command
+        } else {
+            persistent_bash_command()
+        };
         command
             .current_dir(&context.workdir)
             .stdin(Stdio::piped())

@@ -1100,7 +1100,12 @@ impl ManagedState {
             Vec::new(),
             Default::default(),
         );
-        self.append_delegation_projections(&mut record, &delegated_runs, &delegation_transcripts);
+        self.append_delegation_projections(
+            &mut record,
+            &delegated_runs,
+            &Default::default(),
+            &delegation_transcripts,
+        );
         self.sessions
             .lock()
             .unwrap()

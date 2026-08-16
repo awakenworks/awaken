@@ -142,7 +142,7 @@ const surfaces = [
       [/resources\/beta\/vaults/, 'management_vaults_family_e2e.mjs'],
       [/resources\/beta\/user-profiles/, 'management_user_profiles_e2e.mjs'],
       [/resources\/beta\/tunnels/, 'management_tunnels_contract_e2e.mjs'],
-      [/resources\/beta\/webhooks/, 'managed_contract_guard_e2e.mjs'],
+      [/resources\/beta\/webhooks/, 'managed_webhooks_official_sdk_e2e.mjs'],
       [/^resources\/beta\/beta\.d\.ts$/, 'managed_contract_guard_e2e.mjs'],
     ],
     exclusions: [[

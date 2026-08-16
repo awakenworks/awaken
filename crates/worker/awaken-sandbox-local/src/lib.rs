@@ -165,17 +165,15 @@ impl IsolatedRoot {
     }
 }
 
-/// Rewrite one tool call's arguments so its paths are jailed under `root`.
-/// Path tools (`read`/`write`/`edit`/`delete`/`grep`) rebase their `path`; `move`
-/// rebases both endpoints; `glob` rebases
-/// its `pattern`; `bash` is prefixed with `cd '<root>'` so relative commands run
-/// in the environment. Unknown tools pass through unchanged.
+/// Rewrite one tool call's file arguments so paths remain jailed under `root`.
+/// Bash confinement is configured once when its persistent process starts, so
+/// Bash arguments intentionally pass through unchanged here.
 fn jail_args(
     tool_id: &str,
     mut args: Value,
     root: &IsolatedRoot,
     host_outputs: &Path,
-    deny_egress: bool,
+    _deny_egress: bool,
 ) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
@@ -226,36 +224,19 @@ fn jail_args(
             rebase(&mut args, "destination", root)?;
         }
         "glob" => map_output_alias(&mut args, "path", root)?,
-        "bash" => {
-            if deny_egress && let Some(Value::String(cmd)) = args.get("command") {
-                let rooted =
-                    // Egress denied: run the command inside a bwrap namespace with no
-                    // network (`--unshare-net`), rooted at the environment dir. The
-                    // shared bash tool still `sh -c`s this string, which execs bwrap.
-                    bwrap_rooted(&root.root().to_string_lossy(), cmd, true);
-                args["command"] = Value::String(rooted);
-            }
-        }
+        // Bash is confined when its persistent process is launched. Wrapping an
+        // individual command here would create a fresh inner shell and lose
+        // cross-call state such as `cd`, `export`, aliases, and functions.
+        "bash" => {}
         _ => {}
     }
     Ok(args)
 }
 
-/// Single-quote a token for a POSIX shell (`'` → `'\''`), so a token survives the
-/// outer `sh -c` verbatim.
-fn sh_squote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// Build a `bwrap … -- /bin/sh -c '<cmd>'` command string that runs `cmd` under
-/// `root` with network egress denied (`--unshare-net`). Every token is shell-quoted
-/// so the outer `sh -c` (in the shared bash tool) hands bwrap a clean argv and the
-/// user command reaches the inner shell intact. The flag set is the one validated on
-/// the target host: read-only host userland, a private `/tmp`, `/dev` and `/proc`,
-/// and the environment dir bound read-write as the working directory.
-fn bwrap_rooted(root: &str, cmd: &str, deny_egress: bool) -> String {
-    let mut tokens = vec![
-        "bwrap",
+/// Build the trusted launcher argv for one persistent Bash process in a
+/// networkless bubblewrap namespace rooted at the environment workdir.
+fn bwrap_persistent_bash(root: &str) -> Vec<String> {
+    [
         "--ro-bind",
         "/",
         "/",
@@ -270,19 +251,15 @@ fn bwrap_rooted(root: &str, cmd: &str, deny_egress: bool) -> String {
         root,
         "--chdir",
         root,
+        "--unshare-net",
         "--",
-        "/bin/sh",
-        "-c",
-        cmd,
-    ];
-    if deny_egress {
-        tokens.insert(10, "--unshare-net");
-    }
-    tokens
-        .iter()
-        .map(|t| sh_squote(t))
-        .collect::<Vec<_>>()
-        .join(" ")
+        "/bin/bash",
+        "--noprofile",
+        "--norc",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 /// A hand tool bound to a sandbox environment. Unlike a [`RawTool`], its result is
@@ -421,9 +398,15 @@ pub(crate) fn rooted_hand_tools(
     runtime_paths: RuntimePathEnv,
     deny_egress: bool,
 ) -> Vec<Arc<dyn HandTool>> {
-    let context = HandToolContext::new(root.root())
+    let mut context = HandToolContext::new(root.root())
         .with_allowed_root(&host_outputs)
         .with_bash_env(runtime_paths.bash_env());
+    if deny_egress {
+        context = context.with_bash_launcher(
+            "bwrap",
+            bwrap_persistent_bash(&root.root().to_string_lossy()),
+        );
+    }
     all_hand_tools_in(context)
         .into_iter()
         .map(|inner| {
@@ -1135,53 +1118,37 @@ mod tests {
     }
 
     #[test]
-    fn deny_egress_bash_is_wrapped_in_a_no_network_bwrap_and_shell_quoted() {
-        // The egress-denied bash path: instead of the legacy `cd '<root>' && <cmd>`
-        // lexical jail (host network shared), the command must be re-rendered to run
-        // inside a `bwrap --unshare-net` namespace rooted at the env dir, with every
-        // token single-quoted so the outer `sh -c` hands bwrap a clean argv. This is the
-        // deterministic construction the gated isolation e2e can only assert behaviorally.
+    fn deny_egress_bash_commands_are_not_wrapped_per_call() {
+        // Per-call wrapping would start an inner shell and discard `cd`,
+        // exports, aliases, and functions after every invocation.
         let root = IsolatedRoot::new("/env");
         let out = jail_args(
             "bash",
-            serde_json::json!({ "command": "id" }),
+            serde_json::json!({ "command": "cd nested && export ANSWER=42" }),
             &root,
             test_outputs(),
             true,
         )
         .unwrap();
-        let cmd = out["command"].as_str().unwrap();
-        // Runs under bwrap with the network namespace unshared (egress denied).
-        assert!(cmd.starts_with("'bwrap' '--ro-bind' '/' '/'"), "got: {cmd}");
-        assert!(
-            cmd.contains("'--unshare-net'"),
-            "egress must be denied: {cmd}"
-        );
-        // Rooted at the env dir, and the user command reaches the inner shell.
-        assert!(cmd.contains("'--chdir' '/env'"));
-        assert!(cmd.contains("'--bind' '/env' '/env'"));
-        assert!(cmd.ends_with("'/bin/sh' '-c' 'id'"), "got: {cmd}");
-        // It is NOT the legacy lexical `cd && ...` form.
-        assert!(!cmd.contains("cd '/env' &&"));
+        assert_eq!(out["command"], "cd nested && export ANSWER=42");
     }
 
     #[test]
-    fn deny_egress_bash_escapes_an_embedded_quote_so_the_command_cannot_break_out() {
-        // Injection safety: a single quote inside the user command must be escaped
-        // (`'` → `'\''`) so it cannot terminate the outer `sh -c` quoting and smuggle
-        // tokens past the bwrap wrapper.
-        let root = IsolatedRoot::new("/env");
-        let out = jail_args(
-            "bash",
-            serde_json::json!({ "command": "a'b" }),
-            &root,
-            test_outputs(),
-            true,
-        )
-        .unwrap();
-        let cmd = out["command"].as_str().unwrap();
-        // The user command lands as a single fully-quoted token with the quote escaped.
-        assert!(cmd.ends_with(r#"'-c' 'a'\''b'"#), "got: {cmd}");
+    fn persistent_bwrap_launcher_has_no_network_and_exact_root() {
+        // The root is passed as an argv token, not interpolated into shell text,
+        // while the shell process itself lives in the no-network namespace.
+        let args = bwrap_persistent_bash("/env/a'b");
+        assert!(args.iter().any(|arg| arg == "--unshare-net"));
+        assert!(
+            args.windows(3)
+                .any(|part| part == ["--bind", "/env/a'b", "/env/a'b"])
+        );
+        assert!(args.ends_with(&[
+            "--".to_owned(),
+            "/bin/bash".to_owned(),
+            "--noprofile".to_owned(),
+            "--norc".to_owned(),
+        ]));
     }
 
     // ---- HandOutput ----

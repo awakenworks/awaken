@@ -155,6 +155,17 @@ pub struct TokenUsage {
     pub cache_creation_tokens: u64,
 }
 
+/// One completed logical model request observed at the runtime inference seam.
+/// Provider retries belong to the same request; continuations, failover calls,
+/// and advisor calls each produce another observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelRequestObservation {
+    /// Whether the logical request exhausted recovery and returned an error.
+    pub is_error: bool,
+    /// Per-request usage. Providers that omit usage leave all fields at zero.
+    pub usage: TokenUsage,
+}
+
 impl TokenUsage {
     /// Field-wise saturating sum, used to accumulate usage across Steps.
     #[must_use]

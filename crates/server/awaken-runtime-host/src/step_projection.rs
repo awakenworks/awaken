@@ -56,6 +56,8 @@ pub(crate) fn pending(pending: Option<PendingTool>) -> Option<Pending> {
 
 pub(crate) fn settled_step(result: CommittedStepReceipt) -> Result<StepOutcome, RunError> {
     let delegated_runs = result.delegated_runs;
+    let model_requests = result.model_requests;
+    let rescheduled_delegated_run_ids = result.rescheduled_delegated_run_ids;
     let run_id = result.run_id;
     let plan = settled_step_plan(
         &result.state,
@@ -78,6 +80,8 @@ pub(crate) fn settled_step(result: CommittedStepReceipt) -> Result<StepOutcome, 
             rescheduled,
         )
         .with_delegated_runs(delegated_runs)
+        .with_model_requests(model_requests)
+        .with_rescheduled_delegated_runs(rescheduled_delegated_run_ids)
         .with_run_id(run_id)),
         (
             RunState::Ended(cause),
@@ -88,6 +92,8 @@ pub(crate) fn settled_step(result: CommittedStepReceipt) -> Result<StepOutcome, 
         ) => Ok(
             StepOutcome::ended(result.new_messages, cause, compacted, rescheduled)
                 .with_delegated_runs(delegated_runs)
+                .with_model_requests(model_requests)
+                .with_rescheduled_delegated_runs(rescheduled_delegated_run_ids)
                 .with_run_id(run_id),
         ),
         (RunState::Running, SettledStepPlan::RejectRunning) => Err(RunError::internal(

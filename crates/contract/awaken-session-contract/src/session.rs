@@ -9,6 +9,7 @@ use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
+use awaken_runtime_contract::llm::ModelRequestObservation;
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
@@ -61,6 +62,9 @@ pub struct StepOutcome {
     /// during this turn (auto-recovery) — projected as a `session.status_rescheduled`
     /// event ahead of the turn's messages, so a client observes the recovery.
     pub rescheduled: bool,
+    /// Completed logical model requests observed during this settled step.
+    model_requests: Vec<ModelRequestObservation>,
+    rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
     delegated_runs: Vec<DelegatedRun>,
 }
 
@@ -79,6 +83,8 @@ impl StepOutcome {
             pending,
             compacted,
             rescheduled,
+            model_requests: Vec::new(),
+            rescheduled_delegated_run_ids: Default::default(),
             delegated_runs: Vec::new(),
         }
     }
@@ -97,6 +103,8 @@ impl StepOutcome {
             pending: None,
             compacted,
             rescheduled,
+            model_requests: Vec::new(),
+            rescheduled_delegated_run_ids: Default::default(),
             delegated_runs: Vec::new(),
         }
     }
@@ -150,6 +158,31 @@ impl StepOutcome {
     #[must_use]
     pub fn delegated_runs(&self) -> &[DelegatedRun] {
         &self.delegated_runs
+    }
+
+    #[must_use]
+    pub fn with_model_requests(mut self, model_requests: Vec<ModelRequestObservation>) -> Self {
+        self.model_requests = model_requests;
+        self
+    }
+
+    #[must_use]
+    pub fn model_requests(&self) -> &[ModelRequestObservation] {
+        &self.model_requests
+    }
+
+    #[must_use]
+    pub fn with_rescheduled_delegated_runs(
+        mut self,
+        run_ids: std::collections::BTreeSet<String>,
+    ) -> Self {
+        self.rescheduled_delegated_run_ids = run_ids;
+        self
+    }
+
+    #[must_use]
+    pub fn rescheduled_delegated_run_ids(&self) -> &std::collections::BTreeSet<String> {
+        &self.rescheduled_delegated_run_ids
     }
 }
 
@@ -1286,5 +1319,24 @@ mod kani_proofs {
         assert!(outcome.pending().is_none());
         assert_eq!(outcome.failure().is_some(), is_error);
         std::mem::forget(outcome);
+    }
+
+    #[kani::proof]
+    fn observability_decorators_cannot_change_step_authority() {
+        let ended = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, kani::any(), kani::any())
+            // Empty collections are sufficient for this non-interference proof:
+            // both decorators are whole-field assignments, while authority lives
+            // in disjoint fields. Avoiding allocator-backed symbolic contents also
+            // keeps CBMC from unwinding BTree internals unrelated to the property.
+            .with_model_requests(Vec::new())
+            .with_rescheduled_delegated_runs(std::collections::BTreeSet::new());
+        assert!(matches!(
+            ended.state(),
+            RunState::Ended(EndCause::NaturalEnd)
+        ));
+        assert!(ended.pending().is_none());
+        assert!(ended.model_requests().is_empty());
+        assert!(ended.rescheduled_delegated_run_ids().is_empty());
+        std::mem::forget(ended);
     }
 }

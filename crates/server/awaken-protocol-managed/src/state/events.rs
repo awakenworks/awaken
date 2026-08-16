@@ -2,6 +2,7 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
+use crate::types::SpanModelUsage;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 
@@ -360,6 +361,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         delegations: &[DelegatedRun],
+        rescheduled_run_ids: &std::collections::BTreeSet<String>,
         transcripts: &std::collections::HashMap<
             String,
             Vec<awaken_agent_contract::agent::message::Message>,
@@ -396,6 +398,16 @@ impl ManagedState {
             });
             let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
             let completed = d.status == DelegationStatus::Completed;
+            let rescheduled = rescheduled_run_ids.contains(&thread_id);
+            let reschedule_already_projected = record.events.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    OutboundKind::SessionThreadStatusRescheduled {
+                        session_thread_id,
+                        ..
+                    } if session_thread_id == &thread_id
+                )
+            });
             if is_new {
                 record.events.extend(
                     [
@@ -429,6 +441,16 @@ impl ManagedState {
                     .map(Vec::as_slice)
                     .unwrap_or_default(),
             );
+            if rescheduled && !reschedule_already_projected {
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind: OutboundKind::SessionThreadStatusRescheduled {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                    },
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
             if completed && !was_idle {
                 record.child_threads[index].status = SessionThreadStatus::Idle;
                 record.child_threads[index].updated_at = PROCESSED_AT.to_string();
@@ -551,6 +573,8 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         let pending = outcome.pending();
         let delegated_runs = outcome.delegated_runs().to_vec();
+        let rescheduled_delegated_run_ids = outcome.rescheduled_delegated_run_ids().clone();
+        let model_requests = outcome.model_requests().to_vec();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
@@ -612,6 +636,34 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
+        // Model spans are paired in observation order. The start id is minted
+        // first and referenced verbatim by its end; zero-valued usage remains
+        // present because all four SDK fields are required.
+        if project_terminal {
+            for observation in model_requests {
+                let start_id = self.next_event_id();
+                record.events.push(Event {
+                    id: start_id.clone(),
+                    kind: OutboundKind::SpanModelRequestStart {},
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind: OutboundKind::SpanModelRequestEnd {
+                        model_request_start_id: start_id,
+                        is_error: Some(observation.is_error),
+                        model_usage: SpanModelUsage {
+                            input_tokens: observation.usage.prompt_tokens,
+                            output_tokens: observation.usage.completion_tokens,
+                            cache_read_input_tokens: observation.usage.cache_read_tokens,
+                            cache_creation_input_tokens: observation.usage.cache_creation_tokens,
+                            speed: None,
+                        },
+                    },
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
+        }
         // A terminal run fault projects a `session.error` before the turn's idle,
         // so a streaming/listing client observes the failure. The neutral fault's
         // `code` classifies the SDK error variant + retry status; its `message` is
@@ -645,7 +697,12 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        self.append_delegation_projections(record, &delegated_runs, delegation_transcripts);
+        self.append_delegation_projections(
+            record,
+            &delegated_runs,
+            &rescheduled_delegated_run_ids,
+            delegation_transcripts,
+        );
         record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
@@ -1138,9 +1195,17 @@ impl ManagedState {
                         amount: amount.to_string(),
                         currency: crate::types::Currency::USD,
                     });
-            record.session.usage = projected_usage;
+            record.session.usage = projected_usage.clone();
+            let start = record.events.len();
+            record.events.push(Event {
+                id: self.next_event_id(),
+                kind: OutboundKind::SessionUsage {
+                    usage: projected_usage,
+                    budget: record.session.budget.clone(),
+                },
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
             if budget.reached_now {
-                let start = record.events.len();
                 record.events.push(Event {
                     id: self.next_event_id(),
                     kind: OutboundKind::SessionStatusIdle {
@@ -1149,8 +1214,8 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
                 record.project_runtime_status(SessionStatus::Idle);
-                self.broadcast_committed_from(session_id, record, start);
             }
+            self.broadcast_committed_from(session_id, record, start);
         }
         Ok(SendEventsResponse { data: receipts })
     }
@@ -1780,5 +1845,80 @@ mod tests {
             before,
             "R7/E4/E9"
         );
+    }
+
+    #[tokio::test]
+    async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() {
+        use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
+
+        let state = ManagedState::new(LifecycleRuntime::default());
+        let session = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent": "coder",
+                    "environment_id": "env_local"
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .append_step(
+                &session.id,
+                StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
+                    .with_model_requests(vec![
+                        ModelRequestObservation {
+                            is_error: false,
+                            usage: TokenUsage {
+                                prompt_tokens: 11,
+                                completion_tokens: 7,
+                                cache_read_tokens: 3,
+                                cache_creation_tokens: 2,
+                            },
+                        },
+                        ModelRequestObservation {
+                            is_error: true,
+                            usage: TokenUsage::default(),
+                        },
+                    ]),
+                PreviewAllocations::default(),
+                None,
+                &Default::default(),
+            )
+            .unwrap();
+
+        let values = serde_json::to_value(
+            state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data,
+        )
+        .unwrap();
+        let events = values.as_array().unwrap();
+        let starts = events
+            .iter()
+            .filter(|event| event["type"] == "span.model_request_start")
+            .collect::<Vec<_>>();
+        let ends = events
+            .iter()
+            .filter(|event| event["type"] == "span.model_request_end")
+            .collect::<Vec<_>>();
+        assert_eq!((starts.len(), ends.len()), (2, 2));
+        for (start, end) in starts.iter().zip(&ends) {
+            assert_eq!(end["model_request_start_id"], start["id"]);
+        }
+        assert_eq!(ends[0]["is_error"], false);
+        assert_eq!(ends[0]["model_usage"]["input_tokens"], 11);
+        assert_eq!(ends[0]["model_usage"]["cache_creation_input_tokens"], 2);
+        assert_eq!(ends[1]["is_error"], true);
+        for field in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            assert_eq!(ends[1]["model_usage"][field], 0, "{field} must be present");
+        }
     }
 }

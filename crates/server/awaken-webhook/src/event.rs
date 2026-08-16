@@ -23,6 +23,10 @@ pub struct WebhookEventData {
     pub event_type: String,
     /// The id of the object the event is about (session id, agent id, …).
     pub id: String,
+    /// Required by the three `session.thread_*` catalog entries and absent from
+    /// every other event kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_thread_id: Option<String>,
     /// The owning organization — present only in a cloud deployment with a real
     /// Org (ADR-0048 D4); omitted self-hosted, where the chain roots at workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,9 +68,34 @@ impl WebhookEvent {
             data: WebhookEventData {
                 event_type: event_type.into(),
                 id: object_id.into(),
+                session_thread_id: None,
                 organization_id,
                 workspace_id: workspace_id.into(),
             },
+        }
+    }
+
+    /// Attach the required thread id for a `session.thread_*` lifecycle event.
+    /// Keeping this as structured data (rather than encoding it in the event id)
+    /// makes the signed body compatible with the official SDK discriminated union.
+    #[must_use]
+    pub fn with_session_thread_id(mut self, session_thread_id: impl Into<String>) -> Self {
+        self.data.session_thread_id = Some(session_thread_id.into());
+        self
+    }
+
+    /// Validate event-specific fields before signing. The official webhook union
+    /// requires `session_thread_id` on exactly the three thread lifecycle events.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let is_thread_event = matches!(
+            self.data.event_type.as_str(),
+            "session.thread_created" | "session.thread_idled" | "session.thread_terminated"
+        );
+        match (is_thread_event, self.data.session_thread_id.as_deref()) {
+            (true, Some(id)) if !id.is_empty() => Ok(()),
+            (true, _) => Err("session thread webhook requires session_thread_id"),
+            (false, None) => Ok(()),
+            (false, Some(_)) => Err("non-thread webhook must omit session_thread_id"),
         }
     }
 
@@ -116,6 +145,52 @@ mod tests {
     }
 
     #[test]
+    fn thread_event_carries_the_official_required_thread_id() {
+        let ev = WebhookEvent::new(
+            "event_thread",
+            "2026-07-09T00:00:00Z",
+            "session.thread_idled",
+            "sesn_1",
+            "wrkspc_acme",
+            Some("org_root".to_string()),
+        )
+        .with_session_thread_id("sthr_1");
+        let value: serde_json::Value = serde_json::from_str(&ev.to_body()).unwrap();
+        assert_eq!(value["data"]["session_thread_id"], "sthr_1");
+        assert_eq!(ev.validate(), Ok(()));
+    }
+
+    #[test]
+    fn event_specific_thread_field_validation_fails_closed() {
+        let missing = WebhookEvent::new(
+            "event_missing",
+            "2026-07-09T00:00:00Z",
+            "session.thread_terminated",
+            "sesn_1",
+            "wrkspc_acme",
+            None,
+        );
+        assert_eq!(
+            missing.validate(),
+            Err("session thread webhook requires session_thread_id")
+        );
+
+        let misplaced = WebhookEvent::new(
+            "event_misplaced",
+            "2026-07-09T00:00:00Z",
+            "session.status_idled",
+            "sesn_1",
+            "wrkspc_acme",
+            None,
+        )
+        .with_session_thread_id("sthr_1");
+        assert_eq!(
+            misplaced.validate(),
+            Err("non-thread webhook must omit session_thread_id")
+        );
+    }
+
+    #[test]
     fn an_event_round_trips_through_deserialize() {
         // The wire body a receiver parses must deserialize back to the same event —
         // the `Deserialize` derive is exercised, so a `serde(rename)` drift is caught.
@@ -137,10 +212,10 @@ mod tests {
     #[test]
     fn a_future_field_is_tolerated_on_deserialize() {
         // Forward compatibility: a consumer on this version must still parse a body
-        // the catalog grew a field on (no `deny_unknown_fields`).
+        // the catalog grew another field on (no `deny_unknown_fields`).
         let body = r#"{"type":"event","id":"event_1","created_at":"2026-07-09T00:00:00Z",
             "data":{"type":"session.status_idled","id":"sesn_1","workspace_id":"wrkspc_a",
-            "session_thread_id":"thrd_future"}}"#;
+            "future_catalog_field":"future"}}"#;
         let ev: WebhookEvent = serde_json::from_str(body).expect("unknown fields are tolerated");
         assert_eq!(ev.data.workspace_id, "wrkspc_a");
         assert_eq!(ev.data.event_type, "session.status_idled");

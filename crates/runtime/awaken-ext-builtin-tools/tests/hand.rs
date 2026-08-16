@@ -68,6 +68,47 @@ async fn glob_lists_matching_paths() {
 }
 
 #[tokio::test]
+async fn glob_supports_node_brace_and_at_extglob_alternation_without_duplicates() {
+    // Cause/effect graph: Node fs.glob alternation forms select two extensions;
+    // overlapping alternatives must not duplicate a path in the 200-result budget.
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["a.rs", "b.ts", "c.txt"] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    for pattern in ["*.{rs,ts,rs}", "@(a.rs|b.ts|a.rs)"] {
+        let output = tool_at("glob", dir.path())
+            .invoke(call("glob", serde_json::json!({ "pattern": pattern })))
+            .await
+            .unwrap()
+            .text();
+        let mut names = output
+            .lines()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            })
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, ["a.rs", "b.ts"], "pattern {pattern}");
+    }
+}
+
+#[tokio::test]
+async fn glob_rejects_combinatorial_alternation_before_walking() {
+    // Decision table: <=256 expansions are bounded work; >256 is a typed
+    // argument error and performs no filesystem traversal.
+    let pattern = "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}";
+    let error = tool("glob")
+        .invoke(call("glob", serde_json::json!({ "pattern": pattern })))
+        .await
+        .expect_err("512 alternatives must fail closed");
+    assert!(matches!(error, ToolError::InvalidArguments(_)));
+    assert!(error.to_string().contains("more than 256 alternatives"));
+}
+
+#[tokio::test]
 async fn grep_finds_matching_lines_with_line_numbers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("log.txt");
@@ -83,8 +124,18 @@ async fn grep_finds_matching_lines_with_line_numbers() {
     let content = out.text();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 2);
-    assert!(lines[0].contains(":2:beta error"));
-    assert!(lines[1].contains(":4:delta error"));
+    if std::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        // ripgrep omits the filename when the explicit search path is one file.
+        assert_eq!(lines[0], "2:beta error");
+        assert_eq!(lines[1], "4:delta error");
+    } else {
+        assert!(lines[0].contains(":2:beta error"));
+        assert!(lines[1].contains(":4:delta error"));
+    }
 }
 
 #[tokio::test]
@@ -202,7 +253,64 @@ async fn grep_invalid_regex_is_a_typed_error() {
         ))
         .await
         .expect_err("bad regex");
-    assert!(matches!(err, ToolError::InvalidArguments(_)));
+    assert!(
+        matches!(
+            err,
+            ToolError::InvalidArguments(_) | ToolError::Execution(_)
+        ),
+        "ripgrep reports an execution error; the no-rg fallback reports invalid arguments"
+    );
+}
+
+#[tokio::test]
+async fn grep_matches_official_ripgrep_ignore_and_hidden_file_semantics() {
+    if std::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+    std::fs::write(dir.path().join("visible.txt"), "needle\n").unwrap();
+    std::fs::write(dir.path().join("ignored.txt"), "needle\n").unwrap();
+    std::fs::write(dir.path().join(".hidden.txt"), "needle\n").unwrap();
+
+    let output = tool_at("grep", dir.path())
+        .invoke(call("grep", serde_json::json!({ "pattern": "needle" })))
+        .await
+        .unwrap()
+        .text();
+    assert!(output.contains("visible.txt:1:needle"));
+    assert!(!output.contains("ignored.txt"));
+    assert!(!output.contains(".hidden.txt"));
+}
+
+#[tokio::test]
+async fn grep_caps_ripgrep_output_and_marks_truncation() {
+    if std::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let line = format!("needle-{}", "x".repeat(1900));
+    std::fs::write(
+        dir.path().join("large.txt"),
+        format!("{}\n", line).repeat(100),
+    )
+    .unwrap();
+    let output = tool_at("grep", dir.path())
+        .invoke(call("grep", serde_json::json!({ "pattern": "needle" })))
+        .await
+        .unwrap()
+        .text();
+    assert!(output.contains("[output truncated at 102400 bytes]"));
+    assert!(output.len() <= 102400 + "\n[output truncated at 102400 bytes]".len());
 }
 
 #[tokio::test]
@@ -224,6 +332,32 @@ async fn glob_invalid_pattern_is_a_typed_error() {
         .await
         .expect_err("bad glob");
     assert!(matches!(err, ToolError::InvalidArguments(_)));
+}
+
+#[tokio::test]
+async fn glob_prunes_noise_caps_results_and_denies_symlink_escape() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".git")).unwrap();
+    std::fs::create_dir(root.path().join("node_modules")).unwrap();
+    std::fs::write(root.path().join(".git/ignored.rs"), "").unwrap();
+    std::fs::write(root.path().join("node_modules/ignored.rs"), "").unwrap();
+    for index in 0..205 {
+        std::fs::write(root.path().join(format!("file-{index:03}.rs")), "").unwrap();
+    }
+    std::fs::write(outside.path().join("secret.rs"), "secret").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+
+    let output = tool_at("glob", root.path())
+        .invoke(call("glob", serde_json::json!({ "pattern": "**/*.rs" })))
+        .await
+        .unwrap()
+        .text();
+    assert_eq!(output.lines().count(), 200);
+    assert!(!output.contains("node_modules"));
+    assert!(!output.contains("/.git/"));
+    assert!(!output.contains("secret.rs"));
 }
 
 #[tokio::test]
