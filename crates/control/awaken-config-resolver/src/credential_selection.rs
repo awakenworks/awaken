@@ -7,29 +7,9 @@ use crate::{ResolveError, SourceLookup};
 #[cfg(test)]
 use awaken_credential_vault::CredentialKind;
 use awaken_credential_vault::{
-    AvailabilityLedger, CredentialBinding, CredentialMaterialOrigin, CredentialPool,
-    CredentialPoolId, CredentialPoolMember, CredentialSource, CredentialStatus, SelectionPolicy,
+    AvailabilityLedger, CredentialBinding, CredentialPool, CredentialPoolId, CredentialPoolMember,
+    CredentialSource, CredentialStatus, SelectionPolicy,
 };
-
-/// Allocation-free kernel for the provider x endpoint scope join.
-///
-/// The caller supplies equality facts for the concrete catalog/source strings;
-/// this kernel owns the security-significant shape rule. In particular, an
-/// endpoint scope is never interpreted as provider-wide, and Worker-local
-/// material without a provider namespace is never treated as a legacy global
-/// credential.
-#[must_use]
-const fn credential_scope_admits(
-    worker_local: bool,
-    provider_scoped: bool,
-    provider_matches: bool,
-    endpoint_scoped: bool,
-    endpoint_matches: bool,
-) -> bool {
-    (!worker_local || provider_scoped)
-        && (!provider_scoped || provider_matches)
-        && (!endpoint_scoped || (provider_scoped && endpoint_matches))
-}
 
 /// May this credential authenticate the model provider?
 #[must_use]
@@ -41,56 +21,9 @@ pub fn can_consume(
     if source.is_claude_code_setup_token() {
         return false;
     }
-    let provider_scope = source.provider_id.as_deref();
-    let endpoint_scope = source.protocol_endpoint_id.as_deref();
-    credential_scope_admits(
-        source.material_origin() == CredentialMaterialOrigin::WorkerLocal,
-        provider_scope.is_some(),
-        provider_scope.is_none_or(|scoped| scoped == offering_provider_id),
-        endpoint_scope.is_some(),
-        endpoint_scope.is_none_or(|scoped| offering_endpoint_id == Some(scoped)),
-    )
-}
-
-#[cfg(kani)]
-mod verification {
-    use super::credential_scope_admits;
-
-    /// Proves every scope axis is binding: admission of a scoped source implies
-    /// exact equality, malformed endpoint-only scopes fail closed, and the only
-    /// unscoped compatibility path excludes Worker-local material.
-    #[kani::proof]
-    fn provider_scope_never_widens_endpoint_scope() {
-        let worker_local = kani::any::<bool>();
-        let provider_scoped = kani::any::<bool>();
-        let provider_matches = kani::any::<bool>();
-        let endpoint_scoped = kani::any::<bool>();
-        let endpoint_matches = kani::any::<bool>();
-        let admitted = credential_scope_admits(
-            worker_local,
-            provider_scoped,
-            provider_matches,
-            endpoint_scoped,
-            endpoint_matches,
-        );
-
-        if admitted && provider_scoped {
-            assert!(provider_matches);
-        }
-        if admitted && endpoint_scoped {
-            assert!(provider_scoped);
-            assert!(endpoint_matches);
-        }
-        if endpoint_scoped && !provider_scoped {
-            assert!(!admitted);
-        }
-        if worker_local && !provider_scoped {
-            assert!(!admitted);
-        }
-        if !worker_local && !provider_scoped && !endpoint_scoped {
-            assert!(admitted);
-        }
-    }
+    source
+        .authorization_scope()
+        .authorizes(offering_provider_id, offering_endpoint_id)
 }
 
 /// The resolver-owned provider/backend validity join used by both default
@@ -106,12 +39,10 @@ pub fn credential_can_supply(
 ) -> bool {
     if source.is_claude_code_setup_token() {
         return offering_provider_id == "anthropic"
-            && source
-                .protocol_endpoint_id
-                .as_deref()
-                .is_none_or(|scoped| offering_endpoint_id == Some(scoped))
             && backend_ref == "acp:claude"
-            && source.provider_id.as_deref() == Some("anthropic");
+            && source
+                .authorization_scope()
+                .authorizes("anthropic", offering_endpoint_id);
     }
     can_consume(offering_provider_id, offering_endpoint_id, source)
 }
@@ -140,17 +71,9 @@ pub fn derive_vendor_pool(
                 )
         })
         .collect::<Vec<_>>();
-    // Prefer a credential explicitly classified for this provider over a legacy
-    // unscoped Vault secret. Unscoped material remains a compatibility fallback,
-    // but a newly added runtime/MCP secret must never displace a verified model
-    // API key merely because its generated id sorts first.
-    eligible.sort_by_key(|source| {
-        (
-            !source.is_claude_code_setup_token(),
-            source.provider_id.as_deref() != Some(offering_provider_id),
-            source.id.0.as_str(),
-        )
-    });
+    // Every candidate passed the canonical provider/endpoint join; preserve
+    // deterministic identity order without reinterpreting authorization scope.
+    eligible.sort_by_key(|source| (!source.is_claude_code_setup_token(), source.id.0.as_str()));
     let members = eligible
         .into_iter()
         .enumerate()
@@ -458,7 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn provider_scoped_credentials_precede_unscoped_vault_fallbacks() {
+    fn unscoped_material_is_not_a_provider_wildcard() {
+        /* Cause/effect graph: C1=credential explicitly binds the offering
+         * provider; C2=workspace/status/origin are eligible. Effects: E1=pool
+         * membership; E2=exclude. Rules A1 C1+C2=>E1; A2 !C1+C2=>E2. */
         let scoped = CredentialSource {
             id: awaken_credential_contract::CredentialSourceId("cred:z-provider".into()),
             workspace_id: "ws".into(),
@@ -483,6 +409,6 @@ mod tests {
             .into_iter()
             .map(|member| member.credential_source_id.0.clone())
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["cred:z-provider", "cred:a-runtime"]);
+        assert_eq!(ids, ["cred:z-provider"], "A1/A2");
     }
 }

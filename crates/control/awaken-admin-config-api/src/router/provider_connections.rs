@@ -109,7 +109,9 @@ pub(super) async fn list_provider_connections(
             let provider_credentials = credentials
                 .iter()
                 .filter(|credential| {
-                    credential.provider_id.as_deref() == Some(provider_id.as_str())
+                    credential
+                        .authorization_scope()
+                        .belongs_to_provider(provider_id.as_str())
                 })
                 .collect::<Vec<_>>();
             let active_credentials = provider_credentials
