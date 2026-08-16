@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
@@ -17,6 +16,7 @@ mod container_files;
 mod container_repositories;
 mod container_skills;
 mod provider;
+mod repository_realizer;
 mod session_files;
 mod session_hand;
 pub(crate) use agent_sandbox::AgentSandbox;
@@ -249,64 +249,10 @@ impl SessionEnvironment {
     }
 }
 
-#[async_trait]
-impl pc::RepositoryRealizer for SessionEnvironment {
-    async fn realize_repository(
-        &self,
-        plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => {
-                pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
-            }
-            Self::Namespace { sandbox, .. } => sandbox.provision_repo(
-                &plan.mount_path,
-                &plan.remote_url,
-                plan.initial_branch.as_deref(),
-                plan.initial_commit.as_deref(),
-                credential,
-            ),
-            Self::Container { sandbox, .. } => {
-                container_repositories::provision(
-                    sandbox.as_ref(),
-                    &plan.mount_path,
-                    &plan.remote_url,
-                    plan.initial_branch.as_deref(),
-                    plan.initial_commit.as_deref(),
-                    credential,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn publish_repository(
-        &self,
-        plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<bool, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => {
-                pc::RepositoryRealizer::publish_repository(sandbox.as_ref(), plan, credential).await
-            }
-            Self::Namespace { sandbox, .. } => sandbox.push_repo(&plan.mount_path, credential),
-            Self::Container { sandbox, .. } => {
-                container_repositories::push(
-                    sandbox.as_ref(),
-                    &plan.mount_path,
-                    &plan.remote_url,
-                    credential,
-                )
-                .await
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use awaken_provisioning_contract::{
         IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
     };
@@ -340,6 +286,8 @@ mod tests {
     }
 
     struct UnreapableProcess;
+
+    struct SlowReapProcess;
 
     impl DoneProcess {
         fn success(id: impl Into<String>) -> Self {
@@ -426,6 +374,25 @@ mod tests {
 
         async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
             Err(pc::SandboxError::new("scripted signal failure"))
+        }
+    }
+
+    #[async_trait]
+    impl pc::ProcessHandle for SlowReapProcess {
+        fn id(&self) -> &str {
+            "slow-reap-hand"
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            std::future::pending().await
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            Ok(None)
+        }
+
+        async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            Ok(())
         }
     }
 
@@ -540,8 +507,12 @@ mod tests {
                     .lock()
                     .unwrap()
                     .contains_key("__unreapable_hand");
+            let slow_reap = command.argv.iter().any(|part| part == "--stdio")
+                && self.shared.lock().unwrap().contains_key("__slow_reap_hand");
             let process: Box<dyn pc::ProcessHandle> = if unreapable {
                 Box::new(UnreapableProcess)
+            } else if slow_reap {
+                Box::new(SlowReapProcess)
             } else {
                 Box::new(DoneProcess::exited("container-exec", exit_code))
             };
@@ -817,7 +788,7 @@ mod tests {
             .await
             .unwrap();
         environment
-            .remove_workspace_path("projected.bin")
+            .remove_projection_path("projected.bin")
             .await
             .unwrap();
 
@@ -1441,6 +1412,99 @@ mod tests {
         environment.dispose().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn live_projection_update_rejects_an_unreapable_hand() {
+        // A failed reap leaves the old process outcome unknown. An empty local
+        // binding is therefore not evidence that the projection can proceed:
+        // the owner must remain closed and must never launch a second Hand.
+        let provider = Arc::new(FakeContainerProvider::default());
+        provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__unreapable_hand".into(), Vec::new());
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let hand = environment.tool_executor();
+
+        let error = match environment.begin_live_projection_update().await {
+            Err(error) => error,
+            Ok(_) => panic!("an unknown old-process outcome must reject the projection update"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("failed to reap Session hand before projection update")
+        );
+        assert!(matches!(
+            hand.invoke(&ToolCall {
+                call_id: "after-projection-reap-failure".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await,
+            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        ));
+        assert_eq!(
+            provider.hand_spawns.load(Ordering::SeqCst),
+            1,
+            "a failed projection reap never permits a replacement Hand"
+        );
+        environment.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
+        let provider = Arc::new(FakeContainerProvider::default());
+        provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__slow_reap_hand".into(), Vec::new());
+        let environment = Arc::new(
+            SessionEnvironmentProvider::container(
+                provider.clone(),
+                Vec::new(),
+                ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+                "/usr/local/bin/awaken-sandbox",
+            )
+            .create(&spec())
+            .await
+            .unwrap(),
+        );
+        let updating = tokio::spawn({
+            let environment = environment.clone();
+            async move {
+                let update = environment
+                    .begin_live_projection_update()
+                    .await?
+                    .expect("Container projection has a Hand fence");
+                update.commit();
+                Ok::<_, pc::SandboxError>(())
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        updating.abort();
+        let _ = updating.await;
+
+        let SessionEnvironment::Container { hand, .. } = environment.as_ref() else {
+            panic!("test uses a Container environment")
+        };
+        assert!(
+            hand.has_tracked_binding().await,
+            "cancellation must retain the only known process owner"
+        );
+        assert!(hand.projection_is_updating());
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1);
+    }
+
     /// Worker-local Hand inactivity cause/effect decision table.
     /// C1=idle policy enabled; C2=deadline reached; C3=a newer invocation touches
     /// the generation; C4=policy is zero; C5=invocation follows hibernation.
@@ -1841,14 +1905,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            environment.list_files(".mnt").await.unwrap(),
+            environment.list_workspace_files(".mnt").await.unwrap(),
             vec![("live.txt".into(), b"live".to_vec())]
         );
         environment
-            .remove_workspace_path(".mnt/live.txt")
+            .remove_projection_path(".mnt/live.txt")
             .await
             .unwrap();
-        assert!(environment.list_files(".mnt").await.unwrap().is_empty());
+        assert!(
+            environment
+                .list_workspace_files(".mnt")
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let change = environment
             .sandbox()

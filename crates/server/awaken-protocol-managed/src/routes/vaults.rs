@@ -147,6 +147,61 @@ fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CredentialAdmissionError {
+    VaultUnavailable,
+    LimitReached,
+    DuplicateEnvironmentKey(String),
+    InvalidMcpUrl,
+}
+
+/// Pure admission kernel for adding one child to a Workspace-owned Vault. Store
+/// adapters own scoped reads; this kernel owns the product cardinality and
+/// credential-key rules independently of HTTP and persistence.
+fn admit_vault_credential(
+    workspace_id: &str,
+    vault_id: &str,
+    vault: Option<&VaultRecord>,
+    existing: &[CredentialRecord],
+    params: &CredentialCreateParams,
+) -> Result<(), CredentialAdmissionError> {
+    if !vault.is_some_and(|vault| {
+        vault.workspace_id == workspace_id && vault.id == vault_id && vault.archived_at.is_none()
+    }) {
+        return Err(CredentialAdmissionError::VaultUnavailable);
+    }
+    if existing.len() >= MAX_CREDENTIALS_PER_VAULT {
+        return Err(CredentialAdmissionError::LimitReached);
+    }
+    match params {
+        CredentialCreateParams::EnvironmentVariable { secret_name, .. } => {
+            if existing.iter().any(|credential| {
+                credential.workspace_id == workspace_id
+                    && credential.vault_id == vault_id
+                    && credential.archived_at.is_none()
+                    && matches!(
+                        &credential.auth,
+                        AuthRecord::EnvironmentVariable {
+                            secret_name: current,
+                            ..
+                        } if current == secret_name
+                    )
+            }) {
+                return Err(CredentialAdmissionError::DuplicateEnvironmentKey(
+                    secret_name.clone(),
+                ));
+            }
+        }
+        CredentialCreateParams::StaticBearer { mcp_server_url, .. }
+        | CredentialCreateParams::McpOauth { mcp_server_url, .. } => {
+            if awaken_session_contract::McpTarget::identity(mcp_server_url).is_err() {
+                return Err(CredentialAdmissionError::InvalidMcpUrl);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The vault surface's state: the neutral credential domain stores plus the
 /// durable, secret-free Managed projection.
 pub struct VaultState {
@@ -217,30 +272,36 @@ impl VaultState {
         )
         .await?;
         self.vaults
-            .put_vault(VaultRecord {
-                id: vault_id.clone(),
-                workspace_id: workspace_id.to_owned(),
-                display_name: application_authority_id.to_owned(),
-                metadata: BTreeMap::new(),
-                archived_at: None,
-            })
+            .put_vault(
+                workspace_id,
+                VaultRecord {
+                    id: vault_id.clone(),
+                    workspace_id: workspace_id.to_owned(),
+                    display_name: application_authority_id.to_owned(),
+                    metadata: BTreeMap::new(),
+                    archived_at: None,
+                },
+            )
             .await?;
         self.vaults
-            .put_vault_credential(CredentialRecord {
-                id: format!(
-                    "crd_app_{}",
-                    sha256_identity("application-mcp-credential-v1", &[&source.id.0])
-                ),
-                vault_id: vault_id.clone(),
-                workspace_id: workspace_id.to_owned(),
-                source_id: source.id.clone(),
-                auth: AuthRecord::StaticBearer {
-                    mcp_server_url: mcp_server_url.to_owned(),
+            .put_vault_credential(
+                workspace_id,
+                CredentialRecord {
+                    id: format!(
+                        "crd_app_{}",
+                        sha256_identity("application-mcp-credential-v1", &[&source.id.0])
+                    ),
+                    vault_id: vault_id.clone(),
+                    workspace_id: workspace_id.to_owned(),
+                    source_id: source.id.clone(),
+                    auth: AuthRecord::StaticBearer {
+                        mcp_server_url: mcp_server_url.to_owned(),
+                    },
+                    metadata: BTreeMap::new(),
+                    display_name: None,
+                    archived_at: None,
                 },
-                metadata: BTreeMap::new(),
-                display_name: None,
-                archived_at: None,
-            })
+            )
             .await?;
         let revision = u64::try_from(source.version).map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
@@ -277,9 +338,9 @@ impl VaultState {
     ) -> Result<bool, awaken_credential_vault::CredentialError> {
         Ok(self
             .vaults
-            .get_vault(id)
+            .get_vault(workspace_id, id)
             .await?
-            .is_some_and(|vault| vault.workspace_id == workspace_id && vault.archived_at.is_none()))
+            .is_some_and(|vault| vault.archived_at.is_none()))
     }
 
     /// Seal a write-only compatibility token and return only its neutral source
@@ -322,8 +383,21 @@ impl VaultState {
         vault_id: &str,
         credential_id: &str,
     ) -> Option<CredentialSourceId> {
+        self.credential_source_id_in_workspace(crate::state::DEFAULT_SCOPE, vault_id, credential_id)
+            .await
+    }
+
+    /// Workspace-authoritative form used by hosted/session callers. The
+    /// compatibility helper above is limited to the standalone installation
+    /// Workspace and cannot discover another Workspace by id.
+    async fn credential_source_id_in_workspace(
+        &self,
+        workspace_id: &str,
+        vault_id: &str,
+        credential_id: &str,
+    ) -> Option<CredentialSourceId> {
         self.vaults
-            .get_vault_credential(credential_id)
+            .get_vault_credential(workspace_id, credential_id)
             .await
             .ok()
             .flatten()
@@ -345,13 +419,18 @@ impl VaultState {
             return Ok(None);
         };
         for vault_id in vault_ids {
-            let vault_is_active = self.vaults.get_vault(vault_id).await?.is_some_and(|vault| {
-                vault.workspace_id == workspace_id && vault.archived_at.is_none()
-            });
+            let vault_is_active = self
+                .vaults
+                .get_vault(workspace_id, vault_id)
+                .await?
+                .is_some_and(|vault| vault.archived_at.is_none());
             if !vault_is_active {
                 continue;
             }
-            let mut credentials = self.vaults.list_vault_credentials(vault_id).await?;
+            let mut credentials = self
+                .vaults
+                .list_vault_credentials(workspace_id, vault_id)
+                .await?;
             credentials.sort_by(|left, right| left.id.cmp(&right.id));
             if let Some(credential) = credentials
                 .into_iter()
@@ -533,7 +612,7 @@ impl VaultState {
         let revision = access.credential.revision;
         let refresh = self
             .vaults
-            .get_vault_credential_by_source(source_id)
+            .get_vault_credential_by_source(&source.workspace_id, source_id)
             .await?
             .and_then(|record| match record.auth {
                 AuthRecord::McpOauth { refresh, .. } => refresh,
@@ -832,6 +911,16 @@ fn storage_error(error: impl std::fmt::Display) -> WireError {
     )
 }
 
+/// Resolve the trusted Workspace stamped by the product edge. Standalone/local
+/// composition preserves its documented installation Workspace fallback here,
+/// before any Vault repository operation receives authority.
+fn request_workspace(scope: Option<Extension<WorkspaceScope>>) -> String {
+    scope.map_or_else(
+        || crate::state::DEFAULT_SCOPE.to_string(),
+        |Extension(scope)| scope.0,
+    )
+}
+
 async fn create_vault(
     State(state): State<Arc<VaultState>>,
     scope: Option<Extension<WorkspaceScope>>,
@@ -841,12 +930,10 @@ async fn create_vault(
         return Err(bad_request("display_name must be 1-255 characters"));
     }
     let id = format!("vlt_{}", uuid::Uuid::now_v7().simple());
+    let workspace_id = request_workspace(scope);
     let record = VaultRecord {
         id,
-        workspace_id: scope.map_or_else(
-            || crate::state::DEFAULT_SCOPE.to_string(),
-            |Extension(scope)| scope.0,
-        ),
+        workspace_id: workspace_id.clone(),
         display_name: params.display_name,
         metadata: params.metadata,
         archived_at: None,
@@ -854,7 +941,7 @@ async fn create_vault(
     let vault = VaultState::project_vault(&record);
     state
         .vaults
-        .put_vault(record)
+        .put_vault(&workspace_id, record)
         .await
         .map_err(storage_error)?;
     Ok((StatusCode::OK, Json(vault)))
@@ -862,11 +949,13 @@ async fn create_vault(
 
 async fn retrieve_vault(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vault>, WireError> {
+    let workspace_id = request_workspace(scope);
     let record = state
         .vaults
-        .get_vault(&id)
+        .get_vault(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
@@ -883,10 +972,7 @@ async fn list_vaults(
     Query(query): Query<ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<PageCursor<Vault>>, WireError> {
-    let workspace_id = scope.map_or_else(
-        || crate::state::DEFAULT_SCOPE.to_string(),
-        |Extension(scope)| scope.0,
-    );
+    let workspace_id = request_workspace(scope);
     let mut records = state
         .vaults
         .list_vaults(&workspace_id)
@@ -900,11 +986,13 @@ async fn list_vaults(
 
 async fn delete_vault(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedVault>, WireError> {
+    let workspace_id = request_workspace(scope);
     if !state
         .vaults
-        .delete_vault(&id)
+        .delete_vault(&workspace_id, &id)
         .await
         .map_err(storage_error)?
     {
@@ -922,18 +1010,20 @@ async fn delete_vault(
 /// vault does not cascade — only `DELETE` cascades).
 async fn archive_vault(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vault>, WireError> {
+    let workspace_id = request_workspace(scope);
     let mut record = state
         .vaults
-        .get_vault(&id)
+        .get_vault(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
     record.archived_at = Some(OBJECT_AT.to_string());
     state
         .vaults
-        .put_vault(record.clone())
+        .put_vault(&workspace_id, record.clone())
         .await
         .map_err(storage_error)?;
     Ok(Json(VaultState::project_vault(&record)))
@@ -945,9 +1035,11 @@ async fn archive_vault(
 /// that echoes the vault.
 async fn update_vault(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<VaultUpdateParams>,
 ) -> Result<Json<Vault>, WireError> {
+    let workspace_id = request_workspace(scope);
     if let Some(name) = &params.display_name
         && (name.is_empty() || name.len() > 255)
     {
@@ -955,7 +1047,7 @@ async fn update_vault(
     }
     let mut record = state
         .vaults
-        .get_vault(&id)
+        .get_vault(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
@@ -967,7 +1059,7 @@ async fn update_vault(
     }
     state
         .vaults
-        .put_vault(record.clone())
+        .put_vault(&workspace_id, record.clone())
         .await
         .map_err(storage_error)?;
     Ok(Json(VaultState::project_vault(&record)))
@@ -984,57 +1076,45 @@ async fn create_credential(
     // platform-resolved workspace stamped at the startup edge owns the durable
     // credential row. Standalone embeddings that omit that edge use the documented
     // local/default workspace; tenancy is never derived from a resource id.
-    let resource_workspace = scope.map_or_else(
-        || crate::state::DEFAULT_SCOPE.to_string(),
-        |Extension(scope)| scope.0,
-    );
+    let resource_workspace = request_workspace(scope);
     // Enforce the vault exists and the per-vault constraints up front. The 20-cap
     // spans all credential types. Active env-var names are unique keys; MCP URLs
     // are validated here but may have multiple credentials, with deterministic
     // selection performed only by the Session binding normalizer.
     {
-        if state
+        let vault = state
             .vaults
-            .get_vault(&vault_id)
-            .await
-            .map_err(storage_error)?
-            .is_none()
-        {
-            return Err(not_found("vault"));
-        }
-        let in_vault = state
-            .vaults
-            .list_vault_credentials(&vault_id)
+            .get_vault(&resource_workspace, &vault_id)
             .await
             .map_err(storage_error)?;
-        if in_vault.len() >= MAX_CREDENTIALS_PER_VAULT {
-            return Err(bad_request("vault credential limit reached (max 20)"));
-        }
-        match &params {
-            CredentialCreateParams::EnvironmentVariable { secret_name, .. } => {
-                let duplicate = in_vault.iter().any(|credential| {
-                    credential.archived_at.is_none()
-                        && matches!(
-                            &credential.auth,
-                            AuthRecord::EnvironmentVariable {
-                                secret_name: existing,
-                                ..
-                            } if existing == secret_name
-                        )
-                });
-                if duplicate {
-                    return Err(bad_request(format!(
-                        "credential key `{secret_name}` already exists in this vault"
-                    )));
-                }
+        let in_vault = state
+            .vaults
+            .list_vault_credentials(&resource_workspace, &vault_id)
+            .await
+            .map_err(storage_error)?;
+        match admit_vault_credential(
+            &resource_workspace,
+            &vault_id,
+            vault.as_ref(),
+            &in_vault,
+            &params,
+        ) {
+            Ok(()) => {}
+            Err(CredentialAdmissionError::VaultUnavailable) => {
+                return Err(not_found("vault"));
             }
-            CredentialCreateParams::StaticBearer { mcp_server_url, .. }
-            | CredentialCreateParams::McpOauth { mcp_server_url, .. } => {
-                if awaken_session_contract::McpTarget::identity(mcp_server_url).is_err() {
-                    return Err(bad_request(
-                        "mcp_server_url must be an absolute HTTP(S) URL",
-                    ));
-                }
+            Err(CredentialAdmissionError::LimitReached) => {
+                return Err(bad_request("vault credential limit reached (max 20)"));
+            }
+            Err(CredentialAdmissionError::DuplicateEnvironmentKey(secret_name)) => {
+                return Err(bad_request(format!(
+                    "credential key `{secret_name}` already exists in this vault"
+                )));
+            }
+            Err(CredentialAdmissionError::InvalidMcpUrl) => {
+                return Err(bad_request(
+                    "mcp_server_url must be an absolute HTTP(S) URL",
+                ));
             }
         }
     }
@@ -1190,7 +1270,7 @@ async fn create_credential(
     let record = CredentialRecord {
         id,
         vault_id,
-        workspace_id: resource_workspace,
+        workspace_id: resource_workspace.clone(),
         source_id: source.id,
         auth,
         metadata,
@@ -1200,7 +1280,7 @@ async fn create_credential(
     let credential = VaultState::project_credential(&record);
     state
         .vaults
-        .put_vault_credential(record)
+        .put_vault_credential(&resource_workspace, record)
         .await
         .map_err(storage_error)?;
     Ok((StatusCode::OK, Json(credential)))
@@ -1212,13 +1292,15 @@ async fn create_credential(
 /// wire id. Archived credentials are excluded unless `?include_archived=true`.
 async fn list_credentials(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(vault_id): Path<String>,
     Query(query): Query<ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<PageCursor<Credential>>, WireError> {
+    let workspace_id = request_workspace(scope);
     if state
         .vaults
-        .get_vault(&vault_id)
+        .get_vault(&workspace_id, &vault_id)
         .await
         .map_err(storage_error)?
         .is_none()
@@ -1227,7 +1309,7 @@ async fn list_credentials(
     }
     let mut records = state
         .vaults
-        .list_vault_credentials(&vault_id)
+        .list_vault_credentials(&workspace_id, &vault_id)
         .await
         .map_err(storage_error)?;
     records.retain(|record| query.include_archived || record.archived_at.is_none());
@@ -1238,11 +1320,13 @@ async fn list_credentials(
 
 async fn retrieve_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<Credential>, WireError> {
+    let workspace_id = request_workspace(scope);
     let record = state
         .vaults
-        .get_vault_credential(&id)
+        .get_vault_credential(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .filter(|c| c.vault_id == vault_id)
@@ -1257,11 +1341,13 @@ async fn retrieve_credential(
 /// 404s rather than deleting across the path scope.
 async fn delete_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<DeletedCredential>, WireError> {
+    let workspace_id = request_workspace(scope);
     let record = state
         .vaults
-        .get_vault_credential(&id)
+        .get_vault_credential(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .filter(|record| record.vault_id == vault_id)
@@ -1269,7 +1355,7 @@ async fn delete_credential(
     retire_record(&state, &record).await?;
     state
         .vaults
-        .delete_vault_credential(&id)
+        .delete_vault_credential(&workspace_id, &id)
         .await
         .map_err(storage_error)?;
     Ok(Json(DeletedCredential {
@@ -1283,11 +1369,13 @@ async fn delete_credential(
 /// secret-free credential; scoped by `vault_id`.
 async fn archive_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<Credential>, WireError> {
+    let workspace_id = request_workspace(scope);
     let mut record = state
         .vaults
-        .get_vault_credential(&id)
+        .get_vault_credential(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .filter(|record| record.vault_id == vault_id)
@@ -1296,7 +1384,7 @@ async fn archive_credential(
     record.archived_at = Some(OBJECT_AT.to_string());
     state
         .vaults
-        .put_vault_credential(record.clone())
+        .put_vault_credential(&workspace_id, record.clone())
         .await
         .map_err(storage_error)?;
     Ok(Json(VaultState::project_credential(&record)))
@@ -1328,13 +1416,15 @@ async fn retire_record(state: &VaultState, record: &CredentialRecord) -> Result<
 /// `await`s off the state mutex: validate + snapshot, re-seal, then apply.
 async fn update_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((vault_id, id)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<CredentialUpdateParams>,
 ) -> Result<Json<Credential>, WireError> {
+    let workspace_id = request_workspace(scope);
     // Phase 1 — validate the kind match + refresh precondition, snapshot the id.
     let mut record = state
         .vaults
-        .get_vault_credential(&id)
+        .get_vault_credential(&workspace_id, &id)
         .await
         .map_err(storage_error)?
         .filter(|c| c.vault_id == vault_id)
@@ -1526,7 +1616,7 @@ async fn update_credential(
     }
     state
         .vaults
-        .put_vault_credential(record.clone())
+        .put_vault_credential(&workspace_id, record.clone())
         .await
         .map_err(storage_error)?;
     Ok(Json(VaultState::project_credential(&record)))
@@ -1534,12 +1624,14 @@ async fn update_credential(
 
 async fn validate_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<CredentialValidation>, WireError> {
+    let workspace_id = request_workspace(scope);
     let (source_id, mcp_server_url, has_refresh_token) = {
         let record = state
             .vaults
-            .get_vault_credential(&id)
+            .get_vault_credential(&workspace_id, &id)
             .await
             .map_err(storage_error)?
             .filter(|c| c.vault_id == vault_id)

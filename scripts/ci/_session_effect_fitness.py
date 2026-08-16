@@ -15,6 +15,7 @@ APPLICATION_CLEANUP = (
     "crates/server/awaken-session-application/src/resource_reconciliation.rs"
 )
 APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
+APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/application.rs"
 PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
 SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
@@ -76,11 +77,15 @@ REQUIRED = {
     APPLICATION_TERMINAL: (
         "SessionDeleteCommand",
         "commit_delete_intent",
+        "ensure_terminal_intents",
+        "pub async fn delete_session(",
+        ".release_terminal_resources(&owner_scope, &session_id)",
         'event_type: "session.deleted"',
     ),
+    APPLICATION_WORK_DISPATCH: ("if session.is_terminal()",),
     PROTOCOL_SESSIONS: (
         "SessionDeleteCommand::new(id)",
-        "release_terminal_resources(&transition.owner_scope, id)",
+        ".delete_session(awaken_session_application::SessionDeleteCommand::new(id))",
     ),
     SESSION_STORE: ("SessionRepositoryError::Unavailable", "SessionRepositoryError::Corrupt"),
     SQLITE_SESSION_STORE: ("current_session.admits_tombstone(",),
@@ -119,8 +124,33 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         errors.append(
             f"{APPLICATION_CLEANUP}: terminal cleanup bypasses its durable intent/receipt port"
         )
+    if application.count(".retire_terminal_work(") != 1:
+        errors.append(
+            f"{APPLICATION_CLEANUP}: Work retirement must have one cleanup-driver call site"
+        )
+    if application.count(".commit_delete_tombstone(") != 1:
+        errors.append(
+            f"{APPLICATION_CLEANUP}: Delete tombstone must have one finalization path"
+        )
+    terminal = sources.get(APPLICATION_TERMINAL, "")
+    if ".retire_terminal_work(" in terminal:
+        errors.append(
+            f"{APPLICATION_TERMINAL}: terminal edge bypasses the shared cleanup driver"
+        )
+    work_dispatch = sources.get(APPLICATION_WORK_DISPATCH, "")
+    terminal_dispatch = work_dispatch.split("if session.is_terminal()", 1)[-1].split("}", 1)[0]
+    if ".retire_session_work(" in terminal_dispatch:
+        errors.append(
+            f"{APPLICATION_WORK_DISPATCH}: terminal Work retirement bypasses the shared cleanup driver"
+        )
     protocol = sources.get(PROTOCOL_SESSIONS, "")
-    for forbidden in (".begin_delete(", "lifecycle_event::SESSION_DELETED"):
+    for forbidden in (
+        ".begin_delete(",
+        "lifecycle_event::SESSION_DELETED",
+        ".commit_delete_intent(",
+        ".release_terminal_resources(",
+        ".notify_lifecycle_fact(",
+    ):
         if forbidden in protocol:
             errors.append(
                 f"{PROTOCOL_SESSIONS}: protocol adapter owns Delete authority via {forbidden!r}"
@@ -206,6 +236,10 @@ def selftest() -> None:
         canonical[PROTOCOL_SESSIONS] + "\npersisted.resources = Default::default();"
     )
     assert session_effect_violations(protocol_authority), "protocol mutation rejected"
+    protocol_authority[PROTOCOL_SESSIONS] = (
+        canonical[PROTOCOL_SESSIONS] + "\napplication.release_terminal_resources(scope, id);"
+    )
+    assert session_effect_violations(protocol_authority), "protocol cleanup driver rejected"
 
     stale_worker = dict(canonical)
     stale_worker[WORKER_RUNTIME] = "execute_terminal_cleanup(SessionCleanupCommand)"

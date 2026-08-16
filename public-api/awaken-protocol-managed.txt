@@ -1660,13 +1660,13 @@ pub awaken_protocol_managed::ResourcesRouterInput::skills: core::option::Option<
 pub struct awaken_protocol_managed::VaultState
 impl awaken_protocol_managed::VaultState
 pub async fn awaken_protocol_managed::VaultState::credential_access_for_source(&self, &awaken_credential_contract::CredentialSourceId, &str, awaken_credential_contract::CredentialUsage, awaken_credential_contract::CredentialExecutionPolicy, &awaken_credential_contract::PlaintextHolder, &awaken_credential_contract::CredentialMaterialBinding) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
-pub fn awaken_protocol_managed::VaultState::credential_source_id(&self, &str, &str) -> core::option::Option<awaken_credential_contract::CredentialSourceId>
+pub async fn awaken_protocol_managed::VaultState::credential_source_id(&self, &str, &str) -> core::option::Option<awaken_credential_contract::CredentialSourceId>
 pub async fn awaken_protocol_managed::VaultState::enter_application_mcp_bearer(&self, &str, &str, &str, &str, awaken_agent_contract::secret::RedactedString) -> core::result::Result<(alloc::string::String, awaken_credential_contract::CredentialSourceId, u64), awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::enter_session_bearer(&self, &str, alloc::string::String) -> core::result::Result<awaken_credential_contract::CredentialSourceId, awaken_credential_vault::CredentialError>
-pub fn awaken_protocol_managed::VaultState::has_vault(&self, &str) -> bool
+pub async fn awaken_protocol_managed::VaultState::has_vault(&self, &str, &str) -> core::result::Result<bool, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_access_for_source(&self, &awaken_credential_contract::CredentialSourceId) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
-pub fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(&self, &[alloc::string::String], &str) -> core::option::Option<awaken_credential_contract::CredentialSourceId>
-pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>) -> Self
+pub async fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(&self, &str, &[alloc::string::String], &str) -> core::result::Result<core::option::Option<awaken_credential_contract::CredentialSourceId>, awaken_credential_vault::CredentialError>
+pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_envelope_issuer(self, alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
 impl awaken_session_application::session_services::RepositoryCredentialIngress for awaken_protocol_managed::VaultState

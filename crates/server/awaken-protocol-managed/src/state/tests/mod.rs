@@ -18,10 +18,27 @@ struct EndSessionRecorder {
     interrupted: Arc<std::sync::Mutex<Vec<String>>>,
     prepared: Arc<std::sync::Mutex<Vec<String>>>,
     delegated: Arc<std::sync::Mutex<Vec<awaken_session_contract::DelegatedRun>>>,
+    block_quiesce: Arc<std::sync::atomic::AtomicBool>,
+    quiesce_entered: Arc<tokio::sync::Notify>,
+    quiesce_release: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
 impl SessionRuntime for EndSessionRecorder {
+    async fn quiesce_terminal_delegations(
+        &self,
+        _thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+        if self.block_quiesce.load(std::sync::atomic::Ordering::SeqCst) {
+            self.quiesce_entered.notify_one();
+            self.quiesce_release.notified().await;
+        }
+        Ok(awaken_session_contract::DelegatedRunSnapshot {
+            delegated_runs: self.delegated.lock().unwrap().clone(),
+            watermark: 0,
+        })
+    }
+
     async fn run(
         &self,
         _agent: &str,

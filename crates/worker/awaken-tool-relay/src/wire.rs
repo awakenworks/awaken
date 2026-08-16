@@ -27,8 +27,9 @@ pub struct HandRequest {
     /// the runtime's own fingerprint discipline, G4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_fingerprint: Option<String>,
-    /// Absolute wall-clock deadline hint (unix ms). Carried for the hand to abort
-    /// a doomed call; enforcement is a later slice.
+    /// Absolute wall-clock deadline hint (unix ms). The Hand rejects an already
+    /// expired request before ledger admission so it cannot consume or poison an
+    /// operation identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_unix_ms: Option<u64>,
     /// The already-authorized, already-gated call to run.
@@ -46,7 +47,8 @@ pub struct HandReply {
 ///
 /// `Indeterminate` is a first-class value (ADR-0044 D4 / G26): a call that may or
 /// may not have run is never silently coerced to success or failure. It is
-/// produced brain-side when the channel drops mid-flight, not sent by the hand.
+/// produced brain-side when a request write or reply read is uncertain, not sent
+/// by the hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum HandResult {
@@ -56,7 +58,8 @@ pub enum HandResult {
     /// mismatch). Distinct from a `ToolOutput` with `is_error`, which *did* run.
     Err { error: HandError },
     /// The call's outcome is unknown (channel lost after dispatch). Resolvable by
-    /// an idempotent re-drive with the same `correlation_id`.
+    /// an idempotent re-drive with the same stable `operation_id`; the transport
+    /// correlation id may be fresh.
     Indeterminate,
 }
 

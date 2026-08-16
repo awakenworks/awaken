@@ -1711,7 +1711,7 @@ impl SharedHost {
                     } = &mount.source
                     {
                         let files = env
-                            .list_files(&mount.mount_path)
+                            .list_frozen_mount_files(&mount.mount_path)
                             .await
                             .map_err(|error| HostError::internal(error.to_string()))?;
                         mounter

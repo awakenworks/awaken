@@ -1181,11 +1181,12 @@ impl ManagedState {
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
-        let transition = self
+        let deletion = self
             .application
-            .commit_delete_intent(awaken_session_application::SessionDeleteCommand::new(id))
+            .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
+        let transition = deletion.transition();
         self.refresh_cached_projection(&transition.session)?;
 
         {
@@ -1201,26 +1202,10 @@ impl ManagedState {
             self.broadcast_committed_from(id, record, from);
             sessions.remove(id);
         }
-        // Terminal edge: dispose the session's sandbox(es) at the host — the main
-        // thread is the session id, and each spawned child agent thread gets its own.
-        // Best-effort teardown: the session IS deleted from the client's view
-        // regardless, so a dispose failure must not resurrect a deleted session.
-        if let Err(error) = self
-            .application
-            .release_terminal_resources(&transition.owner_scope, id)
-            .await
-        {
-            tracing::warn!(
-                session = id,
-                error = ?error,
-                "Session delete cleanup remains pending for application recovery"
-            );
-        }
-        // Project the deletion as a lifecycle fact so a webhook subscriber is
-        // notified, mirroring create's `session.status_idled` and archive's
-        // `session.status_terminated`. The owner is resolved from the persisted
-        // owner (the delete edge carries only the id).
-        self.application.notify_lifecycle_fact();
+        // Cleanup already runs in an application-owned task. Awaiting it keeps
+        // the established foreground latency when healthy, while cancellation
+        // cannot undo cache hiding or abandon the durable cleanup operation.
+        deletion.wait().await;
         Ok(())
     }
 

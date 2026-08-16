@@ -42,6 +42,68 @@ pub struct ToolOperationContext {
     pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
 }
 
+/// Canonical, non-model-authored identity of one tool effect.
+///
+/// Unlike [`ToolCall::call_id`], this token is stable across Hand connection and
+/// process replacement. Its fields are private so adapters cannot accidentally
+/// rebuild durable identity from response-local protocol coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOperationToken {
+    run_id: Option<RunId>,
+    operation_id: String,
+    execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
+}
+
+impl ToolOperationToken {
+    /// Construct a token only from Runtime-owned execution context. Empty
+    /// operation identities fail closed instead of falling back to a model call
+    /// id at a durable-effect boundary.
+    #[must_use]
+    pub fn from_context(context: &ToolOperationContext) -> Option<Self> {
+        (!context.operation_id.trim().is_empty()).then(|| Self {
+            run_id: context.run_id.clone(),
+            operation_id: context.operation_id.clone(),
+            execution_scope: context.execution_scope.clone(),
+        })
+    }
+
+    /// Derive the bounded ledger identity for one infrastructure scope. The
+    /// domain label and complete tuple are fingerprinted so delimiters inside an
+    /// opaque Workspace, Session, or operation id cannot create aliases.
+    #[must_use]
+    pub fn ledger_id(&self, infrastructure_scope: Option<&str>) -> String {
+        let execution_scope = self
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.0.0.as_str());
+        let run_id = self.run_id.as_ref().map(|run_id| run_id.0.as_str());
+        let fingerprint = crate::resolution::content_fingerprint(&(
+            "tool-operation-v2",
+            execution_scope,
+            infrastructure_scope,
+            run_id,
+            self.operation_id.as_str(),
+        ))
+        .expect("tool operation identity components always serialize");
+        format!("tool-op-v2:{fingerprint}")
+    }
+
+    #[must_use]
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> Option<&RunId> {
+        self.run_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn execution_scope(&self) -> Option<&awaken_tenancy::ExecutionScopeRef> {
+        self.execution_scope.as_ref()
+    }
+}
+
 impl ToolOperationContext {
     /// Construct the durable coordinates for one runtime-owned tool operation
     /// without exposing the agent-contract Run id type to extension crates.
@@ -59,6 +121,15 @@ impl ToolOperationContext {
 #[must_use]
 pub fn current_tool_operation_context() -> Option<ToolOperationContext> {
     TOOL_OPERATION_CONTEXT.try_with(Clone::clone).ok()
+}
+
+/// Return the canonical effect token for the current Runtime-owned tool
+/// invocation. Direct adapter calls and malformed empty contexts return `None`.
+#[must_use]
+pub fn current_tool_operation_token() -> Option<ToolOperationToken> {
+    current_tool_operation_context()
+        .as_ref()
+        .and_then(ToolOperationToken::from_context)
 }
 
 /// Return the runtime-scoped identity of the tool invocation currently entering an
@@ -273,6 +344,9 @@ pub enum ToolError {
     /// replaying an external effect. Failures after dispatch remain `Execution`.
     #[error("tool executor unavailable before dispatch: {0}")]
     UnavailableBeforeDispatch(String),
+    /// Includes non-retryable local executor-configuration rejection as well as
+    /// failures after the dispatch boundary. An owner must not replace an
+    /// executor merely because this variant was returned.
     #[error("tool execution failed: {0}")]
     Execution(String),
 }
@@ -575,12 +649,52 @@ mod recovery_tests {
             (
                 current_tool_operation_context(),
                 current_tool_operation_id(),
+                current_tool_operation_token(),
             )
         })
         .await;
         assert_eq!(seen.0, Some(expected.clone()));
         assert_eq!(seen.1.as_deref(), Some(expected.operation_id.as_str()));
+        assert_eq!(
+            seen.2.as_ref().map(ToolOperationToken::operation_id),
+            Some(expected.operation_id.as_str())
+        );
         assert_eq!(current_tool_operation_context(), None);
+    }
+
+    #[test]
+    fn operation_token_ledger_identity_binds_every_authority_axis() {
+        let base = ToolOperationContext {
+            run_id: Some(RunId("run-7".into())),
+            operation_id: "operation-1".into(),
+            execution_scope: Some(awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId(
+                "workspace-a".into(),
+            ))),
+        };
+        let token = ToolOperationToken::from_context(&base).unwrap();
+        let exact = token.ledger_id(Some("session-1"));
+        assert_eq!(exact, token.ledger_id(Some("session-1")));
+
+        let mut another_operation = base.clone();
+        another_operation.operation_id = "operation-2".into();
+        assert_ne!(
+            exact,
+            ToolOperationToken::from_context(&another_operation)
+                .unwrap()
+                .ledger_id(Some("session-1"))
+        );
+
+        let mut another_workspace = base;
+        another_workspace.execution_scope = Some(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId("workspace-b".into()),
+        ));
+        assert_ne!(
+            exact,
+            ToolOperationToken::from_context(&another_workspace)
+                .unwrap()
+                .ledger_id(Some("session-1"))
+        );
+        assert_ne!(exact, token.ledger_id(Some("session-2")));
     }
 
     #[test]

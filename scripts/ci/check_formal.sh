@@ -130,7 +130,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness disabled_credential_pool_members_are_never_eligible \
     --harness credential_cooldown_boundary_is_exact_and_inclusive \
     --harness exhausted_credentials_are_unavailable_at_every_time \
-    --harness a_pool_with_no_enabled_available_member_fails_closed
+    --harness a_pool_with_no_enabled_available_member_fails_closed \
+    --harness managed_vault_workspace_admission_is_exact_and_non_widening \
+    --harness managed_credential_workspace_admission_requires_exact_parent_and_owner
   run_kani awaken-config-resolver \
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness provider_scope_never_widens_endpoint_scope
@@ -240,6 +242,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-runtime-host \
+    --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
     --harness session_realization_control_disposition_projects_exact_worker_effect \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \

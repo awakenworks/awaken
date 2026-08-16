@@ -16,6 +16,31 @@ pub struct SessionDispositionMutation {
     pub transitioned: bool,
 }
 
+/// A committed Delete transition plus its application-owned cleanup task.
+///
+/// The durable hidden fence is already authoritative when this value is
+/// returned. Protocol adapters may therefore remove their projections before
+/// awaiting cleanup, while dropping the request future cannot cancel cleanup.
+pub struct SessionDeleteExecution {
+    transition: SessionDispositionMutation,
+    cleanup: tokio::task::JoinHandle<()>,
+}
+
+impl SessionDeleteExecution {
+    #[must_use]
+    pub fn transition(&self) -> &SessionDispositionMutation {
+        &self.transition
+    }
+
+    /// Wait for the foreground observation of cleanup. The task itself is
+    /// detached and continues if this waiter is cancelled or dropped.
+    pub async fn wait(self) {
+        if let Err(error) = self.cleanup.await {
+            tracing::warn!(error = ?error, "Session delete cleanup task did not complete normally");
+        }
+    }
+}
+
 /// Protocol-neutral request to commit the durable Session Delete fence.
 /// Application code, not an edge adapter, derives the canonical lifecycle fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +72,29 @@ impl SessionDeleteCommand {
             runtime_interval: None,
         }
     }
+}
+
+/// Idempotently establish the durable terminal intents owned by the Session.
+///
+/// Callers deliberately choose whether the Resource release intent may advance:
+/// the cleanup driver must persist the admission fence before Runtime quiescence,
+/// then persist the release intent only after the target set is frozen. Delete
+/// commits both intents in its existing atomic root transaction.
+pub(crate) fn ensure_terminal_intents(
+    session: &mut PersistedSession,
+    include_resource_release: bool,
+) -> Result<bool, SessionPreparationError> {
+    let session_id = session.session_id.clone();
+    let mut changed = session.terminal_cleanup.request(&session_id);
+    if include_resource_release && session.resources.pending.is_none() {
+        let resources_before = session.resources.clone();
+        session
+            .resources
+            .begin_release()
+            .map_err(super::resource_reconciliation::internal)?;
+        changed |= session.resources != resources_before;
+    }
+    Ok(changed)
 }
 
 impl SessionApplication {
@@ -87,25 +135,43 @@ impl SessionApplication {
             .begin_archive(session_id, archived_at, fact)
             .await
             .map_err(mutation_failure)?;
-        self.retire_terminal_work(&transition.session).await?;
-        let release_required = transition.transitioned
-            || transition.session.resources.pending.is_some()
-            || transition
-                .session
-                .resources
-                .activations
-                .iter()
-                .any(|activation| {
-                    activation.state == awaken_session_contract::ActivationState::Active
-                });
-        if release_required {
-            self.release_terminal_resources(&transition.owner_scope, session_id)
-                .await?;
-        }
+        self.release_terminal_resources(&transition.owner_scope, session_id)
+            .await?;
         if transition.transitioned {
             self.notify_lifecycle_fact();
         }
         Ok(transition)
+    }
+
+    /// Commit one Delete transition, then hand all external cleanup to the
+    /// shared recoverable driver. Cleanup remains best-effort for the foreground
+    /// Delete edge: the durable hidden fence is authoritative and recovery owns
+    /// any unfinished effects.
+    pub async fn delete_session(
+        self: &std::sync::Arc<Self>,
+        command: SessionDeleteCommand,
+    ) -> Result<SessionDeleteExecution, SessionPreparationError> {
+        let session_id = command.session_id.clone();
+        let transition = self.commit_delete_intent(command).await?;
+        self.notify_lifecycle_fact();
+        let owner_scope = transition.owner_scope.clone();
+        let application = std::sync::Arc::clone(self);
+        let cleanup = tokio::spawn(async move {
+            if let Err(error) = application
+                .release_terminal_resources(&owner_scope, &session_id)
+                .await
+            {
+                tracing::warn!(
+                    session = session_id,
+                    error = ?error,
+                    "Session delete cleanup remains pending for application recovery"
+                );
+            }
+        });
+        Ok(SessionDeleteExecution {
+            transition,
+            cleanup,
+        })
     }
 
     /// Commit the archive fact once. [`Self::terminate_session`] follows this
@@ -188,24 +254,18 @@ impl SessionApplication {
                 });
             }
             session.request_delete();
+            ensure_terminal_intents(&mut session, true)?;
             let mut facts = session
                 .close_runtime_interval(now_unix_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
                 .into_iter()
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact(&owner_scope));
-            if session.resources.pending.is_none() {
-                session
-                    .resources
-                    .begin_release()
-                    .map_err(super::resource_reconciliation::internal)?;
-            }
             match self
                 .commit_session_snapshot(&owner_scope, session, "delete-intent", facts)
                 .await
             {
                 Ok(session) => {
-                    self.retire_terminal_work(&session).await?;
                     return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,

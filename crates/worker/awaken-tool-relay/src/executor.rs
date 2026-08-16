@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_runtime_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
+    current_tool_operation_token,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
@@ -18,14 +19,15 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
 
-const CHANNEL_CLOSED_BEFORE_DISPATCH: &str = "hand channel closed before dispatch";
+const MISSING_DURABLE_OPERATION_TOKEN: &str =
+    "durable hand dispatch requires a Runtime-owned tool operation token";
 
 /// A `ToolExecutor` that runs each call on a remote hand over `channel`.
 ///
 /// Calls in one run are sequential (the loop awaits each), so a single framed
 /// channel guarded by a mutex is sufficient: send request, read the matching
-/// reply. Correlation ids are monotonic and also key the hand's idempotency
-/// ledger, so a re-drive after a transport hiccup runs the effect at most once.
+/// reply. Correlation ids pair wire replies only; Runtime-owned operation tokens
+/// key a durable hand's idempotency ledger across connection replacement.
 pub struct RemoteToolExecutor<S> {
     framed: Mutex<Framed<S, LengthDelimitedCodec>>,
     next_id: AtomicU64,
@@ -76,16 +78,25 @@ where
 
     /// Run one call on the hand, returning the raw [`HandResult`].
     ///
-    /// A transport failure *after* the request was written is surfaced as
-    /// [`HandResult::Indeterminate`] (ADR-0044 D4): the effect may have run, so
-    /// the caller must resolve it by an idempotent re-drive, never by assuming
-    /// success or failure.
+    /// Once writing the request has been attempted, every transport failure is
+    /// surfaced as [`HandResult::Indeterminate`] (ADR-0044 D4). A stream write
+    /// may fail after emitting part or all of a frame, so an error cannot prove
+    /// that the effect stayed behind the dispatch boundary.
     pub async fn call_hand(&self, call: &ToolCall) -> HandResult {
         let correlation_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let operation_id = self.operation_scope.as_ref().map_or_else(
-            || call.call_id.clone(),
-            |scope| format!("{scope}:{}", call.call_id),
-        );
+        let operation_id = match current_tool_operation_token() {
+            Some(token) => token.ledger_id(self.operation_scope.as_deref()),
+            None if self.recovery_capability == ToolRecoveryCapability::DurableRequest => {
+                return HandResult::err(crate::wire::HandError::new(
+                    HandErrorKind::Execution,
+                    MISSING_DURABLE_OPERATION_TOKEN,
+                ));
+            }
+            None => self.operation_scope.as_ref().map_or_else(
+                || call.call_id.clone(),
+                |scope| format!("{scope}:{}", call.call_id),
+            ),
+        };
         let request = HandRequest {
             correlation_id,
             operation_id,
@@ -107,11 +118,7 @@ where
 
         let mut framed = self.framed.lock().await;
         if framed.send(bytes.into()).await.is_err() {
-            // Could not even write the request → it never ran → definite failure.
-            return HandResult::err(crate::wire::HandError::new(
-                HandErrorKind::Execution,
-                CHANNEL_CLOSED_BEFORE_DISPATCH,
-            ));
+            return HandResult::Indeterminate;
         }
         // Past this point the request is on the wire; any read failure is
         // indeterminate.
@@ -140,9 +147,14 @@ where
             HandResult::Ok { output } => Ok(output),
             HandResult::Err { error }
                 if error.kind == HandErrorKind::Execution
-                    && error.message == CHANNEL_CLOSED_BEFORE_DISPATCH =>
+                    && error.message == MISSING_DURABLE_OPERATION_TOKEN =>
             {
-                Err(ToolError::UnavailableBeforeDispatch(error.message))
+                // This is a local composition error, not evidence that replacing
+                // the Hand or its channel can make the invocation succeed.
+                Err(ToolError::Execution(format!(
+                    "tool executor configuration rejected dispatch: {}",
+                    error.message
+                )))
             }
             HandResult::Err { error } => match error.kind {
                 // Preserve the in-process display so a remote unknown-tool reads

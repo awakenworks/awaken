@@ -610,10 +610,10 @@ async fn dispatch_session_work(
         return Ok(false);
     }
     if session.is_terminal() {
-        environments
-            .retire_session_work(&baseline.environment.environment_id, &session.session_id)
-            .await?;
-        return Ok(true);
+        // Terminal Work retirement belongs exclusively to the recoverable
+        // resource cleanup driver. A second reconciler would duplicate the
+        // external attempt and obscure its durable completion boundary.
+        return Ok(false);
     }
     environments
         .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)

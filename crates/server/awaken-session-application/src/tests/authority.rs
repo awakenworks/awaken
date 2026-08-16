@@ -179,6 +179,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     );
     create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
     create(repo.as_ref(), persisted("delete-live", true, "idle")).await;
+    create(repo.as_ref(), persisted("archive-work", true, "idle")).await;
     create(
         repo.as_ref(),
         persisted("delete-failed", false, "activation_failed"),
@@ -217,17 +218,55 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     assert!(!replay.transitioned, "L2");
     assert_eq!(replay.session.revision, revision, "L2");
 
+    let app = Arc::new(app);
     let deleted = app
-        .commit_delete_intent(SessionDeleteCommand::new("delete-live"))
+        .delete_session(SessionDeleteCommand::new("delete-live"))
         .await
         .expect("L3");
-    assert!(deleted.transitioned, "L3");
-    assert_eq!(deleted.session.execution.as_str(), "terminated", "L3");
-    assert!(deleted.session.is_hidden(), "L3");
-    assert!(deleted.session.needs_resource_reconciliation(), "L3");
+    let transition = deleted.transition().clone();
+    deleted.wait().await;
+    assert!(transition.transitioned, "L3");
+    assert_eq!(transition.session.execution.as_str(), "terminated", "L3");
+    assert!(transition.session.is_hidden(), "L3");
+    assert!(transition.session.needs_resource_reconciliation(), "L3");
+    let tombstone = repo.get("delete-live").await.expect_err("L3 tombstone");
+    assert!(matches!(
+        tombstone,
+        awaken_session_contract::SessionRepositoryError::NotFound
+    ));
     assert!(
-        environments.retired.lock().unwrap().contains("delete-live"),
+        environments
+            .retired
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|session_id| session_id == "delete-live"),
         "L3 terminal truth retires its one Work projection"
+    );
+    app.terminate_session(
+        "archive-work",
+        "2026-08-06T00:00:00Z",
+        fact("archive-work", "session.terminated"),
+    )
+    .await
+    .expect("L3a archive cleanup");
+    app.terminate_session(
+        "archive-work",
+        "2026-08-06T00:00:00Z",
+        fact("archive-work", "session.terminated"),
+    )
+    .await
+    .expect("L3a archive replay");
+    assert_eq!(
+        environments
+            .retired
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|session_id| session_id.as_str() == "archive-work")
+            .count(),
+        1,
+        "L3a completed archive cleanup does not retire Work twice"
     );
     let archived_delete = app
         .commit_delete_intent(SessionDeleteCommand::new("archive-race"))

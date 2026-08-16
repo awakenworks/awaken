@@ -694,7 +694,7 @@ impl ManagedHost {
             // the prior manifest authoritative and the persisted pending generation
             // can safely retry without mistaking an unrealized mount for success.
             environment
-                .remove_workspace_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
+                .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
                 .await
                 .map_err(|error| RunError::internal(error.to_string()))?;
             for mount in &old.mounts {
@@ -704,7 +704,7 @@ impl ManagedHost {
                     .any(|candidate| candidate.mount_path == mount.mount_path)
                 {
                     environment
-                        .remove_workspace_path(&mount.mount_path)
+                        .remove_projection_path(&mount.mount_path)
                         .await
                         .map_err(|error| RunError::internal(error.to_string()))?;
                 }
@@ -724,7 +724,7 @@ impl ManagedHost {
                     .any(|candidate| candidate.plan == repository.plan)
                 {
                     environment
-                        .remove_workspace_path(&repository.plan.mount_path)
+                        .remove_projection_path(&repository.plan.mount_path)
                         .await
                         .map_err(|error| RunError::internal(error.to_string()))?;
                 }

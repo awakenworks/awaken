@@ -72,6 +72,15 @@ impl HandSession {
     /// returns its process-local result without re-running the effect. A claim
     /// recovered from a prior process is indeterminate (ADR-0044 D4).
     pub async fn handle(&mut self, request: HandRequest) -> HandReply {
+        // Envelope validation is side-effect free and must precede ledger
+        // admission. A rejected request must not claim or cache the stable
+        // operation identity that a later authoritative request may use.
+        if let Some(result) = self.validate_envelope(&request) {
+            return HandReply {
+                correlation_id: request.correlation_id,
+                result,
+            };
+        }
         // Old peers omitted `operation_id`; treating the already-stable tool call
         // id as the operation identity preserves compatibility without falling
         // back to the per-request correlation id.
@@ -129,16 +138,34 @@ impl HandSession {
         }
     }
 
-    async fn dispatch(&self, request: &HandRequest) -> HandResult {
+    fn validate_envelope(&self, request: &HandRequest) -> Option<HandResult> {
+        // Keep the established rolling-production boundary: an unstamped legacy
+        // peer remains accepted, but two present fingerprints must agree.
         if let (Some(expected), Some(got)) =
             (&self.catalog_fingerprint, &request.catalog_fingerprint)
             && expected != got
         {
-            return HandResult::err(HandError::new(
+            return Some(HandResult::err(HandError::new(
                 HandErrorKind::FingerprintMismatch,
                 format!("catalog fingerprint mismatch: hand={expected} run={got}"),
-            ));
+            )));
         }
+        if let Some(deadline) = request.deadline_unix_ms {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            if now >= u128::from(deadline) {
+                return Some(HandResult::err(HandError::new(
+                    HandErrorKind::DeadlineExceeded,
+                    format!("hand request deadline {deadline} has expired"),
+                )));
+            }
+        }
+        None
+    }
+
+    async fn dispatch(&self, request: &HandRequest) -> HandResult {
         match self.registry.invoke(&request.call).await {
             Ok(output) => HandResult::ok(output),
             Err(ToolError::Unknown(tool_id)) => HandResult::err(HandError::unknown_tool(&tool_id)),

@@ -8,6 +8,112 @@ use super::container_files;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::DiscoveredSkillFile;
 
+/// A typed read root prevents a Workspace-relative request from silently
+/// acquiring the authority of a frozen sandbox-absolute mount path.
+enum FileReadRoot {
+    #[cfg(test)]
+    Workspace {
+        subdir: String,
+    },
+    FrozenMount {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileReadAuthority {
+    Workspace,
+    FrozenMount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileReadPathFacts {
+    absolute: bool,
+    lexically_safe: bool,
+}
+
+/// Pure authority kernel consumed by both typed constructors. Filesystem and
+/// parser behavior remain adapter boundaries; the privilege relation itself is
+/// small enough to exhaustively prove.
+const fn file_read_authority_admitted(
+    authority: FileReadAuthority,
+    facts: FileReadPathFacts,
+) -> bool {
+    facts.lexically_safe
+        && match authority {
+            FileReadAuthority::Workspace => !facts.absolute,
+            FileReadAuthority::FrozenMount => facts.absolute,
+        }
+}
+
+impl FileReadRoot {
+    #[cfg(test)]
+    fn workspace(subdir: &str) -> Result<Self, pc::SandboxError> {
+        // Validate with the same canonical rule the Container backend uses. The
+        // local backends receive the relative representation only after this
+        // shared admission decision succeeds.
+        container_files::workspace_path(subdir)?;
+        if !file_read_authority_admitted(
+            FileReadAuthority::Workspace,
+            FileReadPathFacts {
+                absolute: subdir.starts_with('/'),
+                lexically_safe: true,
+            },
+        ) {
+            return Err(pc::SandboxError::new("unsafe Workspace file read root"));
+        }
+        Ok(Self::Workspace {
+            subdir: subdir.to_string(),
+        })
+    }
+
+    fn frozen_mount(path: &str) -> Result<Self, pc::SandboxError> {
+        let path = container_files::sandbox_absolute_path(path)?;
+        if !file_read_authority_admitted(
+            FileReadAuthority::FrozenMount,
+            FileReadPathFacts {
+                absolute: path.starts_with('/'),
+                lexically_safe: true,
+            },
+        ) {
+            return Err(pc::SandboxError::new("unsafe frozen mount read root"));
+        }
+        Ok(Self::FrozenMount { path })
+    }
+
+    fn local_logical(&self) -> &str {
+        match self {
+            #[cfg(test)]
+            Self::Workspace { subdir } => subdir,
+            Self::FrozenMount { path } => path,
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
+    let authority = if kani::any() {
+        FileReadAuthority::Workspace
+    } else {
+        FileReadAuthority::FrozenMount
+    };
+    let facts = FileReadPathFacts {
+        absolute: kani::any(),
+        lexically_safe: kani::any(),
+    };
+    if file_read_authority_admitted(authority, facts) {
+        assert!(facts.lexically_safe);
+        match authority {
+            FileReadAuthority::Workspace => assert!(!facts.absolute),
+            FileReadAuthority::FrozenMount => assert!(facts.absolute),
+        }
+    }
+    if !facts.lexically_safe {
+        assert!(!file_read_authority_admitted(authority, facts));
+    }
+}
+
 impl SessionEnvironment {
     /// Enumerate Agent-authored outputs through the provisioning contract's
     /// canonical Artifact port. Container backends expose the same contract over
@@ -53,18 +159,40 @@ impl SessionEnvironment {
         }
     }
 
-    pub(crate) async fn list_files(
+    /// Read a Workspace-relative directory. Absolute paths are rejected at the
+    /// type-construction edge rather than interpreted differently per backend.
+    #[cfg(test)]
+    pub(crate) async fn list_workspace_files(
         &self,
         subdir: &str,
     ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
+        self.list_files_at(FileReadRoot::workspace(subdir)?).await
+    }
+
+    /// Read an exact sandbox-absolute mount root obtained from a validated,
+    /// frozen Session resource projection.
+    pub(crate) async fn list_frozen_mount_files(
+        &self,
+        mount_path: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
+        self.list_files_at(FileReadRoot::frozen_mount(mount_path)?)
+            .await
+    }
+
+    async fn list_files_at(
+        &self,
+        root: FileReadRoot,
+    ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => Ok(sandbox.list_files(subdir)),
-            Self::Namespace { sandbox, .. } => Ok(sandbox.list_files(subdir)),
+            Self::Workdir(sandbox) => Ok(sandbox.list_files(root.local_logical())),
+            Self::Namespace { sandbox, .. } => Ok(sandbox.list_files(root.local_logical())),
             Self::Container { sandbox, .. } => {
-                let root = if subdir.starts_with('/') {
-                    subdir.to_string()
-                } else {
-                    container_files::read_root(subdir, sandbox.outputs_path())?
+                let root = match root {
+                    #[cfg(test)]
+                    FileReadRoot::Workspace { subdir } => {
+                        container_files::read_root(&subdir, sandbox.outputs_path())?
+                    }
+                    FileReadRoot::FrozenMount { path } => path,
                 };
                 sandbox.read_files(&root).await.map(|files| {
                     files
@@ -172,9 +300,12 @@ impl SessionEnvironment {
         }
     }
 
-    /// Remove one path from the live resource projection. Every backend applies
-    /// the same lexical jail and treats an absent path as an idempotent success.
-    pub(crate) async fn remove_workspace_path(
+    /// Remove one path from the live resource projection. The Container adapter
+    /// owns the distinction between its governed live-input root and ordinary
+    /// Workspace files; callers no longer mislabel every projection as a
+    /// Workspace path. Every backend applies its lexical jail and treats an
+    /// absent path as an idempotent success.
+    pub(crate) async fn remove_projection_path(
         &self,
         logical: &str,
     ) -> Result<(), pc::SandboxError> {
@@ -189,5 +320,21 @@ impl SessionEnvironment {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileReadRoot;
+
+    #[test]
+    fn read_root_authority_is_explicit_and_fail_closed() {
+        assert!(FileReadRoot::workspace("outputs/nested").is_ok());
+        assert!(FileReadRoot::workspace("/mnt/session/input").is_err());
+        assert!(FileReadRoot::workspace("outputs/../secret").is_err());
+
+        assert!(FileReadRoot::frozen_mount("/mnt/session/input").is_ok());
+        assert!(FileReadRoot::frozen_mount("mnt/session/input").is_err());
+        assert!(FileReadRoot::frozen_mount("/mnt/../secret").is_err());
     }
 }

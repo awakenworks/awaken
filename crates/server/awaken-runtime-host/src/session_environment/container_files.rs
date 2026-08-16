@@ -2,6 +2,30 @@
 
 use awaken_provisioning_contract as pc;
 
+/// Canonicalize one sandbox-absolute path at the runtime boundary.
+///
+/// Resource manifests and runtime-owned configuration files may legitimately
+/// live outside `/workspace`, so this helper deliberately validates lexical
+/// safety without imposing a particular sandbox root. Callers that require a
+/// workspace path must use [`workspace_path`] or [`logical_path`] instead.
+pub(super) fn sandbox_absolute_path(path: &str) -> Result<String, pc::SandboxError> {
+    if !path.starts_with('/') || path.contains('\0') || path.contains('\\') {
+        return Err(pc::SandboxError::new("unsafe sandbox-absolute path"));
+    }
+    let components = path
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| matches!(*component, "." | ".."))
+    {
+        return Err(pc::SandboxError::new("unsafe sandbox-absolute path"));
+    }
+    Ok(format!("/{}", components.join("/")))
+}
+
 fn read_only_tree_file_path(root: &str, relative: &str) -> Result<String, pc::SandboxError> {
     if relative.is_empty()
         || relative.contains('\\')
@@ -19,6 +43,8 @@ fn read_only_tree_file_path(root: &str, relative: &str) -> Result<String, pc::Sa
 
 pub(super) fn workspace_path(subdir: &str) -> Result<String, pc::SandboxError> {
     if subdir.starts_with('/')
+        || subdir.contains('\0')
+        || subdir.contains('\\')
         || subdir
             .split('/')
             .any(|component| component == "." || component == "..")
@@ -32,6 +58,7 @@ pub(super) fn workspace_path(subdir: &str) -> Result<String, pc::SandboxError> {
     })
 }
 
+#[cfg(test)]
 pub(super) fn read_root(subdir: &str, outputs_path: &str) -> Result<String, pc::SandboxError> {
     let workspace = workspace_path(subdir)?;
     if subdir == "outputs" {
@@ -46,6 +73,8 @@ pub(super) fn read_root(subdir: &str, outputs_path: &str) -> Result<String, pc::
 pub(super) fn logical_path(logical: &str) -> Result<String, pc::SandboxError> {
     let logical = logical.trim_start_matches('/');
     if logical.is_empty()
+        || logical.contains('\0')
+        || logical.contains('\\')
         || logical
             .split('/')
             .any(|component| component == "." || component == "..")
@@ -66,11 +95,7 @@ pub(super) async fn write(
     logical: &str,
     contents: &[u8],
 ) -> Result<(), pc::SandboxError> {
-    if !logical.starts_with('/') || logical.split('/').any(|part| part == "." || part == "..") {
-        return Err(pc::SandboxError::new(
-            "unsafe container materialization path",
-        ));
-    }
+    let logical = sandbox_absolute_path(logical)?;
     let setup = sandbox
         .spawn(pc::Command {
             argv: vec![
@@ -78,7 +103,7 @@ pub(super) async fn write(
                 "-c".into(),
                 "umask 077; mkdir -p -- \"$(dirname -- \"$1\")\" && : > \"$1\"".into(),
                 "awaken-materialize".into(),
-                logical.to_string(),
+                logical.clone(),
             ],
             cwd: "/workspace".into(),
             env: Vec::new(),
@@ -100,7 +125,7 @@ pub(super) async fn write(
                     "-c".into(),
                     "printf %s \"$2\" | base64 -d >> \"$1\"".into(),
                     "awaken-materialize".into(),
-                    logical.to_string(),
+                    logical.clone(),
                     encoded,
                 ],
                 cwd: "/workspace".into(),
@@ -211,10 +236,38 @@ mod tests {
             workspace_path("outputs/nested").unwrap(),
             "/workspace/outputs/nested"
         );
-        for unsafe_path in ["/etc", ".", "..", "outputs/../etc", "./outputs"] {
+        for unsafe_path in [
+            "/etc",
+            ".",
+            "..",
+            "outputs/../etc",
+            "./outputs",
+            "windows\\path",
+        ] {
             assert!(
                 workspace_path(unsafe_path).is_err(),
                 "accepted {unsafe_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_absolute_paths_have_one_canonical_lexical_form() {
+        assert_eq!(
+            sandbox_absolute_path("//mnt/session//input.bin").unwrap(),
+            "/mnt/session/input.bin"
+        );
+        for unsafe_path in [
+            "relative",
+            "/",
+            "/mnt/../secret",
+            "/mnt/./input",
+            "/mnt/windows\\path",
+            "/mnt/nul\0path",
+        ] {
+            assert!(
+                sandbox_absolute_path(unsafe_path).is_err(),
+                "accepted {unsafe_path:?}"
             );
         }
     }

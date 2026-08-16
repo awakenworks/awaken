@@ -70,6 +70,18 @@ struct HandBinding {
     executor: Arc<dyn ToolExecutor>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetireOutcome {
+    Retired,
+    AlreadyVacant,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetireError {
+    ReapFailed,
+}
+
 struct HandLifecycle {
     binding: Mutex<Option<HandBinding>>,
     closed: AtomicBool,
@@ -83,37 +95,54 @@ impl HandLifecycle {
         let _ = self.activity.send(generation);
     }
 
+    fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            self.touch();
+        }
+    }
+
+    async fn retire_binding(
+        &self,
+        binding: &mut Option<HandBinding>,
+        event: &'static str,
+    ) -> Result<RetireOutcome, RetireError> {
+        let Some(current) = binding.as_ref() else {
+            return Ok(RetireOutcome::AlreadyVacant);
+        };
+        // Keep the binding installed while the external reap is in flight. If
+        // this Future is cancelled, the mutex guard is dropped but the owner is
+        // still tracked; a later retry can resume retirement and can never infer
+        // Vacant and launch a second process from an unknown outcome.
+        if stop_hand_binding(current, event).await {
+            binding.take();
+            Ok(RetireOutcome::Retired)
+        } else {
+            // The process outcome is unknown. Starting another Hand could
+            // violate the one-owner invariant, so fail closed.
+            self.close();
+            Err(RetireError::ReapFailed)
+        }
+    }
+
     async fn hibernate_if_current(
         &self,
         expected_generation: Option<u64>,
         event: &'static str,
-    ) -> bool {
+    ) -> Result<RetireOutcome, RetireError> {
         let mut binding = self.binding.lock().await;
         if expected_generation
             .is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected)
         {
-            return false;
+            return Ok(RetireOutcome::Stale);
         }
-        if let Some(binding) = binding.take() {
-            if stop_hand_binding(binding, event).await {
-                true
-            } else {
-                // The process outcome is unknown. Starting another Hand could
-                // violate the one-owner invariant, so fail closed.
-                self.closed.store(true, Ordering::Release);
-                self.touch();
-                false
-            }
-        } else {
-            false
-        }
+        self.retire_binding(&mut binding, event).await
     }
 }
 
 const HAND_STOP_GRACE: Duration = Duration::from_secs(2);
 
-async fn stop_hand_binding(binding: HandBinding, event: &'static str) -> bool {
-    let Some(process) = binding.process else {
+async fn stop_hand_binding(binding: &HandBinding, event: &'static str) -> bool {
+    let Some(process) = binding.process.as_ref() else {
         // A resident Hand belongs to the Session Pod. Dropping the channel must
         // never terminate that workload.
         return true;
@@ -146,14 +175,50 @@ pub(crate) struct SessionHandExecutor {
     projection_update: Mutex<()>,
     projection_updating: AtomicBool,
     idle_after: Duration,
-    residency: crate::deployment_config::ContainerHandResidency,
+    mode: HandMode,
     container_skills: Option<(
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         Arc<ContainerSkillCache>,
     )>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandMode {
+    AttachedExec,
+    Resident,
+}
+
+impl HandMode {
+    fn from_residency(residency: crate::deployment_config::ContainerHandResidency) -> Self {
+        match residency {
+            crate::deployment_config::ContainerHandResidency::AttachedExec => Self::AttachedExec,
+            crate::deployment_config::ContainerHandResidency::Resident => Self::Resident,
+        }
+    }
+
+    const fn recovery_capability(self) -> ToolRecoveryCapability {
+        match self {
+            Self::AttachedExec => ToolRecoveryCapability::NonRecoverable,
+            Self::Resident => ToolRecoveryCapability::DurableRequest,
+        }
+    }
+
+    const fn hibernates_when_idle(self) -> bool {
+        matches!(self, Self::AttachedExec)
+    }
+}
+
 impl SessionHandExecutor {
+    #[cfg(test)]
+    pub(super) async fn has_tracked_binding(&self) -> bool {
+        self.lifecycle.binding.lock().await.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn projection_is_updating(&self) -> bool {
+        self.projection_updating.load(Ordering::Acquire)
+    }
+
     pub(super) fn namespace(
         sandbox: Arc<NamespaceSandbox>,
         factory: Arc<dyn HandExecutorFactory>,
@@ -169,7 +234,6 @@ impl SessionHandExecutor {
             hand_bin.into(),
             idle_after,
             crate::deployment_config::ContainerHandResidency::AttachedExec,
-            None,
             None,
         )
     }
@@ -192,7 +256,6 @@ impl SessionHandExecutor {
             hand_bin,
             idle_after,
             residency,
-            None,
             Some((sandbox, skills)),
         );
         let binding = executor.launch().await?;
@@ -206,13 +269,13 @@ impl SessionHandExecutor {
         hand_bin: String,
         idle_after: Duration,
         residency: crate::deployment_config::ContainerHandResidency,
-        binding: Option<HandBinding>,
         container_skills: Option<(
             Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
             Arc<ContainerSkillCache>,
         )>,
     ) -> Self {
         let operation_scope = launcher.operation_scope();
+        let mode = HandMode::from_residency(residency);
         let (activity, observed_activity) = tokio::sync::watch::channel(0);
         let executor = Self {
             launcher,
@@ -220,7 +283,7 @@ impl SessionHandExecutor {
             hand_bin,
             operation_scope,
             lifecycle: Arc::new(HandLifecycle {
-                binding: Mutex::new(binding),
+                binding: Mutex::new(None),
                 closed: AtomicBool::new(false),
                 generation: AtomicU64::new(0),
                 activity,
@@ -228,10 +291,10 @@ impl SessionHandExecutor {
             projection_update: Mutex::new(()),
             projection_updating: AtomicBool::new(false),
             idle_after,
-            residency,
+            mode,
             container_skills,
         };
-        if residency == crate::deployment_config::ContainerHandResidency::AttachedExec {
+        if mode.hibernates_when_idle() {
             executor.spawn_idle_hibernation(observed_activity);
         }
         executor
@@ -243,7 +306,7 @@ impl SessionHandExecutor {
 
     async fn launch(&self) -> Result<HandBinding, pc::SandboxError> {
         let started = std::time::Instant::now();
-        if self.residency == crate::deployment_config::ContainerHandResidency::Resident {
+        if self.mode == HandMode::Resident {
             // Pod Running/Ready can become observable before PID 1 has bound its
             // listener. Retry only this pre-dispatch attachment boundary.
             let mut attempts = 0_u8;
@@ -331,10 +394,12 @@ impl SessionHandExecutor {
                         if lifecycle.closed.load(Ordering::Acquire) {
                             break;
                         }
-                        if lifecycle
-                            .hibernate_if_current(Some(generation), "idle_hibernate")
-                            .await
-                        {
+                        if matches!(
+                            lifecycle
+                                .hibernate_if_current(Some(generation), "idle_hibernate")
+                                .await,
+                            Ok(RetireOutcome::Retired)
+                        ) {
                             tracing::info!(
                                 session_environment = %operation_scope,
                                 idle_after_ms = idle_after.as_millis(),
@@ -360,27 +425,27 @@ impl SessionHandExecutor {
         if self.lifecycle.closed.load(Ordering::Acquire) {
             return Err(pc::SandboxError::new("Session hand binding is closed"));
         }
-        if self
+        match self
             .lifecycle
             .hibernate_if_current(None, "projection_hibernate")
             .await
-            || self.lifecycle.binding.lock().await.is_none()
         {
-            Ok(HandProjectionUpdate {
+            Ok(RetireOutcome::Retired | RetireOutcome::AlreadyVacant) => Ok(HandProjectionUpdate {
                 hand: self,
                 _update: update,
                 committed: false,
-            })
-        } else {
-            Err(pc::SandboxError::new(
-                "failed to hibernate Session hand before projection update",
-            ))
+            }),
+            Ok(RetireOutcome::Stale) => Err(pc::SandboxError::new(
+                "Session hand activity changed during projection update",
+            )),
+            Err(RetireError::ReapFailed) => Err(pc::SandboxError::new(
+                "failed to reap Session hand before projection update",
+            )),
         }
     }
 
     pub(super) async fn stop(&self) {
-        self.lifecycle.closed.store(true, Ordering::Release);
-        self.lifecycle.touch();
+        self.lifecycle.close();
         let _ = self
             .lifecycle
             .hibernate_if_current(None, "terminal_stop")
@@ -406,7 +471,7 @@ impl SessionHandExecutor {
 #[async_trait]
 impl ToolExecutor for SessionHandExecutor {
     fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
-        self.residency.recovery_capability()
+        self.mode.recovery_capability()
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
@@ -441,11 +506,12 @@ impl ToolExecutor for SessionHandExecutor {
                 tool_id = %call.tool_id,
                 "reacquiring expired Session hand before tool dispatch"
             );
-            if let Some(expired) = binding.take()
-                && !stop_hand_binding(expired, "expired_reap").await
+            if self
+                .lifecycle
+                .retire_binding(&mut binding, "expired_reap")
+                .await
+                .is_err()
             {
-                self.lifecycle.closed.store(true, Ordering::Release);
-                self.lifecycle.touch();
                 return Err(ToolError::UnavailableBeforeDispatch(
                     "failed to reap expired Session hand; environment must be reconstructed".into(),
                 ));

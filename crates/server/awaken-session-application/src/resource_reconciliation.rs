@@ -988,147 +988,138 @@ impl SessionApplication {
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
             Err(error) => return Err(repository_preparation(error)),
         };
-        // Work retirement belongs to the recoverable cleanup operation. Doing
-        // it here closes the crash window between a committed Delete fence and
-        // the protocol's best-effort cleanup call: recovery must settle the
-        // queue before it can ever reach the tombstone commit below.
-        self.retire_terminal_work(&session).await?;
-        if session.terminal_cleanup.is_completed() {
-            if session.is_hidden() {
-                self.commit_delete_tombstone(owner_scope, &session)
+        if !session.terminal_cleanup.is_completed() {
+            // Work retirement belongs to the recoverable cleanup operation.
+            // Completed archive cleanup is absorbing: a replay must not issue a
+            // second retirement attempt through this or any other reconciler.
+            self.retire_terminal_work(&session).await?;
+            // Phase 1 is a durable admission fence. It must win before interrupting
+            // the parent, otherwise a concurrent Run/Delegation can be admitted
+            // after the cleanup target snapshot.
+            if super::terminal::ensure_terminal_intents(&mut session, false)? {
+                session = self
+                    .commit_resource_snapshot(
+                        owner_scope,
+                        session,
+                        "terminal-cleanup-fence",
+                        Vec::new(),
+                    )
                     .await
                     .map_err(mutation_failure)?;
-                return Ok(None);
             }
-            return Ok(Some(session));
-        }
-        // Phase 1 is a durable admission fence. It must win before interrupting
-        // the parent, otherwise a concurrent Run/Delegation can be admitted
-        // after the cleanup target snapshot.
-        if session.terminal_cleanup.request(session_id) {
-            session = self
-                .commit_resource_snapshot(
-                    owner_scope,
-                    session,
-                    "terminal-cleanup-fence",
-                    Vec::new(),
-                )
-                .await
-                .map_err(mutation_failure)?;
-        }
 
-        // Phase 2 interrupts and waits for the parent to settle, then freezes the
-        // complete durable delegated-Run set and its committed watermark. A retry
-        // after this commit reuses exactly these targets.
-        let mut intent_changed = false;
-        if session.terminal_cleanup.is_fenced() {
-            let snapshot = self
-                .runtime()
-                .quiesce_terminal_delegations(session_id)
-                .await
-                .map_err(SessionPreparationError::Rejected)?;
-            intent_changed = session
-                .terminal_cleanup
-                .freeze_targets(
-                    session_id,
-                    snapshot
-                        .delegated_runs
-                        .into_iter()
-                        .map(|delegated| delegated.run_id.0),
-                    snapshot.watermark,
-                )
-                .map_err(internal)?;
-        }
-        if session.resources.pending.is_none() {
-            let before = session.resources.clone();
-            session.resources.begin_release().map_err(internal)?;
-            intent_changed |= session.resources != before;
-        }
-        if intent_changed {
-            session = self
-                .commit_resource_snapshot(
-                    owner_scope,
-                    session,
-                    "resource-release-intent",
-                    Vec::new(),
-                )
-                .await
-                .map_err(mutation_failure)?;
-        }
-
-        if session.terminal_cleanup.is_requested() {
-            let threads = session
-                .terminal_cleanup
-                .thread_ids()
-                .cloned()
-                .ok_or_else(|| internal("Session terminal cleanup thread intent disappeared"))?;
-            let mut teardown_error = None;
-            let mut receipts = Vec::with_capacity(threads.len());
-            for thread in threads {
-                let command = session
-                    .terminal_cleanup
-                    .command_for(session_id, &thread)
-                    .ok_or_else(|| internal("Session cleanup command disappeared"))?;
-                match self
+            // Phase 2 interrupts and waits for the parent to settle, then freezes the
+            // complete durable delegated-Run set and its committed watermark. A retry
+            // after this commit reuses exactly these targets.
+            let mut intent_changed = false;
+            if session.terminal_cleanup.is_fenced() {
+                let snapshot = self
                     .runtime()
-                    .execute_terminal_cleanup(command.clone())
-                    .await
-                {
-                    Ok(completion) => match completion.verify(&command) {
-                        Ok(receipt) => receipts.push(receipt),
-                        Err(error) => {
-                            teardown_error.get_or_insert(RunError::internal(format!(
-                                "Session cleanup completion mismatch: {error}"
-                            )));
-                        }
-                    },
-                    Err(error) => {
-                        tracing::warn!(
-                            session = session_id,
-                            thread = %thread,
-                            effect_id = %command.effect_id,
-                            error = ?error,
-                            "Session terminal Runtime teardown remains pending"
-                        );
-                        teardown_error.get_or_insert(error);
-                    }
-                }
-            }
-            if let Some(error) = teardown_error {
-                return Err(SessionPreparationError::Rejected(error));
-            }
-            if let Some(checkpoint) = session.environment.checkpoint().cloned() {
-                self.runtime()
-                    .delete_session_checkpoint(session_id, &checkpoint)
+                    .quiesce_terminal_delegations(session_id)
                     .await
                     .map_err(SessionPreparationError::Rejected)?;
+                intent_changed = session
+                    .terminal_cleanup
+                    .freeze_targets(
+                        session_id,
+                        snapshot
+                            .delegated_runs
+                            .into_iter()
+                            .map(|delegated| delegated.run_id.0),
+                        snapshot.watermark,
+                    )
+                    .map_err(internal)?;
             }
-            if !self
-                .retire_session_repositories(owner_scope, session_id, &session.resources)
-                .await
-            {
-                return Err(internal(
-                    "Session-scoped Repository cleanup remains pending",
-                ));
+            intent_changed |= super::terminal::ensure_terminal_intents(&mut session, true)?;
+            if intent_changed {
+                session = self
+                    .commit_resource_snapshot(
+                        owner_scope,
+                        session,
+                        "resource-release-intent",
+                        Vec::new(),
+                    )
+                    .await
+                    .map_err(mutation_failure)?;
+            }
+
+            if session.terminal_cleanup.is_requested() {
+                let threads = session
+                    .terminal_cleanup
+                    .thread_ids()
+                    .cloned()
+                    .ok_or_else(|| {
+                        internal("Session terminal cleanup thread intent disappeared")
+                    })?;
+                let mut teardown_error = None;
+                let mut receipts = Vec::with_capacity(threads.len());
+                for thread in threads {
+                    let command = session
+                        .terminal_cleanup
+                        .command_for(session_id, &thread)
+                        .ok_or_else(|| internal("Session cleanup command disappeared"))?;
+                    match self
+                        .runtime()
+                        .execute_terminal_cleanup(command.clone())
+                        .await
+                    {
+                        Ok(completion) => match completion.verify(&command) {
+                            Ok(receipt) => receipts.push(receipt),
+                            Err(error) => {
+                                teardown_error.get_or_insert(RunError::internal(format!(
+                                    "Session cleanup completion mismatch: {error}"
+                                )));
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                session = session_id,
+                                thread = %thread,
+                                effect_id = %command.effect_id,
+                                error = ?error,
+                                "Session terminal Runtime teardown remains pending"
+                            );
+                            teardown_error.get_or_insert(error);
+                        }
+                    }
+                }
+                if let Some(error) = teardown_error {
+                    return Err(SessionPreparationError::Rejected(error));
+                }
+                if let Some(checkpoint) = session.environment.checkpoint().cloned() {
+                    self.runtime()
+                        .delete_session_checkpoint(session_id, &checkpoint)
+                        .await
+                        .map_err(SessionPreparationError::Rejected)?;
+                }
+                if !self
+                    .retire_session_repositories(owner_scope, session_id, &session.resources)
+                    .await
+                {
+                    return Err(internal(
+                        "Session-scoped Repository cleanup remains pending",
+                    ));
+                }
+                session
+                    .terminal_cleanup
+                    .complete(session_id, &receipts)
+                    .map_err(internal)?;
+                session.environment =
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
             }
             session
-                .terminal_cleanup
-                .complete(session_id, &receipts)
-                .map_err(internal)?;
-            session.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+                .resources
+                .complete_terminal_release("Session terminated before activation completed");
+            session = self
+                .commit_resource_snapshot(
+                    owner_scope,
+                    session,
+                    "resource-release-complete",
+                    Vec::new(),
+                )
+                .await
+                .map_err(mutation_failure)?;
         }
-        session
-            .resources
-            .complete_terminal_release("Session terminated before activation completed");
-        session = self
-            .commit_resource_snapshot(
-                owner_scope,
-                session,
-                "resource-release-complete",
-                Vec::new(),
-            )
-            .await
-            .map_err(mutation_failure)?;
         if session.is_hidden() {
             self.commit_delete_tombstone(owner_scope, &session)
                 .await

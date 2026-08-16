@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolCall, ToolError, ToolExecutor, ToolOperationContext, ToolOutput,
+    with_tool_operation_context,
+};
 use awaken_tool_relay::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
 use awaken_tool_relay::{
     FsOperationLedger, HandOperationLedger, HandSession, LedgerAdmission, RemoteToolExecutor,
@@ -262,18 +265,16 @@ async fn unknown_tool_reads_identically_to_the_local_path() {
 }
 
 #[tokio::test]
-async fn an_oversized_frame_fails_closed_at_encode_never_indeterminate() {
-    // A call whose encoded frame exceeds the length-delimited codec's max is rejected
-    // locally at encode — before it can reach the hand — so it is a DEFINITE error, not
-    // an Indeterminate. The effect provably never ran (nothing was dispatched).
+async fn an_oversized_frame_send_error_is_conservatively_indeterminate() {
+    // The executor intentionally does not infer transport-specific atomicity from
+    // a generic Sink error. Every send/flush failure follows the same conservative
+    // Indeterminate path; a future explicit preflight size check could reject this
+    // before attempting send without weakening that rule.
     let (brain_end, _hand_end) = tokio::io::duplex(64 * 1024);
     let executor = RemoteToolExecutor::new(brain_end);
     let huge = "x".repeat(9 * 1024 * 1024); // > the 8 MiB default max frame length
     let result = executor.call_hand(&call("c1", "echo", &huge)).await;
-    assert!(
-        matches!(result, HandResult::Err { .. }),
-        "an oversized frame is a definite encode error, not Indeterminate: {result:?}"
-    );
+    assert_eq!(result, HandResult::Indeterminate);
 }
 
 #[tokio::test]
@@ -635,14 +636,16 @@ async fn a_tool_execution_error_round_trips_as_a_tool_error() {
 
 #[tokio::test]
 async fn catalog_fingerprint_mismatch_fails_closed() {
+    let runs = Arc::new(AtomicU32::new(0));
     let tool = Arc::new(CountingEcho {
         id: "echo".into(),
-        runs: Arc::new(AtomicU32::new(0)),
+        runs: runs.clone(),
     });
     let mut session = test_session([tool as Arc<dyn RawTool>]).with_catalog_fingerprint("hand-v1");
 
     let mut request = HandRequest::new(1, call("c1", "echo", "x"));
     request.catalog_fingerprint = Some("run-v2".into());
+    let operation_id = request.operation_id.clone();
 
     let reply = session.handle(request).await;
     match reply.result {
@@ -651,26 +654,60 @@ async fn catalog_fingerprint_mismatch_fails_closed() {
         }
         other => panic!("expected fingerprint mismatch, got {other:?}"),
     }
+
+    // A side-effect-free envelope rejection must not claim/cache the stable
+    // operation. The corrected request with the exact same identity may execute.
+    let mut corrected = HandRequest::new(2, call("c1", "echo", "x"));
+    corrected.operation_id = operation_id;
+    corrected.catalog_fingerprint = Some("hand-v1".into());
+    assert!(matches!(
+        session.handle(corrected).await.result,
+        HandResult::Ok { .. }
+    ));
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn a_write_that_fails_before_dispatch_is_a_definite_error_not_indeterminate() {
-    // The hand's read half is already gone, so the very first send fails: the call
-    // never left, so it is a definite Execution error, never Indeterminate.
+async fn an_expired_request_does_not_claim_its_operation_identity() {
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut session = test_session([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    }) as Arc<dyn RawTool>]);
+    let mut expired = HandRequest::new(1, call("deadline-call", "echo", "x"));
+    expired.deadline_unix_ms = Some(0);
+    let operation_id = expired.operation_id.clone();
+
+    assert!(matches!(
+        session.handle(expired).await.result,
+        HandResult::Err { error } if error.kind == HandErrorKind::DeadlineExceeded
+    ));
+
+    let mut retry = HandRequest::new(2, call("deadline-call", "echo", "x"));
+    retry.operation_id = operation_id;
+    assert!(matches!(
+        session.handle(retry).await.result,
+        HandResult::Ok { .. }
+    ));
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the expired envelope never entered the operation ledger"
+    );
+}
+
+#[tokio::test]
+async fn a_write_error_is_indeterminate_even_when_the_peer_is_already_closed() {
+    // Stream writes do not expose an atomic "zero bytes accepted" proof. Even a
+    // peer observed closed by this test exercises the conservative production
+    // rule: once send is attempted, the outcome is Indeterminate.
     let (brain_end, hand_end) = tokio::io::duplex(64);
     drop(hand_end);
     let executor = RemoteToolExecutor::new(brain_end);
-    match executor.call_hand(&call("c1", "echo", "x")).await {
-        HandResult::Err { error } => {
-            assert_eq!(error.kind, HandErrorKind::Execution);
-            assert!(
-                error.message.contains("closed before dispatch"),
-                "got: {}",
-                error.message
-            );
-        }
-        other => panic!("expected a definite pre-dispatch error, got {other:?}"),
-    }
+    assert_eq!(
+        executor.call_hand(&call("c1", "echo", "x")).await,
+        HandResult::Indeterminate
+    );
 }
 
 #[tokio::test]
@@ -788,13 +825,11 @@ async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
 }
 
 #[tokio::test]
-async fn invoke_classifies_a_closed_pre_dispatch_channel_as_safe_to_reacquire() {
+async fn invoke_never_classifies_a_stream_write_error_as_safe_to_reacquire() {
     /*
-     * Cause/effect rule RPD1: C1 the peer closes before the framed request can
-     * be written; E1 no tool effect ran and invoke returns the one typed
-     * pre-dispatch-unavailable error. This is deliberately distinct from RPD2,
-     * covered above, where the peer reads the request and drops the reply and
-     * the result remains an ordinary indeterminate Execution error.
+     * Cause/effect rule RPD1: C1 framed send reports an error; E1 the stream may
+     * have emitted bytes, so invoke returns non-retryable indeterminate Execution
+     * and never the typed pre-dispatch-unavailable signal.
      */
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     drop(hand_end);
@@ -804,8 +839,76 @@ async fn invoke_classifies_a_closed_pre_dispatch_channel_as_safe_to_reacquire() 
         .expect_err("a closed channel cannot accept the request");
     assert!(matches!(
         error,
-        ToolError::UnavailableBeforeDispatch(ref message)
-            if message == "hand channel closed before dispatch"
+        ToolError::Execution(ref message) if message.contains("indeterminate")
+    ));
+}
+
+#[tokio::test]
+async fn runtime_operation_identity_not_response_call_id_keys_the_hand_ledger() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let peer = tokio::spawn(async move {
+        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+        let mut operation_ids = Vec::new();
+        for _ in 0..3 {
+            let frame = framed.next().await.unwrap().unwrap();
+            let request: HandRequest = serde_json::from_slice(&frame).unwrap();
+            operation_ids.push(request.operation_id.clone());
+            let reply = HandReply {
+                correlation_id: request.correlation_id,
+                result: HandResult::ok(ToolOutput::ok(request.call.call_id, "ok")),
+            };
+            framed
+                .send(serde_json::to_vec(&reply).unwrap().into())
+                .await
+                .unwrap();
+        }
+        operation_ids
+    });
+    let executor = RemoteToolExecutor::new(brain_end).with_operation_scope("session-1");
+
+    with_tool_operation_context(
+        ToolOperationContext::for_run("run-1", "operation-1"),
+        executor.call_hand(&call("same-call", "echo", "first")),
+    )
+    .await;
+    with_tool_operation_context(
+        ToolOperationContext::for_run("run-1", "operation-2"),
+        executor.call_hand(&call("same-call", "echo", "second")),
+    )
+    .await;
+    with_tool_operation_context(
+        ToolOperationContext::for_run("run-1", "operation-1"),
+        executor.call_hand(&call("different-call", "echo", "re-drive")),
+    )
+    .await;
+
+    let operation_ids = peer.await.unwrap();
+    assert_ne!(
+        operation_ids[0], operation_ids[1],
+        "a response-local call id cannot alias two Runtime operations"
+    );
+    assert_eq!(
+        operation_ids[0], operation_ids[2],
+        "one Runtime operation retains its identity across correlation changes"
+    );
+}
+
+#[tokio::test]
+async fn durable_hand_dispatch_without_a_runtime_operation_token_is_non_retryable() {
+    let (brain_end, _hand_end) = tokio::io::duplex(64 * 1024);
+    let error = RemoteToolExecutor::new(brain_end)
+        .with_durable_request_recovery()
+        .invoke(&call("legacy-call", "echo", "x"))
+        .await
+        .expect_err("durable effects require Runtime-owned identity");
+    assert!(matches!(
+        error,
+        ToolError::Execution(ref message)
+            if message.contains("configuration rejected dispatch")
+                && message.contains("Runtime-owned tool operation token")
     ));
 }
 

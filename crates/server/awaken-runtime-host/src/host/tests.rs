@@ -2347,7 +2347,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert_eq!(
         environment_before
-            .list_files("/mnt/session/uploads")
+            .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .unwrap(),
         vec![("data.txt".into(), b"hello-attached".to_vec())],
@@ -2394,7 +2394,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert!(
         environment_after
-            .list_files(".mnt")
+            .list_workspace_files(".mnt")
             .await
             .unwrap()
             .is_empty(),
@@ -2489,7 +2489,7 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
     let handle = environment.handle();
     assert_eq!(
         environment
-            .list_files("workspace/live-repo")
+            .list_workspace_files("workspace/live-repo")
             .await
             .unwrap()
             .iter()
@@ -2510,7 +2510,7 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
         .expect("detach repository");
     assert!(
         environment
-            .list_files("workspace/live-repo")
+            .list_workspace_files("workspace/live-repo")
             .await
             .unwrap()
             .is_empty(),
@@ -2581,7 +2581,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     assert_eq!(host.sandbox_spec("t-local-attach"), before);
     assert!(
         environment
-            .list_files("mnt/session/uploads")
+            .list_workspace_files("mnt/session/uploads")
             .await
             .unwrap()
             .is_empty()
