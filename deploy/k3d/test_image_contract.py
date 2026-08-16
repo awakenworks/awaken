@@ -28,6 +28,31 @@ def main() -> None:
     assert "COPY awaken-coordinator /usr/local/bin/awaken-coordinator" in dockerfile
     assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
     resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
+    policy_graph = (
+        Path(__file__).parent / "bases" / "sandbox-network-policy" / "resources.yaml"
+    ).read_text()
+
+    def policy(name: str) -> str:
+        return policy_graph.split(f"name: {name}", 1)[1].split("---", 1)[0]
+
+    # Network-policy cause/effect rules: N1 exact deny plus open-only widening
+    # is the one graph attested by K8sRuntime; generic DNS must not select
+    # Sandbox Pods; each production overlay imports that graph and grants only
+    # read-only observation to its runtime ServiceAccount.
+    assert "ingress: []" in policy("awaken-sandbox-default-deny")
+    assert "egress: []" in policy("awaken-sandbox-default-deny")
+    assert "awaken-egress: open" in policy("awaken-sandbox-open-egress")
+    distributed = Path(__file__).parent / "distributed-control"
+    product = Path(__file__).parent / "product-backend"
+    dns = (distributed / "network-policies.yaml").read_text()
+    assert "operator: NotIn, values: [awaken-sandbox]" in dns
+    assert 'resources: ["networkpolicies"]' in resources
+    assert 'verbs: ["get", "list", "watch"]' in resources
+    for overlay in (distributed, product):
+        assert "../bases/sandbox-network-policy" in (overlay / "kustomization.yaml").read_text()
+    product_resources = (product / "resources.yaml").read_text()
+    assert 'resources: ["networkpolicies"]' in product_resources
+    assert 'verbs: ["get", "list", "watch"]' in product_resources
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources

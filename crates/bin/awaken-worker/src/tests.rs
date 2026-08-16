@@ -19,6 +19,10 @@ struct CheckpointContainerProvider;
 
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContainerProvider {
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
     fn checkpoint_formats(&self) -> Vec<String> {
         vec!["hosted-csi-v1".into()]
     }
@@ -70,6 +74,10 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for UnusedCheckpointSt
 
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerProvider {
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
     async fn create_environment(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,

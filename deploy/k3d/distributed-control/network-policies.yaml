@@ -13,7 +13,9 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: { name: dns-egress }
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: NotIn, values: [awaken-sandbox] }
   policyTypes: [Egress]
   egress:
     - to:

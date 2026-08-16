@@ -6,6 +6,26 @@ use awaken_provisioning_contract as pc;
 
 use crate::ContainerPlan;
 
+/// Capabilities common to one concrete container runtime. Network denial is
+/// runtime evidence rather than an isolation-class assumption.
+pub(crate) fn container_capabilities(
+    network_isolation: bool,
+    package_provisioning: bool,
+) -> pc::SandboxCapabilities {
+    pc::SandboxCapabilities {
+        isolation: pc::IsolationClass::Container,
+        tool_transparent: true,
+        path_fidelity: true,
+        enforced_readonly: true,
+        network_isolation,
+        enforced_network_allowlist: false,
+        secret_egress_substitution: false,
+        resource_limits: true,
+        custom_rootfs: true,
+        package_provisioning,
+    }
+}
+
 /// A memory-store mount carried into a remote container runtime. The canonical
 /// MemoryMounter seeds and harvests these bytes; the Pod receives no Resource
 /// authority credential.
@@ -73,6 +93,11 @@ pub trait ContainerRuntime: Send + Sync {
     fn enforces_network_none(&self) -> bool {
         false
     }
+
+    /// Revalidate backend availability and mutable external enforcement.
+    /// Every adapter must name its evidence source; readiness has no permissive
+    /// default that could accidentally advertise stale authority.
+    async fn probe_ready(&self) -> Result<(), RuntimeError>;
 
     fn supports_package_provisioning(&self) -> bool {
         false
