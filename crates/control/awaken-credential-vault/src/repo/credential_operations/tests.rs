@@ -13,12 +13,17 @@ struct RecordingRolloutTarget {
 
 #[async_trait::async_trait]
 impl ManagedCredentialRolloutTarget for RecordingRolloutTarget {
-    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String> {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         if self.fail.load(Ordering::SeqCst) {
-            return Err("service controller unavailable".into());
+            return Err(ManagedCredentialAdoptionError::Unavailable(
+                "service controller unavailable".into(),
+            ));
         }
         self.events.lock().unwrap().push(event.clone());
-        Ok(())
+        Ok(ManagedCredentialAdoptionProgress::Converged)
     }
 }
 

@@ -62,11 +62,11 @@ impl AcpBackend {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
-        mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
+        mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
     ) -> Arc<AcpRunExecutor> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
-                Arc::new(executor.for_session(permission, &mcp_servers))
+                Arc::new(executor.for_session_servers(permission, &mcp_servers))
             }
             AcpExecutorSource::Bound {
                 launch,

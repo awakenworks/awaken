@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use awaken_credential_vault::repo::{ManagedCredentialRollout, ManagedCredentialRolloutTarget};
+use awaken_credential_vault::repo::{
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialRollout,
+    ManagedCredentialRolloutTarget,
+};
 use awaken_service_auth_contract::{
     COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
     ServiceBearerTokenSource, ServiceRequestAuthenticator,
@@ -63,8 +66,24 @@ async fn apply_rollout(
         })?;
     ManagedCredentialRolloutTarget::rollout(state.managed.as_ref(), &event)
         .await
-        .map(|()| StatusCode::NO_CONTENT)
-        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))
+        .map(|progress| match progress {
+            ManagedCredentialAdoptionProgress::Converged => StatusCode::NO_CONTENT,
+            ManagedCredentialAdoptionProgress::Pending => StatusCode::ACCEPTED,
+        })
+        .map_err(|error| match error {
+            ManagedCredentialAdoptionError::InvalidEvent(_) => {
+                (StatusCode::BAD_REQUEST, error.to_string())
+            }
+            ManagedCredentialAdoptionError::IdentityCollision => {
+                (StatusCode::CONFLICT, error.to_string())
+            }
+            ManagedCredentialAdoptionError::Unauthorized => {
+                (StatusCode::FORBIDDEN, error.to_string())
+            }
+            ManagedCredentialAdoptionError::Unavailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        })
 }
 
 /// Split-service adapter. Delivery is idempotent at both ends: Control retains
@@ -109,9 +128,13 @@ impl HttpManagedCredentialRolloutTarget {
 
 #[async_trait::async_trait]
 impl ManagedCredentialRolloutTarget for HttpManagedCredentialRolloutTarget {
-    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String> {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         let token =
-            awaken_service_auth_contract::resolve_service_bearer_token(self.token_source.as_ref())?;
+            awaken_service_auth_contract::resolve_service_bearer_token(self.token_source.as_ref())
+                .map_err(ManagedCredentialAdoptionError::Unavailable)?;
         let response = self
             .client
             .post(&self.endpoint)
@@ -119,14 +142,20 @@ impl ManagedCredentialRolloutTarget for HttpManagedCredentialRolloutTarget {
             .json(event)
             .send()
             .await
-            .map_err(|error| format!("deliver Managed credential rollout: {error}"))?;
-        if response.status().is_success() {
-            Ok(())
+            .map_err(|error| {
+                ManagedCredentialAdoptionError::Unavailable(format!(
+                    "deliver Managed credential rollout: {error}"
+                ))
+            })?;
+        if response.status() == StatusCode::NO_CONTENT {
+            Ok(ManagedCredentialAdoptionProgress::Converged)
+        } else if response.status() == StatusCode::ACCEPTED {
+            Ok(ManagedCredentialAdoptionProgress::Pending)
         } else {
-            Err(format!(
+            Err(ManagedCredentialAdoptionError::Unavailable(format!(
                 "Coordinator rollout service returned {}",
                 response.status()
-            ))
+            )))
         }
     }
 }

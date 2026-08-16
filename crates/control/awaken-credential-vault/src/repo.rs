@@ -10,6 +10,44 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
+
+/// Local adoption progress. The cross-service HTTP adapter maps these two
+/// states directly to 204 and 202; no second JSON state vocabulary is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedCredentialAdoptionProgress {
+    Converged,
+    Pending,
+}
+
+impl ManagedCredentialAdoptionProgress {
+    #[must_use]
+    pub const fn is_converged(self) -> bool {
+        matches!(self, Self::Converged)
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_rollout_ack_requires_converged_progress() {
+    assert!(!ManagedCredentialAdoptionProgress::Pending.is_converged());
+    assert!(ManagedCredentialAdoptionProgress::Converged.is_converged());
+}
+
+/// Typed failures owned by the rollout target port. Pending convergence is a
+/// successful state and therefore is not represented as an error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ManagedCredentialAdoptionError {
+    #[error("credential adoption event is invalid: {0}")]
+    InvalidEvent(String),
+    #[error("credential adoption event id names a different payload")]
+    IdentityCollision,
+    #[error("credential adoption is unauthorized")]
+    Unauthorized,
+    #[error("credential adoption target is unavailable: {0}")]
+    Unavailable(String),
+}
+
 #[cfg(any(test, feature = "test-support"))]
 use crate::catalog::admit_managed_credential_insert;
 use crate::catalog::{
@@ -38,18 +76,6 @@ pub struct CredentialMutationIntent {
     pub before: Option<CredentialSource>,
     #[serde(alias = "source")]
     pub after: CredentialSource,
-}
-
-/// The one closed Managed Credential command vocabulary. Keeping the operation
-/// in the durable fact makes recovery and the formal model share the same
-/// transition rather than inferring intent from before/after payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedCredentialOperation {
-    Create,
-    Update,
-    Archive,
-    Delete,
 }
 
 /// Parent-aggregate fence for terminal child commands. A Vault deletion may
@@ -155,36 +181,22 @@ pub struct PendingManagedCredentialMutation {
     pub writer_lease_expires_at_unix_ms: u64,
 }
 
-/// Durable notification that one committed Vault credential fence must be
-/// adopted by every online service that references the parent Vault. The event
-/// is deliberately secret-free and idempotent; consumers acknowledge this
-/// exact revision only after their rolling replacement has converged.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ManagedCredentialRollout {
-    pub id: String,
-    pub workspace_id: String,
-    pub vault_id: String,
-    pub credential_id: String,
-    pub source_id: CredentialSourceId,
-    pub source_version: u64,
-    pub credential_revision: u64,
-    pub operation: ManagedCredentialOperation,
-}
-
-impl ManagedCredentialRollout {
-    #[must_use]
-    pub fn from_committed(pending: &PendingManagedCredentialMutation) -> Option<Self> {
-        (pending.operation != ManagedCredentialOperation::Create).then(|| Self {
-            id: pending.operation_id.clone(),
-            workspace_id: pending.after_credential.workspace_id.clone(),
-            vault_id: pending.after_credential.vault_id.clone(),
-            credential_id: pending.after_credential.id.clone(),
-            source_id: pending.after_source.id.clone(),
-            source_version: u64::try_from(pending.after_source.version).unwrap_or_default(),
-            credential_revision: pending.after_credential.revision,
-            operation: pending.operation,
-        })
-    }
+/// Construct the public secret-free adoption event from an exact committed
+/// mutation. Creation has no online predecessor to replace and emits no event.
+#[must_use]
+pub fn managed_rollout_from_committed(
+    pending: &PendingManagedCredentialMutation,
+) -> Option<ManagedCredentialRollout> {
+    (pending.operation != ManagedCredentialOperation::Create).then(|| ManagedCredentialRollout {
+        id: pending.operation_id.clone(),
+        workspace_id: pending.after_credential.workspace_id.clone(),
+        vault_id: pending.after_credential.vault_id.clone(),
+        credential_id: pending.after_credential.id.clone(),
+        source_id: pending.after_source.id.clone(),
+        source_version: u64::try_from(pending.after_source.version).unwrap_or_default(),
+        credential_revision: pending.after_credential.revision,
+        operation: pending.operation,
+    })
 }
 
 #[must_use]
@@ -732,7 +744,10 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
 /// it only requires an idempotent adoption of the exact committed fence.
 #[async_trait::async_trait]
 pub trait ManagedCredentialRolloutTarget: Send + Sync {
-    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String>;
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError>;
 }
 
 /// Deliver all currently durable rollout events. A failed target leaves the
@@ -760,7 +775,10 @@ async fn reconcile_managed_credential_rollout(
     repo: &dyn ManagedCredentialRepository,
     target: &dyn ManagedCredentialRolloutTarget,
 ) -> Result<bool, CredentialError> {
-    if target.rollout(event).await.is_err() {
+    let Ok(progress) = target.rollout(event).await else {
+        return Ok(false);
+    };
+    if !progress.is_converged() {
         return Ok(false);
     }
     repo.complete_managed_rollout(event).await?;
@@ -1336,7 +1354,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                 }
             }
         }
-        let rollout = ManagedCredentialRollout::from_committed(pending);
+        let rollout = managed_rollout_from_committed(pending);
         if rollout.as_ref().is_some_and(|proposed| {
             state
                 .managed_rollouts

@@ -326,7 +326,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 ],
             )
             .map_err(storage)?;
-            if let Some(rollout) = ManagedCredentialRollout::from_committed(&pending) {
+            if let Some(rollout) = managed_rollout_from_committed(&pending) {
                 tx.execute(
                     &format!("INSERT OR IGNORE INTO {p}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"),
                     params![rollout.id, serde_json::to_string(&rollout).map_err(storage)?],

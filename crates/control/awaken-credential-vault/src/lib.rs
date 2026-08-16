@@ -543,6 +543,50 @@ mod verification {
     use super::*;
     use crate::availability::{AvailabilityState, availability_at};
 
+    /// The canonical authorization projection has no endpoint-to-provider
+    /// fallback: endpoint scope binds both axes, provider scope binds its
+    /// provider, and malformed or generic shapes always deny.
+    #[kani::proof]
+    fn provider_scope_never_widens_endpoint_scope() {
+        let provider_matches = kani::any::<bool>();
+        let endpoint_is_present = kani::any::<bool>();
+        let endpoint_matches = kani::any::<bool>();
+        let scoped_provider = if provider_matches {
+            "provider"
+        } else {
+            "other-provider"
+        };
+        let scoped_endpoint = if endpoint_matches {
+            "endpoint"
+        } else {
+            "other-endpoint"
+        };
+        let requested_endpoint = endpoint_is_present.then_some("endpoint");
+        let scope = match kani::any::<u8>() % 4 {
+            0 => CredentialAuthorizationScope::Generic,
+            1 => CredentialAuthorizationScope::Provider {
+                provider_id: scoped_provider,
+            },
+            2 => CredentialAuthorizationScope::ProtocolEndpoint {
+                provider_id: scoped_provider,
+                protocol_endpoint_id: scoped_endpoint,
+            },
+            _ => CredentialAuthorizationScope::Invalid,
+        };
+        let admitted = scope.authorizes("provider", requested_endpoint);
+        assert_eq!(
+            admitted,
+            match scope {
+                CredentialAuthorizationScope::Provider { .. } => provider_matches,
+                CredentialAuthorizationScope::ProtocolEndpoint { .. } => {
+                    provider_matches && endpoint_is_present && endpoint_matches
+                }
+                CredentialAuthorizationScope::Generic | CredentialAuthorizationScope::Invalid =>
+                    false,
+            }
+        );
+    }
+
     #[kani::proof]
     fn disabled_credential_pool_members_are_never_eligible() {
         let state = match kani::any::<u8>() % 3 {

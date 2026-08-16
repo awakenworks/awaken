@@ -1752,6 +1752,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-local-process",
  "awaken-protocol-acp",
  "awaken-provisioning-contract",

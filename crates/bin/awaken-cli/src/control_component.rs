@@ -258,6 +258,14 @@ pub(super) async fn prepare_control_routers(
         remote_iam,
     )
     .await;
+    // Hosted compositions may replace the transport/target mechanism while
+    // preserving Control's sole durable outbox and acknowledgement authority.
+    // Self-hosted split deployments keep the canonical Coordinator target.
+    let credential_rollout_target = process
+        .managed_services
+        .credential_rollout_target
+        .clone()
+        .or(credential_rollout_target);
     if let Some(target) = credential_rollout_target {
         component.vault_state.set_rollout_target(target);
     }

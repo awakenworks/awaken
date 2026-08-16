@@ -40,7 +40,9 @@ use awaken_protocol_acp::{
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
 // executor also uses these names internally to emit lifecycle events.
-pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver, Supervisor};
+pub use awaken_protocol_acp::{
+    AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver, SessionMcpServer, Supervisor,
+};
 use awaken_provisioning_contract::ProcessHandle;
 pub use awaken_provisioning_contract::{SandboxError, SecretBroker};
 use awaken_runtime_contract::activation::RunActivation;
@@ -258,18 +260,30 @@ impl AcpRunExecutor {
         policy: Arc<dyn ToolPermissionPolicy>,
         mcp_servers: &[McpServerConfig],
     ) -> Self {
+        let session_servers = mcp_servers
+            .iter()
+            .map(subprocess::to_session_mcp_server)
+            .collect::<Vec<_>>();
+        self.for_session_servers(policy, &session_servers)
+    }
+
+    /// Bind an exact process-local MCP projection, including an optional
+    /// credential that is deliberately absent from every serializable runtime
+    /// configuration type. The caller must obtain it through the delivery
+    /// selection kernel before entering this boundary.
+    #[must_use]
+    pub fn for_session_servers(
+        &self,
+        policy: Arc<dyn ToolPermissionPolicy>,
+        mcp_servers: &[awaken_protocol_acp::SessionMcpServer],
+    ) -> Self {
         Self {
             source: self.source.clone(),
             policy: self.policy,
             observer: self.observer.clone(),
             permission: Arc::new(NeutralPermissionResolver { policy }),
             session_home: self.session_home.clone(),
-            session_mcp_servers: Some(
-                mcp_servers
-                    .iter()
-                    .map(subprocess::to_session_mcp_server)
-                    .collect(),
-            ),
+            session_mcp_servers: Some(mcp_servers.to_vec()),
         }
     }
 
@@ -1621,8 +1635,8 @@ pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver, McpInjection,
     ProjectingChannelSource, SubprocessChannelSource, admit_mcp_injection, mcp_injection,
-    mcp_injection_from_servers, project_launch, with_backend_owned_host_environment,
-    with_local_host_launch_environment,
+    mcp_injection_from_servers, mcp_injection_from_session_servers, project_launch,
+    with_backend_owned_host_environment, with_local_host_launch_environment,
 };
 
 #[cfg(test)]
