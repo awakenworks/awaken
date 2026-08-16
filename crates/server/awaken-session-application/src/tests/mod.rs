@@ -179,9 +179,6 @@ impl SessionRuntime for NoopRuntime {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 
@@ -320,9 +317,6 @@ impl SessionRuntime for RecordingCleanupRuntime {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &intent,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 

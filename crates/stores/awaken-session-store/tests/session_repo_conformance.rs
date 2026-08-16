@@ -206,13 +206,7 @@ fn complete_terminal_cleanup(value: &mut PersistedSession) {
         .terminal_cleanup
         .command_for(&session_id, &session_id)
         .expect("requested cleanup exposes its exact root command");
-    let completion = awaken_session_contract::SessionCleanupCompletion::new(
-        &command,
-        Vec::new(),
-        true,
-        true,
-        true,
-    );
+    let completion = awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new());
     let verified = completion
         .verify(&command)
         .expect("exact completion becomes a verified receipt");

@@ -22,6 +22,11 @@ use crate::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
 const MISSING_DURABLE_OPERATION_TOKEN: &str =
     "durable hand dispatch requires a Runtime-owned tool operation token";
 
+#[must_use]
+const fn hand_channel_reply_admitted(decoded: bool, correlation_matches: bool) -> bool {
+    decoded && correlation_matches
+}
+
 /// A `ToolExecutor` that runs each call on a remote hand over `channel`.
 ///
 /// Calls in one run are sequential (the loop awaits each), so a single framed
@@ -29,11 +34,16 @@ const MISSING_DURABLE_OPERATION_TOKEN: &str =
 /// reply. Correlation ids pair wire replies only; Runtime-owned operation tokens
 /// key a durable hand's idempotency ledger across connection replacement.
 pub struct RemoteToolExecutor<S> {
-    framed: Mutex<Framed<S, LengthDelimitedCodec>>,
+    channel: Mutex<HandChannel<S>>,
     next_id: AtomicU64,
     catalog_fingerprint: Option<String>,
     operation_scope: Option<String>,
     recovery_capability: ToolRecoveryCapability,
+}
+
+struct HandChannel<S> {
+    framed: Framed<S, LengthDelimitedCodec>,
+    usable: bool,
 }
 
 impl<S> RemoteToolExecutor<S>
@@ -43,7 +53,10 @@ where
     /// Wrap an established byte channel to a hand.
     pub fn new(channel: S) -> Self {
         Self {
-            framed: Mutex::new(Framed::new(channel, LengthDelimitedCodec::new())),
+            channel: Mutex::new(HandChannel {
+                framed: Framed::new(channel, LengthDelimitedCodec::new()),
+                usable: true,
+            }),
             next_id: AtomicU64::new(1),
             catalog_fingerprint: None,
             operation_scope: None,
@@ -98,6 +111,7 @@ where
             ),
         };
         let request = HandRequest {
+            protocol_version: crate::wire::CURRENT_HAND_PROTOCOL_VERSION,
             correlation_id,
             operation_id,
             catalog_fingerprint: self.catalog_fingerprint.clone(),
@@ -116,20 +130,50 @@ where
             }
         };
 
-        let mut framed = self.framed.lock().await;
-        if framed.send(bytes.into()).await.is_err() {
+        let mut channel = self.channel.lock().await;
+        if !channel.usable {
+            return HandResult::Indeterminate;
+        }
+        // Mark the stream unusable before the first cancellable write. A dropped
+        // caller cannot otherwise tell whether a partial/full frame or its reply
+        // remains queued. Only the exact correlated reply restores readiness.
+        channel.usable = false;
+        if channel.framed.send(bytes.into()).await.is_err() {
             return HandResult::Indeterminate;
         }
         // Past this point the request is on the wire; any read failure is
         // indeterminate.
-        match framed.next().await {
+        match channel.framed.next().await {
             Some(Ok(frame)) => match serde_json::from_slice::<HandReply>(&frame) {
-                Ok(reply) if reply.correlation_id == correlation_id => reply.result,
+                Ok(reply)
+                    if hand_channel_reply_admitted(
+                        true,
+                        reply.correlation_id == correlation_id,
+                    ) =>
+                {
+                    channel.usable = true;
+                    reply.result
+                }
                 Ok(_) => HandResult::Indeterminate,
                 Err(_) => HandResult::Indeterminate,
             },
             _ => HandResult::Indeterminate,
         }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn hand_channel_only_exact_decoded_reply_restores_readiness() {
+        let decoded = kani::any();
+        let correlation_matches = kani::any();
+        assert_eq!(
+            hand_channel_reply_admitted(decoded, correlation_matches),
+            decoded && correlation_matches
+        );
     }
 }
 

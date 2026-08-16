@@ -295,6 +295,43 @@ async fn dropped_channel_after_dispatch_is_indeterminate() {
 }
 
 #[tokio::test]
+async fn caller_cancellation_poisons_the_stream_before_a_late_reply_can_cross_calls() {
+    use futures_util::StreamExt;
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let request_seen = Arc::new(tokio::sync::Notify::new());
+    let peer_seen = request_seen.clone();
+    let peer = tokio::spawn(async move {
+        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+        let _first = framed.next().await.expect("request").expect("frame");
+        peer_seen.notify_one();
+        // Keep the connection open without replying. The cancelled caller must
+        // leave it poisoned rather than let a later call consume this reply.
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    });
+    let executor = Arc::new(RemoteToolExecutor::new(brain_end));
+    let first_executor = executor.clone();
+    let first = tokio::spawn(async move {
+        first_executor
+            .call_hand(&call("cancelled", "echo", "first"))
+            .await
+    });
+    request_seen.notified().await;
+    first.abort();
+    let _ = first.await;
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        executor.call_hand(&call("next", "echo", "second")),
+    )
+    .await
+    .expect("poisoned channel fails without waiting for the stale reply");
+    assert_eq!(second, HandResult::Indeterminate);
+    peer.abort();
+}
+
+#[tokio::test]
 async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
     // Idempotency ledger (ADR-0044 D4): the second identical request returns the
     // recorded result without re-running the tool.

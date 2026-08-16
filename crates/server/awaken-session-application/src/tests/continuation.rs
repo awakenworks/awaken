@@ -26,9 +26,6 @@ impl SessionRuntime for ContinuationRuntime {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
 

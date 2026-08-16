@@ -1181,12 +1181,11 @@ impl ManagedState {
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
-        let deletion = self
+        let transition = self
             .application
             .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
-        let transition = deletion.transition();
         self.refresh_cached_projection(&transition.session)?;
 
         {
@@ -1202,10 +1201,6 @@ impl ManagedState {
             self.broadcast_committed_from(id, record, from);
             sessions.remove(id);
         }
-        // Cleanup already runs in an application-owned task. Awaiting it keeps
-        // the established foreground latency when healthy, while cancellation
-        // cannot undo cache hiding or abandon the durable cleanup operation.
-        deletion.wait().await;
         Ok(())
     }
 

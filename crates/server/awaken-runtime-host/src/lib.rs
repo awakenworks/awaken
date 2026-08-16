@@ -853,13 +853,8 @@ impl SessionRuntime for ManagedHost {
             .end_session(&command.thread_id)
             .await
             .map_err(to_run_error)?;
-        let completion = awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            artifact_receipts,
-            true,
-            true,
-            true,
-        );
+        let completion =
+            awaken_session_contract::SessionCleanupCompletion::new(&command, artifact_receipts);
         completion
             .verify(&command)
             .map_err(|error| RunError::internal(error.to_string()))?;

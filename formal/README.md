@@ -48,7 +48,8 @@ The named harnesses in the strict gate invoke production pure functions directly
     initial acquisition found no lease; realization renewal remains inert.
   - Session cleanup advances only through
     `NotRequested -> Fenced -> Requested -> Completed`, and every identity,
-    settlement, and canonical completion axis is mandatory.
+    and canonical artifact-completion axis is mandatory. Adapter-returned
+    booleans are deliberately not accepted as independent proof evidence.
   - a first Delete request always hides, terminalizes when needed, and requests
     cleanup together; Deleting/Deleted replays are inert.
   - a Session tombstone is admitted only for a hidden, terminal aggregate with
@@ -82,6 +83,10 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-credential-vault`
   - disabled, cooling, and exhausted pool members remain ineligible;
   - a pool with no eligible member fails closed.
+  - Managed Vault child insertion requires an active same-Workspace parent,
+    remaining aggregate capacity, and no duplicate active environment key;
+  - Managed Vault replacement requires the exact observed revision and its
+    strict successor, so stale writers cannot silently overwrite each other.
 - `awaken-credential-contract`
   - an issued recipient-bound envelope is accepted exactly when its reference,
     payload fingerprint, recipient, and plaintext boundary all match the
@@ -132,6 +137,11 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-protocol-managed` / `awaken-runtime-host`
   - only terminal cleanup bypasses a retired Agent publication, and MCP
     credential realization preserves the authored target exactly.
+  - a Session Hand can become ready only through a tracked `Starting` phase;
+    cancellation of the waiting request does not transfer process ownership.
+  - a container read-only tree is publishable only after its safe staging tree
+    is complete and restricted; the external filesystem rename and rollback
+    behavior remains an adapter assumption.
 - `awaken-provider-genai`
   - neutral content categories project exactly per provider dialect: Anthropic
     retains each opaque thinking text/signature pair in order while other
@@ -350,7 +360,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ToolBatch | 1,414 | 979 | 12 |
 | RuntimeSystem | 110,923 | 12,896 | 13 |
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
-| RustCommitSystem | 4,494 | 1,277 | 9 |
+| RustCommitSystem | 4,446 | 1,277 | 9 |
 | RemoteTool | 421 | 200 | 10 |
 | RemoteAttempt | 701 | 356 | 16 |
 | AuthzKernel | 180 | 18 | 1 |
@@ -467,10 +477,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 299/299 formalizable obligations model-linked or
+checkpoint the ledger is 308/308 formalizable obligations model-linked or
 kernel-proved, plus 10 explicitly external obligations, for 100% formal
 evidence coverage. The evidence dimensions are reported independently: 186
-model-checked, 27 model-proved, 139 Kani-kernel-proved, and 6 linked to the
+model-checked, 27 model-proved, 148 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -482,7 +492,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 295 and now 299 as new obligations were discovered)
+The denominator (previously 295 and now 308 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -490,16 +500,16 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 578 candidate modules: all 578 are classified,
-324 have checked formal evidence associated with the production file, 194 have
-a direct Kani/trace proof link, and 198 are linked to an explicit product
+source-oriented inventory finds 583 candidate modules: all 583 are classified,
+329 have checked formal evidence associated with the production file, 202 have
+a direct Kani/trace proof link, and 197 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 193 unique Kani harnesses; repeated
+The source tree and strict CI name the same 203 unique Kani harnesses; repeated
 ledger references are allowed only when one production proof supports more than
 one precisely stated obligation.
 

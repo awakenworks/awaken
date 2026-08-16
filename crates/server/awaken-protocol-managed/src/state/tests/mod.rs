@@ -92,9 +92,6 @@ impl SessionRuntime for EndSessionRecorder {
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),
-            true,
-            true,
-            true,
         ))
     }
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {

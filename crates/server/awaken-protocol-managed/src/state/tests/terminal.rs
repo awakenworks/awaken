@@ -4,6 +4,22 @@ fn test_thread_agent(id: &str) -> SessionThreadAgent {
     ManagedState::thread_agent_from_profile(id, Default::default())
 }
 
+async fn await_session_tombstone(repo: &dyn ManagedSessionRepository, id: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                repo.get(id).await,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound)
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached terminal cleanup converges to a tombstone");
+}
+
 #[tokio::test]
 async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_worker_ack() {
     // Cause/effect graph: C1 placement is a registered Worker; C2 the durable
@@ -306,6 +322,7 @@ async fn delete_session_disposes_the_host_sandbox() {
         .expect("create")
         .id;
     state.delete_session(&id).await.expect("delete");
+    await_session_tombstone(repo.as_ref(), &id).await;
     assert_eq!(
         *ended.lock().unwrap(),
         vec![id.clone()],
@@ -376,6 +393,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
         .delete_session(&id)
         .await
         .expect("delete archived Session after restart");
+    await_session_tombstone(repo.as_ref(), &id).await;
     assert!(
         matches!(
             repo.get(&id).await,
@@ -786,7 +804,19 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         matches!(state.get_session(&id), Err(StateError::NotFound)),
         "the session is gone even though its sandbox dispose errored"
     );
-    let durable = repo.get(&id).await.unwrap();
+    let durable = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let durable = repo.get(&id).await.unwrap();
+            if durable.resources.activations[0].state
+                == awaken_session_contract::ActivationState::Releasing
+            {
+                break durable;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed detached cleanup remains durably reconcilable");
     assert!(matches!(durable.disposition, SessionDisposition::Deleting));
     assert_eq!(
         durable.resources.activations[0].state,

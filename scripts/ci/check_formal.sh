@@ -97,7 +97,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \
     --harness source_disposal_receipt_requires_exact_binding_and_termination \
     --harness restore_receipt_requires_exact_checkpoint_and_nonempty_binding \
-    --harness session_cleanup_completion_requires_every_identity_and_settlement_axis \
+    --harness session_cleanup_completion_requires_every_identity_axis \
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
     --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
@@ -132,7 +132,12 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness exhausted_credentials_are_unavailable_at_every_time \
     --harness a_pool_with_no_enabled_available_member_fails_closed \
     --harness managed_vault_workspace_admission_is_exact_and_non_widening \
-    --harness managed_credential_workspace_admission_requires_exact_parent_and_owner
+    --harness managed_vault_replacement_requires_exact_revision_successor \
+    --harness managed_credential_workspace_admission_requires_exact_parent_and_owner \
+    --harness managed_credential_insert_requires_every_aggregate_invariant
+  run_kani awaken-tool-relay \
+    --harness hand_channel_only_exact_decoded_reply_restores_readiness \
+    --harness hand_protocol_requires_supported_version_and_v2_operation_identity
   run_kani awaken-config-resolver \
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness provider_scope_never_widens_endpoint_scope
@@ -243,6 +248,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-runtime-host \
     --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
+    --harness hand_availability_has_only_explicit_recovery_and_terminal_transitions \
+    --harness hand_binding_can_only_become_ready_through_tracked_starting \
+    --harness read_only_tree_publication_requires_a_complete_restricted_safe_stage \
     --harness session_realization_control_disposition_projects_exact_worker_effect \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \

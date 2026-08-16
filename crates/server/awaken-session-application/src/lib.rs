@@ -60,7 +60,7 @@ pub use update::{
     SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 mod terminal;
-pub use terminal::{SessionDeleteCommand, SessionDeleteExecution, SessionDispositionMutation};
+pub use terminal::{SessionDeleteCommand, SessionDispositionMutation};
 
 #[cfg(test)]
 mod tests;

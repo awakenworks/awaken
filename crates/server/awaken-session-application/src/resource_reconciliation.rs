@@ -989,14 +989,10 @@ impl SessionApplication {
             Err(error) => return Err(repository_preparation(error)),
         };
         if !session.terminal_cleanup.is_completed() {
-            // Work retirement belongs to the recoverable cleanup operation.
-            // Completed archive cleanup is absorbing: a replay must not issue a
-            // second retirement attempt through this or any other reconciler.
-            self.retire_terminal_work(&session).await?;
-            // Phase 1 is a durable admission fence. It must win before interrupting
-            // the parent, otherwise a concurrent Run/Delegation can be admitted
-            // after the cleanup target snapshot.
-            if super::terminal::ensure_terminal_intents(&mut session, false)? {
+            // Persist the admission fence before *any* external cleanup effect.
+            // This also upgrades legacy terminal rows that predate the explicit
+            // cleanup operation.
+            if session.ensure_terminal_cleanup_fence() {
                 session = self
                     .commit_resource_snapshot(
                         owner_scope,
@@ -1007,6 +1003,10 @@ impl SessionApplication {
                     .await
                     .map_err(mutation_failure)?;
             }
+            // Work retirement belongs to the recoverable cleanup operation.
+            // Completed archive cleanup is absorbing: a replay must not issue a
+            // second retirement attempt through this or any other reconciler.
+            self.retire_terminal_work(&session).await?;
 
             // Phase 2 interrupts and waits for the parent to settle, then freezes the
             // complete durable delegated-Run set and its committed watermark. A retry
@@ -1019,9 +1019,7 @@ impl SessionApplication {
                     .await
                     .map_err(SessionPreparationError::Rejected)?;
                 intent_changed = session
-                    .terminal_cleanup
-                    .freeze_targets(
-                        session_id,
+                    .freeze_terminal_cleanup_targets(
                         snapshot
                             .delegated_runs
                             .into_iter()
@@ -1030,7 +1028,6 @@ impl SessionApplication {
                     )
                     .map_err(internal)?;
             }
-            intent_changed |= super::terminal::ensure_terminal_intents(&mut session, true)?;
             if intent_changed {
                 session = self
                     .commit_resource_snapshot(
@@ -1101,15 +1098,12 @@ impl SessionApplication {
                     ));
                 }
                 session
-                    .terminal_cleanup
-                    .complete(session_id, &receipts)
+                    .complete_terminal_cleanup(
+                        &receipts,
+                        "Session terminated before activation completed",
+                    )
                     .map_err(internal)?;
-                session.environment =
-                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
             }
-            session
-                .resources
-                .complete_terminal_release("Session terminated before activation completed");
             session = self
                 .commit_resource_snapshot(
                     owner_scope,

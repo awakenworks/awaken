@@ -66,20 +66,19 @@ REQUIRED = {
     ),
     APPLICATION_CLEANUP: (
         ".execute_terminal_cleanup(command.clone())",
-        ".complete(session_id, &receipts)",
+        ".complete_terminal_cleanup(",
         ".commit_delete_tombstone(owner_scope, &session)",
         ".retire_terminal_work(&session)",
-        "SessionEnvironmentState::Unmaterialized",
+        ".ensure_terminal_cleanup_fence()",
         ".quiesce_terminal_delegations(session_id)",
-        ".freeze_targets(",
+        ".freeze_terminal_cleanup_targets(",
         '"terminal-cleanup-fence"',
     ),
     APPLICATION_TERMINAL: (
         "SessionDeleteCommand",
         "commit_delete_intent",
-        "ensure_terminal_intents",
         "pub async fn delete_session(",
-        ".release_terminal_resources(&owner_scope, &session_id)",
+        ".wake_lifecycle_supervisor()",
         'event_type: "session.deleted"',
     ),
     APPLICATION_WORK_DISPATCH: ("if session.is_terminal()",),
@@ -222,8 +221,8 @@ def selftest() -> None:
     for rule, marker in (
         ("durable fence", '"terminal-cleanup-fence"'),
         ("quiescence", ".quiesce_terminal_delegations(session_id)"),
-        ("watermarked freeze", ".freeze_targets("),
-        ("exact settlement", ".complete(session_id, &receipts)"),
+        ("watermarked freeze", ".freeze_terminal_cleanup_targets("),
+        ("exact settlement", ".complete_terminal_cleanup("),
     ):
         mutant = dict(canonical)
         mutant[APPLICATION_CLEANUP] = mutant[APPLICATION_CLEANUP].replace(marker, "")

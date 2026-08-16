@@ -40,9 +40,10 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::{CredentialEnvelopeIssuance, CredentialEnvelopeIssuer};
 use awaken_credential_vault::catalog::{
-    ManagedCredentialAuth as AuthRecord, ManagedCredentialNetworking,
-    ManagedMcpOauthRefresh as McpOauthRefreshRecord, ManagedVault as VaultRecord,
-    ManagedVaultCredential as CredentialRecord, ManagedVaultRepo,
+    ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
+    ManagedCredentialNetworking, ManagedMcpOauthRefresh as McpOauthRefreshRecord,
+    ManagedVault as VaultRecord, ManagedVaultCredential as CredentialRecord,
+    ManagedVaultMutationError, ManagedVaultRepo,
 };
 use awaken_credential_vault::repo::{
     ApplicationMcpBearerCommand, CredentialMaterialPatch, CredentialRepo, CredentialRetirement,
@@ -73,8 +74,6 @@ use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so
 /// the wire is reproducible under test).
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-/// Anthropic's per-vault credential cap.
-const MAX_CREDENTIALS_PER_VAULT: usize = 20;
 
 fn application_mcp_target_fingerprint(
     url: &str,
@@ -145,61 +144,6 @@ fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
         | AuthRecord::McpOauth { mcp_server_url, .. } => Some(mcp_server_url),
         AuthRecord::EnvironmentVariable { .. } => None,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CredentialAdmissionError {
-    VaultUnavailable,
-    LimitReached,
-    DuplicateEnvironmentKey(String),
-    InvalidMcpUrl,
-}
-
-/// Pure admission kernel for adding one child to a Workspace-owned Vault. Store
-/// adapters own scoped reads; this kernel owns the product cardinality and
-/// credential-key rules independently of HTTP and persistence.
-fn admit_vault_credential(
-    workspace_id: &str,
-    vault_id: &str,
-    vault: Option<&VaultRecord>,
-    existing: &[CredentialRecord],
-    params: &CredentialCreateParams,
-) -> Result<(), CredentialAdmissionError> {
-    if !vault.is_some_and(|vault| {
-        vault.workspace_id == workspace_id && vault.id == vault_id && vault.archived_at.is_none()
-    }) {
-        return Err(CredentialAdmissionError::VaultUnavailable);
-    }
-    if existing.len() >= MAX_CREDENTIALS_PER_VAULT {
-        return Err(CredentialAdmissionError::LimitReached);
-    }
-    match params {
-        CredentialCreateParams::EnvironmentVariable { secret_name, .. } => {
-            if existing.iter().any(|credential| {
-                credential.workspace_id == workspace_id
-                    && credential.vault_id == vault_id
-                    && credential.archived_at.is_none()
-                    && matches!(
-                        &credential.auth,
-                        AuthRecord::EnvironmentVariable {
-                            secret_name: current,
-                            ..
-                        } if current == secret_name
-                    )
-            }) {
-                return Err(CredentialAdmissionError::DuplicateEnvironmentKey(
-                    secret_name.clone(),
-                ));
-            }
-        }
-        CredentialCreateParams::StaticBearer { mcp_server_url, .. }
-        | CredentialCreateParams::McpOauth { mcp_server_url, .. } => {
-            if awaken_session_contract::McpTarget::identity(mcp_server_url).is_err() {
-                return Err(CredentialAdmissionError::InvalidMcpUrl);
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The vault surface's state: the neutral credential domain stores plus the
@@ -280,6 +224,7 @@ impl VaultState {
                     display_name: application_authority_id.to_owned(),
                     metadata: BTreeMap::new(),
                     archived_at: None,
+                    revision: 1,
                 },
             )
             .await?;
@@ -911,6 +856,21 @@ fn storage_error(error: impl std::fmt::Display) -> WireError {
     )
 }
 
+fn vault_mutation_error(error: ManagedVaultMutationError) -> WireError {
+    match error {
+        ManagedVaultMutationError::NotFound => not_found("vault"),
+        ManagedVaultMutationError::RevisionConflict => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new(
+                "conflict_error",
+                "vault changed concurrently; retry the request",
+            )),
+        ),
+        ManagedVaultMutationError::RevisionExhausted => storage_error(error),
+        ManagedVaultMutationError::Store(error) => storage_error(error),
+    }
+}
+
 /// Resolve the trusted Workspace stamped by the product edge. Standalone/local
 /// composition preserves its documented installation Workspace fallback here,
 /// before any Vault repository operation receives authority.
@@ -937,6 +897,7 @@ async fn create_vault(
         display_name: params.display_name,
         metadata: params.metadata,
         archived_at: None,
+        revision: 1,
     };
     let vault = VaultState::project_vault(&record);
     state
@@ -1020,12 +981,16 @@ async fn archive_vault(
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
+    let expected_revision = record.revision;
     record.archived_at = Some(OBJECT_AT.to_string());
+    record.revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
     state
         .vaults
-        .put_vault(&workspace_id, record.clone())
+        .replace_vault(&workspace_id, expected_revision, record.clone())
         .await
-        .map_err(storage_error)?;
+        .map_err(vault_mutation_error)?;
     Ok(Json(VaultState::project_vault(&record)))
 }
 
@@ -1051,17 +1016,21 @@ async fn update_vault(
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
+    let expected_revision = record.revision;
     if let Some(name) = params.display_name {
         record.display_name = name;
     }
     if let Some(patch) = params.metadata {
         apply_metadata_patch(&mut record.metadata, patch);
     }
+    record.revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
     state
         .vaults
-        .put_vault(&workspace_id, record.clone())
+        .replace_vault(&workspace_id, expected_revision, record.clone())
         .await
-        .map_err(storage_error)?;
+        .map_err(vault_mutation_error)?;
     Ok(Json(VaultState::project_vault(&record)))
 }
 
@@ -1077,48 +1046,6 @@ async fn create_credential(
     // credential row. Standalone embeddings that omit that edge use the documented
     // local/default workspace; tenancy is never derived from a resource id.
     let resource_workspace = request_workspace(scope);
-    // Enforce the vault exists and the per-vault constraints up front. The 20-cap
-    // spans all credential types. Active env-var names are unique keys; MCP URLs
-    // are validated here but may have multiple credentials, with deterministic
-    // selection performed only by the Session binding normalizer.
-    {
-        let vault = state
-            .vaults
-            .get_vault(&resource_workspace, &vault_id)
-            .await
-            .map_err(storage_error)?;
-        let in_vault = state
-            .vaults
-            .list_vault_credentials(&resource_workspace, &vault_id)
-            .await
-            .map_err(storage_error)?;
-        match admit_vault_credential(
-            &resource_workspace,
-            &vault_id,
-            vault.as_ref(),
-            &in_vault,
-            &params,
-        ) {
-            Ok(()) => {}
-            Err(CredentialAdmissionError::VaultUnavailable) => {
-                return Err(not_found("vault"));
-            }
-            Err(CredentialAdmissionError::LimitReached) => {
-                return Err(bad_request("vault credential limit reached (max 20)"));
-            }
-            Err(CredentialAdmissionError::DuplicateEnvironmentKey(secret_name)) => {
-                return Err(bad_request(format!(
-                    "credential key `{secret_name}` already exists in this vault"
-                )));
-            }
-            Err(CredentialAdmissionError::InvalidMcpUrl) => {
-                return Err(bad_request(
-                    "mcp_server_url must be an absolute HTTP(S) URL",
-                ));
-            }
-        }
-    }
-
     // Secret-in through the ACL: every raw secret crosses into the domain here and
     // is sealed by the SecretStore; the returned row is secret-free, and only the
     // kind-specific wire projection is kept on the record.
@@ -1271,18 +1198,48 @@ async fn create_credential(
         id,
         vault_id,
         workspace_id: resource_workspace.clone(),
-        source_id: source.id,
+        source_id: source.id.clone(),
         auth,
         metadata,
         display_name,
         archived_at: None,
     };
     let credential = VaultState::project_credential(&record);
-    state
+    let insertion = state
         .vaults
-        .put_vault_credential(&resource_workspace, record)
+        .insert_vault_credential(&resource_workspace, record)
+        .await;
+    if let Err(error) = insertion {
+        // The source is already a durable, tracked credential aggregate. Retire
+        // it before returning an aggregate-admission error so a rejected child
+        // never leaves executable orphan material.
+        if let Err(retirement_error) = revoke_credential(
+            &source.id,
+            CredentialRetirement::Archive,
+            state.secrets.as_ref(),
+            state.credentials.as_ref(),
+        )
         .await
-        .map_err(storage_error)?;
+        {
+            return Err(storage_error(retirement_error));
+        }
+        return Err(match error {
+            ManagedCredentialAdmissionError::VaultUnavailable => not_found("vault"),
+            ManagedCredentialAdmissionError::LimitReached => {
+                bad_request("vault credential limit reached (max 20)")
+            }
+            ManagedCredentialAdmissionError::DuplicateEnvironmentKey(secret_name) => bad_request(
+                format!("credential key `{secret_name}` already exists in this vault"),
+            ),
+            ManagedCredentialAdmissionError::InvalidMcpUrl => {
+                bad_request("mcp_server_url must be an absolute HTTP(S) URL")
+            }
+            ManagedCredentialAdmissionError::WorkspaceMismatch => {
+                bad_request("credential workspace does not match request authority")
+            }
+            ManagedCredentialAdmissionError::Store(error) => storage_error(error),
+        });
+    }
     Ok((StatusCode::OK, Json(credential)))
 }
 

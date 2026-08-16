@@ -223,8 +223,10 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         .delete_session(SessionDeleteCommand::new("delete-live"))
         .await
         .expect("L3");
-    let transition = deleted.transition().clone();
-    deleted.wait().await;
+    let transition = deleted.clone();
+    app.release_terminal_resources(&transition.owner_scope, "delete-live")
+        .await
+        .expect("L3 reconciliation");
     assert!(transition.transitioned, "L3");
     assert_eq!(transition.session.execution.as_str(), "terminated", "L3");
     assert!(transition.session.is_hidden(), "L3");

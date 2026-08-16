@@ -5,7 +5,7 @@
 //! Runtime-Host responsibility.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -70,6 +70,76 @@ struct HandBinding {
     executor: Arc<dyn ToolExecutor>,
 }
 
+enum HandBindingState {
+    Vacant,
+    Starting,
+    Ready(HandBinding),
+    LaunchFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandBindingPhase {
+    Vacant,
+    Starting,
+    Ready,
+    LaunchFailed,
+}
+
+#[must_use]
+const fn hand_binding_transition_admitted(
+    current: HandBindingPhase,
+    next: HandBindingPhase,
+) -> bool {
+    matches!(
+        (current, next),
+        (HandBindingPhase::Vacant, HandBindingPhase::Starting)
+            | (HandBindingPhase::Starting, HandBindingPhase::Ready)
+            | (HandBindingPhase::Starting, HandBindingPhase::LaunchFailed)
+            | (HandBindingPhase::Ready, HandBindingPhase::Vacant)
+            | (HandBindingPhase::LaunchFailed, HandBindingPhase::Vacant)
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum HandAvailability {
+    Open,
+    ProjectionUpdate,
+    Fenced,
+    Closed,
+}
+
+#[must_use]
+const fn hand_availability_transition_admitted(
+    current: HandAvailability,
+    next: HandAvailability,
+) -> bool {
+    matches!(
+        (current, next),
+        (HandAvailability::Open, HandAvailability::ProjectionUpdate)
+            | (HandAvailability::Fenced, HandAvailability::ProjectionUpdate)
+            | (HandAvailability::ProjectionUpdate, HandAvailability::Open)
+            | (HandAvailability::Open, HandAvailability::Fenced)
+            | (HandAvailability::ProjectionUpdate, HandAvailability::Fenced)
+            | (HandAvailability::Open, HandAvailability::Closed)
+            | (HandAvailability::ProjectionUpdate, HandAvailability::Closed)
+            | (HandAvailability::Fenced, HandAvailability::Closed)
+            | (HandAvailability::Closed, HandAvailability::Closed)
+    )
+}
+
+impl HandAvailability {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Open,
+            1 => Self::ProjectionUpdate,
+            2 => Self::Fenced,
+            3 => Self::Closed,
+            _ => Self::Fenced,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetireOutcome {
     Retired,
@@ -83,43 +153,126 @@ enum RetireError {
 }
 
 struct HandLifecycle {
-    binding: Mutex<Option<HandBinding>>,
-    closed: AtomicBool,
+    binding: Mutex<HandBindingState>,
+    binding_changed: tokio::sync::Notify,
+    availability: AtomicU8,
     generation: AtomicU64,
     activity: tokio::sync::watch::Sender<u64>,
 }
 
 impl HandLifecycle {
+    fn availability(&self) -> HandAvailability {
+        HandAvailability::from_raw(self.availability.load(Ordering::Acquire))
+    }
+
+    fn is_open(&self) -> bool {
+        self.availability() == HandAvailability::Open
+    }
+
+    fn begin_projection_update(&self) -> bool {
+        loop {
+            let current = self.availability();
+            if !hand_availability_transition_admitted(current, HandAvailability::ProjectionUpdate) {
+                return false;
+            }
+            if self
+                .availability
+                .compare_exchange(
+                    current as u8,
+                    HandAvailability::ProjectionUpdate as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    fn commit_projection_update(&self) {
+        debug_assert!(hand_availability_transition_admitted(
+            HandAvailability::ProjectionUpdate,
+            HandAvailability::Open,
+        ));
+        let _ = self.availability.compare_exchange(
+            HandAvailability::ProjectionUpdate as u8,
+            HandAvailability::Open as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn fence(&self) {
+        loop {
+            let current = self.availability();
+            if matches!(current, HandAvailability::Fenced | HandAvailability::Closed) {
+                return;
+            }
+            debug_assert!(hand_availability_transition_admitted(
+                current,
+                HandAvailability::Fenced,
+            ));
+            if self
+                .availability
+                .compare_exchange(
+                    current as u8,
+                    HandAvailability::Fenced as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                self.touch();
+                return;
+            }
+        }
+    }
+
     fn touch(&self) {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let _ = self.activity.send(generation);
     }
 
     fn close(&self) {
-        if !self.closed.swap(true, Ordering::AcqRel) {
+        if self
+            .availability
+            .swap(HandAvailability::Closed as u8, Ordering::AcqRel)
+            != HandAvailability::Closed as u8
+        {
             self.touch();
         }
     }
 
     async fn retire_binding(
         &self,
-        binding: &mut Option<HandBinding>,
+        binding: &mut HandBindingState,
         event: &'static str,
     ) -> Result<RetireOutcome, RetireError> {
-        let Some(current) = binding.as_ref() else {
-            return Ok(RetireOutcome::AlreadyVacant);
+        let current = match binding {
+            HandBindingState::Ready(current) => current,
+            HandBindingState::Vacant | HandBindingState::LaunchFailed(_) => {
+                *binding = HandBindingState::Vacant;
+                return Ok(RetireOutcome::AlreadyVacant);
+            }
+            HandBindingState::Starting => return Ok(RetireOutcome::Stale),
         };
         // Keep the binding installed while the external reap is in flight. If
         // this Future is cancelled, the mutex guard is dropped but the owner is
         // still tracked; a later retry can resume retirement and can never infer
         // Vacant and launch a second process from an unknown outcome.
         if stop_hand_binding(current, event).await {
-            binding.take();
+            debug_assert!(hand_binding_transition_admitted(
+                HandBindingPhase::Ready,
+                HandBindingPhase::Vacant,
+            ));
+            *binding = HandBindingState::Vacant;
+            self.binding_changed.notify_waiters();
             Ok(RetireOutcome::Retired)
         } else {
             // The process outcome is unknown. Starting another Hand could
             // violate the one-owner invariant, so fail closed.
-            self.close();
+            self.fence();
             Err(RetireError::ReapFailed)
         }
     }
@@ -129,13 +282,21 @@ impl HandLifecycle {
         expected_generation: Option<u64>,
         event: &'static str,
     ) -> Result<RetireOutcome, RetireError> {
-        let mut binding = self.binding.lock().await;
-        if expected_generation
-            .is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected)
-        {
-            return Ok(RetireOutcome::Stale);
+        loop {
+            let notified = self.binding_changed.notified();
+            let mut binding = self.binding.lock().await;
+            if expected_generation
+                .is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected)
+            {
+                return Ok(RetireOutcome::Stale);
+            }
+            if matches!(*binding, HandBindingState::Starting) {
+                drop(binding);
+                notified.await;
+                continue;
+            }
+            return self.retire_binding(&mut binding, event).await;
         }
-        self.retire_binding(&mut binding, event).await
     }
 }
 
@@ -165,6 +326,72 @@ async fn stop_hand_binding(binding: &HandBinding, event: &'static str) -> bool {
     }
 }
 
+async fn launch_hand(
+    launcher: Arc<SessionAgentLauncher>,
+    factory: Arc<dyn HandExecutorFactory>,
+    hand_bin: String,
+    operation_scope: String,
+    mode: HandMode,
+) -> Result<HandBinding, pc::SandboxError> {
+    let started = std::time::Instant::now();
+    if mode == HandMode::Resident {
+        // Pod Running/Ready can become observable before PID 1 has bound its
+        // listener. Retry only this pre-dispatch attachment boundary.
+        let mut attempts = 0_u8;
+        let channel = loop {
+            attempts += 1;
+            match launcher.open_resident_channel().await {
+                Ok(channel) => break channel,
+                Err(error) if attempts < 50 => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tracing::debug!(attempts, error = %error, "resident Hand is not ready");
+                }
+                Err(error) => {
+                    awaken_observability::record_hand_lifecycle(
+                        "attach_resident",
+                        "error",
+                        started.elapsed(),
+                    );
+                    return Err(error);
+                }
+            }
+        };
+        awaken_observability::record_hand_lifecycle("attach_resident", "ok", started.elapsed());
+        return Ok(HandBinding {
+            executor: factory.bind(
+                channel,
+                &operation_scope,
+                ToolRecoveryCapability::DurableRequest,
+            ),
+            process: None,
+        });
+    }
+
+    let command = pc::Command {
+        argv: vec![hand_bin, "hand".into(), "--stdio".into()],
+        cwd: "/workspace".into(),
+        env: Vec::new(),
+        stdio: pc::Stdio::Piped,
+    };
+    let (process, channel) = match launcher.spawn_agent(command).await {
+        Ok(binding) => binding,
+        Err(error) => {
+            awaken_observability::record_hand_lifecycle("launch", "error", started.elapsed());
+            return Err(error);
+        }
+    };
+    awaken_observability::add_live_hand(1);
+    awaken_observability::record_hand_lifecycle("launch", "ok", started.elapsed());
+    Ok(HandBinding {
+        executor: factory.bind(
+            channel,
+            &operation_scope,
+            ToolRecoveryCapability::NonRecoverable,
+        ),
+        process: Some(process),
+    })
+}
+
 /// The one Session-Environment-owned Hand binding.
 pub(crate) struct SessionHandExecutor {
     launcher: Arc<SessionAgentLauncher>,
@@ -173,7 +400,6 @@ pub(crate) struct SessionHandExecutor {
     operation_scope: String,
     lifecycle: Arc<HandLifecycle>,
     projection_update: Mutex<()>,
-    projection_updating: AtomicBool,
     idle_after: Duration,
     mode: HandMode,
     container_skills: Option<(
@@ -211,12 +437,15 @@ impl HandMode {
 impl SessionHandExecutor {
     #[cfg(test)]
     pub(super) async fn has_tracked_binding(&self) -> bool {
-        self.lifecycle.binding.lock().await.is_some()
+        matches!(
+            *self.lifecycle.binding.lock().await,
+            HandBindingState::Ready(_)
+        )
     }
 
     #[cfg(test)]
     pub(super) fn projection_is_updating(&self) -> bool {
-        self.projection_updating.load(Ordering::Acquire)
+        self.lifecycle.availability() == HandAvailability::ProjectionUpdate
     }
 
     pub(super) fn namespace(
@@ -258,8 +487,7 @@ impl SessionHandExecutor {
             residency,
             Some((sandbox, skills)),
         );
-        let binding = executor.launch().await?;
-        *executor.lifecycle.binding.lock().await = Some(binding);
+        executor.await_ready_binding().await?;
         Ok(executor)
     }
 
@@ -283,13 +511,13 @@ impl SessionHandExecutor {
             hand_bin,
             operation_scope,
             lifecycle: Arc::new(HandLifecycle {
-                binding: Mutex::new(None),
-                closed: AtomicBool::new(false),
+                binding: Mutex::new(HandBindingState::Vacant),
+                binding_changed: tokio::sync::Notify::new(),
+                availability: AtomicU8::new(HandAvailability::Open as u8),
                 generation: AtomicU64::new(0),
                 activity,
             }),
             projection_update: Mutex::new(()),
-            projection_updating: AtomicBool::new(false),
             idle_after,
             mode,
             container_skills,
@@ -304,64 +532,72 @@ impl SessionHandExecutor {
         self.launcher.clone()
     }
 
-    async fn launch(&self) -> Result<HandBinding, pc::SandboxError> {
-        let started = std::time::Instant::now();
-        if self.mode == HandMode::Resident {
-            // Pod Running/Ready can become observable before PID 1 has bound its
-            // listener. Retry only this pre-dispatch attachment boundary.
-            let mut attempts = 0_u8;
-            let channel = loop {
-                attempts += 1;
-                match self.launcher.open_resident_channel().await {
-                    Ok(channel) => break channel,
-                    Err(error) if attempts < 50 => {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        tracing::debug!(attempts, error = %error, "resident Hand is not ready");
-                    }
-                    Err(error) => {
-                        awaken_observability::record_hand_lifecycle(
-                            "attach_resident",
-                            "error",
-                            started.elapsed(),
-                        );
-                        return Err(error);
+    fn start_owned_launch(&self) {
+        let launcher = self.launcher.clone();
+        let factory = self.factory.clone();
+        let hand_bin = self.hand_bin.clone();
+        let operation_scope = self.operation_scope.clone();
+        let mode = self.mode;
+        let lifecycle = self.lifecycle.clone();
+        tokio::spawn(async move {
+            let result = launch_hand(launcher, factory, hand_bin, operation_scope, mode).await;
+            let mut state = lifecycle.binding.lock().await;
+            match result {
+                Ok(binding) => {
+                    debug_assert!(hand_binding_transition_admitted(
+                        HandBindingPhase::Starting,
+                        HandBindingPhase::Ready,
+                    ));
+                    *state = HandBindingState::Ready(binding);
+                    // Launch is owned by this task, not by the request Future.
+                    // If the environment closed or fenced while spawning, keep
+                    // the process tracked until the same owner reaps it.
+                    if !lifecycle.is_open() {
+                        let _ = lifecycle
+                            .retire_binding(&mut state, "cancelled_launch_reap")
+                            .await;
                     }
                 }
-            };
-            awaken_observability::record_hand_lifecycle("attach_resident", "ok", started.elapsed());
-            return Ok(HandBinding {
-                executor: self.factory.bind(
-                    channel,
-                    &self.operation_scope,
-                    ToolRecoveryCapability::DurableRequest,
-                ),
-                process: None,
-            });
-        }
-
-        let command = pc::Command {
-            argv: vec![self.hand_bin.clone(), "hand".into(), "--stdio".into()],
-            cwd: "/workspace".into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        };
-        let (process, channel) = match self.launcher.spawn_agent(command).await {
-            Ok(binding) => binding,
-            Err(error) => {
-                awaken_observability::record_hand_lifecycle("launch", "error", started.elapsed());
-                return Err(error);
+                Err(error) => {
+                    debug_assert!(hand_binding_transition_admitted(
+                        HandBindingPhase::Starting,
+                        HandBindingPhase::LaunchFailed,
+                    ));
+                    *state = HandBindingState::LaunchFailed(error.to_string());
+                }
             }
-        };
-        awaken_observability::add_live_hand(1);
-        awaken_observability::record_hand_lifecycle("launch", "ok", started.elapsed());
-        Ok(HandBinding {
-            executor: self.factory.bind(
-                channel,
-                &self.operation_scope,
-                ToolRecoveryCapability::NonRecoverable,
-            ),
-            process: Some(process),
-        })
+            lifecycle.binding_changed.notify_waiters();
+        });
+    }
+
+    async fn await_ready_binding(&self) -> Result<(), pc::SandboxError> {
+        loop {
+            let notified = self.lifecycle.binding_changed.notified();
+            let mut state = self.lifecycle.binding.lock().await;
+            match &mut *state {
+                HandBindingState::Ready(_) => return Ok(()),
+                HandBindingState::Vacant => {
+                    debug_assert!(hand_binding_transition_admitted(
+                        HandBindingPhase::Vacant,
+                        HandBindingPhase::Starting,
+                    ));
+                    *state = HandBindingState::Starting;
+                    self.start_owned_launch();
+                }
+                HandBindingState::Starting => {}
+                HandBindingState::LaunchFailed(error) => {
+                    let error = std::mem::take(error);
+                    debug_assert!(hand_binding_transition_admitted(
+                        HandBindingPhase::LaunchFailed,
+                        HandBindingPhase::Vacant,
+                    ));
+                    *state = HandBindingState::Vacant;
+                    return Err(pc::SandboxError::new(error));
+                }
+            }
+            drop(state);
+            notified.await;
+        }
     }
 
     fn spawn_idle_hibernation(&self, mut activity: tokio::sync::watch::Receiver<u64>) {
@@ -382,7 +618,12 @@ impl SessionHandExecutor {
                         generation = *activity.borrow_and_update();
                         if lifecycle
                             .upgrade()
-                            .is_none_or(|lifecycle| lifecycle.closed.load(Ordering::Acquire))
+                            .is_none_or(|lifecycle| {
+                                matches!(
+                                    lifecycle.availability(),
+                                    HandAvailability::Fenced | HandAvailability::Closed
+                                )
+                            })
                         {
                             break;
                         }
@@ -391,7 +632,10 @@ impl SessionHandExecutor {
                         let Some(lifecycle) = lifecycle.upgrade() else {
                             break;
                         };
-                        if lifecycle.closed.load(Ordering::Acquire) {
+                        if matches!(
+                            lifecycle.availability(),
+                            HandAvailability::Fenced | HandAvailability::Closed
+                        ) {
                             break;
                         }
                         if matches!(
@@ -421,9 +665,10 @@ impl SessionHandExecutor {
         &self,
     ) -> Result<HandProjectionUpdate<'_>, pc::SandboxError> {
         let update = self.projection_update.lock().await;
-        self.projection_updating.store(true, Ordering::Release);
-        if self.lifecycle.closed.load(Ordering::Acquire) {
-            return Err(pc::SandboxError::new("Session hand binding is closed"));
+        if !self.lifecycle.begin_projection_update() {
+            return Err(pc::SandboxError::new(
+                "Session hand binding is unavailable for projection update",
+            ));
         }
         match self
             .lifecycle
@@ -435,12 +680,18 @@ impl SessionHandExecutor {
                 _update: update,
                 committed: false,
             }),
-            Ok(RetireOutcome::Stale) => Err(pc::SandboxError::new(
-                "Session hand activity changed during projection update",
-            )),
-            Err(RetireError::ReapFailed) => Err(pc::SandboxError::new(
-                "failed to reap Session hand before projection update",
-            )),
+            Ok(RetireOutcome::Stale) => {
+                self.lifecycle.fence();
+                Err(pc::SandboxError::new(
+                    "Session hand activity changed during projection update",
+                ))
+            }
+            Err(RetireError::ReapFailed) => {
+                self.lifecycle.fence();
+                Err(pc::SandboxError::new(
+                    "failed to reap Session hand before projection update",
+                ))
+            }
         }
     }
 
@@ -452,9 +703,9 @@ impl SessionHandExecutor {
             .await;
     }
 
-    async fn replacement(&self) -> Result<HandBinding, ToolError> {
+    async fn replacement(&self) -> Result<(), ToolError> {
         let started = std::time::Instant::now();
-        let result = self.launch().await;
+        let result = self.await_ready_binding().await;
         awaken_observability::record_hand_lifecycle(
             "reacquire",
             if result.is_ok() { "ok" } else { "error" },
@@ -475,31 +726,25 @@ impl ToolExecutor for SessionHandExecutor {
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        if self.lifecycle.closed.load(Ordering::Acquire)
-            || self.projection_updating.load(Ordering::Acquire)
-        {
+        if !self.lifecycle.is_open() {
             return Err(ToolError::UnavailableBeforeDispatch(
                 "Session hand binding is closed or its resource projection is updating".into(),
             ));
         }
         self.lifecycle.touch();
+        self.replacement().await?;
         let mut binding = self.lifecycle.binding.lock().await;
-        if self.lifecycle.closed.load(Ordering::Acquire)
-            || self.projection_updating.load(Ordering::Acquire)
-        {
+        if !self.lifecycle.is_open() {
             return Err(ToolError::UnavailableBeforeDispatch(
                 "Session hand binding is closed or its resource projection is updating".into(),
             ));
         }
-        if binding.is_none() {
-            *binding = Some(self.replacement().await?);
-        }
-        let result = binding
-            .as_ref()
-            .expect("binding installed above")
-            .executor
-            .invoke(call)
-            .await;
+        let HandBindingState::Ready(current) = &*binding else {
+            return Err(ToolError::UnavailableBeforeDispatch(
+                "Session hand launch did not install an owned binding".into(),
+            ));
+        };
+        let result = current.executor.invoke(call).await;
         let result = if matches!(result, Err(ToolError::UnavailableBeforeDispatch(_))) {
             tracing::warn!(
                 session_environment = %self.operation_scope,
@@ -516,18 +761,25 @@ impl ToolExecutor for SessionHandExecutor {
                     "failed to reap expired Session hand; environment must be reconstructed".into(),
                 ));
             }
-            if self.lifecycle.closed.load(Ordering::Acquire) {
+            if !self.lifecycle.is_open() {
                 return Err(ToolError::UnavailableBeforeDispatch(
                     "Session hand binding closed during reacquisition".into(),
                 ));
             }
-            *binding = Some(self.replacement().await?);
-            binding
-                .as_ref()
-                .expect("replacement binding installed above")
-                .executor
-                .invoke(call)
-                .await
+            drop(binding);
+            self.replacement().await?;
+            binding = self.lifecycle.binding.lock().await;
+            if !self.lifecycle.is_open() {
+                return Err(ToolError::UnavailableBeforeDispatch(
+                    "Session hand binding closed during reacquisition".into(),
+                ));
+            }
+            let HandBindingState::Ready(current) = &*binding else {
+                return Err(ToolError::UnavailableBeforeDispatch(
+                    "replacement Session hand was not installed".into(),
+                ));
+            };
+            current.executor.invoke(call).await
         } else {
             result
         };
@@ -539,6 +791,12 @@ impl ToolExecutor for SessionHandExecutor {
         }
         self.lifecycle.touch();
         result
+    }
+}
+
+impl Drop for SessionHandExecutor {
+    fn drop(&mut self) {
+        self.lifecycle.close();
     }
 }
 
@@ -555,9 +813,7 @@ pub(crate) struct HandProjectionUpdate<'a> {
 impl HandProjectionUpdate<'_> {
     pub(crate) fn commit(mut self) {
         self.committed = true;
-        self.hand
-            .projection_updating
-            .store(false, Ordering::Release);
+        self.hand.lifecycle.commit_projection_update();
         self.hand.lifecycle.touch();
     }
 }
@@ -565,10 +821,54 @@ impl HandProjectionUpdate<'_> {
 impl Drop for HandProjectionUpdate<'_> {
     fn drop(&mut self) {
         if !self.committed {
+            self.hand.lifecycle.fence();
             tracing::warn!(
                 session_environment = %self.hand.operation_scope,
                 "resource projection update did not commit; keeping Session hand fenced"
             );
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn hand_availability_has_only_explicit_recovery_and_terminal_transitions() {
+        let current = match kani::any::<u8>() % 4 {
+            0 => HandAvailability::Open,
+            1 => HandAvailability::ProjectionUpdate,
+            2 => HandAvailability::Fenced,
+            _ => HandAvailability::Closed,
+        };
+        assert!(!hand_availability_transition_admitted(
+            HandAvailability::Closed,
+            HandAvailability::Open,
+        ));
+        assert!(!hand_availability_transition_admitted(
+            HandAvailability::Fenced,
+            HandAvailability::Open,
+        ));
+        if hand_availability_transition_admitted(current, HandAvailability::Open) {
+            assert_eq!(current, HandAvailability::ProjectionUpdate);
+        }
+    }
+
+    #[kani::proof]
+    fn hand_binding_can_only_become_ready_through_tracked_starting() {
+        let current = match kani::any::<u8>() % 4 {
+            0 => HandBindingPhase::Vacant,
+            1 => HandBindingPhase::Starting,
+            2 => HandBindingPhase::Ready,
+            _ => HandBindingPhase::LaunchFailed,
+        };
+        assert!(!hand_binding_transition_admitted(
+            HandBindingPhase::Vacant,
+            HandBindingPhase::Ready,
+        ));
+        if hand_binding_transition_admitted(current, HandBindingPhase::Ready) {
+            assert_eq!(current, HandBindingPhase::Starting);
         }
     }
 }
