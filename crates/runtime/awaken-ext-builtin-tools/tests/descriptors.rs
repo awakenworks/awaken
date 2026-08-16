@@ -56,12 +56,10 @@ fn hand_tool_execution_targets_follow_the_placement_decision_table() {
 
 #[test]
 fn grep_descriptor_exposes_every_executor_input() {
-    // Cause/effect graph: C1 GrepTool requires a regex pattern; C2 it requires
-    // the spill-file path. C1+C2 -> E1 the model can inspect a large managed
-    // tool result without rereading and respilling the entire file.
-    // Decision rule G1 requires both fields in properties and required.
-    // FMECA: omitting `path` made Anthropic's >100k-result spill recovery
-    // undiscoverable and drove agents into repeated web fetch/search loops.
+    // Cause/effect graph: C1 GrepTool requires a regex pattern; C2 it accepts an
+    // optional file/directory path and defaults to the current directory. This
+    // is the official Managed Agent tool shape while still allowing spill-file
+    // recovery by passing `path` explicitly.
     let grep = builtin_tools()
         .into_iter()
         .find(|tool| tool.descriptor.id == "grep")
@@ -73,7 +71,7 @@ fn grep_descriptor_exposes_every_executor_input() {
     assert!(properties.contains_key("path"), "G1/C2");
     assert_eq!(
         grep.descriptor.parameters["required"],
-        serde_json::json!(["pattern", "path"]),
+        serde_json::json!(["pattern"]),
         "G1/E1"
     );
 }

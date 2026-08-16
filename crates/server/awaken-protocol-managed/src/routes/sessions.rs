@@ -598,6 +598,7 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 pub const SKILLS_BETA: &str = "skills-2025-10-02";
 /// The endpoint-specific beta that replaces the Managed beta on Memory APIs.
 pub const MEMORY_BETA: &str = "agent-memory-2026-07-22";
+pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 fn has_beta(req: &Request, expected: &str) -> bool {
     req.headers()
@@ -617,6 +618,25 @@ pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // Both supported SDK anchors currently send the same API date. Validate an
+    // explicit date, but retain missing-header acceptance for Awaken's legacy
+    // raw clients; a package version is never inferred from telemetry headers.
+    if req
+        .headers()
+        .get("anthropic-version")
+        .is_some_and(|value| value.to_str().ok() != Some(ANTHROPIC_API_VERSION))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "unsupported `anthropic-version`; this endpoint supports {ANTHROPIC_API_VERSION}"
+                ),
+            )),
+        )
+            .into_response();
+    }
     let path = req.uri().path();
     let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
     if is_family("/v1/memory_stores") {

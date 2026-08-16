@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use awaken_session_contract::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
-    DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyApplication, DreamPolicyApplicationError,
-    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus,
-    DreamStatusEvent, DreamUsage,
+    DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
+    DreamPolicyApplicationError, DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord,
+    DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
 };
 pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
@@ -25,6 +25,7 @@ pub struct DreamRequest {
     pub job_id: String,
     pub workspace_id: String,
     pub source_memory_store_id: String,
+    pub output_behavior: DreamOutputBehavior,
     pub session_ids: Vec<String>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
@@ -137,6 +138,7 @@ struct DreamProcess {
     workspace_id: String,
     status: DreamStatus,
     source_memory_store_id: String,
+    output_behavior: DreamOutputBehavior,
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
@@ -158,6 +160,7 @@ impl DreamProcess {
             job_id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
             source_memory_store_id: self.source_memory_store_id.clone(),
+            output_behavior: self.output_behavior.clone(),
             session_ids: self.session_ids.clone(),
             model: self.model.clone(),
             request_guidance: self.request_guidance.clone(),
@@ -199,6 +202,7 @@ impl DreamProcess {
             ],
             instructions: self.request_guidance.clone(),
             model: self.model.clone(),
+            output_behavior: self.output_behavior.clone(),
             outputs: self
                 .result_memory_store_id
                 .iter()
@@ -224,6 +228,7 @@ fn process_record(process: &DreamProcess) -> DreamProcessRecord {
         workspace_id: process.workspace_id.clone(),
         status: process.status.clone(),
         source_memory_store_id: process.source_memory_store_id.clone(),
+        output_behavior: process.output_behavior.clone(),
         session_ids: process.session_ids.clone(),
         model: process.model.clone(),
         request_guidance: process.request_guidance.clone(),
@@ -249,6 +254,7 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
         workspace_id: record.workspace_id,
         status: record.status,
         source_memory_store_id: record.source_memory_store_id,
+        output_behavior: record.output_behavior,
         session_ids: record.session_ids,
         model: record.model,
         request_guidance: record.request_guidance,
@@ -613,6 +619,7 @@ impl DreamApplication {
                         ],
                         model: DreamModelInput::Config(policy.config.model.clone()),
                         instructions: policy.config.instructions.clone(),
+                        output_behavior: DreamOutputBehavior::CreateNew,
                     },
                     Some((key, previous, policy)),
                 )
@@ -717,6 +724,7 @@ impl DreamApplication {
         policy_claim: Option<((String, String), StoredDreamPolicy, StoredDreamPolicy)>,
     ) -> Result<Dream, DreamApiError> {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
+        let output_behavior = params.output_behavior;
         let model = params.model.into_config();
         let readiness = self.model_readiness.lock().unwrap().clone();
         if let Some(readiness) = readiness {
@@ -737,6 +745,7 @@ impl DreamApplication {
             workspace_id: workspace_id.to_string(),
             status: DreamStatus::Pending,
             source_memory_store_id,
+            output_behavior,
             session_ids,
             model,
             request_guidance,
@@ -1223,7 +1232,16 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
             "session ids must be non-empty and unique".into(),
         ));
     }
-    Ok((memory.expect("validated memory input"), sessions))
+    let memory = memory.expect("validated memory input");
+    if let DreamOutputBehavior::UpdateExisting { memory_store_id } = &params.output_behavior
+        && memory_store_id != &memory
+    {
+        return Err(DreamApiError::BadRequest(
+            "output_behavior.update_existing memory_store_id must match the memory_store input"
+                .into(),
+        ));
+    }
+    Ok((memory, sessions))
 }
 
 #[cfg(test)]
@@ -1242,6 +1260,7 @@ mod tests {
             ],
             model: DreamModelInput::Id("claude-sonnet-5".into()),
             instructions: None,
+            output_behavior: DreamOutputBehavior::CreateNew,
         }
     }
 
@@ -1288,6 +1307,18 @@ mod tests {
         let mut long_instructions = valid_params();
         long_instructions.instructions = Some("x".repeat(DREAM_MAX_INSTRUCTIONS_CHARS + 1));
         assert!(validate_create(&long_instructions).is_err(), "R5");
+
+        let mut mismatched_update = valid_params();
+        mismatched_update.output_behavior = DreamOutputBehavior::UpdateExisting {
+            memory_store_id: "another-memory".into(),
+        };
+        assert!(validate_create(&mismatched_update).is_err(), "R6");
+
+        let mut matching_update = valid_params();
+        matching_update.output_behavior = DreamOutputBehavior::UpdateExisting {
+            memory_store_id: "memory-a".into(),
+        };
+        assert!(validate_create(&matching_update).is_ok(), "R7");
     }
 
     #[test]
@@ -1301,6 +1332,7 @@ mod tests {
             workspace_id: "workspace".into(),
             status: DreamStatus::Failed,
             source_memory_store_id: "memory".into(),
+            output_behavior: DreamOutputBehavior::CreateNew,
             session_ids: vec!["session".into()],
             model: DreamModelConfig {
                 id: "claude-sonnet-5".into(),

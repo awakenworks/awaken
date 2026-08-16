@@ -72,10 +72,10 @@ pub use routes::environments::{
 };
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{VaultState, vault_router};
-pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{
-    MEMORY_BETA, SKILLS_BETA, enforce_managed_beta, replace_resource_manifest, router,
-    tunnels_router,
+    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, enforce_managed_beta,
+    replace_resource_manifest, router, tunnels_router,
 };
+pub use routes::{DREAMING_BETA, dreams_router};
 pub use state::{ManagedState, StateError};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};

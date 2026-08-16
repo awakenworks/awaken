@@ -24,6 +24,8 @@ pub struct DreamProcessRecord {
     pub workspace_id: String,
     pub status: DreamStatus,
     pub source_memory_store_id: String,
+    #[serde(default)]
+    pub output_behavior: DreamOutputBehavior,
     pub session_ids: Vec<String>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
@@ -49,6 +51,8 @@ struct StoredDreamProcessRecord {
     workspace_id: String,
     status: DreamStatus,
     source_memory_store_id: String,
+    #[serde(default)]
+    output_behavior: DreamOutputBehavior,
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
@@ -90,6 +94,7 @@ impl<'de> Deserialize<'de> for DreamProcessRecord {
             workspace_id: stored.workspace_id,
             status: stored.status,
             source_memory_store_id: stored.source_memory_store_id,
+            output_behavior: stored.output_behavior,
             session_ids: stored.session_ids,
             model: stored.model,
             request_guidance: stored.request_guidance,
@@ -164,6 +169,18 @@ pub struct DreamOutput {
     pub memory_store_id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
+}
+
+/// Where a Dream writes its consolidated memories. Omitting this field keeps
+/// the original Managed Agents behavior and creates a new output store.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DreamOutputBehavior {
+    #[default]
+    CreateNew,
+    UpdateExisting {
+        memory_store_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +472,7 @@ pub struct Dream {
     pub inputs: Vec<DreamInput>,
     pub instructions: Option<String>,
     pub model: DreamModelConfig,
+    pub output_behavior: DreamOutputBehavior,
     pub outputs: Vec<DreamOutput>,
     pub session_id: Option<String>,
     pub status: DreamStatus,
@@ -468,6 +486,8 @@ pub struct DreamCreateParams {
     pub model: DreamModelInput,
     #[serde(default)]
     pub instructions: Option<String>,
+    #[serde(default)]
+    pub output_behavior: DreamOutputBehavior,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -502,6 +522,7 @@ mod tests {
             workspace_id: "workspace".into(),
             status: DreamStatus::Pending,
             source_memory_store_id: "memory".into(),
+            output_behavior: DreamOutputBehavior::CreateNew,
             session_ids: vec!["session".into()],
             model: DreamModelConfig {
                 id: "claude-sonnet-5".into(),
@@ -533,6 +554,7 @@ mod tests {
 
         let mut legacy = current.clone();
         legacy.as_object_mut().unwrap().remove("agent_id");
+        legacy.as_object_mut().unwrap().remove("output_behavior");
         legacy["agent_selection"] = serde_json::json!({"agent_id": "awaken_builtin_dream_agent"});
         assert_eq!(
             serde_json::from_value::<DreamProcessRecord>(legacy).expect("R2"),

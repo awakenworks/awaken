@@ -27,7 +27,8 @@ pub(crate) use awaken_tenancy::WorkspaceScope;
 pub use dreams::{DREAMING_BETA, dreams_router};
 pub(crate) use sessions::ManagedJson;
 pub use sessions::{
-    MEMORY_BETA, SKILLS_BETA, enforce_managed_beta, replace_resource_manifest, router,
+    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, enforce_managed_beta,
+    replace_resource_manifest, router,
 };
 pub use tunnels::tunnels_router;
 

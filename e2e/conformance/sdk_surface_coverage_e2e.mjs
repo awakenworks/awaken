@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
@@ -24,7 +25,7 @@ const anthropicContractFingerprints = {
   'resources/beta/beta.d.ts': { declarations: 15, sha256: 'd9a436bd2e80e4c829da1d98cf8887182942a5e160c8756928004e4a6ea93a42' },
   'resources/beta/deployment-runs.d.ts': { declarations: 25, sha256: 'b56255907a3a1a18b93baa58d1545e410746f0800f0eb662f995004bded745bb' },
   'resources/beta/deployments.d.ts': { declarations: 43, sha256: 'a6e4c314c50f091a92a36432c8629f870ccf56eed3c52c2bc4eb297898fa2d21' },
-  'resources/beta/dreams.d.ts': { declarations: 18, sha256: '9c1964434e37470f5d0605c02416f21709bc8bff75dda9f50744db3205f5a040' },
+  'resources/beta/dreams.d.ts': { declarations: 21, sha256: '4cf7ab0f0ceaafc17730f21068e766168f34170eb52558c84221285879ad8991' },
   'resources/beta/environments/environments.d.ts': { declarations: 19, sha256: '99af8cf98c4909c4d8a1fca7ab5cc0a0355d234ab3e2ce5c76f28fc503cbd90f' },
   'resources/beta/environments/index.d.ts': { declarations: 2, sha256: '6b26b8a3fe99abb769d8e267c7cd8a91485689b95e66dd69125976ad3c46b6fd' },
   'resources/beta/environments/work.d.ts': { declarations: 21, sha256: 'e3a721aaec9ca93b7e6012d43a57b9c9d766bcb4dda47613e2c57c1ab3bc3f5c' },
@@ -188,6 +189,8 @@ let files = 0;
 let excluded = 0;
 let contracts = 0;
 const unknownAnthropicContracts = {};
+const driftedAnthropicContracts = {};
+const visitedAnthropicContracts = new Set();
 const mappedTests = new Set();
 for (const surface of surfaces) {
   const packageRoot = resolve(E2E, 'node_modules', surface.package);
@@ -220,16 +223,13 @@ for (const surface of surfaces) {
     }
     mappedTests.add(test);
     if (surface.package === '@anthropic-ai/sdk') {
+      visitedAnthropicContracts.add(path);
       const actual = publicContractFingerprint(declaration);
       const expected = anthropicContractFingerprints[path];
       if (!expected) {
         unknownAnthropicContracts[path] = actual;
-      } else {
-        assert.deepEqual(
-          actual,
-          expected,
-          `${surface.package}/${path} public method/DTO/enum contract drifted; review the SDK change and update behavior evidence before accepting the new fingerprint`,
-        );
+      } else if (!isDeepStrictEqual(actual, expected)) {
+        driftedAnthropicContracts[path] = { expected, actual };
       }
       contracts += actual.declarations;
     }
@@ -241,6 +241,18 @@ assert.deepEqual(
   unknownAnthropicContracts,
   {},
   `Anthropic public contracts need reviewed fingerprints:\n${JSON.stringify(unknownAnthropicContracts, null, 2)}`,
+);
+
+assert.deepEqual(
+  driftedAnthropicContracts,
+  {},
+  `Anthropic public contracts drifted; review behavior before accepting fingerprints:\n${JSON.stringify(driftedAnthropicContracts, null, 2)}`,
+);
+
+assert.deepEqual(
+  [...visitedAnthropicContracts].sort(),
+  Object.keys(anthropicContractFingerprints).sort(),
+  'every reviewed Anthropic contract fingerprint must be reachable from the installed SDK Beta root; an older or incomplete install must not silently skip newer Managed families',
 );
 
 for (const test of mappedTests) {

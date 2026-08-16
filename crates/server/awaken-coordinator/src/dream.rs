@@ -15,12 +15,12 @@ use awaken_resource_contract::{
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
-    ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
+    DreamOutputBehavior, ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
 };
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
-Your only task is to curate durable memories from the frozen inputs into the independent output memory store.
+Your only task is to curate durable memories from the frozen inputs into the designated output memory store.
 
 1. Read /mnt/dream/input-memory and the JSONL files under /mnt/dream/session-transcripts.
 2. Preserve durable project facts, decisions, preferences, constraints, and unresolved work.
@@ -245,20 +245,37 @@ impl BuiltInDreamAgent {
     }
 
     async fn release_result(&self, request: &DreamRequest, retain_result: bool) {
-        let result_id = format!("mem_result_{}", request.job_id);
-        if retain_result {
-            ExclusiveMemoryStoreWriterLease {
-                workspace_id: request.workspace_id.clone(),
-                result_memory_store_id: result_id.clone(),
-            }
-            .release(self.stores.as_ref())
-            .await;
-        } else {
-            let _ = self
-                .stores
-                .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
+        let result_id = match &request.output_behavior {
+            DreamOutputBehavior::CreateNew => format!("mem_result_{}", request.job_id),
+            DreamOutputBehavior::UpdateExisting { memory_store_id } => memory_store_id.clone(),
+        };
+        match &request.output_behavior {
+            // An in-place Dream suspends its source store before creating the
+            // session. Restore it even when later preparation fails, otherwise
+            // one failed run can strand a caller-owned store as unavailable.
+            DreamOutputBehavior::UpdateExisting { .. } => {
+                ExclusiveMemoryStoreWriterLease {
+                    workspace_id: request.workspace_id.clone(),
+                    result_memory_store_id: result_id.clone(),
+                }
+                .release(self.stores.as_ref())
                 .await;
-            let _ = self.memory.purge_store(&result_id).await;
+            }
+            DreamOutputBehavior::CreateNew if retain_result => {
+                ExclusiveMemoryStoreWriterLease {
+                    workspace_id: request.workspace_id.clone(),
+                    result_memory_store_id: result_id.clone(),
+                }
+                .release(self.stores.as_ref())
+                .await;
+            }
+            DreamOutputBehavior::CreateNew => {
+                let _ = self
+                    .stores
+                    .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
+                    .await;
+                let _ = self.memory.purge_store(&result_id).await;
+            }
         }
         let _ = self
             .memory
@@ -302,14 +319,24 @@ impl DreamExecutor for BuiltInDreamAgent {
 
     async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
         let snapshot_id = format!("mem_snapshot_{}", request.job_id);
-        let result_id = format!("mem_result_{}", request.job_id);
+        let result_id = match &request.output_behavior {
+            DreamOutputBehavior::CreateNew => format!("mem_result_{}", request.job_id),
+            DreamOutputBehavior::UpdateExisting { memory_store_id } => memory_store_id.clone(),
+        };
         let expected_session_id = format!("sesn_dream_{}", request.job_id);
         let existing_result = self
             .stores
             .get(&request.workspace_id, &result_id)
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        if existing_result.is_some() {
+        if existing_result.is_some()
+            && (matches!(request.output_behavior, DreamOutputBehavior::CreateNew)
+                || self
+                    .sessions
+                    .session_transcript(&request.workspace_id, &expected_session_id)
+                    .await
+                    .is_ok())
+        {
             let session_exists = self
                 .sessions
                 .session_transcript(&request.workspace_id, &expected_session_id)
@@ -336,7 +363,9 @@ impl DreamExecutor for BuiltInDreamAgent {
         // deterministic clone. No Agent could have received it yet, so reclaim it
         // and rebuild from one fresh atomic source snapshot.
         let _ = self.memory.purge_store(&snapshot_id).await;
-        let _ = self.memory.purge_store(&result_id).await;
+        if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
+            let _ = self.memory.purge_store(&result_id).await;
+        }
         let snapshot = MemoryStoreContentSnapshot {
             snapshot_memory_store_id: snapshot_id.clone(),
             files: self
@@ -358,25 +387,37 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .create(&snapshot.snapshot_memory_store_id, &head.path, content)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-            self.memory
-                .create(&result_id, &head.path, content)
+            if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
+                self.memory
+                    .create(&result_id, &head.path, content)
+                    .await
+                    .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+            }
+        }
+        if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
+            self.stores
+                .create(CreateMemoryStoreCommand {
+                    workspace_id: request.workspace_id.clone(),
+                    id: Some(MemoryStoreId::from(result_id.clone())),
+                    name: "Dream result".into(),
+                    description: format!("Dream output for {}", request.job_id),
+                    metadata: BTreeMap::from([(
+                        "awaken.dream_job_id".into(),
+                        request.job_id.clone(),
+                    )]),
+                    initial_state: ResourceState::Suspended,
+                    retention_policy: Default::default(),
+                })
+                .await
+                .map_err(|error| {
+                    DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
+                })?;
+        } else {
+            self.stores
+                .set_state(&request.workspace_id, &result_id, ResourceState::Suspended)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }
-        self.stores
-            .create(CreateMemoryStoreCommand {
-                workspace_id: request.workspace_id.clone(),
-                id: Some(MemoryStoreId::from(result_id.clone())),
-                name: "Dream result".into(),
-                description: format!("Dream output for {}", request.job_id),
-                metadata: BTreeMap::from([("awaken.dream_job_id".into(), request.job_id.clone())]),
-                initial_state: ResourceState::Suspended,
-                retention_policy: Default::default(),
-            })
-            .await
-            .map_err(|error| {
-                DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
-            })?;
         let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
         let session_id = match self
             .make_session(request, &snapshot_id, &result_id, transcripts)
