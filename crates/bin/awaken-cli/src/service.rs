@@ -244,6 +244,10 @@ async fn serve_prepared_process(
     process: crate::PreparedProcess,
     prepared_worker: Option<crate::PreparedLocalWorker>,
 ) -> Result<(), String> {
+    let coordinator_postgres_pool = process
+        .coordinator_authorities
+        .as_ref()
+        .and_then(|authorities| authorities.postgres_pool.clone());
     let local_setup = process.local_setup;
     let registration_supervisor = process.registration_supervisor;
     let service_lifecycle = process.service_lifecycle;
@@ -253,6 +257,9 @@ async fn serve_prepared_process(
     let private_app = process.private_router;
     let controller = crate::DrainController::new();
     controller.set_service_lifecycle(service_lifecycle.clone());
+    if let Some(pool) = coordinator_postgres_pool {
+        controller.set_postgres_pool(pool);
+    }
     if let Some(supervisor) = registration_supervisor {
         controller.set_registration_supervisor(supervisor);
     }

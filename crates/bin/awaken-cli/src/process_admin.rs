@@ -10,6 +10,8 @@
 //!   (a `preStop` hook calls this before SIGTERM; interrupted clients reconnect and
 //!   resume from durable truth).
 //! - `GET /readyz` — readiness for the Service: 200 normally, 503 while draining.
+//!   A Coordinator backed by PostgreSQL also executes one bounded `SELECT 1`
+//!   against its process-owned pool; it never opens a probe-only connection pool.
 //! - `GET /metrics` — connection/drain gauges plus Control registration
 //!   readiness, pending-domain, failure, and lag gauges.
 
@@ -23,6 +25,8 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+
+const POSTGRES_READINESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct ActiveRequestGuard(Arc<DrainController>);
 
@@ -65,6 +69,7 @@ pub struct DrainController {
     registration_supervisor: RwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
     registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
     service_lifecycle: RwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
+    postgres_pool: RwLock<Option<sqlx::PgPool>>,
 }
 
 impl DrainController {
@@ -109,6 +114,16 @@ impl DrainController {
             .expect("service lifecycle lock poisoned") = Some(lifecycle);
     }
 
+    /// Attach the canonical Coordinator pool already opened by
+    /// `CoordinatorPersistence`. Readiness clones this handle; it must never
+    /// create a second pool or retain a database URL.
+    pub(crate) fn set_postgres_pool(&self, pool: sqlx::PgPool) {
+        *self
+            .postgres_pool
+            .write()
+            .expect("postgres readiness pool lock poisoned") = Some(pool);
+    }
+
     #[cfg(test)]
     fn set_registration_health_for_test(&self, health: Arc<awaken_control::RegistrationHealth>) {
         *self
@@ -132,6 +147,35 @@ impl DrainController {
                 .expect("registration health lock poisoned")
                 .as_ref()
                 .is_none_or(|health| health.snapshot().ready)
+    }
+
+    fn readiness_decision(&self, database_ready: bool) -> bool {
+        self.is_ready() && database_ready
+    }
+
+    async fn is_serving_ready(&self) -> bool {
+        // Drain and critical-task failure mask the database state. Short-circuit
+        // them before acquiring a connection so an unroutable process does not
+        // add load to an already degraded database.
+        if !self.is_ready() {
+            return false;
+        }
+        let pool = self
+            .postgres_pool
+            .read()
+            .expect("postgres readiness pool lock poisoned")
+            .clone();
+        let Some(pool) = pool else {
+            return self.readiness_decision(true);
+        };
+        let database_ready = bounded_readiness_probe(
+            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool),
+            POSTGRES_READINESS_TIMEOUT,
+        )
+        .await;
+        // Re-evaluate process state after the await so a concurrent drain or
+        // critical-task failure cannot race a successful database response.
+        self.readiness_decision(database_ready)
     }
 
     fn registration_snapshot(&self) -> Option<awaken_control::RegistrationHealthSnapshot> {
@@ -175,7 +219,14 @@ async fn drain(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
 }
 
 async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
-    awaken_coordinator::admin::readyz(ctrl.is_ready())
+    awaken_coordinator::admin::readyz(ctrl.is_serving_ready().await)
+}
+
+async fn bounded_readiness_probe<F, T, E>(probe: F, deadline: std::time::Duration) -> bool
+where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    matches!(tokio::time::timeout(deadline, probe).await, Ok(Ok(_)))
 }
 
 /// The Coordinator's Prometheus scrape: the whole process's OTel metrics — the
@@ -421,6 +472,59 @@ mod tests {
             .shutdown(std::time::Duration::from_secs(1))
             .await
             .expect("failed task watcher joins");
+    }
+
+    #[tokio::test]
+    async fn readiness_decision_table_covers_postgres_failure_and_timeout() {
+        // Cause/effect graph:
+        // C1 process accepts traffic (not draining and critical tasks healthy);
+        // C2 the canonical Coordinator PgPool completes `SELECT 1`; C3 the
+        // query returns an error; C4 the one-second probe deadline expires;
+        // C5 a critical task fails; C6 drain begins. E1 is HTTP-ready; E2 is
+        // fail-closed/unready. C3 and C4 are mutually exclusive probe outcomes;
+        // C5/C6 mask database state and avoid a redundant checkout.
+        //
+        // | Rule | C1 | DB outcome | critical task | draining | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | success | healthy | no | E1 ready |
+        // | R2 | yes | error | healthy | no | E2 unready |
+        // | R3 | yes | timeout | healthy | no | E2 unready |
+        // | R4 | no | success | failed | no | E2 unready |
+        // | R5 | no | success | healthy | yes | E2 unready |
+        let healthy_database = bounded_readiness_probe(
+            std::future::ready(Ok::<_, ()>(())),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        let database_down = bounded_readiness_probe(
+            std::future::ready(Err::<(), _>("database unavailable")),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        let database_timeout = bounded_readiness_probe(
+            std::future::pending::<Result<(), ()>>(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        let ctrl = DrainController::new();
+        assert!(ctrl.readiness_decision(healthy_database), "R1");
+        assert!(!ctrl.readiness_decision(database_down), "R2");
+        assert!(!ctrl.readiness_decision(database_timeout), "R3");
+
+        let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+        ctrl.set_service_lifecycle(lifecycle.clone());
+        lifecycle.spawn("failed", |_| async { Err("offline".into()) });
+        lifecycle.wait_for_failure().await.expect("C5 observed");
+        assert!(!ctrl.readiness_decision(healthy_database), "R4");
+        lifecycle
+            .shutdown(std::time::Duration::from_secs(1))
+            .await
+            .expect("failed task watcher joins");
+
+        let draining = DrainController::new();
+        draining.begin_drain();
+        assert!(!draining.readiness_decision(healthy_database), "R5");
     }
 
     #[tokio::test]
