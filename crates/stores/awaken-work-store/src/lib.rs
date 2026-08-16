@@ -509,11 +509,11 @@ impl WorkQueue for SqliteWorkQueue {
         let guard = self.conn.lock().map_err(storage)?;
         guard
             .execute(
-                "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
-                 state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
-                 lease_refreshed_ms = NULL WHERE data_type = 'session' \
-                 AND state = 'active' AND lease_owner = ?2",
-                params![OBJECT_AT, worker_owner],
+                "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
+                 state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
+                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 WHERE data_type = 'session' AND state = 'active' AND lease_owner = ?1",
+                params![worker_owner],
             )
             .map_err(storage)
     }
@@ -564,14 +564,30 @@ impl WorkQueue for SqliteWorkQueue {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         self.reclaim_lapsed(&tx, env_id, now_ms)?;
-        let current: (String, Option<String>, i64) = tx
+        let current: (String, Option<String>, i64, Option<i64>) = tx
             .query_row(
-                "SELECT state, lease_owner, lease_epoch FROM work_queue_item \
+                "SELECT state, lease_owner, lease_epoch, lease_expires_ms FROM work_queue_item \
                  WHERE work_id = ?1 AND environment_id = ?2",
                 params![work_id, env_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(storage)?;
+        if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
+            let owner = current.1.clone().ok_or_else(|| {
+                WorkQueueError::Storage("active Session Work has no lease owner".into())
+            })?;
+            let (_, epoch) = lease_epoch(current.2, false)?;
+            let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
+                .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
+            return Ok(Some(SessionWorkLease {
+                work_id,
+                environment_id: env_id.to_string(),
+                session_id: session_id.to_string(),
+                owner,
+                epoch,
+                expires_at_unix_ms,
+            }));
+        }
         let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
             let (_, epoch) = lease_epoch(current.2, false)?;
             tx.execute(
@@ -1166,12 +1182,11 @@ impl WorkQueue for PostgresWorkQueue {
 
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
         let released = sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
-             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL WHERE data_type = 'session' \
-             AND state = 'active' AND lease_owner = $2",
+            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
+             state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+             WHERE data_type = 'session' AND state = 'active' AND lease_owner = $1",
         )
-        .bind(OBJECT_AT)
         .bind(worker_owner)
         .execute(&self.pool)
         .await
@@ -1239,8 +1254,8 @@ impl WorkQueue for PostgresWorkQueue {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let current: (String, Option<String>, i64) = sqlx::query_as(
-            "SELECT state, lease_owner, lease_epoch FROM work_queue_item \
+        let current: (String, Option<String>, i64, Option<i64>) = sqlx::query_as(
+            "SELECT state, lease_owner, lease_epoch, lease_expires_ms FROM work_queue_item \
              WHERE work_id = $1 AND environment_id = $2",
         )
         .bind(&work_id)
@@ -1248,6 +1263,22 @@ impl WorkQueue for PostgresWorkQueue {
         .fetch_one(&mut *tx)
         .await
         .map_err(storage)?;
+        if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
+            let owner = current.1.clone().ok_or_else(|| {
+                WorkQueueError::Storage("active Session Work has no lease owner".into())
+            })?;
+            let (_, epoch) = lease_epoch(current.2, false)?;
+            let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
+                .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
+            return Ok(Some(SessionWorkLease {
+                work_id,
+                environment_id: env_id.to_string(),
+                session_id: session_id.to_string(),
+                owner,
+                epoch,
+                expires_at_unix_ms,
+            }));
+        }
         let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
             let (_, epoch) = lease_epoch(current.2, false)?;
             sqlx::query(

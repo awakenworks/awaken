@@ -204,6 +204,7 @@ pub struct PreparedProcess {
     /// Canonical Coordinator persistence handles for a hosted composition.
     /// Consumers must reuse these handles and must not reopen the same stores.
     pub coordinator_authorities: Option<CoordinatorAuthorityHandles>,
+    pub admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
 struct ProcessRouters {
@@ -211,6 +212,7 @@ struct ProcessRouters {
     private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
 impl ProcessRouters {
@@ -219,6 +221,7 @@ impl ProcessRouters {
         private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
         service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+        admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     ) -> Self {
         // Router-only embedding helpers do not retain PreparedProcess. Keep the
         // same supervisor alive inside the router as well as exposing it to the
@@ -233,6 +236,7 @@ impl ProcessRouters {
             private_router,
             registration_supervisor,
             service_lifecycle,
+            admin_tools,
         }
     }
 }

@@ -174,6 +174,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         registration_supervisor: prepared.registration_supervisor,
         service_lifecycle: prepared.service_lifecycle,
         coordinator_authorities,
+        admin_tools: prepared.admin_tools,
     })
 }
 

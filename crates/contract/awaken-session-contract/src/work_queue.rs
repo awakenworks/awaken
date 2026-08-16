@@ -332,8 +332,8 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
         now_ms: u64,
     ) -> Result<bool, WorkQueueError>;
 
-    /// Release every Session Work lease still owned by one exact registered
-    /// Worker incarnation during graceful deregistration.
+    /// Return every non-terminal Session Work lease owned by one exact registered
+    /// Worker incarnation to the queue during authority loss or deregistration.
     async fn release_worker_session_work(
         &self,
         worker_owner: &str,
@@ -558,8 +558,9 @@ pub trait WorkQueue: Send + Sync {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError>;
-    /// Graceful registered-Worker teardown. Only active Session items with the
-    /// exact incarnation-qualified owner are stopped.
+    /// Registered-Worker authority teardown. Only active Session items with the
+    /// exact incarnation-qualified owner are returned to the queue, so a live
+    /// non-terminal Session can be adopted by a fresh incarnation.
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError>;
     /// Coordinator-owned terminal projection. This is not a Worker mutation:
     /// it retires the canonical item after the Session terminal fence and
@@ -570,8 +571,11 @@ pub trait WorkQueue: Send + Sync {
         session_id: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Private registered-Worker adapter over the same WorkQueue authority.
-    /// It claims the exact queued Session or renews that exact current owner;
-    /// another owner and the Environment single-active cap fail closed.
+    /// It claims the exact queued Session or renews that exact current owner.
+    /// When the exact Session is actively held by another owner, return that
+    /// current lease so the caller can distinguish stale ownership from a
+    /// retired or capacity-blocked item. The Environment single-active cap and
+    /// non-claimable states otherwise fail closed with `None`.
     async fn acquire_session(
         &self,
         env_id: &str,

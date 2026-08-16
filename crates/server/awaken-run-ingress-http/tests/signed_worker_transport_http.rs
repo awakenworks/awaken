@@ -41,6 +41,7 @@ struct RecordingSessionControl {
 #[derive(Default)]
 struct RecordingSessionWorkAuthority {
     owner: Mutex<Option<String>>,
+    retired: std::sync::atomic::AtomicBool,
     acquisitions: AtomicUsize,
     releases: AtomicUsize,
     acquired_sessions: Mutex<Vec<String>>,
@@ -66,12 +67,26 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
             .lock()
             .unwrap()
             .push(session_id.to_string());
+        if self.retired.load(Ordering::SeqCst) {
+            return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
+        }
         let mut owner = self.owner.lock().unwrap();
         if owner
             .as_deref()
             .is_some_and(|current| current != worker_owner)
         {
-            return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
+            return Ok(
+                awaken_session_contract::work_queue::SessionWorkOwnership::Leased(
+                    awaken_session_contract::work_queue::SessionWorkLease {
+                        work_id: "work-session".into(),
+                        environment_id: "env".into(),
+                        session_id: session_id.into(),
+                        owner: owner.clone().expect("checked existing owner"),
+                        epoch: 1,
+                        expires_at_unix_ms: now_ms + 60_000,
+                    },
+                ),
+            );
         }
         *owner = Some(worker_owner.to_string());
         Ok(
@@ -618,17 +633,17 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T16 | exact/live | explicit renewal | Control NotReady | preserve typed reply |
     // | T17 | exact/live | Work owned by other Worker | yes | reject resume before Control |
     // | T18 | exact/live | Work owner changes before phase | - | reject phase before Control |
-    // | T19 | exact/live | any Work owner | claim check | no Session Work mutation |
-    // | T20 | exact/live | exact Work owner | settle | release Work, then settle Run |
+    // | T19 | exact/live | exact Work owner | claim check | atomically renew Work |
+    // | T20 | exact/live | exact Work owner | root settle | release Work, then settle Run |
     // | T21 | exact/live | active Work remains | deregister | release exact incarnation |
     // | T22 | child Run | parent Work exact | verify/resume | use parent Session affinity |
     // | T23 | child Run | borrowed parent Work | settle | retain Work for waiting parent |
-    // | T24 | exact/live | retired Work is unowned | renewal | typed NotReady; no Control call |
+    // | T24 | exact/live | retired Work is unowned | renewal | typed Retired; no Control call |
     //
     // FMECA T24: a settled self-hosted Run retires Work before its longer
     // realization lease expires. Classifying that expected absence as another
     // Worker's ownership produces a false critical alarm and obscures the true
-    // lifecycle edge; the transport now preserves NotReady so the Worker uses
+    // lifecycle edge; the transport now preserves Retired so the Worker uses
     // its one quiet local-projection retirement path.
     let client = WorkerControlClient::new(upstream.clone());
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
@@ -684,17 +699,19 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T10");
     assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T10");
-    *session_work.owner.lock().unwrap() = Some("retired-or-replaced-work".into());
+    *session_work.owner.lock().unwrap() = None;
+    session_work.retired.store(true, Ordering::SeqCst);
     assert!(
         matches!(
             client
                 .begin_session_realization(&registered.snapshot.identity, renewal.clone())
                 .await,
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_contract::SessionRealizationControlFailure::Retired)
         ),
         "T24"
     );
     assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T24");
+    session_work.retired.store(false, Ordering::SeqCst);
     *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
     *session_control.begin_failure.lock().unwrap() =
         Some(awaken_session_contract::SessionRealizationControlFailure::NotReady);
@@ -902,10 +919,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T23 child settlement retains the parent's Work"
     );
 
-    // FMECA T20: leaving the outer Session Work active after its subordinate Run
-    // settles blocks every queued Session in the same Environment. The exact
-    // owner release is part of the private registered-Worker settlement chain;
-    // public custom Workers retain their official explicit stop call.
+    // FMECA T20 causal graph: C1 one active Work is permitted per Environment;
+    // C2 root Run settles; C3 another Session is queued. If C2 keeps the first
+    // Work active, C1 blocks C3 forever. The root release is therefore part of
+    // settlement; a later activity on the same Session can revive its stable
+    // Work item, while T23 proves a child Run cannot release the parent fence.
     assert_eq!(
         queue
             .settle(
@@ -919,11 +937,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         awaken_run_ingress::SettleOutcome::Applied,
         "T20"
     );
-    assert_eq!(session_work.releases.load(Ordering::SeqCst), 1, "T20");
+    assert_eq!(
+        session_work.releases.load(Ordering::SeqCst),
+        1,
+        "T20 root settlement releases the Environment ownership fence"
+    );
     assert_eq!(
         session_work.released_sessions.lock().unwrap().as_slice(),
         ["signed-thread"],
-        "T20 only the root Run releases its Session Work"
+        "T20 releases only the root Session Work"
     );
 
     let mut next_activation = activation();
@@ -942,7 +964,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("post-settlement claim")
-        .expect("released Session Work permits the next Run");
+        .expect("released Session Work permits the next Session Run");
     let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
     assert!(
         queue

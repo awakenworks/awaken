@@ -13,6 +13,27 @@ use awaken_worker_transport_security::{WORKER_ID_HEADER, WorkerRequestAuthorizer
 const TRANSPORT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
+fn server_error_detail(body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.trim().to_string());
+    let mut chars = detail.chars();
+    let bounded = chars.by_ref().take(512).collect::<String>();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else if bounded.is_empty() {
+        "response body was empty".to_string()
+    } else {
+        bounded
+    }
+}
+
 /// Atomic claimed-run commit used by a database-less Worker.
 pub struct RemoteClaimedRunCommit {
     base_url: String,
@@ -99,22 +120,22 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                     break;
                 }
             };
-            if response.status().is_server_error() {
-                last_transport_error = Some(format!(
-                    "claimed commit server returned {}",
-                    response.status()
-                ));
+            let status = response.status();
+            if !status.is_success() {
+                let detail = match response.text().await {
+                    Ok(body) => server_error_detail(&body),
+                    Err(error) => format!("response body could not be read: {error}"),
+                };
+                let message = format!("claimed commit server returned {status}: {detail}");
+                if !status.is_server_error() {
+                    return Err(CommitError::Rejected(message));
+                }
+                last_transport_error = Some(message);
                 if attempt < TRANSPORT_ATTEMPTS {
                     tokio::time::sleep(RETRY_DELAY).await;
                     continue;
                 }
                 break;
-            }
-            if !response.status().is_success() {
-                return Err(CommitError::Rejected(format!(
-                    "claimed commit server returned {}",
-                    response.status()
-                )));
             }
             match response.json().await {
                 Ok(receipt) => return Ok(receipt),

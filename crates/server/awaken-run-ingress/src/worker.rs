@@ -133,7 +133,7 @@ struct AttemptControlGuard {
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
 /// owns the claim, rather than to each caller (pool, daemon, or foreground child),
 /// so every execution path has the same lease behavior.
-struct ClaimLeaseRenewal {
+pub(crate) struct ClaimLeaseRenewal {
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
@@ -165,43 +165,56 @@ impl Drop for AttemptControlGuard {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchWorker<S> {
-    fn renew_claim_while_driving(&self, claim: &RunClaim) -> ClaimLeaseRenewal {
-        let store = self.store.clone();
-        let run_id = claim.run_id.clone();
-        let owner = claim.owner.clone();
-        let lease_ms = self.lease_ms;
-        let interval = Duration::from_millis((lease_ms / 3).max(1));
-        let clock = self.ownership_clock.clone();
-        let shutdown = CancellationToken::new();
-        let task_shutdown = shutdown.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = task_shutdown.cancelled() => break,
-                    _ = tokio::time::sleep(interval) => {
-                        match store.renew_lease(&run_id, &owner, lease_ms, clock.now_ms()).await {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                tracing::warn!(
-                                    run_id = %run_id.0,
-                                    %owner,
-                                    "dispatch lease renewal lost exact claim ownership"
-                                );
-                                break;
-                            }
-                            Err(error) => tracing::warn!(
+/// Keep an exact claim live across any owned work, including the potentially
+/// slow Worker/Session resolution that precedes [`DispatchWorker::drive_claimed`].
+pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
+    store: Arc<S>,
+    claim: &RunClaim,
+    lease_ms: u64,
+    clock: Arc<dyn Clock>,
+) -> ClaimLeaseRenewal {
+    let run_id = claim.run_id.clone();
+    let owner = claim.owner.clone();
+    let interval = Duration::from_millis((lease_ms / 3).max(1));
+    let shutdown = CancellationToken::new();
+    let task_shutdown = shutdown.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = task_shutdown.cancelled() => break,
+                _ = tokio::time::sleep(interval) => {
+                    match store.renew_lease(&run_id, &owner, lease_ms, clock.now_ms()).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::warn!(
                                 run_id = %run_id.0,
                                 %owner,
-                                %error,
-                                "dispatch lease renewal failed"
-                            ),
+                                "dispatch lease renewal lost exact claim ownership"
+                            );
+                            break;
                         }
+                        Err(error) => tracing::warn!(
+                            run_id = %run_id.0,
+                            %owner,
+                            %error,
+                            "dispatch lease renewal failed"
+                        ),
                     }
                 }
             }
-        });
-        ClaimLeaseRenewal { shutdown, task }
+        }
+    });
+    ClaimLeaseRenewal { shutdown, task }
+}
+
+impl<S: Dispatch + 'static> DispatchWorker<S> {
+    fn renew_claim_while_driving(&self, claim: &RunClaim) -> ClaimLeaseRenewal {
+        renew_claim_while_active(
+            self.store.clone(),
+            claim,
+            self.lease_ms,
+            self.ownership_clock.clone(),
+        )
     }
 
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.

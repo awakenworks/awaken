@@ -416,6 +416,8 @@ pub enum SessionRealizationControlFailure {
     NotFound,
     #[error("Session is not ready for this realization phase")]
     NotReady,
+    #[error("Session realization retired after its driving work settled")]
+    Retired,
     #[error("Session realization is terminal")]
     Terminal,
     #[error("Session realization ownership is stale")]
@@ -447,7 +449,7 @@ impl SessionRealizationControlFailure {
             Self::StaleOwnership | Self::Conflict | Self::Unavailable(_) => {
                 SessionRealizationControlDisposition::Retryable
             }
-            Self::NotFound | Self::Terminal | Self::Invalid(_) => {
+            Self::NotFound | Self::Retired | Self::Terminal | Self::Invalid(_) => {
                 SessionRealizationControlDisposition::Terminal
             }
         }
@@ -844,7 +846,7 @@ mod tests {
         // | Rule | cause | disposition |
         // | T1 | not ready | NotReady |
         // | T2 | stale/conflict/unavailable | Retryable |
-        // | T3 | not found/terminal/invalid | Terminal |
+        // | T3 | not found/retired/terminal/invalid | Terminal |
         for (rule, failure, disposition) in [
             (
                 "T3 not found",
@@ -855,6 +857,11 @@ mod tests {
                 "T1 not ready",
                 SessionRealizationControlFailure::NotReady,
                 SessionRealizationControlDisposition::NotReady,
+            ),
+            (
+                "T3 retired",
+                SessionRealizationControlFailure::Retired,
+                SessionRealizationControlDisposition::Terminal,
             ),
             (
                 "T3 terminal",

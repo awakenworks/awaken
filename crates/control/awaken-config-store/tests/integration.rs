@@ -648,6 +648,52 @@ async fn put_publication_scoped_is_idempotent_by_fingerprint() {
 }
 
 #[tokio::test]
+async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revision() {
+    // R1 the reviewed Agent remains at revision 1; R2 the first fingerprint is
+    // committed; R3 dependency re-resolution produces different executable
+    // bytes without a new authoring revision. R3 must conflict before a second
+    // durable row can later poison executable-registration recovery.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let scope = ScopeId::from("ws_publication_revision_fence");
+    let first_config = agent_with("agent", "first behavior");
+    let second_config = agent_with("agent", "dependency-resolved behavior");
+    store
+        .put_config_scoped(&scope, &first_config)
+        .await
+        .expect("draft");
+    let first = StoredPublication::published_at_revision(
+        compile(&first_config, &tool_catalog()).expect("first compile"),
+        "agent",
+        1,
+    );
+    let second = StoredPublication::published_at_revision(
+        compile(&second_config, &tool_catalog()).expect("second compile"),
+        "agent",
+        1,
+    );
+    assert_ne!(first.fingerprint, second.fingerprint);
+    assert_eq!(
+        store
+            .put_publication_if_config_revision_scoped(&scope, &first, 1)
+            .await
+            .expect("first publication"),
+        ConfigWrite::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .put_publication_if_config_revision_scoped(&scope, &second, 1)
+            .await
+            .expect("revision fence"),
+        ConfigWrite::Conflict {
+            current_revision: Some(1)
+        }
+    );
+    let durable = store.list_published_scoped(&scope).await.unwrap();
+    assert_eq!(durable.len(), 1);
+    assert_eq!(durable[0].fingerprint, first.fingerprint);
+}
+
+#[tokio::test]
 async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_order() {
     // list_published_scoped: WHERE scope_id AND state='published' ORDER BY insertion.
     // Covers the state filter (compiled excluded), scope isolation, ordering, and the

@@ -96,22 +96,19 @@ impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource
                         negotiated: Some(negotiated),
                         reason_code: None,
                     },
-                    Err(_) => AcpCapabilityObservation {
-                        backend_ref: format!("acp:{}", target.cli_id),
-                        adapter_version: target.adapter_version,
-                        state: AcpCapabilityObservationState::ProbeFailed,
-                        observed_at_ms,
-                        fingerprint: None,
-                        negotiated: None,
-                        reason_code: Some("acp_capability_probe_failed".into()),
-                    },
+                    Err(error) => {
+                        return Err(format!(
+                            "acp:{} capability probe failed: {error}",
+                            target.cli_id
+                        ));
+                    }
                 };
-                (index, observation)
+                Ok::<_, String>((index, observation))
             });
         }
         let mut observations = Vec::with_capacity(self.targets.len());
         while let Some(result) = probes.join_next().await {
-            observations.push(result.map_err(|error| error.to_string())?);
+            observations.push(result.map_err(|error| error.to_string())??);
         }
         observations.sort_by_key(|(index, _)| *index);
         Ok(observations
@@ -160,8 +157,8 @@ mod tests {
     async fn configured_capability_decision_table() {
         // Causes: C1 identity/image/argv are complete; C2 live negotiation
         // succeeds. Effects: E1 incomplete targets fail before observation; E2
-        // success emits coherent Verified evidence; E3 failure emits
-        // ProbeFailed with no stale fingerprint or negotiated value.
+        // success emits coherent Verified evidence; E3 a failed causal batch
+        // returns an error so the liveness cache retains prior verified evidence.
         //
         // | Rule | C1 | C2 | Effect |
         // | T1 | no  | -   | E1 |
@@ -171,15 +168,8 @@ mod tests {
             ConfiguredAcpCapabilityTarget::new("", "image:v1", vec!["ok".into()], None).is_err(),
             "T1"
         );
-        let source = ConfiguredAcpCapabilityObservationSource::new(
+        let verified = ConfiguredAcpCapabilityObservationSource::new(
             vec![
-                ConfiguredAcpCapabilityTarget::new(
-                    "z-failed",
-                    "image:bad",
-                    vec!["failed".into()],
-                    None,
-                )
-                .unwrap(),
                 ConfiguredAcpCapabilityTarget::new(
                     "a-verified",
                     "image:good",
@@ -191,20 +181,34 @@ mod tests {
             Arc::new(Probe),
             PathBuf::from("/workspace"),
         );
-        let observations = source.capability_observations().await.unwrap();
+        let observations = verified.capability_observations().await.unwrap();
         assert_eq!(
             observations[0].state,
             AcpCapabilityObservationState::Verified,
             "T2"
         );
         assert!(observations[0].fingerprint.is_some(), "T2");
-        assert_eq!(
-            observations[1].state,
-            AcpCapabilityObservationState::ProbeFailed,
+        let failed = ConfiguredAcpCapabilityObservationSource::new(
+            vec![
+                ConfiguredAcpCapabilityTarget::new(
+                    "z-failed",
+                    "image:bad",
+                    vec!["failed".into()],
+                    None,
+                )
+                .unwrap(),
+            ],
+            Arc::new(Probe),
+            PathBuf::from("/workspace"),
+        );
+        assert!(
+            failed
+                .capability_observations()
+                .await
+                .unwrap_err()
+                .contains("acp:z-failed capability probe failed"),
             "T3"
         );
-        assert!(observations[1].fingerprint.is_none(), "T3");
-        assert!(observations[1].negotiated.is_none(), "T3");
     }
 
     struct ConcurrentProbe {

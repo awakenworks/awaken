@@ -452,6 +452,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
             let status = match &error {
                 SessionRealizationControlFailure::NotFound => StatusCode::NOT_FOUND,
                 SessionRealizationControlFailure::NotReady
+                | SessionRealizationControlFailure::Retired
                 | SessionRealizationControlFailure::Terminal
                 | SessionRealizationControlFailure::StaleOwnership
                 | SessionRealizationControlFailure::Conflict => StatusCode::CONFLICT,
@@ -724,7 +725,7 @@ async fn begin_session_realization(
             // quietly revokes only its stale process-local projection.
             SessionWorkOwnership::Unowned => {
                 return Err(RealizationHttpError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::NotReady,
+                    awaken_session_contract::SessionRealizationControlFailure::Retired,
                 ));
             }
             SessionWorkOwnership::Leased(_) => {
@@ -1429,7 +1430,7 @@ async fn settle(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<SettleReq>,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
+    let result: Result<Value, RealizationHttpError> = async {
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         // Bind the epoch to the authenticated owner before settling. Dropping the
@@ -1444,7 +1445,7 @@ async fn settle(
             .dispatch
             .lock_commit_epoch(&claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| RealizationHttpError::from(HostError::internal(error.to_string())))?;
         let Some(guard) = authorized else {
             return Ok(json!({ "settled": false }));
         };
@@ -1452,19 +1453,23 @@ async fn settle(
         let session_thread_id = guard.request().session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;
         drop(guard);
-        // When configured, registered-Worker Session Work is the outer ownership
-        // fence. Release it only after every claim-fenced commit has completed
-        // and immediately before the subordinate Run delivery settles. Generic
-        // Run-only compositions have no synthetic Work item to acquire or clear.
+        // Cause graph: a Work item is the Environment's single active ownership
+        // fence, not a permanent reservation for every idle Session. Keeping a
+        // root Session's Work active after its Run settles starves every queued
+        // Session in that Environment. Release only the root after all fenced
+        // commits have landed; a later activity revives and reacquires its stable
+        // Work item. Child Runs borrow the parent's fence and must retain it.
         if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
             let released = session_work
                 .release_session_work(&session_thread_id.0, &claim.owner, authority.now_ms)
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| {
+                    RealizationHttpError::from(HostError::internal(error.to_string()))
+                })?;
             if !released {
-                return Err(HostError::bad_request(
+                return Err(RealizationHttpError::from(HostError::bad_request(
                     "Session Work ownership was lost before Run settlement",
-                ));
+                )));
             }
         }
         let outcome = service
@@ -1476,7 +1481,7 @@ async fn settle(
                 &request.consumed,
             )
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| RealizationHttpError::from(HostError::internal(error.to_string())))?;
         if outcome.applied()
             && let (Some(completion), Some(recovery)) = (&service.completion, &service.recovery)
             && let Ok(snapshot) = recovery.recovery_snapshot(&thread_id, &claim.run_id).await
@@ -1490,7 +1495,7 @@ async fn settle(
         Ok(json!({ "settled": outcome.applied() }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 async fn stream_event(

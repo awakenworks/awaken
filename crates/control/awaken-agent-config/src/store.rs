@@ -400,6 +400,18 @@ pub trait ScopedConfigRegistry: Send + Sync {
         if current_revision != Some(expected_revision) {
             return Ok(ConfigWrite::Conflict { current_revision });
         }
+        if self
+            .list_published_scoped(scope)
+            .await?
+            .into_iter()
+            .any(|existing| {
+                existing.agent_id == publication.agent_id
+                    && existing.source_revision == publication.source_revision
+                    && existing.fingerprint != publication.fingerprint
+            })
+        {
+            return Ok(ConfigWrite::Conflict { current_revision });
+        }
         self.put_publication_scoped(scope, publication).await?;
         Ok(ConfigWrite::Applied {
             revision: expected_revision,

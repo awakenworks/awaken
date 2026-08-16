@@ -1222,7 +1222,15 @@ enum ScopeClass {
 /// The authenticated principal the guard stamps on a [`RouteAuthz::TokenAdmin`]
 /// request for the handler's own authorization step.
 #[derive(Debug, Clone)]
-struct AuthedPrincipal(PrincipalRef);
+pub(crate) struct AuthedPrincipal(pub(crate) PrincipalRef);
+
+/// A2A v1 discovery is intentionally anonymous: peers need the standard card
+/// before they can learn which authenticated runtime interface to call. Keep
+/// this exception exact and read-only; every `/v1/a2a` operation still enters
+/// the normal management/runtime authorization table.
+fn is_public_protocol_discovery(method: &Method, path: &str) -> bool {
+    method == Method::GET && path == "/.well-known/agent-card.json"
+}
 
 /// The management-plane guard: authenticate the bearer token, fence any
 /// `workspace_id` the request names against the token's workspace, map the
@@ -1238,6 +1246,9 @@ pub async fn management_guard(
     req: Request,
     next: Next,
 ) -> Response {
+    if is_public_protocol_discovery(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
     // Fail closed on an unmapped route: the guard only wraps the management
     // routers, so reaching this arm means a route was added without extending
     // the action table.
@@ -1330,9 +1341,13 @@ pub async fn management_guard(
         return forbidden("the route has no resolvable authorization target");
     };
 
-    let decision = authz.authorize_action(principal, action, target_scope, action_namespace);
+    let decision =
+        authz.authorize_action(principal.clone(), action, target_scope, action_namespace);
     match decision {
-        AuthorizationDecision::Allow => next.run(req).await,
+        AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(AuthedPrincipal(principal));
+            next.run(req).await
+        }
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
         AuthorizationDecision::RequireApproval => {
@@ -1353,6 +1368,9 @@ pub async fn cloud_management_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
+    if is_public_protocol_discovery(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
     let Some(route) = action_for(req.method(), req.uri().path()) else {
         return forbidden("no management action is mapped for this route");
     };

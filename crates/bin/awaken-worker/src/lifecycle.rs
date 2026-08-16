@@ -252,11 +252,17 @@ pub(crate) fn spawn_heartbeat(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        // A suspended laptop or paused VM can miss many ticks. Replaying them as
+        // a burst contends with the co-located Coordinator just when it is also
+        // recovering. One fresh heartbeat is authoritative; stale catch-up ticks
+        // add load without extending the lease further.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
         loop {
             interval.tick().await;
-            let mutation = lifecycle
-                .control
-                .heartbeat(
+            let mutation = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                lifecycle.control.heartbeat(
                     &lifecycle.identity,
                     WorkerHeartbeat {
                         sequence,
@@ -268,37 +274,50 @@ pub(crate) fn spawn_heartbeat(
                             .observations
                             .acp_capability_snapshot(),
                     },
-                )
-                .await;
+                ),
+            )
+            .await;
             sequence = sequence.saturating_add(1);
             match mutation {
-                Ok(RegistryMutation::Applied) => {
+                Ok(Ok(RegistryMutation::Applied)) => {
                     // Session projection leases are shorter than Worker
                     // authority and renew through the canonical realization
                     // protocol. The Control endpoint caps the requested expiry
                     // by the freshly-heartbeated registry lease.
                     let now = wall_clock_ms();
-                    if let Err(error) = lifecycle
-                        .host
-                        .renew_due_session_realizations(
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        lifecycle.host.renew_due_session_realizations(
                             now.saturating_add(15_000),
                             now.saturating_add(20_000),
-                        )
-                        .await
+                        ),
+                    )
+                    .await
                     {
-                        eprintln!("Session realization renewal failed closed: {error}");
-                        revoke_worker_session_authority(&lifecycle).await;
-                        break;
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => eprintln!(
+                            "Session realization renewal failed closed; Worker heartbeat continues: {error}"
+                        ),
+                        Err(_) => eprintln!(
+                            "Session realization renewal exceeded 3s; projections retain their existing deadlines and Worker heartbeat continues"
+                        ),
                     }
                 }
-                Ok(other) => {
+                Ok(Ok(other)) => {
                     eprintln!("worker heartbeat lost authority: {other:?}; draining locally");
                     revoke_worker_session_authority(&lifecycle).await;
                     break;
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     eprintln!(
                         "worker heartbeat cannot prove continuing authority: {error}; draining locally"
+                    );
+                    revoke_worker_session_authority(&lifecycle).await;
+                    break;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "worker heartbeat exceeded 8s and cannot prove continuing authority; draining locally"
                     );
                     revoke_worker_session_authority(&lifecycle).await;
                     break;
@@ -313,6 +332,8 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
         loop {
             interval.tick().await;
             if let Err(error) = lifecycle.reconcile_environment_warmups().await {

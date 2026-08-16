@@ -207,7 +207,7 @@ const TOPICS: &[Topic] = &[
         what: "A2A exposes published Agent Cards and lets compatible remote agents discover callable endpoints.",
         why: "It is an interoperability boundary between deployments, distinct from an auxiliary Agent inside one primary Agent's roster.",
         location: "Connect ▸ A2A federation.",
-        how: "Publish the delegate Agent → enter its id → verify the Agent Card and endpoint → configure the remote A2A client with the required access token.",
+        how: "Open A2A federation → inspect this deployment's published Agent Card and endpoints → configure the remote A2A client with the required access token. Configure outbound peers in the calling Agent's Collaboration settings.",
         gotcha: "A2A does not make a draft callable and does not replace the parent-owned auxiliary Agent relationship used for local delegation.",
     },
     Topic {

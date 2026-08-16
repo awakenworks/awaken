@@ -251,6 +251,8 @@ async fn serve_prepared_process(
     let local_setup = process.local_setup;
     let registration_supervisor = process.registration_supervisor;
     let service_lifecycle = process.service_lifecycle;
+    let prepared_worker =
+        prepared_worker.map(|prepared| prepared.with_admin_tools(process.admin_tools.clone()));
     let public_app = process.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
@@ -306,16 +308,17 @@ async fn serve_prepared_process(
             listener.local_addr().expect("bound listener address")
         )
     });
-    let local_worker = prepared_worker
-        .map(|prepared| {
-            prepared.build_worker(
-                worker_url
-                    .clone()
-                    .expect("AllInOne always binds its private Worker surface"),
-                &deployment,
-            )
-        })
-        .transpose()?;
+    if let Some(prepared) = &prepared_worker {
+        // Validate the reusable composition before advertising readiness. The
+        // supervisor constructs a fresh incarnation from this same secret-safe
+        // composition whenever registry authority is lost.
+        prepared.build_worker(
+            worker_url
+                .clone()
+                .expect("AllInOne always binds its private Worker surface"),
+            &deployment,
+        )?;
+    }
     if role == ServiceRole::AllInOne {
         eprintln!("\n  Awaken is ready\n");
         eprintln!("  Console   {url}");
@@ -355,7 +358,7 @@ async fn serve_prepared_process(
         }
     }
 
-    let Some(worker) = local_worker else {
+    let Some(prepared_worker) = prepared_worker else {
         let observed_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
         let failure_slot = observed_failure.clone();
         let failure_source = service_lifecycle.clone();
@@ -394,7 +397,7 @@ async fn serve_prepared_process(
 
     // AllInOne owns one shutdown sequence. The local Worker fences admission
     // and deregisters before the co-located HTTP service stops.
-    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(None);
     let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
     let server = serve_application_surfaces(
         public_listener,
@@ -405,26 +408,23 @@ async fn serve_prepared_process(
         },
     );
     tokio::pin!(server);
+    let worker_deployment = deployment.clone();
+    let worker_url = worker_url.expect("AllInOne always binds its private Worker surface");
     let worker = tokio::spawn(async move {
-        worker
-            .run_until(async move {
-                worker_shutdown_rx.await.map_err(|_| {
-                    Box::new(std::io::Error::other(
-                        "AllInOne Worker shutdown owner dropped",
-                    )) as Box<dyn std::error::Error + Send + Sync>
-                })
-            })
-            .await
-            .map_err(|error| error.to_string())
+        supervise_local_worker(
+            prepared_worker,
+            worker_url,
+            worker_deployment,
+            worker_shutdown_rx,
+        )
+        .await
     });
     tokio::pin!(worker);
-    let mut worker_shutdown_tx = Some(worker_shutdown_tx);
+    let worker_shutdown_tx = worker_shutdown_tx;
     let mut server_shutdown_tx = Some(server_shutdown_tx);
     let result = tokio::select! {
         mode = shutdown_mode_signal() => {
-            if let Some(tx) = worker_shutdown_tx.take() {
-                let _ = tx.send(mode);
-            }
+            let _ = worker_shutdown_tx.send(Some(mode));
             let worker_result = local_worker_result((&mut worker).await);
             if let Some(tx) = server_shutdown_tx.take() {
                 let _ = tx.send(());
@@ -436,9 +436,7 @@ async fn serve_prepared_process(
             server_result
         }
         result = &mut server => {
-            if let Some(tx) = worker_shutdown_tx.take() {
-                let _ = tx.send(awaken_worker::WorkerShutdown::Prompt);
-            }
+            let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
             let worker_result = local_worker_result((&mut worker).await);
             result.map_err(|error| format!("server stopped: {error}"))?;
             worker_result
@@ -455,9 +453,7 @@ async fn serve_prepared_process(
             server_result
         }
         failure = service_lifecycle.wait_for_failure() => {
-            if let Some(tx) = worker_shutdown_tx.take() {
-                let _ = tx.send(awaken_worker::WorkerShutdown::Prompt);
-            }
+            let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
             let worker_result = local_worker_result((&mut worker).await);
             if let Some(tx) = server_shutdown_tx.take() {
                 let _ = tx.send(());
@@ -553,6 +549,63 @@ where
             let public = (&mut public).await;
             private.map_err(|error| format!("private server stopped: {error}"))?;
             public.map_err(|error| format!("public server stopped: {error}"))
+        }
+    }
+}
+
+fn local_worker_restart_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((250_u64.saturating_mul(1_u64 << attempt.min(4))).min(5_000))
+}
+
+async fn supervise_local_worker(
+    prepared: crate::PreparedLocalWorker,
+    upstream: String,
+    deployment: ResolvedDeployment,
+    mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker::WorkerShutdown>>,
+) -> Result<(), String> {
+    let mut restart_attempt = 0_u32;
+    loop {
+        if shutdown.borrow().is_some() {
+            return Ok(());
+        }
+        let worker = prepared.build_worker(upstream.clone(), &deployment)?;
+        let mut run_shutdown = shutdown.clone();
+        let result = worker
+            .run_until(async move {
+                loop {
+                    if let Some(mode) = *run_shutdown.borrow() {
+                        return Ok(mode);
+                    }
+                    run_shutdown.changed().await.map_err(|_| {
+                        Box::new(std::io::Error::other(
+                            "AllInOne Worker shutdown owner dropped",
+                        )) as Box<dyn std::error::Error + Send + Sync>
+                    })?;
+                }
+            })
+            .await;
+        if shutdown.borrow().is_some() {
+            return result.map_err(|error| error.to_string());
+        }
+
+        // A distributed Worker must terminate its incarnation on authority loss.
+        // AllInOne is also that Worker's local supervisor: keep Control and the
+        // Console available, back off, then register a fresh generation. This is
+        // especially important after host suspend, where wall-clock leases expire
+        // while both co-located processes were paused.
+        match result {
+            Ok(()) => eprintln!("awaken: embedded Worker stopped unexpectedly; restarting"),
+            Err(error) => eprintln!("awaken: embedded Worker lost authority ({error}); restarting"),
+        }
+        let delay = local_worker_restart_delay(restart_attempt);
+        restart_attempt = restart_attempt.saturating_add(1);
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            changed = shutdown.changed() => {
+                if changed.is_err() || shutdown.borrow().is_some() {
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -792,6 +845,26 @@ mod tests {
                 .unwrap_err()
                 .contains("mode"),
             "P3"
+        );
+    }
+
+    #[test]
+    fn embedded_worker_restart_backoff_is_bounded() {
+        // Cause graph: C1 a Worker incarnation loses its registry lease (for
+        // example across host suspend); C2 Control remains healthy; C3 repeated
+        // registration failures continue. Effects: AllInOne supervises a fresh
+        // incarnation, avoids a hot restart loop, and caps recovery delay.
+        assert_eq!(
+            local_worker_restart_delay(0),
+            std::time::Duration::from_millis(250)
+        );
+        assert_eq!(
+            local_worker_restart_delay(1),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(
+            local_worker_restart_delay(20),
+            std::time::Duration::from_secs(4)
         );
     }
 

@@ -49,6 +49,7 @@ pub(crate) struct ExecutableAgentWiring {
 }
 
 impl ExecutableAgentWiring {
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn local() -> Self {
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         Self {

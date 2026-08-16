@@ -104,7 +104,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use awaken_coordinator::WorkerDirectory as _;
     use awaken_worker_contract::{
         RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision, WorkerHeartbeat,
         WorkerManifest, WorkerRegistration,

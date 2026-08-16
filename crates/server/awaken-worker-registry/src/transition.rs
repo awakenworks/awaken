@@ -98,6 +98,14 @@ pub(crate) fn heartbeat(
     if !identity_matches(current, identity) {
         return (None, RegistryMutation::StaleIncarnation);
     }
+    // Expiry is an authority boundary, not a late-renewal grace period. Once
+    // other stores may reclaim this Worker's leases, reviving the same
+    // generation would let registry placement and Session ownership disagree.
+    // Report lost authority so the Worker drains and its supervisor registers a
+    // fresh incarnation/generation.
+    if current.snapshot.expires_at_ms <= now_ms {
+        return (None, RegistryMutation::StaleIncarnation);
+    }
     if heartbeat.sequence <= current.heartbeat_sequence {
         return (None, RegistryMutation::StaleSequence);
     }
@@ -271,6 +279,31 @@ mod tests {
         );
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(updated.unwrap().snapshot.state, WorkerState::Draining);
+    }
+
+    #[test]
+    fn expired_incarnation_cannot_revive_its_authority_with_a_late_heartbeat() {
+        // Cause graph: C1 registry lease expires while a host is suspended;
+        // C2 dispatch and Session stores may reclaim ownership; C3 the old
+        // process resumes with a higher heartbeat sequence. Effect: reject C3
+        // without mutation so the supervisor must register a new generation.
+        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let identity = first.snapshot.identity.clone();
+        let late = WorkerHeartbeat {
+            sequence: 1,
+            ready: true,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+        };
+        let (at_boundary, result) = heartbeat(Some(&first), &identity, late.clone(), 110, 100);
+        assert!(at_boundary.is_none());
+        assert_eq!(result, RegistryMutation::StaleIncarnation);
+
+        let (before_boundary, result) = heartbeat(Some(&first), &identity, late, 109, 100);
+        assert_eq!(result, RegistryMutation::Applied);
+        assert_eq!(before_boundary.unwrap().snapshot.expires_at_ms, 209);
     }
 
     #[test]

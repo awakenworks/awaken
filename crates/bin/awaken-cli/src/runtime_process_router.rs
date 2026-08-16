@@ -471,7 +471,7 @@ pub(super) async fn prepare_runtime_routers(
         .with_agent_publications(executable_agent_catalog.clone())
         .with_capture_sink(capture_sink)
         .with_data_subject_consent_source(data_subject_consent)
-        .with_admin_tools(admin_execs);
+        .with_admin_tools(admin_execs.clone());
     if let Some(credentials) = credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);
     }
@@ -697,5 +697,6 @@ pub(super) async fn prepare_runtime_routers(
         coordinator.private_router,
         registration_supervisor,
         process.service_lifecycle,
+        admin_execs,
     ))
 }

@@ -2,8 +2,9 @@
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
 use awaken_agent_config::{
-    AgentConfig, AuditedConfigWrite, ConfigRegistry, ManagementAuditRecord, ManagementEffect,
-    PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication, compile_resolved,
+    AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, ManagementAuditRecord,
+    ManagementEffect, PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication,
+    compile_resolved,
 };
 use awaken_config_store::PostgresConfigStore;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -267,6 +268,63 @@ async fn postgres_config_store_round_trips_config_and_publication() {
         .expect("publication exists");
     assert_eq!(loaded.fingerprint, publication.fingerprint.0);
     assert_eq!(loaded.snapshot.fingerprint.0, publication.fingerprint.0);
+}
+
+#[tokio::test]
+async fn postgres_conditional_publication_fences_one_fingerprint_per_source_revision() {
+    // Cross-backend cause/effect parity with SQLite: P1 Agent generation 1 is
+    // locked; P2 the first resolved fingerprint commits; P3 changed dependency
+    // resolution produces different bytes at that same generation. PostgreSQL
+    // must conflict inside the same transaction, leaving one durable row.
+    let Some(pool) = schema_pool("t_config_publication_revision_fence").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let scope = ScopeId::from("ws_publication_revision_fence");
+    let mut source = agent_config();
+    source.id = "revision-fenced-agent".into();
+    store
+        .put_config_scoped(&scope, &source)
+        .await
+        .expect("source");
+    let tools = vec![ToolDescriptor::pinned(
+        "test",
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    )];
+    let first = StoredPublication::published_at_revision(
+        compile(&source, &tools).expect("first compile"),
+        &source.id,
+        1,
+    );
+    let mut drifted = source.clone();
+    drifted.instructions = "dependency-resolved behavior".into();
+    let second = StoredPublication::published_at_revision(
+        compile(&drifted, &tools).expect("second compile"),
+        &source.id,
+        1,
+    );
+    assert_ne!(first.fingerprint, second.fingerprint, "P3");
+    assert_eq!(
+        store
+            .put_publication_if_config_revision_scoped(&scope, &first, 1)
+            .await
+            .expect("P2"),
+        ConfigWrite::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .put_publication_if_config_revision_scoped(&scope, &second, 1)
+            .await
+            .expect("P3"),
+        ConfigWrite::Conflict {
+            current_revision: Some(1)
+        }
+    );
+    let durable = store.list_published_scoped(&scope).await.unwrap();
+    assert_eq!(durable.len(), 1, "P3");
+    assert_eq!(durable[0].fingerprint, first.fingerprint, "P3");
 }
 
 /// Regression: Postgres is a durable store, so `list_published_scoped` must reload

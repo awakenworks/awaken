@@ -38,9 +38,18 @@ pub(crate) fn finish(
                         let _ = reconciler.reconcile().await;
                     }
                     if response.status().is_success() && worker_observations_may_have_changed {
-                        // The gate advances only after success; heartbeat is the
-                        // bounded retry clock for a transient reconciliation failure.
-                        let _ = worker_observation_gate.reconcile(reconciler.as_ref()).await;
+                        // Heartbeat is Worker authority, while publication refresh is
+                        // an after-commit projection. Never hold the heartbeat response
+                        // open on that projection: a slow model/catalog read would let
+                        // the just-committed Worker lease expire before the Worker can
+                        // observe its receipt, fencing every subsequent dispatch.
+                        //
+                        // The shared gate still coalesces concurrent heartbeats and
+                        // advances its fingerprint only after a successful refresh, so
+                        // a transient failure is retried by a later heartbeat.
+                        tokio::spawn(async move {
+                            let _ = worker_observation_gate.reconcile(reconciler.as_ref()).await;
+                        });
                     }
                     response
                 }
@@ -57,6 +66,7 @@ pub(crate) fn finish(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -67,6 +77,24 @@ mod tests {
     struct RecordingReconciler {
         fixed: AtomicUsize,
         all: AtomicUsize,
+    }
+
+    struct BlockingReconciler {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_config_service::PublicationBindingReconciler for BlockingReconciler {
+        async fn reconcile(&self) -> Result<usize, String> {
+            unreachable!("the Worker event uses the all-policy operation")
+        }
+
+        async fn reconcile_all(&self) -> Result<usize, String> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(1)
+        }
     }
 
     #[async_trait::async_trait]
@@ -111,7 +139,51 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{rule}");
         }
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while reconciler.all.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("H1 schedules the after-commit reconciliation");
         assert_eq!(reconciler.all.load(Ordering::SeqCst), 1, "H1+H2");
         assert_eq!(reconciler.fixed.load(Ordering::SeqCst), 0, "H2");
+    }
+    #[tokio::test]
+    async fn blocked_projection_never_blocks_the_committed_worker_heartbeat_receipt() {
+        // Cause/effect graph:
+        // C1 the registry accepts the heartbeat; C2 the derived publication
+        // refresh blocks. E1 the HTTP heartbeat receipt still returns promptly;
+        // E2 refresh remains in flight and can complete later. Coupling C1 to C2
+        // makes the Worker's lease expire even though authority was committed.
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = finish(
+            Router::new().route("/v1/worker/heartbeat", post(|| async { StatusCode::OK })),
+            Router::new(),
+            Some(Arc::new(BlockingReconciler {
+                entered: entered.clone(),
+                release: release.clone(),
+            })),
+            worker_observations(),
+            "platform".into(),
+        );
+
+        let response = tokio::time::timeout(
+            Duration::from_millis(250),
+            app.oneshot(
+                Request::post("/v1/worker/heartbeat")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("E1 heartbeat response is independent of projection")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "E1");
+        tokio::time::timeout(Duration::from_millis(250), entered.notified())
+            .await
+            .expect("E2 projection continues asynchronously");
+        release.notify_waiters();
     }
 }

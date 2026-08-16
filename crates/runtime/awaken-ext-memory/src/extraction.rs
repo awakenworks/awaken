@@ -1131,6 +1131,41 @@ impl MemoryExtractionController {
         }
     }
 
+    /// Renew from committed claim state, not from the controller's pre-I/O
+    /// snapshot. Credential materialization may record its receipt while the
+    /// extractor is running; overwriting that newer revision would either lose
+    /// the receipt or turn every heartbeat into a false extraction retry.
+    async fn renew_current_claim(
+        &self,
+        intent: &mut MemoryExtractionIntent,
+        generation: u64,
+    ) -> Result<(), MemoryExtractionError> {
+        for _ in 0..8 {
+            let mut current = self
+                .repository
+                .get_extraction(&intent.intent_id)
+                .await?
+                .ok_or_else(|| MemoryExtractionError::NotFound(intent.intent_id.clone()))?;
+            let expected_revision = current.revision;
+            current.renew_claim(&self.owner, generation, unix_ms(), self.policy.lease_ms)?;
+            match self
+                .repository
+                .compare_and_swap_extraction(expected_revision, current.clone())
+                .await
+            {
+                Ok(()) => {
+                    *intent = current;
+                    return Ok(());
+                }
+                Err(MemoryExtractionError::RevisionConflict(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(MemoryExtractionError::RevisionConflict(
+            intent.intent_id.clone(),
+        ))
+    }
+
     async fn advance_claimed(
         &self,
         driver: &dyn MemoryExtractionDriver,
@@ -1149,17 +1184,7 @@ impl MemoryExtractionController {
                 tokio::select! {
                     result = &mut extraction => break result.map_err(|error| (error, false))?,
                     () = tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)) => {
-                        let expected_revision = intent.revision;
-                        intent
-                            .renew_claim(
-                                &self.owner,
-                                generation,
-                                unix_ms(),
-                                self.policy.lease_ms,
-                            )
-                            .map_err(|error| (error.to_string(), false))?;
-                        self.repository
-                            .compare_and_swap_extraction(expected_revision, intent.clone())
+                        self.renew_current_claim(intent, generation)
                             .await
                             .map_err(|error| (error.to_string(), false))?;
                     }
@@ -1703,6 +1728,68 @@ mod tests {
         assert_eq!(completed.attempts, 2);
         assert_eq!(completed.receipt.unwrap().mutations.len(), 1);
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_renews_from_the_latest_claim_revision() {
+        // Concurrent claim-revision graph: C1 the controller owns generation G;
+        // C2 credential materialization commits a newer revision while inference
+        // is running; C3 heartbeat fires. E1 preserve the receipt, E2 renew the
+        // same G lease, E3 do not consume a retry attempt.
+        let repository = Arc::new(TestRepository::default());
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
+            .with_policy(MemoryExtractionPolicy {
+                lease_ms: 10_000,
+                heartbeat_ms: 100,
+                max_attempts: 3,
+                retry_base_ms: 0,
+            });
+        controller.enqueue(intent()).await.unwrap();
+        let mut claimed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let expected_revision = claimed.revision;
+        let generation = claimed.claim("worker-a", unix_ms(), 10_000).unwrap();
+        repository
+            .compare_and_swap_extraction(expected_revision, claimed.clone())
+            .await
+            .unwrap();
+
+        let mut with_receipt = claimed.clone();
+        let expected_revision = with_receipt.revision;
+        with_receipt
+            .record_credential_realization(
+                "worker-a",
+                generation,
+                unix_ms(),
+                credential_receipt(generation),
+            )
+            .unwrap();
+        repository
+            .compare_and_swap_extraction(expected_revision, with_receipt.clone())
+            .await
+            .unwrap();
+
+        controller
+            .renew_current_claim(&mut claimed, generation)
+            .await
+            .expect("C1+C2+C3 renews current state");
+        assert_eq!(claimed.claim_generation, generation, "E2");
+        assert_eq!(claimed.attempts, 1, "E3");
+        assert_eq!(claimed.credential_realizations.len(), 1, "E1");
+        assert_eq!(
+            repository
+                .get_extraction("extract-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .credential_realizations
+                .len(),
+            1,
+            "E1 durable"
+        );
     }
 
     #[tokio::test]

@@ -1037,6 +1037,82 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
     pool.shutdown().await;
 }
 
+/// Resolution is part of the claimed effect even though the concrete Worker
+/// does not exist yet. Slow sandbox/credential preparation must renew the claim.
+#[tokio::test]
+async fn pool_renews_claim_while_worker_resolution_is_blocked() {
+    struct SlowResolver {
+        worker: Arc<MemWorker>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl WorkerResolver<MemoryDispatchStore> for SlowResolver {
+        async fn worker_for(
+            &self,
+            _thread_id: &ThreadId,
+            _agent_id: Option<&str>,
+        ) -> Result<Arc<MemWorker>, Error> {
+            self.entered.notify_one();
+            self.release
+                .acquire()
+                .await
+                .expect("resolution release")
+                .forget();
+            Ok(self.worker.clone())
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let lease_ms = 90;
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "pool")
+            .with_lease_ms(lease_ms),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let clock = Arc::new(SystemClock);
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        clock.clone(),
+        "pool",
+        lease_ms,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        Arc::new(SlowResolver {
+            worker,
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        1,
+    );
+
+    pool.submit(activation("slow-resolution")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        .await
+        .expect("resolver entered");
+    tokio::time::sleep(Duration::from_millis(lease_ms * 3)).await;
+    assert!(
+        store
+            .claim("thief", lease_ms, clock.now_ms(), &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "R1: resolution renews the exact claim beyond its base lease"
+    );
+
+    release.add_permits(1);
+    assert!(
+        wait_for(|| commit.commit_count() >= 1).await,
+        "R2: the original claim executes after resolution"
+    );
+    pool.shutdown().await;
+}
+
 #[tokio::test]
 async fn renewal_stops_when_claim_resolution_fails() {
     use std::sync::atomic::{AtomicUsize, Ordering};

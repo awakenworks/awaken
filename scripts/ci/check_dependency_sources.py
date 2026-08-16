@@ -101,7 +101,14 @@ def validate_lock_data(data: dict[str, object], label: str) -> list[str]:
         if len(revisions) != 1 or FULL_GIT_REV.fullmatch(revisions[0]) is None:
             violations.append(f"{label}:{name}: locked Git source must retain one full rev")
             continue
-        if repository is not None:
+        # Cargo retains an overridden package's original source in the lockfile
+        # and records the effective package in `replace`. Only the effective
+        # source enters the compiled graph; counting both would reject the exact
+        # source-unification mechanism this check is meant to enforce.
+        replaced = package.get("replace")
+        if replaced is not None and not isinstance(replaced, str):
+            violations.append(f"{label}:{name}: replacement package id must be a string")
+        if repository is not None and replaced is None:
             revisions_by_repository.setdefault(repository, set()).add(revisions[0])
         if parsed.fragment != revisions[0]:
             violations.append(f"{label}:{name}: locked Git commit does not match requested rev")
@@ -230,6 +237,22 @@ def self_test() -> int:
         for hit in validate_lock_data(duplicate_lock, "duplicate-lock")
     ):
         print("Self-test FAILED: duplicate lock revisions were accepted", file=sys.stderr)
+        return 1
+    replaced_lock = {
+        "package": [
+            {
+                "name": "old",
+                "source": f"git+{allowed}?rev={revision}#{revision}",
+                "replace": "new 1.0.0 (git+effective)",
+            },
+            {
+                "name": "new",
+                "source": f"git+{allowed}?rev={'2' * 40}#{'2' * 40}",
+            },
+        ]
+    }
+    if validate_lock_data(replaced_lock, "replaced-lock"):
+        print("Self-test FAILED: replaced input was counted as an effective source", file=sys.stderr)
         return 1
     print("OK - dependency-source self-test passed.")
     return 0

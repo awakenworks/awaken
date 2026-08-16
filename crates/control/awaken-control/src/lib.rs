@@ -101,6 +101,112 @@ use sha2::{Digest, Sha256};
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_AUDITED_BODY: usize = 2 * 1024 * 1024;
 
+fn human_coordinate(value: &str, fallback: &str) -> String {
+    let value = value
+        .strip_prefix("awaken:personal:")
+        .or_else(|| value.strip_prefix("workspace_"))
+        .or_else(|| value.strip_prefix("wrkspc_"))
+        .or_else(|| value.strip_prefix("org_"))
+        .or_else(|| value.strip_prefix("acct_"))
+        .unwrap_or(value);
+    let looks_opaque = value.len() > 32
+        || (value.len() >= 20 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    if value.is_empty() || looks_opaque {
+        return fallback.to_owned();
+    }
+    let words = value
+        .split(['-', '_', ':'])
+        .filter(|part| !part.is_empty() && *part != "default" && *part != "local")
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        })
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        fallback.to_owned()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn workspace_display_name(id: &str) -> String {
+    if id.starts_with("workspace_local_") || id.starts_with("wrkspc_local_") {
+        return "Local Workspace".into();
+    }
+    if id == DEFAULT_SCOPE || id == "default" || id.contains(":personal:") {
+        return if id.contains(":personal:") {
+            "Personal Workspace"
+        } else {
+            "Default Workspace"
+        }
+        .into();
+    }
+    let name = human_coordinate(id, "Workspace");
+    if name.to_ascii_lowercase().contains("workspace") {
+        name
+    } else {
+        format!("{name} Workspace")
+    }
+}
+
+fn organization_display_name(id: &str) -> String {
+    if id == "org_default" || id == "default" || id == DEFAULT_SCOPE {
+        return "Default Organization".into();
+    }
+    let name = human_coordinate(id, "Organization");
+    if name.to_ascii_lowercase().contains("organization") {
+        name
+    } else {
+        format!("{name} Organization")
+    }
+}
+
+fn principal_display_name(
+    principal: Option<&awaken_iam_contract::PrincipalRef>,
+    identity_mode: &str,
+) -> String {
+    match principal {
+        Some(awaken_iam_contract::PrincipalRef::Account { account_id })
+            if account_id.0 == "local-console-admin" =>
+        {
+            "Local administrator".into()
+        }
+        Some(awaken_iam_contract::PrincipalRef::Account { account_id }) => {
+            human_coordinate(&account_id.0, "Account user")
+        }
+        Some(awaken_iam_contract::PrincipalRef::Service { service_id }) => {
+            human_coordinate(service_id, "Service account")
+        }
+        Some(awaken_iam_contract::PrincipalRef::ApiToken { .. }) => "API client".into(),
+        None if identity_mode == "no-login" => "Local operator".into(),
+        None if identity_mode == "awaken-cloud" => "Awaken Cloud user".into(),
+        None => "Workspace user".into(),
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::{organization_display_name, workspace_display_name};
+
+    #[test]
+    fn installation_coordinates_never_become_product_chrome_copy() {
+        assert_eq!(
+            workspace_display_name("workspace_local_126cc_18cbbe83d0355538"),
+            "Local Workspace"
+        );
+        assert_eq!(
+            organization_display_name("org_default"),
+            "Default Organization"
+        );
+        assert_eq!(
+            workspace_display_name("awaken:personal:acct_0123456789"),
+            "Personal Workspace"
+        );
+    }
+}
+
 async fn durable_management_audit(
     axum::extract::State(plane): axum::extract::State<ManagementAuditPlane>,
     request: Request<Body>,
@@ -348,6 +454,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let admin = admin.merge(webhook_crud);
     let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
     let vaults = vault_router(vault_state);
+    let presentation_org = data_subject_org.clone();
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
@@ -379,16 +486,35 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         runtimes,
     );
     let fallback_workspace = platform_workspace;
+    let presentation_identity_mode = identity_mode;
     let workspace_context = Router::new().route(
         "/v1/config/workspace-context",
         get(
-            move |scope: Option<Extension<awaken_tenancy::WorkspaceScope>>| {
+            move |scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+                  principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
                 let fallback_workspace = fallback_workspace.clone();
+                let organization_id = presentation_org.clone();
                 async move {
                     let workspace_id = scope
                         .map(|Extension(scope)| scope.0)
                         .unwrap_or(fallback_workspace);
-                    Json(serde_json::json!({ "workspace_id": workspace_id }))
+                    let user_display_name = principal_display_name(
+                        principal.as_ref().map(|Extension(principal)| &principal.0),
+                        presentation_identity_mode,
+                    );
+                    let workspace_name = workspace_display_name(&workspace_id);
+                    let organization_name = if presentation_identity_mode == "no-login" {
+                        "Local Organization".into()
+                    } else {
+                        organization_display_name(&organization_id)
+                    };
+                    Json(serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "workspace_display_name": workspace_name,
+                        "organization_id": organization_id,
+                        "organization_display_name": organization_name,
+                        "user_display_name": user_display_name,
+                    }))
                 }
             },
         ),

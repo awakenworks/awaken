@@ -632,6 +632,23 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             tx.rollback().await.map_err(reject)?;
             return Ok(ConfigWrite::Conflict { current_revision });
         }
+        let existing = sqlx::query(&format!(
+            "SELECT record FROM {NS}_publication WHERE scope_id = $1 AND agent_id = $2 FOR UPDATE"
+        ))
+        .bind(&scope.0)
+        .bind(&publication.agent_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(reject)?;
+        for row in existing {
+            let Json(existing): Json<StoredPublication> = row.try_get("record").map_err(reject)?;
+            if existing.source_revision == publication.source_revision
+                && existing.fingerprint != publication.fingerprint
+            {
+                tx.rollback().await.map_err(reject)?;
+                return Ok(ConfigWrite::Conflict { current_revision });
+            }
+        }
         sqlx::query(&format!(
             "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
              VALUES ($1, $2, $3, $4, $5) \

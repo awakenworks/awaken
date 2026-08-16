@@ -35,7 +35,7 @@ use crate::clock::Clock;
 use crate::dispatch::{Claimed, Dispatch, PendingInput};
 use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
-use crate::worker::DispatchWorker;
+use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_run_ingress_contract::RunDispatch;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -194,9 +194,84 @@ struct DrainAdmission {
 
 struct PoolAdmission {
     gate: tokio::sync::RwLock<DrainAdmission>,
+    error_gate: DrainErrorGate,
     in_flight: Arc<AtomicU32>,
     wake: Notify,
     max_attempts: u64,
+}
+
+#[derive(Default)]
+struct DrainErrorState {
+    consecutive_errors: u32,
+    retry_not_before: Option<tokio::time::Instant>,
+    probe_in_flight: bool,
+}
+
+#[derive(Default)]
+struct DrainErrorGate {
+    state: tokio::sync::Mutex<DrainErrorState>,
+    changed: Notify,
+}
+
+impl DrainErrorGate {
+    /// During an outage, admit exactly one recovery probe for the whole pool.
+    /// Pool width must remain execution concurrency, never retry concurrency.
+    async fn wait_turn(&self, shutdown: &CancellationToken) -> bool {
+        loop {
+            let delay = {
+                let mut state = self.state.lock().await;
+                if state.consecutive_errors == 0 {
+                    return true;
+                }
+                if state.probe_in_flight {
+                    None
+                } else {
+                    let retry_not_before = state
+                        .retry_not_before
+                        .expect("an error state owns a retry deadline");
+                    let now = tokio::time::Instant::now();
+                    if now >= retry_not_before {
+                        state.probe_in_flight = true;
+                        return true;
+                    }
+                    Some(retry_not_before.duration_since(now))
+                }
+            };
+            match delay {
+                Some(delay) => tokio::select! {
+                    _ = shutdown.cancelled() => return false,
+                    _ = self.changed.notified() => {},
+                    _ = tokio::time::sleep(delay) => {},
+                },
+                None => tokio::select! {
+                    _ = shutdown.cancelled() => return false,
+                    _ = self.changed.notified() => {},
+                },
+            }
+        }
+    }
+
+    async fn record_success(&self) {
+        let mut state = self.state.lock().await;
+        if state.consecutive_errors == 0 && !state.probe_in_flight {
+            return;
+        }
+        *state = DrainErrorState::default();
+        drop(state);
+        self.changed.notify_waiters();
+    }
+
+    async fn record_failure(&self) -> (u32, Duration) {
+        let mut state = self.state.lock().await;
+        state.consecutive_errors = state.consecutive_errors.saturating_add(1);
+        let delay = drain_error_backoff(state.consecutive_errors);
+        state.retry_not_before = Some(tokio::time::Instant::now() + delay);
+        state.probe_in_flight = false;
+        let consecutive_errors = state.consecutive_errors;
+        drop(state);
+        self.changed.notify_waiters();
+        (consecutive_errors, delay)
+    }
 }
 
 impl Default for PoolAdmission {
@@ -209,6 +284,7 @@ impl PoolAdmission {
     fn new(max_attempts: u64) -> Self {
         Self {
             gate: tokio::sync::RwLock::new(DrainAdmission::default()),
+            error_gate: DrainErrorGate::default(),
             in_flight: Arc::new(AtomicU32::new(0)),
             wake: Notify::new(),
             max_attempts,
@@ -455,6 +531,13 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             // durable intent is accepted and that owner must settle it.
             return Ok(true);
         };
+        let claim = crate::RunClaim::from(&claimed.lease);
+        let _claim_renewal = renew_claim_while_active(
+            self.store.clone(),
+            &claim,
+            self.lease_ms,
+            self.clock.clone(),
+        );
         let worker = match self.resolver.worker_for_claimed(&claimed).await {
             Ok(worker) => worker,
             Err(error) => {
@@ -537,6 +620,9 @@ async fn drain_loop<S: Dispatch + 'static>(
             _ = shutdown.cancelled() => break,
             _ = admission.wake.notified() => {}
         }
+        if !admission.error_gate.wait_turn(&shutdown).await {
+            break;
+        }
         // Drain everything runnable now. A store error is transient — the next
         // tick retries — so swallow it rather than kill the task.
         match claim_and_drive(
@@ -550,8 +636,11 @@ async fn drain_loop<S: Dispatch + 'static>(
         )
         .await
         {
-            Ok(true) => continue,
-            Ok(false) => {}
+            Ok(true) => {
+                admission.error_gate.record_success().await;
+                continue;
+            }
+            Ok(false) => admission.error_gate.record_success().await,
             // A store/drive error is transient — the next tick retries — so log it
             // and back off rather than kill the task. A stale owner's rejected
             // commit (terminal-is-final fence) never reaches here: `drive_claimed`
@@ -564,10 +653,24 @@ async fn drain_loop<S: Dispatch + 'static>(
                 tokio::time::sleep(poll_interval.max(Duration::from_millis(250))).await;
             }
             Err(err) => {
-                tracing::warn!(owner = %owner, error = %err, "drain tick failed; retrying");
+                let (consecutive_errors, delay) = admission.error_gate.record_failure().await;
+                tracing::warn!(
+                    owner = %owner,
+                    error = %err,
+                    consecutive_errors,
+                    retry_delay_ms = delay.as_millis(),
+                    "drain tick failed; retrying"
+                );
             }
         }
     }
+}
+
+fn drain_error_backoff(consecutive_errors: u32) -> Duration {
+    const MIN: Duration = Duration::from_millis(100);
+    const MAX: Duration = Duration::from_secs(5);
+    let exponent = consecutive_errors.saturating_sub(1).min(31);
+    MIN.saturating_mul(1_u32 << exponent).min(MAX)
 }
 
 /// Convert the external/cross-node wake plus the fallback timer into one
@@ -627,6 +730,10 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         return Ok(false);
     };
     let _in_flight = InFlightGuard::new(admission.in_flight.clone());
+    // Session resolution can create/adopt a sandbox and materialize credentials
+    // before `drive_claimed` installs its guard. Renew from queue exit onward.
+    let claim = crate::RunClaim::from(&claimed.lease);
+    let _claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms, clock.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
@@ -757,6 +864,48 @@ mod in_flight_tests {
 
     use crate::{ManualClock, MemoryDispatchStore};
     use awaken_agent_contract::agent::run::EndCause;
+
+    #[test]
+    fn drain_failures_back_off_exponentially_and_cap() {
+        // Cause/effect table: E1 first transient fault -> 100ms; E2 repeated
+        // faults -> exponential delay; E3 sustained outage -> 5s cap. A later
+        // successful tick resets the counter in `drain_loop` before this helper
+        // is consulted again.
+        assert_eq!(drain_error_backoff(1), Duration::from_millis(100), "E1");
+        assert_eq!(drain_error_backoff(2), Duration::from_millis(200), "E2");
+        assert_eq!(drain_error_backoff(7), Duration::from_secs(5), "E3");
+        assert_eq!(drain_error_backoff(u32::MAX), Duration::from_secs(5), "E3");
+    }
+
+    #[tokio::test]
+    async fn one_shared_recovery_probe_crosses_the_error_gate() {
+        // C1 one queue outage; C2 multiple drain tasks; E1 one probe after the
+        // deadline; E2 every sibling remains blocked. Per-task counters violate
+        // E2 by rotating a fresh "first retry" through the pool.
+        let gate = Arc::new(DrainErrorGate::default());
+        let shutdown = CancellationToken::new();
+        assert_eq!(gate.record_failure().await.0, 1);
+
+        let first = {
+            let gate = gate.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { gate.wait_turn(&shutdown).await })
+        };
+        let second = {
+            let gate = gate.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { gate.wait_turn(&shutdown).await })
+        };
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        assert_eq!(
+            u8::from(first.is_finished()) + u8::from(second.is_finished()),
+            1,
+            "one pool-wide probe owns recovery authority"
+        );
+        shutdown.cancel();
+        let _ = first.await;
+        let _ = second.await;
+    }
 
     struct ReconciliationResolver {
         calls: AtomicUsize,
