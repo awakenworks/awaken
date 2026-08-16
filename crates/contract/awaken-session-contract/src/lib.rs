@@ -93,8 +93,8 @@ pub use mcp_attachment::{
 };
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use model_resolution::{
-    SessionModelOverride, SessionModelPublication, SessionModelPublicationResolver,
-    SessionModelResolutionError,
+    SessionModelOverride, SessionModelOverrideDecision, SessionModelPublication,
+    SessionModelPublicationResolver, SessionModelResolutionError, session_model_override_decision,
 };
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,

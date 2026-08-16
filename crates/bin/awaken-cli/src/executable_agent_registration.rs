@@ -46,6 +46,10 @@ pub(crate) struct ExecutableAgentWiring {
     pub(crate) projection_refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
     pub(crate) private_router: Router,
     pub(crate) coordinator_content_eraser: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    pub(crate) credential_rollout_target:
+        Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
+    pub(crate) service_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 }
 
 impl ExecutableAgentWiring {
@@ -58,6 +62,8 @@ impl ExecutableAgentWiring {
             projection_refresher: None,
             private_router: Router::new(),
             coordinator_content_eraser: None,
+            credential_rollout_target: None,
+            service_authenticator: None,
         }
     }
 
@@ -76,6 +82,8 @@ impl ExecutableAgentWiring {
             projection_refresher: None,
             private_router: Router::new(),
             coordinator_content_eraser: None,
+            credential_rollout_target: None,
+            service_authenticator: None,
         }
     }
 
@@ -89,6 +97,12 @@ impl ExecutableAgentWiring {
         let coordinator_content_eraser = Arc::new(
             awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser::with_token_source(
                 coordinator_url,
+                token_source.clone(),
+            )?,
+        );
+        let credential_rollout_target = Arc::new(
+            awaken_protocol_managed::HttpManagedCredentialRolloutTarget::with_token_source(
+                coordinator_url,
                 token_source,
             )?,
         );
@@ -98,6 +112,8 @@ impl ExecutableAgentWiring {
             projection_refresher: None,
             private_router: Router::new(),
             coordinator_content_eraser: Some(coordinator_content_eraser),
+            credential_rollout_target: Some(credential_rollout_target),
+            service_authenticator: None,
         })
     }
 
@@ -116,6 +132,8 @@ impl ExecutableAgentWiring {
             projection_refresher: None,
             private_router,
             coordinator_content_eraser: None,
+            credential_rollout_target: None,
+            service_authenticator: None,
         }
     }
 
@@ -165,7 +183,7 @@ impl ExecutableAgentWiring {
         let private_router = private_router.merge(
             awaken_coordinator::data_subject_boundary::router_with_authenticator(
                 coordinator_content,
-                authenticator,
+                authenticator.clone(),
             ),
         );
         Ok(Self {
@@ -174,6 +192,8 @@ impl ExecutableAgentWiring {
             projection_refresher: Some(projection_refresher),
             private_router,
             coordinator_content_eraser: None,
+            credential_rollout_target: None,
+            service_authenticator: Some(authenticator),
         })
     }
 }
@@ -184,6 +204,8 @@ type ProcessParts = (
     Router,
     Option<Arc<PostgresExecutableAgentRegistrar>>,
     Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
+    Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 );
 
 /// Consume the explicitly selected role wiring into executable-Agent services.
@@ -197,6 +219,8 @@ pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessPar
         wiring.private_router,
         wiring.projection_refresher,
         wiring.coordinator_content_eraser,
+        wiring.credential_rollout_target,
+        wiring.service_authenticator,
     )
 }
 

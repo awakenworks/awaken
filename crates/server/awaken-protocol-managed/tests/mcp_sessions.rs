@@ -74,6 +74,16 @@ fn lifecycle_test_state() -> (
 
 #[async_trait::async_trait]
 impl SessionRuntime for PreparingFake {
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        Ok(awaken_session_contract::SessionCleanupCompletion::new(
+            &command,
+            Vec::new(),
+        ))
+    }
+
     fn install_session_request_context(
         &self,
         _thread: &str,
@@ -367,7 +377,7 @@ fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness 
 fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials.clone(), credentials));
+    let vaults = Arc::new(VaultState::new(secrets, credentials));
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
@@ -403,7 +413,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
 async fn check_bind_is_fail_closed_on_unknown_vault() {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials.clone(), credentials));
+    let vaults = Arc::new(VaultState::new(secrets, credentials));
     let state = ManagedState::new_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
@@ -491,7 +501,14 @@ async fn call_with_headers(
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    // Production startup stamps the trusted Workspace before these resource
+    // routers run. This fixture mounts routers directly, so reproduce that edge
+    // explicitly instead of relying on the removed unscoped fallback.
+    let mut request = b.body(body).unwrap();
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope("default".into()));
+    let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -880,14 +897,13 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
         .credential_source_id(&vault_id, &cred_id)
         .await
         .unwrap();
-    assert_eq!(
-        refresh.refresh_token_ref,
-        format!(
-            "sec:{}:r1:{}",
-            source_id.0,
-            awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
-        )
+    let logical_prefix = format!(
+        "sec:{}:r1:{}:attempt:",
+        source_id.0,
+        awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
     );
+    assert!(refresh.refresh_token_ref.starts_with(&logical_prefix));
+    assert!(refresh.refresh_token_ref.len() > logical_prefix.len());
 }
 
 #[tokio::test]

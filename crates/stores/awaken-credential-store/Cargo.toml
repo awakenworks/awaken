@@ -17,6 +17,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing = "0.1"
 chacha20poly1305 = { version = "0.10", optional = true }
 rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

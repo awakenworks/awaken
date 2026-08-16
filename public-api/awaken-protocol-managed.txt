@@ -1564,6 +1564,11 @@ impl awaken_protocol_managed::EnvironmentAuthoringState
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::new(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::sandbox_policy_store(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>
+pub struct awaken_protocol_managed::HttpManagedCredentialRolloutTarget
+impl awaken_protocol_managed::HttpManagedCredentialRolloutTarget
+pub fn awaken_protocol_managed::HttpManagedCredentialRolloutTarget::with_token_source(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>) -> core::result::Result<Self, alloc::string::String>
+impl awaken_credential_vault::repo::ManagedCredentialRolloutTarget for awaken_protocol_managed::HttpManagedCredentialRolloutTarget
+pub fn awaken_protocol_managed::HttpManagedCredentialRolloutTarget::rollout<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_vault::repo::ManagedCredentialRollout) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_protocol_managed::ManagedDeploymentSessionLauncher
 impl awaken_protocol_managed::ManagedDeploymentSessionLauncher
 pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
@@ -1637,6 +1642,8 @@ impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_session_realizations(&self) -> usize
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&self) -> usize
+impl awaken_credential_vault::repo::ManagedCredentialRolloutTarget for awaken_protocol_managed::ManagedState
+pub fn awaken_protocol_managed::ManagedState::rollout<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_vault::repo::ManagedCredentialRollout) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::ManagedState::session_usage<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::dream::DreamUsage>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -1666,7 +1673,9 @@ pub async fn awaken_protocol_managed::VaultState::enter_session_bearer(&self, &s
 pub async fn awaken_protocol_managed::VaultState::has_vault(&self, &str, &str) -> core::result::Result<bool, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_access_for_source(&self, &awaken_credential_contract::CredentialSourceId) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(&self, &str, &[alloc::string::String], &str) -> core::result::Result<core::option::Option<awaken_credential_contract::CredentialSourceId>, awaken_credential_vault::CredentialError>
-pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>) -> Self
+pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>) -> Self
+pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> core::result::Result<usize, awaken_credential_vault::CredentialError>
+pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
 pub fn awaken_protocol_managed::VaultState::with_envelope_issuer(self, alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
 impl awaken_session_application::session_services::RepositoryCredentialIngress for awaken_protocol_managed::VaultState
@@ -1706,6 +1715,7 @@ pub fn awaken_protocol_managed::ManagedTunnelApplication::retrieve_tunnel<'life0
 pub fn awaken_protocol_managed::ManagedTunnelApplication::reveal_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelToken, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::ManagedTunnelApplication::rotate_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelToken, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::agents_router(alloc::sync::Arc<awaken_protocol_managed::AgentRegistryState>) -> axum::routing::Router
+pub fn awaken_protocol_managed::credential_rollout_router_with_authenticator(alloc::sync::Arc<awaken_protocol_managed::ManagedState>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
 pub fn awaken_protocol_managed::default_models() -> alloc::vec::Vec<awaken_protocol_managed::ModelEntry>
 pub fn awaken_protocol_managed::deployments_router(alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::dreams_router(alloc::sync::Arc<awaken_dream_application::DreamApplication>) -> axum::routing::Router

@@ -9,7 +9,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the credential domain.
 pub const BUNDLE_ID: &str = "awaken.credential";
 
-const SPECS: [(i64, &str, &str); 6] = [
+const SPECS: [(i64, &str, &str); 8] = [
     (
         1,
         "credential sources: the secret-free row (kind + refs, never material)",
@@ -61,6 +61,22 @@ const SPECS: [(i64, &str, &str); 6] = [
             vault_id TEXT NOT NULL, \
             workspace_id TEXT NOT NULL, \
             source_id TEXT NOT NULL UNIQUE, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        7,
+        "managed credential mutation: secret-free recovery facts",
+        "CREATE TABLE {prefix}_managed_credential_mutation (\
+            source_id TEXT PRIMARY KEY, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        8,
+        "managed credential rollout: committed exact-fence service outbox",
+        "CREATE TABLE {prefix}_managed_credential_rollout (\
+            event_id TEXT PRIMARY KEY, \
             data {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),

@@ -607,7 +607,6 @@ mod tests {
         let credentials = Arc::new(awaken_protocol_managed::VaultState::new(
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             credential_repo.clone(),
-            credential_repo,
         ));
         let delivery = Arc::new(RecordingDelivery::default());
         let token_source = Arc::new(RotatingTokenSource(RwLock::new(Arc::from("correct-token"))));

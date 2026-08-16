@@ -102,6 +102,10 @@ impl serde_core::ser::Serialize for awaken_agent_config::MultiagentTarget
 pub fn awaken_agent_config::MultiagentTarget::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::MultiagentTarget
 pub fn awaken_agent_config::MultiagentTarget::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum awaken_agent_config::PublicationRevisionDecision
+pub awaken_agent_config::PublicationRevisionDecision::Apply
+pub awaken_agent_config::PublicationRevisionDecision::Conflict
+pub awaken_agent_config::PublicationRevisionDecision::ExactReplay
 pub enum awaken_agent_config::PublicationState
 pub awaken_agent_config::PublicationState::Compiled
 pub awaken_agent_config::PublicationState::Published
@@ -184,15 +188,19 @@ pub fn awaken_agent_config::ScopedConfig<S>::put_publication_if_config_revision<
 pub struct awaken_agent_config::StoredPublication
 pub awaken_agent_config::StoredPublication::agent_id: alloc::string::String
 pub awaken_agent_config::StoredPublication::agent_inputs: core::option::Option<serde_json::value::Value>
+pub awaken_agent_config::StoredPublication::execution_workspace: core::option::Option<alloc::string::String>
 pub awaken_agent_config::StoredPublication::fingerprint: alloc::string::String
 pub awaken_agent_config::StoredPublication::publication_id: alloc::string::String
 pub awaken_agent_config::StoredPublication::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_agent_config::StoredPublication::source_revision: u64
 pub awaken_agent_config::StoredPublication::state: awaken_agent_config::PublicationState
 impl awaken_agent_config::StoredPublication
+pub fn awaken_agent_config::StoredPublication::execution_workspace_or<'a>(&'a self, &'a str) -> &'a str
 pub fn awaken_agent_config::StoredPublication::published(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_config::StoredPublication::published_at_revision(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, u64) -> Self
+pub fn awaken_agent_config::StoredPublication::targets_execution_workspace(&self, &str, &str) -> bool
 pub fn awaken_agent_config::StoredPublication::with_agent_inputs(self, core::option::Option<serde_json::value::Value>) -> Self
+pub fn awaken_agent_config::StoredPublication::with_execution_workspace(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_agent_config::ToolOverride
 pub awaken_agent_config::ToolOverride::alias: core::option::Option<alloc::string::String>
 pub awaken_agent_config::ToolOverride::defer: bool
@@ -239,3 +247,4 @@ pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_scoped<'life0,
 pub fn awaken_agent_config::ScopedConfigRegistry::record_management_audit_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_config::compile_published(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata, awaken_runtime_contract::resolved::ResolvedModelCandidate, alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>, core::option::Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
 pub fn awaken_agent_config::compile_resolved(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
+pub fn awaken_agent_config::publication_revision_decision<'a, T, I>(&'a T, core::option::Option<&'a T>, u64, &'a T, I) -> awaken_agent_config::PublicationRevisionDecision where T: core::cmp::PartialEq + ?core::marker::Sized + 'a, I: core::iter::traits::collect::IntoIterator<Item = (core::option::Option<&'a T>, u64, &'a T)>

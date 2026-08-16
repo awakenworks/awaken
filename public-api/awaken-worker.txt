@@ -73,6 +73,7 @@ pub fn awaken_worker::WorkerNodeBuilder::build(self) -> core::result::Result<awa
 pub fn awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_acp_capability_observation_source(self, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_admin_listen(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_attempt_decorator_factory(self, awaken_worker::RegisteredAttemptDecoratorFactory) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_brokered_acp_model_access(self, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::BrokeredAcpModelAccessMaterializer>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self

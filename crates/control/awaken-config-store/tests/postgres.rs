@@ -297,14 +297,16 @@ async fn postgres_conditional_publication_fences_one_fingerprint_per_source_revi
         compile(&source, &tools).expect("first compile"),
         &source.id,
         1,
-    );
+    )
+    .with_execution_workspace("runtime-a");
     let mut drifted = source.clone();
     drifted.instructions = "dependency-resolved behavior".into();
     let second = StoredPublication::published_at_revision(
         compile(&drifted, &tools).expect("second compile"),
         &source.id,
         1,
-    );
+    )
+    .with_execution_workspace("runtime-a");
     assert_ne!(first.fingerprint, second.fingerprint, "P3");
     assert_eq!(
         store
@@ -325,6 +327,52 @@ async fn postgres_conditional_publication_fences_one_fingerprint_per_source_revi
     let durable = store.list_published_scoped(&scope).await.unwrap();
     assert_eq!(durable.len(), 1, "P3");
     assert_eq!(durable[0].fingerprint, first.fingerprint, "P3");
+}
+
+#[tokio::test]
+async fn postgres_allows_one_source_revision_in_distinct_execution_workspaces() {
+    let Some(pool) = schema_pool("t_config_publication_execution_targets").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let scope = ScopeId::from("reserved_authoring_scope");
+    let mut source = agent_config();
+    source.id = "reserved-assistant".into();
+    store
+        .put_config_scoped(&scope, &source)
+        .await
+        .expect("source");
+    let tools = vec![ToolDescriptor::pinned(
+        "test",
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    )];
+    let first = StoredPublication::published_at_revision(
+        compile(&source, &tools).expect("first compile"),
+        &source.id,
+        1,
+    )
+    .with_execution_workspace("workspace-a");
+    let mut drifted = source.clone();
+    drifted.instructions = "workspace-b behavior".into();
+    let second = StoredPublication::published_at_revision(
+        compile(&drifted, &tools).expect("second compile"),
+        &source.id,
+        1,
+    )
+    .with_execution_workspace("workspace-b");
+
+    for publication in [&first, &second] {
+        assert_eq!(
+            store
+                .put_publication_if_config_revision_scoped(&scope, publication, 1)
+                .await
+                .expect("targeted publication"),
+            ConfigWrite::Applied { revision: 1 }
+        );
+    }
+    assert_eq!(store.list_published_scoped(&scope).await.unwrap().len(), 2);
 }
 
 /// Regression: Postgres is a durable store, so `list_published_scoped` must reload

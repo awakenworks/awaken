@@ -42,6 +42,8 @@ pub(super) async fn prepare_runtime_routers(
         executable_agent_private_router,
         executable_agent_projection_refresher,
         _remote_coordinator_content_eraser,
+        _remote_credential_rollout_target,
+        coordinator_service_authenticator,
     ) = executable_agent_registration::process_parts(process.executable_agent_wiring);
     let content_capture_ceiling = process.content_capture_ceiling;
     let deployment = process.deployment;
@@ -332,6 +334,7 @@ pub(super) async fn prepare_runtime_routers(
         local_webhook_stores,
         data_subject_consent,
         registration_supervisor,
+        local_vault_state,
     ) = match control_component {
         Some(component) => {
             let control_stores = control_stores
@@ -356,6 +359,7 @@ pub(super) async fn prepare_runtime_routers(
                 )),
                 component.data_subject_consent,
                 Some(component.registration_supervisor),
+                Some(component.vault_state),
             )
         }
         None => {
@@ -372,6 +376,7 @@ pub(super) async fn prepare_runtime_routers(
                 ManagementAuditPlane::from_repository(services.audit),
                 None,
                 services.consent,
+                None,
                 None,
             )
         }
@@ -599,6 +604,9 @@ pub(super) async fn prepare_runtime_routers(
     }
     let session_application = Arc::new(session_application);
     let managed_state = Arc::new(ManagedState::from_application(session_application.clone()));
+    if let Some(vault_state) = local_vault_state {
+        vault_state.set_rollout_target(managed_state.clone());
+    }
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
@@ -649,6 +657,7 @@ pub(super) async fn prepare_runtime_routers(
             sessions,
             default_workspace: platform_workspace.clone(),
             private_router,
+            service_authenticator: coordinator_service_authenticator,
         },
     )
     .await

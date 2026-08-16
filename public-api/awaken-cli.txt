@@ -195,8 +195,10 @@ impl awaken_cli::PreparedLocalAcp
 pub fn awaken_cli::PreparedLocalAcp::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub struct awaken_cli::PreparedLocalWorker
 impl awaken_cli::PreparedLocalWorker
-pub fn awaken_cli::PreparedLocalWorker::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
+pub fn awaken_cli::PreparedLocalWorker::build_worker(&self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
+pub fn awaken_cli::PreparedLocalWorker::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub struct awaken_cli::PreparedProcess
+pub awaken_cli::PreparedProcess::admin_tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub awaken_cli::PreparedProcess::coordinator_authorities: core::option::Option<awaken_cli::CoordinatorAuthorityHandles>
 pub awaken_cli::PreparedProcess::local_setup: core::option::Option<awaken_iam_host::local_browser::LocalSetupHandoff>
 pub awaken_cli::PreparedProcess::private_router: axum::routing::Router

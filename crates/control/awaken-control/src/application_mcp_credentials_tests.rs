@@ -56,7 +56,6 @@ async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let state = Arc::new(VaultState::new(
         Arc::new(InMemorySecretStore::new()),
-        credentials.clone(),
         credentials,
     ));
     let app = application_mcp_credentials_router(state);

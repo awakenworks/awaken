@@ -20,6 +20,7 @@ pub use config::{
 };
 pub use store::{
     AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
-    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, PublicationState,
-    ScopedConfig, ScopedConfigRegistry, StoredPublication,
+    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+    PublicationRevisionDecision, PublicationState, ScopedConfig, ScopedConfigRegistry,
+    StoredPublication, publication_revision_decision,
 };

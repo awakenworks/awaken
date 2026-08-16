@@ -294,13 +294,36 @@ impl ConfigPlane {
         agent_id: &str,
         source_revision: u64,
     ) -> Result<Option<StoredPublication>, String> {
+        self.publication_at_revision_for_execution_workspace(
+            scope,
+            scope.as_str(),
+            agent_id,
+            source_revision,
+        )
+        .await
+    }
+
+    /// Exact durable publication produced from one authoring revision for one
+    /// execution Workspace. Reserved platform authoring may produce distinct
+    /// fingerprints for several target Workspaces at the same source revision.
+    pub async fn publication_at_revision_for_execution_workspace(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<StoredPublication>, String> {
         self.store
-            .list_published_scoped(scope)
+            .list_published_scoped(configuration_scope)
             .await
             .map(|publications| {
                 publications.into_iter().find(|publication| {
                     publication.agent_id == agent_id
                         && publication.source_revision == source_revision
+                        && publication.targets_execution_workspace(
+                            configuration_scope.as_str(),
+                            execution_workspace,
+                        )
                 })
             })
             .map_err(|error| error.to_string())

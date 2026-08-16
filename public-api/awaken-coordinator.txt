@@ -151,6 +151,7 @@ pub awaken_coordinator::CoordinatorDependencies::model_inventory: alloc::sync::A
 pub awaken_coordinator::CoordinatorDependencies::private_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorDependencies::resource_catalog: alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
 pub awaken_coordinator::CoordinatorDependencies::resource_management_router: axum::routing::Router
+pub awaken_coordinator::CoordinatorDependencies::service_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>
 pub awaken_coordinator::CoordinatorDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
 pub awaken_coordinator::CoordinatorDependencies::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>

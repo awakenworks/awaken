@@ -69,6 +69,10 @@ pub struct CoordinatorDependencies {
     /// Process startup installs projection refresh around the final
     /// Runtime-admitting surface, not around these transport-only routes.
     pub private_router: Router,
+    /// Service-token verifier shared by private Control→Coordinator commands.
+    /// AllInOne uses an in-process rollout target and leaves this absent.
+    pub service_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 }
 
 /// Complete Coordinator application surface.
@@ -149,6 +153,7 @@ pub async fn build_coordinator_component(
         sessions,
         default_workspace,
         private_router,
+        service_authenticator,
     } = dependencies;
 
     deployment_application.bind_executable_agents(executable_agents);
@@ -167,7 +172,7 @@ pub async fn build_coordinator_component(
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
-            managed_state,
+            managed_state.clone(),
             crate::ManagedApplicationServices {
                 session_application,
                 resource_catalog,
@@ -185,6 +190,15 @@ pub async fn build_coordinator_component(
                 worker_directory,
             },
         )?;
+    let private_router = match service_authenticator {
+        Some(authenticator) => private_router.merge(
+            awaken_protocol_managed::credential_rollout_router_with_authenticator(
+                managed_state.clone(),
+                authenticator,
+            ),
+        ),
+        None => private_router,
+    };
     let private_router = private_router
         .merge(worker_transport)
         .merge(environment_warmups);

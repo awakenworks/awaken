@@ -1,39 +1,49 @@
 ------------------------ MODULE CredentialInventory ------------------------
-EXTENDS TLC
+EXTENDS FiniteSets, TLC
 
-VARIABLE committedSecret, pendingSecret, orphanSecret, foreignSecret,
-         processUp, scanned
+Secrets == {"committed", "pending", "orphan", "foreign"}
+ProtectedReferences == {"committed", "pending", "foreign"}
 
-vars == <<committedSecret, pendingSecret, orphanSecret, foreignSecret,
-          processUp, scanned>>
+VARIABLE present, protected, orphanCandidates, reported, processUp, scanned
 
-Init == /\ committedSecret = TRUE /\ pendingSecret = TRUE
-        /\ orphanSecret = TRUE /\ foreignSecret = TRUE
+vars == <<present, protected, orphanCandidates, reported, processUp, scanned>>
+
+Init == /\ present = Secrets
+        /\ protected = {} /\ orphanCandidates = {} /\ reported = {}
         /\ processUp = TRUE /\ scanned = FALSE
 
-\* Inventory - committed references - pending-intent references. The prefix
-\* fence admits only credential-owned orphan candidates for deletion.
+\* Inventory - committed references - pending-intent references. The generic
+\* reconciler records the protected set and reports the remaining candidates.
+\* It is deliberately observational: the repository and SecretStore do not
+\* share an atomic orphan-claim/delete boundary, so present is unchanged.
 ReconcileInventory ==
     /\ processUp
-    /\ orphanSecret' = FALSE /\ scanned' = TRUE
-    /\ UNCHANGED <<committedSecret, pendingSecret, foreignSecret, processUp>>
+    /\ protected' = ProtectedReferences
+    /\ orphanCandidates' = present \ ProtectedReferences
+    /\ reported' = present \ ProtectedReferences
+    /\ scanned' = TRUE
+    /\ UNCHANGED <<present, processUp>>
 
 Crash == /\ processUp /\ processUp' = FALSE
-         /\ UNCHANGED <<committedSecret, pendingSecret, orphanSecret,
-                        foreignSecret, scanned>>
+         /\ UNCHANGED <<present, protected, orphanCandidates, reported, scanned>>
 Restart == /\ ~processUp /\ processUp' = TRUE
-           /\ UNCHANGED <<committedSecret, pendingSecret, orphanSecret,
-                          foreignSecret, scanned>>
+           /\ UNCHANGED <<present, protected, orphanCandidates, reported, scanned>>
 
 Next == ReconcileInventory \/ Crash \/ Restart
 
-TypeOK == /\ committedSecret \in BOOLEAN /\ pendingSecret \in BOOLEAN
-          /\ orphanSecret \in BOOLEAN /\ foreignSecret \in BOOLEAN
+TypeOK == /\ present \subseteq Secrets /\ protected \subseteq Secrets
+          /\ orphanCandidates \subseteq Secrets /\ reported \subseteq Secrets
           /\ processUp \in BOOLEAN /\ scanned \in BOOLEAN
-CommittedMaterialIsNeverDeleted == committedSecret
-PendingIntentMaterialIsNeverDeleted == pendingSecret
-ForeignNamespaceIsNeverDeleted == foreignSecret
-CompletedScanLeavesNoCredentialOrphan == scanned => ~orphanSecret
+CommittedMaterialIsNeverDeleted == "committed" \in present
+PendingIntentMaterialIsNeverDeleted == "pending" \in present
+ForeignNamespaceIsNeverDeleted == "foreign" \in present
+ScanProtectsEveryDurableReference ==
+    scanned => protected = ProtectedReferences
+OnlyUnprotectedPresentMaterialIsCandidate ==
+    scanned => orphanCandidates = present \ protected
+EveryOrphanCandidateIsReported == scanned => reported = orphanCandidates
+ObservedOrphanIsRetainedWithoutAtomicClaim ==
+    "orphan" \in reported => "orphan" \in present
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

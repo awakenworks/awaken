@@ -206,7 +206,7 @@ pub awaken_control::ControlDependencies::content_capture_ceiling: awaken_runtime
 pub awaken_control::ControlDependencies::coordinator_content_eraser: alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>
 pub awaken_control::ControlDependencies::credential_envelope_issuer: core::option::Option<alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>
 pub awaken_control::ControlDependencies::credential_probe: alloc::sync::Arc<dyn awaken_admin_config_api::router::CredentialProbe>
-pub awaken_control::ControlDependencies::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
+pub awaken_control::ControlDependencies::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>
 pub awaken_control::ControlDependencies::data_subject_org: alloc::string::String
 pub awaken_control::ControlDependencies::data_subjects: alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>
 pub awaken_control::ControlDependencies::enrollment_signing_key: [u8; 32]
@@ -236,7 +236,6 @@ pub awaken_control::ControlDependencies::resource_store: alloc::sync::Arc<dyn aw
 pub awaken_control::ControlDependencies::runtimes: alloc::sync::Arc<dyn awaken_config_service::capabilities::RuntimeCapabilitySource>
 pub awaken_control::ControlDependencies::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_control::ControlDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
-pub awaken_control::ControlDependencies::vaults: alloc::sync::Arc<dyn awaken_credential_vault::catalog::ManagedVaultRepo>
 pub awaken_control::ControlDependencies::webhook_store: alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>
 pub struct awaken_control::ControlRouterInput
 pub awaken_control::ControlRouterInput::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>

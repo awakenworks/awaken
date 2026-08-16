@@ -181,7 +181,7 @@ pub async fn awaken_session_application::SessionApplication::settle_activity(&se
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::begin_archive(&self, &str, &str, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionMutationError>
 pub async fn awaken_session_application::SessionApplication::commit_delete_intent(&self, awaken_session_application::SessionDeleteCommand) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionPreparationError>
-pub async fn awaken_session_application::SessionApplication::delete_session(&alloc::sync::Arc<Self>, awaken_session_application::SessionDeleteCommand) -> core::result::Result<awaken_session_application::SessionDeleteExecution, awaken_session_application::SessionPreparationError>
+pub async fn awaken_session_application::SessionApplication::delete_session(&alloc::sync::Arc<Self>, awaken_session_application::SessionDeleteCommand) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionPreparationError>
 pub async fn awaken_session_application::SessionApplication::terminate_session(&self, &str, &str, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionPreparationError>
 impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::claim_lifecycle_supervisor(&self) -> bool
@@ -273,10 +273,6 @@ pub fn awaken_session_application::SessionApplicationConfiguration::default() ->
 pub struct awaken_session_application::SessionDeleteCommand
 impl awaken_session_application::SessionDeleteCommand
 pub fn awaken_session_application::SessionDeleteCommand::new(impl core::convert::Into<alloc::string::String>) -> Self
-pub struct awaken_session_application::SessionDeleteExecution
-impl awaken_session_application::SessionDeleteExecution
-pub fn awaken_session_application::SessionDeleteExecution::transition(&self) -> &awaken_session_application::SessionDispositionMutation
-pub async fn awaken_session_application::SessionDeleteExecution::wait(self)
 pub struct awaken_session_application::SessionDispositionMutation
 pub awaken_session_application::SessionDispositionMutation::owner_scope: alloc::string::String
 pub awaken_session_application::SessionDispositionMutation::session: awaken_session_contract::session_repo::PersistedSession

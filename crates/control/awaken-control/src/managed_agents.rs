@@ -73,15 +73,21 @@ impl ConfigPlaneManagedAgentRepository {
     ) -> Result<Option<awaken_agent_config::StoredPublication>, ManagedAgentError> {
         let direct = self
             .plane
-            .publication_at_revision(&Self::scope(workspace_id), agent_id, source_revision)
+            .publication_at_revision_for_execution_workspace(
+                &Self::scope(workspace_id),
+                workspace_id,
+                agent_id,
+                source_revision,
+            )
             .await
             .map_err(ManagedAgentError::Storage)?;
         if direct.is_some() || !self.reserved_visible_in(workspace_id) {
             return Ok(direct);
         }
         self.plane
-            .publication_at_revision(
+            .publication_at_revision_for_execution_workspace(
                 &ScopeId::from(RESERVED_ADMIN_SCOPE),
+                workspace_id,
                 agent_id,
                 source_revision,
             )
@@ -1597,7 +1603,7 @@ mod tests {
         // | P3 | request-scoped | B | project reserved Assistant |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let plane = plane(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
         let mut config = awaken_admin_assistant::admin_assistant_config();
         config.model_binding = ModelSelection::pinned("provider", "model-a", "backend");
         config.tool_ids.clear();
@@ -1605,7 +1611,7 @@ mod tests {
             .put(&ScopeId::from(RESERVED_ADMIN_SCOPE), &config)
             .await
             .unwrap();
-        plane
+        let publication_a = plane
             .publish_for_execution_workspace(
                 &ScopeId::from(RESERVED_ADMIN_SCOPE),
                 "workspace-a",
@@ -1613,7 +1619,7 @@ mod tests {
             )
             .await
             .unwrap();
-        plane
+        let publication_b = plane
             .publish_for_execution_workspace(
                 &ScopeId::from(RESERVED_ADMIN_SCOPE),
                 "workspace-b",
@@ -1621,6 +1627,32 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_ne!(publication_a.fingerprint, publication_b.fingerprint);
+        for (workspace_id, expected) in [
+            ("workspace-a", &publication_a),
+            ("workspace-b", &publication_b),
+        ] {
+            let durable = plane
+                .publication_at_revision_for_execution_workspace(
+                    &ScopeId::from(RESERVED_ADMIN_SCOPE),
+                    workspace_id,
+                    &config.id,
+                    1,
+                )
+                .await
+                .unwrap()
+                .expect("targeted durable publication");
+            assert_eq!(durable.fingerprint, expected.fingerprint);
+            assert_eq!(
+                catalog
+                    .current(workspace_id, &config.id)
+                    .expect("targeted executable registration")
+                    .snapshot
+                    .fingerprint
+                    .0,
+                expected.fingerprint
+            );
+        }
         let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
 
         let projected = repository

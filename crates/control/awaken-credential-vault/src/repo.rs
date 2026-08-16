@@ -8,9 +8,15 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, HashSet};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::catalog::{ManagedVault, ManagedVaultCredential};
+use crate::catalog::admit_managed_credential_insert;
+use crate::catalog::{
+    ManagedCredentialAdmissionError, ManagedCredentialLifecycle, ManagedCredentialMutationError,
+    ManagedVault, ManagedVaultCredential, ManagedVaultRepo, admit_managed_credential_replacement,
+    complete_managed_vault_deletion,
+};
 use crate::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialPool, CredentialPoolId,
     CredentialSource, CredentialSourceId, CredentialStatus, SecretStore, WorkerLocalBinding,
@@ -19,8 +25,8 @@ use crate::{
 
 mod application_mcp;
 pub use application_mcp::{
-    APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand,
-    enter_or_rotate_application_mcp_bearer,
+    APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
+    enter_or_rotate_application_mcp_bearer, prepare_application_mcp_bearer_rotation,
 };
 
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
@@ -32,6 +38,915 @@ pub struct CredentialMutationIntent {
     pub before: Option<CredentialSource>,
     #[serde(alias = "source")]
     pub after: CredentialSource,
+}
+
+/// The one closed Managed Credential command vocabulary. Keeping the operation
+/// in the durable fact makes recovery and the formal model share the same
+/// transition rather than inferring intent from before/after payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCredentialOperation {
+    Create,
+    Update,
+    Archive,
+    Delete,
+}
+
+/// Parent-aggregate fence for terminal child commands. A Vault deletion may
+/// issue only the absorbing child `Delete`; a public `Archive` remains an
+/// ordinary child mutation and is rejected as soon as root deletion starts.
+#[must_use]
+pub fn managed_retirement_parent_admitted(
+    operation: ManagedCredentialOperation,
+    vault: Option<&ManagedVault>,
+    credential: &ManagedVaultCredential,
+) -> bool {
+    let exact_parent = vault.is_some_and(|vault| {
+        vault.workspace_id == credential.workspace_id && vault.id == credential.vault_id
+    });
+    managed_retirement_parent_fence(
+        exact_parent,
+        vault.is_some_and(ManagedVault::accepts_child_mutation),
+        operation == ManagedCredentialOperation::Delete,
+    )
+}
+
+#[must_use]
+const fn managed_retirement_parent_fence(
+    exact_parent: bool,
+    parent_accepts_child_mutation: bool,
+    is_delete: bool,
+) -> bool {
+    exact_parent && (is_delete || parent_accepts_child_mutation)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
+    let exact_parent = kani::any::<bool>();
+    let parent_accepts_child_mutation = kani::any::<bool>();
+    let is_delete = kani::any::<bool>();
+    let admitted =
+        managed_retirement_parent_fence(exact_parent, parent_accepts_child_mutation, is_delete);
+    assert_eq!(
+        admitted,
+        exact_parent && (is_delete || parent_accepts_child_mutation)
+    );
+    if admitted && !parent_accepts_child_mutation {
+        assert!(exact_parent && is_delete);
+    }
+}
+
+/// Durable process phase around the external SecretStore participant.
+/// `Writing` is live-writer owned, `Ready` may atomically publish,
+/// `Reclaiming` means database truth is already committed and only retired
+/// material remains to be removed, and `ReclaimingAbort` means publication was
+/// durably abandoned while unpublished material remains to be removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCredentialMutationPhase {
+    Writing,
+    Ready,
+    Reclaiming,
+    ReclaimingAbort,
+}
+
+/// A writer has this long to finish the external material write before a
+/// reconciler may fence it and take ownership. The next periodic pass performs
+/// the actual recovery, so expiry does not itself mutate durable state.
+pub const MANAGED_CREDENTIAL_WRITER_LEASE_MS: u64 = 120_000;
+
+const MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION: u8 = 1;
+
+/// Secret-free durable authority for every Managed Credential mutation.
+/// Source and management child are one consistency pair. Plaintext never enters
+/// this fact; only frozen references cross the recovery boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingManagedCredentialMutation {
+    /// Serialization format discriminator. Kept private so ordinary callers
+    /// cannot construct a durable authority with a struct literal; repository
+    /// adapters deserialize legacy rows as version zero and may only recover
+    /// them, never admit them as a new command.
+    #[serde(default)]
+    format_version: u8,
+    pub operation_id: String,
+    pub operation: ManagedCredentialOperation,
+    #[serde(default)]
+    pub before_source: Option<CredentialSource>,
+    pub after_source: CredentialSource,
+    #[serde(default)]
+    pub before_credential: Option<ManagedVaultCredential>,
+    pub after_credential: ManagedVaultCredential,
+    pub phase: ManagedCredentialMutationPhase,
+    /// Stable physical-effect namespace. Unlike writer ownership, this never
+    /// changes when recovery fences an expired writer.
+    #[serde(default)]
+    attempt_id: String,
+    /// Stable token of the process attempt allowed to advance `Writing`.
+    /// Missing legacy fields deserialize as an unowned, expired writer and are
+    /// claimed by recovery before any transition is attempted.
+    #[serde(default)]
+    pub writer_token: String,
+    /// Monotonic fencing generation. A recovery takeover always increments it.
+    #[serde(default)]
+    pub writer_epoch: u64,
+    /// Wall-clock lease fence used only to decide when takeover is allowed.
+    #[serde(default)]
+    pub writer_lease_expires_at_unix_ms: u64,
+}
+
+/// Durable notification that one committed Vault credential fence must be
+/// adopted by every online service that references the parent Vault. The event
+/// is deliberately secret-free and idempotent; consumers acknowledge this
+/// exact revision only after their rolling replacement has converged.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManagedCredentialRollout {
+    pub id: String,
+    pub workspace_id: String,
+    pub vault_id: String,
+    pub credential_id: String,
+    pub source_id: CredentialSourceId,
+    pub source_version: u64,
+    pub credential_revision: u64,
+    pub operation: ManagedCredentialOperation,
+}
+
+impl ManagedCredentialRollout {
+    #[must_use]
+    pub fn from_committed(pending: &PendingManagedCredentialMutation) -> Option<Self> {
+        (pending.operation != ManagedCredentialOperation::Create).then(|| Self {
+            id: pending.operation_id.clone(),
+            workspace_id: pending.after_credential.workspace_id.clone(),
+            vault_id: pending.after_credential.vault_id.clone(),
+            credential_id: pending.after_credential.id.clone(),
+            source_id: pending.after_source.id.clone(),
+            source_version: u64::try_from(pending.after_source.version).unwrap_or_default(),
+            credential_revision: pending.after_credential.revision,
+            operation: pending.operation,
+        })
+    }
+}
+
+#[must_use]
+#[cfg(kani)]
+const fn managed_rollout_publish_allowed(
+    pair_committed: bool,
+    is_create: bool,
+    exact_source_fence: bool,
+    exact_child_fence: bool,
+) -> bool {
+    pair_committed && !is_create && exact_source_fence && exact_child_fence
+}
+
+#[must_use]
+const fn managed_creation_pair_admitted(
+    workspace_matches: bool,
+    source_matches: bool,
+    vault_present: bool,
+    credential_present: bool,
+    source_active: bool,
+    initial_revision: bool,
+) -> bool {
+    workspace_matches
+        && source_matches
+        && vault_present
+        && credential_present
+        && source_active
+        && initial_revision
+}
+
+#[must_use]
+const fn managed_mutation_operation_shape_allowed(
+    operation: u8,
+    before_child_deleted: bool,
+    after_source_active: bool,
+    after_source_archived: bool,
+    after_child_active: bool,
+    after_child_archived: bool,
+    after_child_deleted: bool,
+) -> bool {
+    let operation_matches = match operation {
+        0 => after_source_active && after_child_active,
+        1 => after_source_active && after_child_active,
+        2 => after_source_archived && after_child_archived,
+        3 => after_source_archived && after_child_deleted,
+        _ => false,
+    };
+    operation_matches && (!before_child_deleted || after_child_deleted)
+}
+
+#[must_use]
+const fn managed_material_attempt_admitted(
+    current_format: bool,
+    writing: bool,
+    writes_new_material: bool,
+    valid_owner: bool,
+    new_refs_bound_to_attempt: bool,
+) -> bool {
+    !current_format
+        || (((!writing && !writes_new_material) || valid_owner)
+            && (!writes_new_material || new_refs_bound_to_attempt))
+}
+
+#[must_use]
+#[cfg(kani)]
+const fn managed_creation_begin_allowed(source_published: bool, child_published: bool) -> bool {
+    !source_published && !child_published
+}
+
+impl PendingManagedCredentialMutation {
+    fn fresh_writer_lease() -> Result<(String, u64, u64), CredentialError> {
+        let now_unix_ms = managed_credential_now_unix_ms()?;
+        Ok((
+            uuid::Uuid::new_v4().simple().to_string(),
+            1,
+            now_unix_ms
+                .checked_add(MANAGED_CREDENTIAL_WRITER_LEASE_MS)
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "Managed credential writer lease deadline overflowed".into(),
+                    )
+                })?,
+        ))
+    }
+
+    pub fn claim_after_expiry(
+        &self,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<Self>, CredentialError> {
+        if self.phase != ManagedCredentialMutationPhase::Writing
+            || self.writer_lease_expires_at_unix_ms > now_unix_ms
+        {
+            return Ok(None);
+        }
+        if lease_expires_at_unix_ms <= now_unix_ms {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential recovery lease must expire after claim time".into(),
+            ));
+        }
+        let mut claimed = self.clone();
+        // A legacy durable fact has no attempt namespace to migrate without
+        // plaintext. Keep it in the legacy validation format for this one
+        // recovery cycle while fencing its former writer with a fresh owner.
+        // The fact is removed after commit/abort, so no new command can enter
+        // through this compatibility path.
+        if self.format_version != 0 {
+            claimed.format_version = MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION;
+        }
+        claimed.writer_token = uuid::Uuid::new_v4().simple().to_string();
+        claimed.writer_epoch = self.writer_epoch.checked_add(1).ok_or_else(|| {
+            CredentialError::MutationConflict("Managed credential writer epoch is exhausted".into())
+        })?;
+        claimed.writer_lease_expires_at_unix_ms = lease_expires_at_unix_ms;
+        Ok(Some(claimed))
+    }
+
+    #[must_use]
+    fn has_valid_writer_owner(&self) -> bool {
+        !self.writer_token.is_empty()
+            && self.writer_epoch > 0
+            && self.writer_lease_expires_at_unix_ms > 0
+    }
+
+    /// New commands must use the current closed construction format. Legacy
+    /// rows are accepted only through recovery after deserialization.
+    pub fn validate_for_begin(&self) -> Result<(), ManagedCredentialMutationError> {
+        if self.format_version != MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        self.validate()
+    }
+
+    /// Revalidate the complete durable command shape at every persistence
+    /// boundary. Public serde fields are transport data, never authority.
+    pub fn validate(&self) -> Result<(), ManagedCredentialMutationError> {
+        if self.format_version > MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION
+            || self.operation_id.trim().is_empty()
+            || self.after_source.kind != CredentialKind::Vault
+            || self.after_source.workspace_id != self.after_credential.workspace_id
+            || self.after_source.id != self.after_credential.source_id
+            || self.after_credential.vault_id.trim().is_empty()
+            || self.after_credential.id.trim().is_empty()
+        {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+
+        let before_refs = self
+            .before_source
+            .iter()
+            .flat_map(CredentialSource::material_refs)
+            .collect::<HashSet<_>>();
+        let writes_new_material = self
+            .after_source
+            .material_refs()
+            .any(|reference| !before_refs.contains(reference));
+        let suffix = format!(":attempt:{}", self.attempt_id);
+        let new_refs_bound_to_attempt = !self.attempt_id.is_empty()
+            && self
+                .after_source
+                .material_refs()
+                .filter(|reference| !before_refs.contains(reference))
+                .all(|reference| reference.0.ends_with(&suffix));
+        if !managed_material_attempt_admitted(
+            self.format_version != 0,
+            self.phase == ManagedCredentialMutationPhase::Writing,
+            writes_new_material,
+            self.has_valid_writer_owner(),
+            new_refs_bound_to_attempt,
+        ) {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+
+        let operation = match self.operation {
+            ManagedCredentialOperation::Create => 0,
+            ManagedCredentialOperation::Update => 1,
+            ManagedCredentialOperation::Archive => 2,
+            ManagedCredentialOperation::Delete => 3,
+        };
+        let operation_shape = managed_mutation_operation_shape_allowed(
+            operation,
+            self.before_credential
+                .as_ref()
+                .is_some_and(|before| before.lifecycle.is_deleted()),
+            self.after_source.status == CredentialStatus::Active,
+            self.after_source.status == CredentialStatus::Archived,
+            self.after_credential.lifecycle.is_active(),
+            matches!(
+                self.after_credential.lifecycle,
+                ManagedCredentialLifecycle::Archived { .. }
+            ),
+            self.after_credential.lifecycle.is_deleted(),
+        );
+        if !operation_shape {
+            return Err(ManagedCredentialMutationError::InvalidLifecycle);
+        }
+
+        if self.operation == ManagedCredentialOperation::Create {
+            if self.before_source.is_some()
+                || self.before_credential.is_some()
+                || self.after_source.version != 1
+                || self.after_credential.revision != 1
+            {
+                return Err(ManagedCredentialMutationError::RevisionConflict);
+            }
+            return Ok(());
+        }
+
+        let (Some(before_source), Some(before_credential)) =
+            (&self.before_source, &self.before_credential)
+        else {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        };
+        let source_revision_valid = self.after_source.version == before_source.version
+            || before_source
+                .version
+                .checked_add(1)
+                .is_some_and(|next| self.after_source.version == next);
+        let material_revision_valid = !writes_new_material
+            || before_source
+                .version
+                .checked_add(1)
+                .is_some_and(|next| self.after_source.version == next);
+        let child_revision_valid = before_credential
+            .revision
+            .checked_add(1)
+            .is_some_and(|next| self.after_credential.revision == next);
+        let immutable_source_axes_match = before_source.id == self.after_source.id
+            && before_source.workspace_id == self.after_source.workspace_id
+            && before_source.kind == self.after_source.kind
+            && before_source.provider_id == self.after_source.provider_id
+            && before_source.protocol_endpoint_id == self.after_source.protocol_endpoint_id
+            && before_source.env_key == self.after_source.env_key
+            && before_source.oauth_command == self.after_source.oauth_command
+            && before_source.worker_local_binding == self.after_source.worker_local_binding;
+        let child_identity_matches = before_credential.id == self.after_credential.id
+            && before_credential.workspace_id == self.after_credential.workspace_id
+            && before_credential.vault_id == self.after_credential.vault_id
+            && before_credential.source_id == self.after_credential.source_id;
+        let before_state_matches_operation = match self.operation {
+            ManagedCredentialOperation::Create => false,
+            ManagedCredentialOperation::Update => {
+                before_source.status == CredentialStatus::Active
+                    && before_credential.lifecycle.is_active()
+            }
+            ManagedCredentialOperation::Archive => before_credential.lifecycle.is_active(),
+            ManagedCredentialOperation::Delete => true,
+        };
+        if !source_revision_valid
+            || !material_revision_valid
+            || !child_revision_valid
+            || !immutable_source_axes_match
+            || !child_identity_matches
+            || !before_state_matches_operation
+        {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        Ok(())
+    }
+
+    pub fn create(
+        mut source: CredentialSource,
+        credential: ManagedVaultCredential,
+    ) -> Result<Self, CredentialError> {
+        if !managed_creation_pair_admitted(
+            source.workspace_id == credential.workspace_id,
+            source.id == credential.source_id,
+            !credential.vault_id.trim().is_empty(),
+            !credential.id.trim().is_empty(),
+            source.status == CredentialStatus::Active,
+            source.version == 1 && credential.revision == 1 && credential.lifecycle.is_active(),
+        ) {
+            return Err(CredentialError::InvalidSource(
+                "Managed credential creation must freeze one exact active source/child pair".into(),
+            ));
+        }
+        let (writer_token, writer_epoch, writer_lease_expires_at_unix_ms) =
+            Self::fresh_writer_lease()?;
+        namespace_new_managed_material_refs(None, &mut source, &writer_token);
+        Ok(Self {
+            format_version: MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION,
+            operation_id: format!("managed-create:{}", source.id.0),
+            operation: ManagedCredentialOperation::Create,
+            before_source: None,
+            after_source: source,
+            before_credential: None,
+            after_credential: credential,
+            phase: ManagedCredentialMutationPhase::Writing,
+            attempt_id: writer_token.clone(),
+            writer_token,
+            writer_epoch,
+            writer_lease_expires_at_unix_ms,
+        })
+    }
+
+    pub fn change(
+        operation_id: String,
+        operation: ManagedCredentialOperation,
+        before_source: CredentialSource,
+        mut after_source: CredentialSource,
+        before_credential: ManagedVaultCredential,
+        after_credential: ManagedVaultCredential,
+        writes_new_material: bool,
+    ) -> Result<Self, ManagedCredentialMutationError> {
+        if operation == ManagedCredentialOperation::Create
+            || before_source.id != after_source.id
+            || before_source.workspace_id != after_source.workspace_id
+            || before_credential.source_id != before_source.id
+            || after_credential.source_id != after_source.id
+            || before_credential.workspace_id != after_credential.workspace_id
+            || before_credential.vault_id != after_credential.vault_id
+            || before_source.workspace_id != before_credential.workspace_id
+        {
+            return Err(ManagedCredentialMutationError::NotFound);
+        }
+        admit_managed_credential_replacement(
+            &before_credential.workspace_id,
+            Some(&before_credential),
+            before_credential.revision,
+            &after_credential,
+        )?;
+        let (writer_token, writer_epoch, writer_lease_expires_at_unix_ms) = if writes_new_material {
+            Self::fresh_writer_lease().map_err(ManagedCredentialMutationError::Store)?
+        } else {
+            (String::new(), 0, 0)
+        };
+        if writes_new_material {
+            namespace_new_managed_material_refs(
+                Some(&before_source),
+                &mut after_source,
+                &writer_token,
+            );
+        }
+        Ok(Self {
+            format_version: MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION,
+            operation_id,
+            operation,
+            before_source: Some(before_source),
+            after_source,
+            before_credential: Some(before_credential),
+            after_credential,
+            phase: if writes_new_material {
+                ManagedCredentialMutationPhase::Writing
+            } else {
+                ManagedCredentialMutationPhase::Ready
+            },
+            attempt_id: writer_token.clone(),
+            writer_token,
+            writer_epoch,
+            writer_lease_expires_at_unix_ms,
+        })
+    }
+
+    #[must_use]
+    pub fn source_id(&self) -> &CredentialSourceId {
+        &self.after_source.id
+    }
+}
+
+fn namespace_new_managed_material_refs(
+    before: Option<&CredentialSource>,
+    after: &mut CredentialSource,
+    attempt_id: &str,
+) {
+    let before_refs = before
+        .into_iter()
+        .flat_map(CredentialSource::material_refs)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let suffix = format!(":attempt:{attempt_id}");
+    if let Some(reference) = after.material_ref.as_mut()
+        && !before_refs.contains(reference)
+        && !reference.0.ends_with(&suffix)
+    {
+        reference.0.push_str(&suffix);
+    }
+    for reference in after.auxiliary_material_refs.values_mut() {
+        if !before_refs.contains(reference) && !reference.0.ends_with(&suffix) {
+            reference.0.push_str(&suffix);
+        }
+    }
+}
+
+fn managed_credential_now_unix_ms() -> Result<u64, CredentialError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| CredentialError::Storage(format!("credential clock: {error}")))?
+        .as_millis();
+    u64::try_from(millis)
+        .map_err(|_| CredentialError::Storage("credential clock overflowed u64".into()))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn invalid_pending_mutation(error: ManagedCredentialMutationError) -> CredentialError {
+    match error {
+        ManagedCredentialMutationError::Store(error) => error,
+        error => CredentialError::MutationConflict(format!(
+            "invalid durable Managed credential mutation: {error}"
+        )),
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_creation_pair_requires_every_binding_axis() {
+    let axes = [
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+    ];
+    let admitted =
+        managed_creation_pair_admitted(axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]);
+    assert_eq!(admitted, axes.into_iter().all(|axis| axis));
+    if admitted {
+        assert!(axes.into_iter().all(|axis| axis));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_creation_begin_rejects_every_published_identity() {
+    let source_published = kani::any::<bool>();
+    let child_published = kani::any::<bool>();
+    let admitted = managed_creation_begin_allowed(source_published, child_published);
+    assert_eq!(admitted, !(source_published || child_published));
+    if admitted {
+        assert!(!source_published && !child_published);
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
+    let operation = kani::any::<u8>();
+    let before_deleted = kani::any::<bool>();
+    let source_active = kani::any::<bool>();
+    let source_archived = kani::any::<bool>();
+    let child_active = kani::any::<bool>();
+    let child_archived = kani::any::<bool>();
+    let child_deleted = kani::any::<bool>();
+    let admitted = managed_mutation_operation_shape_allowed(
+        operation,
+        before_deleted,
+        source_active,
+        source_archived,
+        child_active,
+        child_archived,
+        child_deleted,
+    );
+    if admitted {
+        assert!(operation <= 3);
+        assert!(!before_deleted || child_deleted);
+        match operation {
+            0 | 1 => assert!(source_active && child_active),
+            2 => assert!(source_archived && child_archived),
+            3 => assert!(source_archived && child_deleted),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_material_attempt_requires_owner_and_exact_physical_namespace() {
+    let writing = kani::any::<bool>();
+    let writes_new_material = kani::any::<bool>();
+    let valid_owner = kani::any::<bool>();
+    let new_refs_bound_to_attempt = kani::any::<bool>();
+    let admitted = managed_material_attempt_admitted(
+        true,
+        writing,
+        writes_new_material,
+        valid_owner,
+        new_refs_bound_to_attempt,
+    );
+    if admitted && (writing || writes_new_material) {
+        assert!(valid_owner);
+    }
+    if admitted && writes_new_material {
+        assert!(new_refs_bound_to_attempt);
+    }
+}
+
+/// One physical persistence boundary for every Managed Credential command.
+/// Implementations publish Source + child/tombstone and advance the durable
+/// fact to `Reclaiming` in one local transaction.
+#[async_trait::async_trait]
+pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
+    async fn begin_managed_mutation(
+        &self,
+        pending: PendingManagedCredentialMutation,
+    ) -> Result<(), CredentialError>;
+    async fn commit_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError>;
+    async fn mark_managed_mutation_ready(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, CredentialError>;
+    async fn pending_managed_mutations(
+        &self,
+    ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError>;
+    /// Atomically fence one exact expired `Writing` owner. `None` means the
+    /// lease is still live, the phase is no longer `Writing`, or another worker
+    /// already changed the durable snapshot.
+    async fn claim_expired_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<PendingManagedCredentialMutation>, CredentialError>;
+    /// Atomically retain the exact unpublished mutation as a durable cleanup
+    /// authority. Implementations must compare both the complete pending fact
+    /// and its before-pair truth, then transition it to `ReclaimingAbort`.
+    /// Absence or any stale owner/snapshot is a conflict, never an idempotent
+    /// success: callers may delete external material only from the returned
+    /// durable fact.
+    async fn abort_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, CredentialError>;
+    async fn complete_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<(), CredentialError>;
+    async fn pending_managed_rollouts(
+        &self,
+    ) -> Result<Vec<ManagedCredentialRollout>, CredentialError>;
+    async fn complete_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError>;
+    /// Vault roots carrying a durable delete request. Implementations return
+    /// every workspace because this method is consumed only by the supervised
+    /// domain reconciler, never by an authorization surface.
+    async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError>;
+}
+
+/// Service-owned rolling replacement edge. Credential never knows whether the
+/// consumer is a Session, Deployment, Kubernetes controller, or remote service;
+/// it only requires an idempotent adoption of the exact committed fence.
+#[async_trait::async_trait]
+pub trait ManagedCredentialRolloutTarget: Send + Sync {
+    async fn rollout(&self, event: &ManagedCredentialRollout) -> Result<(), String>;
+}
+
+/// Deliver all currently durable rollout events. A failed target leaves the
+/// event pending for the next supervisor tick; successful acknowledgement is
+/// exact-event guarded so a stale worker cannot remove a newer notification.
+pub async fn reconcile_managed_credential_rollouts(
+    repo: &dyn ManagedCredentialRepository,
+    target: &dyn ManagedCredentialRolloutTarget,
+) -> Result<usize, CredentialError> {
+    let mut completed = 0;
+    let mut first_error = None;
+    for event in repo.pending_managed_rollouts().await? {
+        match reconcile_managed_credential_rollout(&event, repo, target).await {
+            Ok(true) => completed += 1,
+            Ok(false) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(completed), Err)
+}
+
+async fn reconcile_managed_credential_rollout(
+    event: &ManagedCredentialRollout,
+    repo: &dyn ManagedCredentialRepository,
+    target: &dyn ManagedCredentialRolloutTarget,
+) -> Result<bool, CredentialError> {
+    if target.rollout(event).await.is_err() {
+        return Ok(false);
+    }
+    repo.complete_managed_rollout(event).await?;
+    Ok(true)
+}
+
+/// Resume one durable Vault-root deletion. Child retirement reuses the exact
+/// Managed Credential transaction and rollout protocol; root completion waits
+/// until every child is a tombstone and no rollout for this Vault remains.
+pub async fn reconcile_managed_vault_deletion(
+    vault: &ManagedVault,
+    store: &dyn SecretStore,
+    repo: &dyn ManagedCredentialRepository,
+) -> Result<bool, ManagedCredentialMutationError> {
+    if vault.is_deleted() {
+        return Ok(true);
+    }
+    if !vault.deletion_requested() {
+        return Err(ManagedCredentialMutationError::InvalidLifecycle);
+    }
+    let operation_id = vault
+        .deletion
+        .as_ref()
+        .expect("requested deletion was checked")
+        .operation_id
+        .clone();
+    for child in repo
+        .list_vault_credentials(&vault.workspace_id, &vault.id)
+        .await?
+    {
+        if !child.lifecycle.is_deleted() {
+            retire_managed_credential(
+                &vault.workspace_id,
+                &vault.id,
+                &child.id,
+                ManagedCredentialOperation::Delete,
+                vault
+                    .deletion
+                    .as_ref()
+                    .expect("requested deletion was checked")
+                    .requested_at
+                    .clone(),
+                store,
+                repo,
+            )
+            .await?;
+        }
+    }
+
+    let has_unsettled_rollout = repo
+        .pending_managed_rollouts()
+        .await?
+        .into_iter()
+        .any(|rollout| rollout.workspace_id == vault.workspace_id && rollout.vault_id == vault.id);
+    if has_unsettled_rollout {
+        return Ok(false);
+    }
+
+    let current = repo
+        .get_vault(&vault.workspace_id, &vault.id)
+        .await?
+        .filter(|current| {
+            current
+                .deletion
+                .as_ref()
+                .is_some_and(|deletion| deletion.operation_id == operation_id)
+        })
+        .ok_or(ManagedCredentialMutationError::NotFound)?;
+    if current.is_deleted() {
+        return Ok(true);
+    }
+    let (completed, changed) =
+        complete_managed_vault_deletion(&current).map_err(|error| match error {
+            crate::catalog::ManagedVaultMutationError::NotFound => {
+                ManagedCredentialMutationError::NotFound
+            }
+            crate::catalog::ManagedVaultMutationError::RevisionConflict => {
+                ManagedCredentialMutationError::RevisionConflict
+            }
+            crate::catalog::ManagedVaultMutationError::RevisionExhausted => {
+                ManagedCredentialMutationError::RevisionExhausted
+            }
+            crate::catalog::ManagedVaultMutationError::InvalidLifecycle => {
+                ManagedCredentialMutationError::InvalidLifecycle
+            }
+            crate::catalog::ManagedVaultMutationError::Store(error) => {
+                ManagedCredentialMutationError::Store(error)
+            }
+        })?;
+    if changed {
+        repo.replace_vault(&current.workspace_id, current.revision, completed)
+            .await
+            .map_err(|error| match error {
+                crate::catalog::ManagedVaultMutationError::NotFound => {
+                    ManagedCredentialMutationError::NotFound
+                }
+                crate::catalog::ManagedVaultMutationError::RevisionConflict => {
+                    ManagedCredentialMutationError::RevisionConflict
+                }
+                crate::catalog::ManagedVaultMutationError::RevisionExhausted => {
+                    ManagedCredentialMutationError::RevisionExhausted
+                }
+                crate::catalog::ManagedVaultMutationError::InvalidLifecycle => {
+                    ManagedCredentialMutationError::InvalidLifecycle
+                }
+                crate::catalog::ManagedVaultMutationError::Store(error) => {
+                    ManagedCredentialMutationError::Store(error)
+                }
+            })?;
+    }
+    Ok(true)
+}
+
+/// Resume every durable root deletion after process restart or request
+/// cancellation. A blocked Vault remains requested for the next pass.
+pub async fn reconcile_managed_vault_deletions(
+    store: &dyn SecretStore,
+    repo: &dyn ManagedCredentialRepository,
+) -> Result<usize, ManagedCredentialMutationError> {
+    let pending = repo.pending_managed_vault_deletions().await?;
+    let mut completed = 0;
+    let mut first_error = None;
+    for vault in pending {
+        match reconcile_managed_vault_deletion(&vault, store, repo).await {
+            Ok(true) => completed += 1,
+            Ok(false) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(completed), Err)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_rollout_never_precedes_exact_pair_publication() {
+    let pair_committed = kani::any::<bool>();
+    let is_create = kani::any::<bool>();
+    let exact_source_fence = kani::any::<bool>();
+    let exact_child_fence = kani::any::<bool>();
+    let published = managed_rollout_publish_allowed(
+        pair_committed,
+        is_create,
+        exact_source_fence,
+        exact_child_fence,
+    );
+    if published {
+        assert!(pair_committed);
+        assert!(!is_create);
+        assert!(exact_source_fence && exact_child_fence);
+    }
+}
+
+/// Write-only Managed creation command. Plaintext is consumed by the
+/// application service and never enters the durable pending fact.
+pub struct ManagedCredentialCreateCommand {
+    pub source: CredentialCreateParams,
+    /// Stable identity for an idempotent domain command. Ordinary Managed API
+    /// creates leave this absent and receive the existing generated identity.
+    pub source_id: Option<CredentialSourceId>,
+    pub protocol_endpoint_id: Option<String>,
+    pub primary_material_ref: Option<crate::SecretRef>,
+    pub auxiliary_materials: BTreeMap<String, awaken_agent_contract::RedactedString>,
+    pub credential_id: String,
+    pub vault_id: String,
+    pub auth: crate::catalog::ManagedCredentialAuth,
+    pub metadata: BTreeMap<String, String>,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManagedCredentialCreationError {
+    #[error(transparent)]
+    Credential(#[from] CredentialError),
+    #[error(transparent)]
+    Admission(#[from] ManagedCredentialAdmissionError),
+}
+
+impl From<ManagedCredentialMutationError> for ManagedCredentialCreationError {
+    fn from(error: ManagedCredentialMutationError) -> Self {
+        match error {
+            ManagedCredentialMutationError::Admission(error) => Self::Admission(error),
+            ManagedCredentialMutationError::Store(error) => Self::Credential(error),
+            error => Self::Credential(CredentialError::MutationConflict(error.to_string())),
+        }
+    }
 }
 
 /// Terminal material-reclaim outcome. Both variants make the source
@@ -95,6 +1010,8 @@ pub(super) struct RepoState {
     rows: HashMap<String, CredentialSource>,
     pools: HashMap<String, CredentialPool>,
     intents: HashMap<String, CredentialMutationIntent>,
+    managed_mutations: HashMap<String, PendingManagedCredentialMutation>,
+    managed_rollouts: HashMap<String, ManagedCredentialRollout>,
     pub(super) vaults: HashMap<String, ManagedVault>,
     pub(super) vault_credentials: HashMap<String, ManagedVaultCredential>,
 }
@@ -264,1667 +1181,374 @@ impl CredentialRepo for InMemoryCredentialRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl ManagedCredentialRepository for InMemoryCredentialRepo {
+    async fn begin_managed_mutation(
+        &self,
+        pending: PendingManagedCredentialMutation,
+    ) -> Result<(), CredentialError> {
+        pending
+            .validate_for_begin()
+            .map_err(invalid_pending_mutation)?;
+        let mut state = self.state.lock().expect("credential repo");
+        let current_source = state.rows.get(&pending.after_source.id.0);
+        let current_child = state.vault_credentials.get(&pending.after_credential.id);
+        if current_source != pending.before_source.as_ref()
+            || current_child != pending.before_credential.as_ref()
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential changed before its mutation was prepared".into(),
+            ));
+        }
+        match state
+            .managed_mutations
+            .entry(pending.after_source.id.0.clone())
+        {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(pending);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &pending => Ok(()),
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(CredentialError::MutationConflict(
+                    "another Managed credential mutation is pending".into(),
+                ))
+            }
+        }
+    }
+
+    async fn commit_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
+        pending.validate()?;
+        let mut state = self.state.lock().expect("credential repo");
+        let durable = state
+            .managed_mutations
+            .get(&pending.after_source.id.0)
+            .cloned()
+            .ok_or_else(|| {
+                ManagedCredentialMutationError::Store(CredentialError::MutationConflict(
+                    "Managed credential mutation has no durable pending fact".into(),
+                ))
+            })?;
+        if durable.phase == ManagedCredentialMutationPhase::Reclaiming {
+            if durable.operation_id == pending.operation_id
+                && durable.writer_token == pending.writer_token
+                && durable.writer_epoch == pending.writer_epoch
+                && state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
+                && state.vault_credentials.get(&pending.after_credential.id)
+                    == Some(&pending.after_credential)
+            {
+                return Ok(durable);
+            }
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        if &durable != pending || pending.phase != ManagedCredentialMutationPhase::Ready {
+            return Err(ManagedCredentialMutationError::Store(
+                CredentialError::MutationConflict(
+                    "Managed credential mutation is not ready or does not match its durable fact"
+                        .into(),
+                ),
+            ));
+        }
+
+        let current_source = state.rows.get(&pending.after_source.id.0);
+        let current_child = state.vault_credentials.get(&pending.after_credential.id);
+        if current_source != pending.before_source.as_ref()
+            || current_child != pending.before_credential.as_ref()
+        {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+
+        let vault = state.vaults.get(&pending.after_credential.vault_id);
+        let existing = state
+            .vault_credentials
+            .values()
+            .filter(|current| {
+                current.workspace_id == pending.after_credential.workspace_id
+                    && current.vault_id == pending.after_credential.vault_id
+                    && current.id != pending.after_credential.id
+                    && !current.lifecycle.is_deleted()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        match pending.operation {
+            ManagedCredentialOperation::Create => {
+                if state
+                    .vault_credentials
+                    .values()
+                    .any(|credential| credential.source_id == pending.after_source.id)
+                {
+                    return Err(ManagedCredentialMutationError::RevisionConflict);
+                }
+                admit_managed_credential_insert(
+                    &pending.after_credential.workspace_id,
+                    vault,
+                    &existing,
+                    &pending.after_credential,
+                )?;
+            }
+            ManagedCredentialOperation::Update => {
+                admit_managed_credential_replacement(
+                    &pending.after_credential.workspace_id,
+                    pending.before_credential.as_ref(),
+                    pending
+                        .before_credential
+                        .as_ref()
+                        .ok_or(ManagedCredentialMutationError::NotFound)?
+                        .revision,
+                    &pending.after_credential,
+                )?;
+                admit_managed_credential_insert(
+                    &pending.after_credential.workspace_id,
+                    vault,
+                    &existing,
+                    &ManagedVaultCredential {
+                        revision: 1,
+                        lifecycle: ManagedCredentialLifecycle::Active,
+                        ..pending.after_credential.clone()
+                    },
+                )?;
+            }
+            ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete => {
+                admit_managed_credential_replacement(
+                    &pending.after_credential.workspace_id,
+                    pending.before_credential.as_ref(),
+                    pending
+                        .before_credential
+                        .as_ref()
+                        .ok_or(ManagedCredentialMutationError::NotFound)?
+                        .revision,
+                    &pending.after_credential,
+                )?;
+                if !managed_retirement_parent_admitted(
+                    pending.operation,
+                    vault,
+                    &pending.after_credential,
+                ) {
+                    return Err(if vault.is_some() {
+                        ManagedCredentialMutationError::InvalidLifecycle
+                    } else {
+                        ManagedCredentialMutationError::NotFound
+                    });
+                }
+            }
+        }
+        let rollout = ManagedCredentialRollout::from_committed(pending);
+        if rollout.as_ref().is_some_and(|proposed| {
+            state
+                .managed_rollouts
+                .get(&proposed.id)
+                .is_some_and(|durable| durable != proposed)
+        }) {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        state.rows.insert(
+            pending.after_source.id.0.clone(),
+            pending.after_source.clone(),
+        );
+        state.vault_credentials.insert(
+            pending.after_credential.id.clone(),
+            pending.after_credential.clone(),
+        );
+        if let Some(rollout) = rollout {
+            state
+                .managed_rollouts
+                .entry(rollout.id.clone())
+                .or_insert(rollout);
+        }
+        let mut reclaiming = pending.clone();
+        reclaiming.phase = ManagedCredentialMutationPhase::Reclaiming;
+        state
+            .managed_mutations
+            .insert(pending.after_source.id.0.clone(), reclaiming.clone());
+        Ok(reclaiming)
+    }
+
+    async fn mark_managed_mutation_ready(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, CredentialError> {
+        pending.validate().map_err(invalid_pending_mutation)?;
+        let mut state = self.state.lock().expect("credential repo");
+        let durable = state
+            .managed_mutations
+            .get_mut(&pending.after_source.id.0)
+            .ok_or_else(|| {
+                CredentialError::MutationConflict(
+                    "Managed credential mutation has no durable pending fact".into(),
+                )
+            })?;
+        if durable != pending || pending.phase != ManagedCredentialMutationPhase::Writing {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential ready transition does not match Writing".into(),
+            ));
+        }
+        durable.phase = ManagedCredentialMutationPhase::Ready;
+        Ok(durable.clone())
+    }
+
+    async fn pending_managed_mutations(
+        &self,
+    ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("credential repo")
+            .managed_mutations
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn claim_expired_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<PendingManagedCredentialMutation>, CredentialError> {
+        let Some(claimed) = pending.claim_after_expiry(now_unix_ms, lease_expires_at_unix_ms)?
+        else {
+            return Ok(None);
+        };
+        claimed.validate().map_err(invalid_pending_mutation)?;
+        let mut state = self.state.lock().expect("credential repo");
+        let Some(durable) = state.managed_mutations.get_mut(&pending.after_source.id.0) else {
+            return Ok(None);
+        };
+        if durable != pending || durable.phase != ManagedCredentialMutationPhase::Writing {
+            return Ok(None);
+        }
+        *durable = claimed.clone();
+        Ok(Some(claimed))
+    }
+
+    async fn abort_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<PendingManagedCredentialMutation, CredentialError> {
+        pending.validate().map_err(invalid_pending_mutation)?;
+        let mut state = self.state.lock().expect("credential repo");
+        if state.rows.get(&pending.after_source.id.0) != pending.before_source.as_ref()
+            || state.vault_credentials.get(&pending.after_credential.id)
+                != pending.before_credential.as_ref()
+        {
+            return Err(CredentialError::MutationConflict(
+                "cannot abort a published or superseded Managed credential mutation".into(),
+            ));
+        }
+        let durable = state
+            .managed_mutations
+            .get_mut(&pending.after_source.id.0)
+            .ok_or_else(|| {
+                CredentialError::MutationConflict(
+                    "Managed credential abort has no durable pending fact".into(),
+                )
+            })?;
+        if durable == pending && pending.phase == ManagedCredentialMutationPhase::ReclaimingAbort {
+            return Ok(durable.clone());
+        }
+        if durable != pending
+            || !matches!(
+                pending.phase,
+                ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready
+            )
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential abort does not match its durable pending fact".into(),
+            ));
+        }
+        durable.phase = ManagedCredentialMutationPhase::ReclaimingAbort;
+        Ok(durable.clone())
+    }
+
+    async fn complete_managed_mutation(
+        &self,
+        pending: &PendingManagedCredentialMutation,
+    ) -> Result<(), CredentialError> {
+        let mut state = self.state.lock().expect("credential repo");
+        let durable = state.managed_mutations.get(&pending.after_source.id.0);
+        if durable.is_none() {
+            return Ok(());
+        }
+        let truth_matches_phase = match pending.phase {
+            ManagedCredentialMutationPhase::Reclaiming => {
+                state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
+                    && state.vault_credentials.get(&pending.after_credential.id)
+                        == Some(&pending.after_credential)
+            }
+            ManagedCredentialMutationPhase::ReclaimingAbort => {
+                state.rows.get(&pending.after_source.id.0) == pending.before_source.as_ref()
+                    && state.vault_credentials.get(&pending.after_credential.id)
+                        == pending.before_credential.as_ref()
+            }
+            ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready => {
+                false
+            }
+        };
+        if durable != Some(pending) || !truth_matches_phase {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential completion does not match its durable cleanup truth".into(),
+            ));
+        }
+        state.managed_mutations.remove(&pending.after_source.id.0);
+        Ok(())
+    }
+
+    async fn pending_managed_rollouts(
+        &self,
+    ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
+        let mut events = self
+            .state
+            .lock()
+            .expect("credential repo")
+            .managed_rollouts
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(events)
+    }
+
+    async fn complete_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError> {
+        let mut state = self.state.lock().expect("credential repo");
+        match state.managed_rollouts.get(&rollout.id) {
+            Some(durable) if durable == rollout => {
+                state.managed_rollouts.remove(&rollout.id);
+                Ok(())
+            }
+            None => Ok(()),
+            Some(_) => Err(CredentialError::MutationConflict(
+                "Managed credential rollout acknowledgement is stale".into(),
+            )),
+        }
+    }
+
+    async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {
+        let mut vaults = self
+            .state
+            .lock()
+            .expect("credential repo")
+            .vaults
+            .values()
+            .filter(|vault| vault.deletion_requested())
+            .cloned()
+            .collect::<Vec<_>>();
+        vaults.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(vaults)
+    }
+}
+
 /// Idempotently register one Worker-owned, non-secret local credential binding.
 /// Primary-key identity is a collision-free length-prefixed projection of the
 /// tuple, making the existing repository constraint the uniqueness authority.
-pub async fn ensure_worker_local(
-    repo: &dyn CredentialRepo,
-    workspace_id: &str,
-    binding: WorkerLocalBinding,
-    provider_id: Option<String>,
-) -> Result<CredentialSource, CredentialError> {
-    if workspace_id.trim().is_empty()
-        || binding.driver_id.trim().is_empty()
-        || binding.subject_id.trim().is_empty()
-    {
-        return Err(CredentialError::InvalidSource(
-            "worker-local workspace, driver, and subject must be non-empty".into(),
-        ));
-    }
-    let segment = |value: &str| format!("{}:{value}", value.len());
-    let id = CredentialSourceId(format!(
-        "cred:worker-local:{}:{}:{}",
-        segment(workspace_id),
-        segment(&binding.driver_id),
-        segment(&binding.subject_id)
-    ));
-    let expected = CredentialSource {
-        id,
-        workspace_id: workspace_id.to_string(),
-        kind: CredentialKind::WorkerLocal,
-        provider_id,
-        protocol_endpoint_id: None,
-        env_key: None,
-        material_ref: None,
-        auxiliary_material_refs: BTreeMap::new(),
-        oauth_command: None,
-        worker_local_binding: Some(binding),
-        status: CredentialStatus::Active,
-        version: 1,
-    };
-    let durable = repo.put_if_absent(expected.clone()).await?;
-    if durable.workspace_id != expected.workspace_id
-        || durable.kind != CredentialKind::WorkerLocal
-        || durable.provider_id != expected.provider_id
-        || durable.worker_local_binding != expected.worker_local_binding
-        || durable.env_key.is_some()
-        || durable.material_ref.is_some()
-        || !durable.auxiliary_material_refs.is_empty()
-        || durable.oauth_command.is_some()
-    {
-        return Err(CredentialError::InvalidSource(format!(
-            "worker-local binding conflicts with existing source {}",
-            durable.id.0
-        )));
-    }
-    Ok(durable)
-}
-
-/// Enter a credential end-to-end (secret-in / secret-free-out): seal the secret in
-/// the [`SecretStore`], persist the secret-free row in the [`CredentialRepo`], and
-/// return the row. The one write path an operator/the Managed wire drives.
-pub async fn enter_credential(
-    params: CredentialCreateParams,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    enter_credential_with_materials(params, BTreeMap::new(), store, repo).await
-}
-
-/// Result of an idempotent credential-entry command.
-pub struct CredentialEntry {
-    pub source: CredentialSource,
-    pub created: bool,
-}
-
-/// Enter a credential once at a stable application-command identity.
-///
-/// Replaying the same identity returns the durable source without writing
-/// material again. A conflicting identity projection fails closed rather than
-/// treating two different credential commands as equivalent.
-pub async fn enter_credential_idempotent(
-    id: CredentialSourceId,
-    params: CredentialCreateParams,
-    protocol_endpoint_id: Option<String>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialEntry, CredentialError> {
-    validate_create_params(&params)?;
-    if protocol_endpoint_id
-        .as_deref()
-        .is_some_and(|endpoint| endpoint.trim().is_empty())
-    {
-        return Err(CredentialError::InvalidSource(
-            "credential endpoint scope must not be empty".into(),
-        ));
-    }
-    if protocol_endpoint_id.is_some() && params.provider_id.is_none() {
-        return Err(CredentialError::InvalidSource(
-            "an endpoint-scoped credential requires a provider".into(),
-        ));
-    }
-    let (mut expected, secret) = prepare_source_with_id(id, params);
-    expected.protocol_endpoint_id = protocol_endpoint_id;
-    enter_prepared_credential_idempotent(expected, secret, store, repo).await
-}
-
-/// Enter one stable Vault credential and verify that every replay names the
-/// same sealed material. The operation identity remains caller-owned; the
-/// credential aggregate owns the create WAL, source CAS, and material check.
-pub async fn enter_credential_idempotent_verified(
-    id: CredentialSourceId,
-    params: CredentialCreateParams,
-    protocol_endpoint_id: Option<String>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialEntry, CredentialError> {
-    let expected_material = params.secret.clone();
-    let entry = enter_credential_idempotent(id, params, protocol_endpoint_id, store, repo).await?;
-    if let Some(expected) = expected_material {
-        let reference = entry
-            .source
-            .material_ref
-            .as_ref()
-            .ok_or_else(|| CredentialError::MissingMaterialRef(entry.source.id.0.clone()))?;
-        let actual = store.get(reference).await?;
-        if actual.expose_secret() != expected.expose_secret() {
-            return Err(CredentialError::MutationConflict(
-                "credential Idempotency-Key was reused with different material".into(),
-            ));
-        }
-    }
-    Ok(entry)
-}
-
-pub(super) async fn enter_prepared_credential_idempotent(
-    expected: CredentialSource,
-    secret: Option<awaken_agent_contract::RedactedString>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialEntry, CredentialError> {
-    match repo.get(&expected.id).await {
-        Ok(source) => {
-            validate_idempotent_source(&source, &expected)?;
-            return Ok(CredentialEntry {
-                source,
-                created: false,
-            });
-        }
-        Err(CredentialError::SourceNotFound(_)) => {}
-        Err(error) => return Err(error),
-    }
-
-    match enter_prepared_credential(expected.clone(), secret, BTreeMap::new(), store, repo).await {
-        Ok(source) => Ok(CredentialEntry {
-            source,
-            created: true,
-        }),
-        Err(conflict @ CredentialError::MutationConflict(_)) => {
-            match repo.get(&expected.id).await {
-                Ok(source) => {
-                    validate_idempotent_source(&source, &expected)?;
-                    Ok(CredentialEntry {
-                        source,
-                        created: false,
-                    })
-                }
-                Err(CredentialError::SourceNotFound(_)) => Err(conflict),
-                Err(error) => Err(error),
-            }
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn validate_idempotent_source(
-    actual: &CredentialSource,
-    expected: &CredentialSource,
-) -> Result<(), CredentialError> {
-    if actual.id != expected.id
-        || actual.workspace_id != expected.workspace_id
-        || actual.kind != expected.kind
-        || actual.provider_id != expected.provider_id
-        || actual.protocol_endpoint_id != expected.protocol_endpoint_id
-        || actual.env_key != expected.env_key
-        || actual.material_ref != expected.material_ref
-        || actual.oauth_command != expected.oauth_command
-        || actual.worker_local_binding.is_some()
-        || !actual.auxiliary_material_refs.is_empty()
-    {
-        return Err(CredentialError::InvalidSource(format!(
-            "idempotent credential identity conflicts with existing source {}",
-            actual.id.0
-        )));
-    }
-    Ok(())
-}
-
-/// Enter one credential and every extension-defined auxiliary material slot as
-/// a single recoverable aggregate revision.
-pub async fn enter_credential_with_materials(
-    params: CredentialCreateParams,
-    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    validate_create_params(&params)?;
-    validate_material_slots(auxiliary.keys().map(String::as_str))?;
-    let (source, secret) = prepare_source(params);
-    enter_prepared_credential(source, secret, auxiliary, store, repo).await
-}
-
-async fn enter_prepared_credential(
-    mut source: CredentialSource,
-    secret: Option<awaken_agent_contract::RedactedString>,
-    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    validate_material_slots(auxiliary.keys().map(String::as_str))?;
-    let mut materials = Vec::new();
-    if let (Some(reference), Some(secret)) = (source.material_ref.clone(), secret) {
-        materials.push((reference, secret));
-    }
-    for (slot, secret) in auxiliary {
-        let reference = material_ref_for(&source.id, source.version, &slot);
-        source
-            .auxiliary_material_refs
-            .insert(slot, reference.clone());
-        materials.push((reference, secret));
-    }
-    let intent = CredentialMutationIntent {
-        before: None,
-        after: source.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-
-    for (reference, secret) in materials {
-        if let Err(error) = store.put(&reference, secret).await {
-            // A failed put may still have partially written. Only retire the
-            // durable intent after every candidate ref is idempotently clean.
-            if cleanup_unpublished_material(&intent, store).await.is_ok() {
-                repo.complete_mutation(&source.id).await?;
-            }
-            return Err(error);
-        }
-    }
-    // Never compensate an ambiguous apply error inline: the intent remains the
-    // recovery authority, preventing deletion of a source that actually committed.
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(&source.id).await?;
-    Ok(source)
-}
-
-fn validate_material_slots<'a>(
-    slots: impl Iterator<Item = &'a str>,
-) -> Result<(), CredentialError> {
-    for slot in slots {
-        if slot.is_empty()
-            || !slot
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        {
-            return Err(CredentialError::InvalidSource(format!(
-                "credential material slot `{slot}` is invalid"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn material_ref_for(id: &CredentialSourceId, version: i64, slot: &str) -> crate::SecretRef {
-    crate::SecretRef(format!("sec:{}:r{version}:{slot}", id.0))
-}
-
-/// Rotate an exact credential revision and all requested material slots in one
-/// WAL/CAS transaction. A stale expected revision fails before any new secret is
-/// written.
-pub async fn rotate_credential_materials_exact(
-    id: &CredentialSourceId,
-    expected_version: i64,
-    patch: CredentialMaterialPatch,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    rotate_credential_materials_exact_with_primary_ref(
-        id,
-        expected_version,
-        patch,
-        None,
-        store,
-        repo,
-    )
-    .await
-}
-
-pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
-    id: &CredentialSourceId,
-    expected_version: i64,
-    patch: CredentialMaterialPatch,
-    primary_ref: Option<crate::SecretRef>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    validate_material_slots(patch.auxiliary.keys().map(String::as_str))?;
-    let before = repo.get(id).await?;
-    if before.version != expected_version {
-        return Err(CredentialError::MutationConflict(
-            "credential revision changed before material rotation".into(),
-        ));
-    }
-    if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
-        return Err(CredentialError::NotActive(id.0.clone()));
-    }
-    if patch.primary.is_none() && patch.auxiliary.is_empty() {
-        return Ok(before);
-    }
-    let version = before
-        .version
-        .checked_add(1)
-        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    let mut after = before.clone();
-    after.version = version;
-    let mut materials = Vec::new();
-    if let Some(material) = patch.primary {
-        let reference = primary_ref.unwrap_or_else(|| material_ref_for(id, version, "primary"));
-        after.material_ref = Some(reference.clone());
-        materials.push((reference, material));
-    }
-    for (slot, material) in patch.auxiliary {
-        match material {
-            Some(material) => {
-                let reference = material_ref_for(id, version, &slot);
-                after
-                    .auxiliary_material_refs
-                    .insert(slot, reference.clone());
-                materials.push((reference, material));
-            }
-            None => {
-                after.auxiliary_material_refs.remove(&slot);
-            }
-        }
-    }
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    for (reference, material) in materials {
-        if let Err(error) = store.put(&reference, material).await {
-            if cleanup_unpublished_material(&intent, store).await.is_ok() {
-                repo.complete_mutation(id).await?;
-            }
-            return Err(error);
-        }
-    }
-    if let Err(error) = repo.apply_mutation(&intent).await {
-        // A CAS conflict proves this intent was not published, so its newly
-        // sealed refs can be reclaimed immediately. Storage errors remain
-        // ambiguous and deliberately retain the WAL for recovery.
-        if matches!(error, CredentialError::MutationConflict(_))
-            && cleanup_unpublished_material(&intent, store).await.is_ok()
-        {
-            repo.complete_mutation(id).await?;
-        }
-        return Err(error);
-    }
-    cleanup_retired_material(&intent, store).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
-}
-
-/// Rotate material from the currently committed revision. Callers that retain
-/// an execution pin should use [`rotate_credential_materials_exact`] instead.
-pub async fn rotate_credential_materials(
-    id: &CredentialSourceId,
-    patch: CredentialMaterialPatch,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let version = repo.get(id).await?.version;
-    rotate_credential_materials_exact(id, version, patch, store, repo).await
-}
-
-/// Rotate the material of one active Vault source without ever overwriting the
-/// reference used by an older exact revision.
-pub async fn rotate_credential(
-    id: &CredentialSourceId,
-    material: awaken_agent_contract::RedactedString,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    rotate_credential_materials(
-        id,
-        CredentialMaterialPatch {
-            primary: Some(material),
-            auxiliary: BTreeMap::new(),
-        },
-        store,
-        repo,
-    )
-    .await
-}
-
-/// Publish a higher exact revision for executable, secret-free configuration
-/// changes while retaining the complete material set.
-pub async fn advance_credential_revision(
-    id: &CredentialSourceId,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let before = repo.get(id).await?;
-    if before.status != CredentialStatus::Active {
-        return Err(CredentialError::NotActive(id.0.clone()));
-    }
-    let mut after = before.clone();
-    after.version = before
-        .version
-        .checked_add(1)
-        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
-}
-
-/// Explicitly widen one active, provider-bound credential from an exact
-/// ProtocolEndpoint to every endpoint owned by that same Provider. The
-/// mutation retains the existing material references and uses exact revision
-/// and endpoint checks so a stale connection command cannot broaden authority.
-pub async fn widen_credential_to_provider_scope_exact(
-    id: &CredentialSourceId,
-    expected_version: i64,
-    expected_provider_id: &str,
-    expected_endpoint_id: &str,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let before = repo.get(id).await?;
-    if before.version != expected_version {
-        return Err(CredentialError::MutationConflict(
-            "credential revision changed before provider-scope widening".into(),
-        ));
-    }
-    if before.status != CredentialStatus::Active {
-        return Err(CredentialError::NotActive(id.0.clone()));
-    }
-    if before.provider_id.as_deref() != Some(expected_provider_id)
-        || before.protocol_endpoint_id.as_deref() != Some(expected_endpoint_id)
-    {
-        return Err(CredentialError::NoCredential);
-    }
-    let mut after = before.clone();
-    after.version = before
-        .version
-        .checked_add(1)
-        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    after.protocol_endpoint_id = None;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
-}
-
-/// Change only lifecycle availability while retaining material. This is the
-/// canonical reversible transition for staged publication; retirement/reclaim
-/// remains a separate terminal operation.
-pub async fn transition_credential_status(
-    id: &CredentialSourceId,
-    status: CredentialStatus,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let before = repo.get(id).await?;
-    if before.status == status {
-        return Ok(before);
-    }
-    let mut after = before.clone();
-    after.version = before
-        .version
-        .checked_add(1)
-        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    after.status = status;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
-}
-
-/// Terminally revoke one source: publish a higher disabled/archived revision
-/// first, then erase its material while the WAL intent remains recoverable.
-pub async fn revoke_credential(
-    id: &CredentialSourceId,
-    retirement: CredentialRetirement,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let before = repo.get(id).await?;
-    let mut after = before.clone();
-    after.version = before
-        .version
-        .checked_add(1)
-        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    after.status = match retirement {
-        CredentialRetirement::Disable => CredentialStatus::Disabled,
-        CredentialRetirement::Archive => CredentialStatus::Archived,
-    };
-    after.material_ref = None;
-    after.auxiliary_material_refs.clear();
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    cleanup_retired_material(&intent, store).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
-}
-
-async fn cleanup_retired_material(
-    intent: &CredentialMutationIntent,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    let before = intent
-        .before
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = intent.after.material_refs().collect::<HashSet<_>>();
-    for reference in before.difference(&after) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
-async fn cleanup_unpublished_material(
-    intent: &CredentialMutationIntent,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    let before = intent
-        .before
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = intent.after.material_refs().collect::<HashSet<_>>();
-    for reference in after.difference(&before) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
-/// Reconcile every interrupted create/rotate/revoke after restart. The exact
-/// durable source decides whether old or new material is retained.
-pub async fn recover_credential_mutations(
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<usize, CredentialError> {
-    let intents = repo.pending_mutations().await?;
-    let mut recovered = 0;
-    for intent in intents {
-        let current = match repo.get(&intent.after.id).await {
-            Ok(source) => Some(source),
-            Err(CredentialError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
-        if current.as_ref() == Some(&intent.after) {
-            cleanup_retired_material(&intent, store).await?;
-        } else if current == intent.before {
-            cleanup_unpublished_material(&intent, store).await?;
-        } else {
-            return Err(CredentialError::MutationConflict(format!(
-                "credential {} no longer matches its pending mutation",
-                intent.after.id.0
-            )));
-        }
-        repo.complete_mutation(&intent.after.id).await?;
-        recovered += 1;
-    }
-    Ok(recovered)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CredentialInventoryReport {
-    pub orphaned_deleted: Vec<crate::SecretRef>,
-    pub missing_material: Vec<crate::SecretRef>,
-}
-
-/// Compare the secret inventory with committed metadata and in-flight intents.
-/// Only credential-owned `sec:cred:` keys are eligible for deletion; webhook and
-/// other domains' material may share the physical store and is deliberately
-/// untouched.
-pub async fn reconcile_credential_inventory(
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialInventoryReport, CredentialError> {
-    let inventory = store.inventory().await?;
-    // Read intents first. Publication atomically removes an intent while adding
-    // its metadata row, so either this read sees the in-flight protection or the
-    // following committed-reference read sees the published source.
-    let pending = repo.pending_mutations().await?;
-    let committed = repo.material_refs().await?;
-    let present: HashSet<String> = inventory.iter().map(|item| item.0.clone()).collect();
-    let committed_keys: HashSet<String> = committed.iter().map(|item| item.0.clone()).collect();
-    let protected: HashSet<String> = committed_keys
-        .iter()
-        .cloned()
-        .chain(pending.iter().flat_map(|intent| {
-            intent
-                .before
-                .iter()
-                .flat_map(CredentialSource::material_refs)
-                .chain(intent.after.material_refs())
-                .map(|reference| reference.0.clone())
-        }))
-        .collect();
-
-    let mut orphaned_deleted = Vec::new();
-    for reference in inventory {
-        if reference.0.starts_with("sec:cred:") && !protected.contains(&reference.0) {
-            store.delete(&reference).await?;
-            orphaned_deleted.push(reference);
-        }
-    }
-    let missing_material = committed
-        .into_iter()
-        .filter(|reference| !present.contains(&reference.0))
-        .collect();
-    Ok(CredentialInventoryReport {
-        orphaned_deleted,
-        missing_material,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use super::*;
-    use crate::{CredentialKind, InMemorySecretStore, materialize};
-    use awaken_agent_contract::RedactedString;
-
-    struct FaultyDeleteStore {
-        inner: InMemorySecretStore,
-        fail_before_delete: AtomicBool,
-        lose_first_response: AtomicBool,
-    }
-
-    struct GatedCredentialRepo {
-        inner: InMemoryCredentialRepo,
-        gate_reads: AtomicBool,
-        gate: Arc<tokio::sync::Barrier>,
-    }
-
-    impl GatedCredentialRepo {
-        fn new() -> Self {
-            Self {
-                inner: InMemoryCredentialRepo::new(),
-                gate_reads: AtomicBool::new(false),
-                gate: Arc::new(tokio::sync::Barrier::new(2)),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl CredentialRepo for GatedCredentialRepo {
-        async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {
-            self.inner.put(source).await
-        }
-
-        async fn put_if_absent(
-            &self,
-            source: CredentialSource,
-        ) -> Result<CredentialSource, CredentialError> {
-            self.inner.put_if_absent(source).await
-        }
-
-        async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
-            let result = self.inner.get(id).await;
-            if self.gate_reads.load(Ordering::SeqCst) {
-                self.gate.wait().await;
-            }
-            result
-        }
-
-        async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError> {
-            self.inner.list(workspace_id).await
-        }
-
-        async fn begin_mutation(
-            &self,
-            intent: CredentialMutationIntent,
-        ) -> Result<(), CredentialError> {
-            self.inner.begin_mutation(intent).await
-        }
-
-        async fn apply_mutation(
-            &self,
-            intent: &CredentialMutationIntent,
-        ) -> Result<(), CredentialError> {
-            self.inner.apply_mutation(intent).await
-        }
-
-        async fn pending_mutations(
-            &self,
-        ) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-            self.inner.pending_mutations().await
-        }
-
-        async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
-            self.inner.complete_mutation(id).await
-        }
-
-        async fn material_refs(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
-            self.inner.material_refs().await
-        }
-
-        async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
-            self.inner.put_pool(pool).await
-        }
-
-        async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
-            self.inner.get_pool(id).await
-        }
-
-        async fn list_pools(
-            &self,
-            workspace_id: &str,
-        ) -> Result<Vec<CredentialPool>, CredentialError> {
-            self.inner.list_pools(workspace_id).await
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl SecretStore for FaultyDeleteStore {
-        async fn put(
-            &self,
-            r: &crate::SecretRef,
-            secret: RedactedString,
-        ) -> Result<(), CredentialError> {
-            self.inner.put(r, secret).await
-        }
-
-        async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
-            self.inner.get(r).await
-        }
-
-        async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
-            if self.fail_before_delete.load(Ordering::SeqCst) {
-                return Err(CredentialError::Storage("delete timeout".into()));
-            }
-            self.inner.delete(r).await?;
-            if self.lose_first_response.swap(false, Ordering::SeqCst) {
-                return Err(CredentialError::Storage("delete response lost".into()));
-            }
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    struct RejectingRepo {
-        inner: InMemoryCredentialRepo,
-    }
-
-    #[async_trait::async_trait]
-    impl CredentialRepo for RejectingRepo {
-        async fn put(&self, _source: CredentialSource) -> Result<(), CredentialError> {
-            Err(CredentialError::Storage("injected row failure".into()))
-        }
-
-        async fn put_if_absent(
-            &self,
-            _source: CredentialSource,
-        ) -> Result<CredentialSource, CredentialError> {
-            Err(CredentialError::Storage("injected row failure".into()))
-        }
-
-        async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
-            Err(CredentialError::SourceNotFound(id.0.clone()))
-        }
-
-        async fn list(
-            &self,
-            _workspace_id: &str,
-        ) -> Result<Vec<CredentialSource>, CredentialError> {
-            Ok(Vec::new())
-        }
-
-        async fn begin_mutation(
-            &self,
-            intent: CredentialMutationIntent,
-        ) -> Result<(), CredentialError> {
-            self.inner.begin_mutation(intent).await
-        }
-
-        async fn apply_mutation(
-            &self,
-            _intent: &CredentialMutationIntent,
-        ) -> Result<(), CredentialError> {
-            Err(CredentialError::Storage("injected row failure".into()))
-        }
-
-        async fn pending_mutations(
-            &self,
-        ) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-            self.inner.pending_mutations().await
-        }
-
-        async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
-            self.inner.complete_mutation(id).await
-        }
-
-        async fn put_pool(&self, _pool: CredentialPool) -> Result<(), CredentialError> {
-            Ok(())
-        }
-
-        async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
-            Err(CredentialError::PoolNotFound(id.0.clone()))
-        }
-
-        async fn list_pools(
-            &self,
-            _workspace_id: &str,
-        ) -> Result<Vec<CredentialPool>, CredentialError> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[tokio::test]
-    async fn enter_stores_row_and_secret_separately() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let source = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("anthropic".into()),
-                env_key: Some("ANTHROPIC_API_KEY".into()),
-                secret: Some(RedactedString::new("sk-xyz")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-
-        // The row is retrievable and secret-free; the secret materializes from the store.
-        let got = repo.get(&source.id).await.unwrap();
-        assert!(!serde_json::to_string(&got).unwrap().contains("sk-xyz"));
-        assert_eq!(
-            materialize(&got, &store).await.unwrap().expose_secret(),
-            "sk-xyz"
-        );
-        assert_eq!(repo.list("ws").await.unwrap().len(), 1);
-        assert_eq!(repo.list("other").await.unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
-        let store = InMemorySecretStore::new();
-        let repo = RejectingRepo::default();
-        let result = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("anthropic".into()),
-                env_key: None,
-                secret: Some(RedactedString::new("must-not-be-orphaned")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await;
-
-        assert!(
-            matches!(result, Err(CredentialError::Storage(message)) if message == "injected row failure")
-        );
-        // An ambiguous commit error is not compensated inline: deleting here could
-        // break a row whose commit succeeded but whose response was lost.
-        assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
-        assert_eq!(
-            recover_credential_mutations(&store, &repo).await.unwrap(),
-            1
-        );
-        assert!(store.map.lock().expect("secret store mutex").is_empty());
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    async fn interrupted_creation(store: &dyn SecretStore, repo: &dyn CredentialRepo) {
-        let source = CredentialSource {
-            id: CredentialSourceId("cred:ws:interrupted".into()),
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: Some("anthropic".into()),
-            protocol_endpoint_id: None,
-            env_key: None,
-            material_ref: Some(crate::SecretRef("sec:cred:ws:interrupted".into())),
-            auxiliary_material_refs: Default::default(),
-            oauth_command: None,
-            worker_local_binding: None,
-            status: crate::CredentialStatus::Active,
-            version: 1,
-        };
-        repo.begin_mutation(CredentialMutationIntent {
-            before: None,
-            after: source.clone(),
-        })
-        .await
-        .unwrap();
-        store
-            .put(
-                source.material_ref.as_ref().unwrap(),
-                RedactedString::new("orphan candidate"),
-            )
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn delete_timeout_keeps_the_intent_for_a_later_reconciliation() {
-        let store = FaultyDeleteStore {
-            inner: InMemorySecretStore::new(),
-            fail_before_delete: AtomicBool::new(true),
-            lose_first_response: AtomicBool::new(false),
-        };
-        let repo = InMemoryCredentialRepo::new();
-        interrupted_creation(&store, &repo).await;
-        assert!(recover_credential_mutations(&store, &repo).await.is_err());
-        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
-        store.fail_before_delete.store(false, Ordering::SeqCst);
-        assert_eq!(
-            recover_credential_mutations(&store, &repo).await.unwrap(),
-            1
-        );
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn lost_delete_response_is_retried_idempotently() {
-        let store = FaultyDeleteStore {
-            inner: InMemorySecretStore::new(),
-            fail_before_delete: AtomicBool::new(false),
-            lose_first_response: AtomicBool::new(true),
-        };
-        let repo = InMemoryCredentialRepo::new();
-        interrupted_creation(&store, &repo).await;
-        assert!(recover_credential_mutations(&store, &repo).await.is_err());
-        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
-        assert_eq!(
-            recover_credential_mutations(&store, &repo).await.unwrap(),
-            1
-        );
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
-        // Causes: L2 active Vault source + replacement material. Effects: source
-        // revision/ref advance together, new material resolves, old ref is erased,
-        // and no WAL remains. This is decision-table rule rotate/success.
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let before = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(RedactedString::new("old")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let old_ref = before.material_ref.clone().unwrap();
-
-        let after = rotate_credential(&before.id, RedactedString::new("new"), &store, &repo)
-            .await
-            .unwrap();
-
-        assert_eq!(after.version, before.version + 1);
-        assert_ne!(after.material_ref, before.material_ref);
-        assert_eq!(
-            materialize(&after, &store).await.unwrap().expose_secret(),
-            "new"
-        );
-        assert!(store.get(&old_ref).await.is_err());
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn retirement_fails_closed_and_reclaims_material() {
-        // Causes: L3 active source + Archive retirement. Effects: a higher
-        // archived revision with no material ref is durable, the secret is erased,
-        // and both direct and pinned materialization fail closed.
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let before = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(RedactedString::new("retire-me")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let old_ref = before.material_ref.clone().unwrap();
-
-        let after = revoke_credential(&before.id, CredentialRetirement::Archive, &store, &repo)
-            .await
-            .unwrap();
-
-        assert_eq!(after.status, CredentialStatus::Archived);
-        assert_eq!(after.version, before.version + 1);
-        assert!(after.material_ref.is_none());
-        assert!(store.get(&old_ref).await.is_err());
-        assert!(matches!(
-            materialize(&after, &store).await,
-            Err(CredentialError::NotActive(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn reversible_status_transition_retains_material_and_advances_revision() {
-        // Decision rule L4: active source + reversible Disabled transition =>
-        // higher fail-closed revision, unchanged material ref/bytes, no pending
-        // WAL. A repeated identical transition is an idempotent no-op.
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let before = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(RedactedString::new("retained")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let disabled = transition_credential_status(&before.id, CredentialStatus::Disabled, &repo)
-            .await
-            .unwrap();
-        assert_eq!(disabled.version, before.version + 1);
-        assert_eq!(disabled.material_ref, before.material_ref);
-        assert_eq!(
-            store
-                .get(disabled.material_ref.as_ref().unwrap())
-                .await
-                .unwrap()
-                .expose_secret(),
-            "retained"
-        );
-        assert_eq!(
-            transition_credential_status(&disabled.id, CredentialStatus::Disabled, &repo,)
-                .await
-                .unwrap(),
-            disabled
-        );
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn provider_scope_widening_is_exact_and_retains_material_authority() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let before = enter_credential_idempotent(
-            CredentialSourceId("cred:ws:provider-scope".into()),
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("provider".into()),
-                env_key: None,
-                secret: Some(RedactedString::new("retained")),
-                oauth_command: None,
-            },
-            Some("provider.chat".into()),
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap()
-        .source;
-
-        assert!(
-            widen_credential_to_provider_scope_exact(
-                &before.id,
-                before.version,
-                "other-provider",
-                "provider.chat",
-                &repo,
-            )
-            .await
-            .is_err(),
-            "a different Provider cannot consume the source"
-        );
-        let widened = widen_credential_to_provider_scope_exact(
-            &before.id,
-            before.version,
-            "provider",
-            "provider.chat",
-            &repo,
-        )
-        .await
-        .unwrap();
-        assert_eq!(widened.protocol_endpoint_id, None);
-        assert_eq!(widened.version, before.version + 1);
-        assert_eq!(widened.material_ref, before.material_ref);
-        assert_eq!(
-            materialize(&widened, &store).await.unwrap().expose_secret(),
-            "retained"
-        );
-        assert!(
-            widen_credential_to_provider_scope_exact(
-                &widened.id,
-                before.version,
-                "provider",
-                "provider.chat",
-                &repo,
-            )
-            .await
-            .is_err(),
-            "a stale command cannot widen again"
-        );
-    }
-
-    #[tokio::test]
-    async fn recovery_uses_the_durable_side_of_a_rotation_as_cleanup_authority() {
-        // Mutation recovery decision table:
-        // R6 current==before => delete unpublished after-ref and keep old-ref.
-        // R7 current==after  => delete retired old-ref and keep new-ref.
-        for publish_after in [false, true] {
-            let store = InMemorySecretStore::new();
-            let repo = InMemoryCredentialRepo::new();
-            let before = enter_credential(
-                CredentialCreateParams {
-                    workspace_id: "ws".into(),
-                    kind: CredentialKind::Vault,
-                    provider_id: None,
-                    env_key: None,
-                    secret: Some(RedactedString::new("old")),
-                    oauth_command: None,
-                },
-                &store,
-                &repo,
-            )
-            .await
-            .unwrap();
-            let mut after = before.clone();
-            after.version += 1;
-            after.material_ref = Some(crate::SecretRef(format!(
-                "sec:{}:r{}",
-                after.id.0, after.version
-            )));
-            let intent = CredentialMutationIntent {
-                before: Some(before.clone()),
-                after: after.clone(),
-            };
-            repo.begin_mutation(intent.clone()).await.unwrap();
-            store
-                .put(
-                    after.material_ref.as_ref().unwrap(),
-                    RedactedString::new("new"),
-                )
-                .await
-                .unwrap();
-            if publish_after {
-                repo.apply_mutation(&intent).await.unwrap();
-            }
-
-            assert_eq!(
-                recover_credential_mutations(&store, &repo).await.unwrap(),
-                1
-            );
-            let durable = repo.get(&before.id).await.unwrap();
-            if publish_after {
-                assert_eq!(durable, after);
-                assert!(
-                    store
-                        .get(before.material_ref.as_ref().unwrap())
-                        .await
-                        .is_err()
-                );
-                assert!(
-                    store
-                        .get(after.material_ref.as_ref().unwrap())
-                        .await
-                        .is_ok()
-                );
-            } else {
-                assert_eq!(durable, before);
-                assert!(
-                    store
-                        .get(before.material_ref.as_ref().unwrap())
-                        .await
-                        .is_ok()
-                );
-                assert!(
-                    store
-                        .get(after.material_ref.as_ref().unwrap())
-                        .await
-                        .is_err()
-                );
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn mutation_rejects_a_competing_revision_and_retains_recovery_evidence() {
-        // Causes: R8 matching WAL but current is neither exact before nor after.
-        // Effects: publication fails with MutationConflict and the WAL remains so
-        // no material can be silently reclaimed against ambiguous metadata.
-        let repo = InMemoryCredentialRepo::new();
-        let before = CredentialSource {
-            id: CredentialSourceId("cred:ws:conflict".into()),
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: None,
-            protocol_endpoint_id: None,
-            env_key: None,
-            material_ref: Some(crate::SecretRef("sec:cred:ws:conflict".into())),
-            auxiliary_material_refs: Default::default(),
-            oauth_command: None,
-            worker_local_binding: None,
-            status: CredentialStatus::Active,
-            version: 1,
-        };
-        repo.put(before.clone()).await.unwrap();
-        let mut after = before.clone();
-        after.version = 2;
-        let intent = CredentialMutationIntent {
-            before: Some(before.clone()),
-            after,
-        };
-        repo.begin_mutation(intent.clone()).await.unwrap();
-        let mut competing = before;
-        competing.version = 3;
-        repo.put(competing).await.unwrap();
-
-        assert!(matches!(
-            repo.apply_mutation(&intent).await,
-            Err(CredentialError::MutationConflict(_))
-        ));
-        assert_eq!(repo.pending_mutations().await.unwrap(), vec![intent]);
-    }
-
-    #[tokio::test]
-    async fn inventory_deletes_only_unreferenced_credential_material() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let committed = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws".into(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(RedactedString::new("kept")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let orphan = crate::SecretRef("sec:cred:ws:legacy-orphan".into());
-        let webhook = crate::SecretRef("whsec:shared-store".into());
-        store
-            .put(&orphan, RedactedString::new("delete"))
-            .await
-            .unwrap();
-        store
-            .put(&webhook, RedactedString::new("preserve"))
-            .await
-            .unwrap();
-
-        let report = reconcile_credential_inventory(&store, &repo).await.unwrap();
-        assert_eq!(report.orphaned_deleted, vec![orphan.clone()]);
-        assert!(report.missing_material.is_empty());
-        assert!(store.get(&orphan).await.is_err());
-        assert!(store.get(&webhook).await.is_ok());
-        assert!(
-            store
-                .get(committed.material_ref.as_ref().unwrap())
-                .await
-                .is_ok()
-        );
-        assert!(
-            reconcile_credential_inventory(&store, &repo)
-                .await
-                .unwrap()
-                .orphaned_deleted
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn inventory_reports_metadata_whose_secret_is_missing() {
-        let repo = InMemoryCredentialRepo::new();
-        let store = InMemorySecretStore::new();
-        let reference = crate::SecretRef("sec:cred:ws:missing".into());
-        let source = CredentialSource {
-            id: CredentialSourceId("cred:ws:missing".into()),
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: None,
-            protocol_endpoint_id: None,
-            env_key: None,
-            material_ref: Some(reference.clone()),
-            auxiliary_material_refs: Default::default(),
-            oauth_command: None,
-            worker_local_binding: None,
-            status: crate::CredentialStatus::Active,
-            version: 1,
-        };
-        repo.put(source.clone()).await.unwrap();
-
-        let report = reconcile_credential_inventory(&store, &repo).await.unwrap();
-        assert_eq!(report.missing_material, vec![reference]);
-        assert!(materialize(&source, &store).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn pools_round_trip_and_list_scopes_by_workspace() {
-        let repo = InMemoryCredentialRepo::new();
-        let pool = |id: &str, ws: &str| CredentialPool {
-            id: CredentialPoolId(id.into()),
-            workspace_id: ws.into(),
-            members: Vec::new(),
-            policy: crate::SelectionPolicy::FirstHealthy,
-        };
-        repo.put_pool(pool("pool:a", "ws")).await.unwrap();
-        repo.put_pool(pool("pool:b", "ws")).await.unwrap();
-        repo.put_pool(pool("pool:c", "other")).await.unwrap();
-
-        let got = repo
-            .get_pool(&CredentialPoolId("pool:a".into()))
-            .await
-            .unwrap();
-        assert_eq!(got.workspace_id, "ws");
-        assert_eq!(repo.list_pools("ws").await.unwrap().len(), 2);
-        assert_eq!(repo.list_pools("other").await.unwrap().len(), 1);
-        assert_eq!(repo.list_pools("empty").await.unwrap().len(), 0);
-    }
-
-    /// F11(d): `get` is a deliberate **unscoped by-id primitive** — keyed by source
-    /// id only, never by workspace (only `list`/`list_pools` filter by workspace).
-    /// Tenancy is NOT enforced on this low-level read; it is enforced one layer up,
-    /// at credential *resolution* (`awaken_config_resolver::resolve_credential`),
-    /// which is where both the binding's and the source's workspace are known: a
-    /// pool member whose source belongs to another workspace is skipped, and an
-    /// `Exact` binding on a cross-workspace source fails closed (`SourceMissing`).
-    ///
-    /// Audit of every `CredentialRepo::get` caller confirms none performs an
-    /// unfenced cross-workspace *secret materialization*:
-    /// - `awaken-runtime-host::PrefetchedSourceLookup::for_defs` (managed MCP)
-    ///   prefetches by id, then materializes only through the fenced resolver;
-    /// - the admin-config-api routes (`get_credential`, `archive_credential`,
-    ///   `put_mcp_server` existence-check) are IAM-gated by-id management ops that
-    ///   read a **secret-free** row / mutate status — they never materialize a
-    ///   secret; the sealed material stays behind `SecretStore`.
-    ///
-    /// So keeping `get` unscoped is correct: it is the shared read primitive, and
-    /// the tenant fence lives at the resolution seam. This test pins that primitive.
-    #[tokio::test]
-    async fn get_is_an_unscoped_by_id_primitive_fenced_at_resolution() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let owned = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "ws-owner".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("anthropic".into()),
-                env_key: Some("ANTHROPIC_API_KEY".into()),
-                secret: Some(RedactedString::new("secret")),
-                oauth_command: None,
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-
-        // `list` for an unrelated workspace correctly hides the row...
-        assert_eq!(repo.list("ws-other").await.unwrap().len(), 0);
-        // ...but a direct `get` with the id returns it regardless of workspace.
-        let cross_read = repo.get(&owned.id).await.unwrap();
-        assert_eq!(cross_read.workspace_id, "ws-owner");
-    }
-
-    // Idempotent-entry decision table:
-    // R1 missing identity + valid command -> create one row and one material ref.
-    // R2 same identity + same non-secret facts -> return the existing row without
-    //    creating another material ref.
-    // R3 same identity + different provider facts -> fail closed as a conflict.
-    // R4 same identity/provider + different endpoint scope -> fail closed.
-    #[tokio::test]
-    async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let id = CredentialSourceId("cred:ws:provider-command".into());
-        let params = |provider: &str, secret: &str| CredentialCreateParams {
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: Some(provider.into()),
-            env_key: None,
-            secret: Some(RedactedString::new(secret)),
-            oauth_command: None,
-        };
-
-        let first = enter_credential_idempotent(
-            id.clone(),
-            params("anthropic", "first"),
-            Some("anthropic.anthropic_messages".into()),
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let replay = enter_credential_idempotent(
-            id.clone(),
-            params("anthropic", "ignored-on-replay"),
-            Some("anthropic.anthropic_messages".into()),
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        let conflict = enter_credential_idempotent(
-            id,
-            params("openai", "different-command"),
-            Some("openai.open_ai_chat".into()),
-            &store,
-            &repo,
-        )
-        .await;
-        let endpoint_conflict = enter_credential_idempotent(
-            CredentialSourceId("cred:ws:provider-command".into()),
-            params("anthropic", "different-endpoint"),
-            Some("anthropic.anthropic_messages.backup".into()),
-            &store,
-            &repo,
-        )
-        .await;
-
-        assert!(first.created);
-        assert!(!replay.created);
-        assert_eq!(first.source.id, replay.source.id);
-        assert_eq!(repo.list("ws").await.unwrap().len(), 1);
-        assert_eq!(store.inventory().await.unwrap().len(), 1);
-        assert!(matches!(conflict, Err(CredentialError::InvalidSource(_))));
-        assert!(matches!(
-            endpoint_conflict,
-            Err(CredentialError::InvalidSource(_))
-        ));
-    }
-
-    /// Verified-idempotency cause/effect graph: C1 stable source identity and
-    /// metadata match; C2 submitted material matches the sealed first write.
-    /// C1+C2 is an exact no-write replay; C1+!C2 fails with a mutation conflict.
-    /// This stricter command is opt-in so ordinary non-secret idempotent callers
-    /// retain their established replay semantics.
-    #[tokio::test]
-    async fn verified_idempotent_entry_rejects_different_material() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let id = CredentialSourceId("cred:ws:verified-operation".into());
-        let params = |secret: &str| CredentialCreateParams {
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: Some("domain-pack/provider".into()),
-            env_key: None,
-            secret: Some(RedactedString::new(secret)),
-            oauth_command: None,
-        };
-
-        let first =
-            enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
-                .await
-                .unwrap();
-        let replay =
-            enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
-                .await
-                .unwrap();
-        let conflict =
-            enter_credential_idempotent_verified(id, params("second"), None, &store, &repo).await;
-
-        assert!(first.created);
-        assert!(!replay.created);
-        assert_eq!(first.source, replay.source);
-        assert!(matches!(
-            conflict,
-            Err(CredentialError::MutationConflict(_))
-        ));
-        assert_eq!(store.inventory().await.unwrap().len(), 1);
-    }
-
-    /// Cause/effect graph for the hosted application bearer aggregate:
-    /// C1 source absent; C2 tuple matches the durable source; C3 command key
-    /// matches; C4 payload/material matches; C5 a new command key is supplied.
-    /// Effects are E1 create one source/revision, E2 exact replay/no write, E3
-    /// reject an idempotency or tuple conflict, and E4 rotate only material while
-    /// retaining source identity. Constraints: C3 excludes C5; C4 is relevant
-    /// only with C3.
-    ///
-    /// | rule | C1 | C2 | C3 | C4 | C5 | effect |
-    /// |---|---|---|---|---|---|---|
-    /// | A1 | yes | - | - | - | - | E1/revision 1 |
-    /// | A2 | no | yes | yes | yes | no | E2/same ids and revision |
-    /// | A3 | no | yes | yes | no | no | E3/conflict |
-    /// | A4 | no | yes | no | - | yes | E4/same id, revision + 1 |
-    /// | A5 | no | no | - | - | - | E3/conflict |
-    #[tokio::test]
-    async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggregate() {
-        let store = InMemorySecretStore::new();
-        let repo = InMemoryCredentialRepo::new();
-        let source_id = CredentialSourceId("cred:app-mcp:test".into());
-        macro_rules! command {
-            ($workspace:expr, $target:expr, $key:expr, $token:expr) => {
-                enter_or_rotate_application_mcp_bearer(
-                    ApplicationMcpBearerCommand {
-                        source_id: source_id.clone(),
-                        workspace_id: $workspace.into(),
-                        target_fingerprint: $target.into(),
-                        command_key_fingerprint: $key.into(),
-                        bearer: RedactedString::new($token),
-                    },
-                    &store,
-                    &repo,
-                )
-            };
-        }
-
-        let first = command!("ws", "target-a", "key-1", "token-1")
-            .await
-            .unwrap();
-        let replay = command!("ws", "target-a", "key-1", "token-1")
-            .await
-            .unwrap();
-        let mismatched_replay = command!("ws", "target-a", "key-1", "token-other").await;
-        let rotated = command!("ws", "target-a", "key-2", "token-2")
-            .await
-            .unwrap();
-        let workspace_conflict = command!("other", "target-a", "key-3", "token-3").await;
-        let target_conflict = command!("ws", "target-b", "key-3", "token-3").await;
-
-        assert_eq!(first.version, 1);
-        assert_eq!(first.id, replay.id);
-        assert_eq!(first.version, replay.version);
-        assert!(matches!(
-            mismatched_replay,
-            Err(CredentialError::MutationConflict(_))
-        ));
-        assert_eq!(rotated.id, first.id);
-        assert_eq!(rotated.version, first.version + 1);
-        assert_eq!(
-            store
-                .get(rotated.material_ref.as_ref().unwrap())
-                .await
-                .unwrap()
-                .expose_secret(),
-            "token-2"
-        );
-        assert!(matches!(
-            workspace_conflict,
-            Err(CredentialError::MutationConflict(_))
-        ));
-        assert!(matches!(
-            target_conflict,
-            Err(CredentialError::MutationConflict(_))
-        ));
-    }
-
-    /// Concurrent-rotation decision rule: C1 two valid commands read the same
-    /// revision and C2 their command identities differ. The one source-keyed WAL
-    /// accepts exactly one intent (E1), the other returns MutationConflict (E2),
-    /// and the durable source advances exactly once (E3). Equal command+payload
-    /// is constrained to the replay rule above and may safely share one intent.
-    #[tokio::test]
-    async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
-        let store = InMemorySecretStore::new();
-        let repo = GatedCredentialRepo::new();
-        let source_id = CredentialSourceId("cred:app-mcp:race".into());
-        enter_or_rotate_application_mcp_bearer(
-            ApplicationMcpBearerCommand {
-                source_id: source_id.clone(),
-                workspace_id: "ws".into(),
-                target_fingerprint: "target".into(),
-                command_key_fingerprint: "initial-key".into(),
-                bearer: RedactedString::new("initial-token"),
-            },
-            &store,
-            &repo,
-        )
-        .await
-        .unwrap();
-        repo.gate_reads.store(true, Ordering::SeqCst);
-
-        let left = enter_or_rotate_application_mcp_bearer(
-            ApplicationMcpBearerCommand {
-                source_id: source_id.clone(),
-                workspace_id: "ws".into(),
-                target_fingerprint: "target".into(),
-                command_key_fingerprint: "left-key".into(),
-                bearer: RedactedString::new("left-token"),
-            },
-            &store,
-            &repo,
-        );
-        let right = enter_or_rotate_application_mcp_bearer(
-            ApplicationMcpBearerCommand {
-                source_id: source_id.clone(),
-                workspace_id: "ws".into(),
-                target_fingerprint: "target".into(),
-                command_key_fingerprint: "right-key".into(),
-                bearer: RedactedString::new("right-token"),
-            },
-            &store,
-            &repo,
-        );
-        let (left, right) = tokio::join!(left, right);
-        repo.gate_reads.store(false, Ordering::SeqCst);
-
-        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
-        assert_eq!(
-            usize::from(matches!(left, Err(CredentialError::MutationConflict(_))))
-                + usize::from(matches!(right, Err(CredentialError::MutationConflict(_)))),
-            1
-        );
-        assert_eq!(repo.get(&source_id).await.unwrap().version, 2);
-        assert!(repo.pending_mutations().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_missing_source_or_pool_is_not_found() {
-        let repo = InMemoryCredentialRepo::new();
-        assert!(matches!(
-            repo.get(&CredentialSourceId("cred:absent".into())).await,
-            Err(CredentialError::SourceNotFound(id)) if id == "cred:absent"
-        ));
-        assert!(matches!(
-            repo.get_pool(&CredentialPoolId("pool:absent".into())).await,
-            Err(CredentialError::PoolNotFound(id)) if id == "pool:absent"
-        ));
-    }
-}
+mod credential_operations;
+mod inventory;
+
+pub use credential_operations::*;
+pub use inventory::*;

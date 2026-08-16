@@ -37,6 +37,11 @@ struct FixedModelPublication {
     publication: awaken_session_contract::SessionModelPublication,
 }
 
+struct RecordingModelPublication {
+    publication: awaken_session_contract::SessionModelPublication,
+    requests: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionModelPublicationResolver for FixedModelPublication {
     async fn resolve_session_model(
@@ -47,6 +52,24 @@ impl awaken_session_contract::SessionModelPublicationResolver for FixedModelPubl
         awaken_session_contract::SessionModelPublication,
         awaken_session_contract::SessionModelResolutionError,
     > {
+        Ok(self.publication.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionModelPublicationResolver for RecordingModelPublication {
+    async fn resolve_session_model(
+        &self,
+        workspace_id: &str,
+        model_reference: &str,
+    ) -> Result<
+        awaken_session_contract::SessionModelPublication,
+        awaken_session_contract::SessionModelResolutionError,
+    > {
+        self.requests
+            .lock()
+            .expect("model requests")
+            .push((workspace_id.to_string(), model_reference.to_string()));
         Ok(self.publication.clone())
     }
 }
@@ -241,6 +264,57 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         tools: Default::default(),
         budget: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mismatch() {
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("test repository"),
+    );
+    let mut app = application(repository, Arc::new(RecordingEnvironmentSource::default()));
+    let publication = awaken_session_contract::SessionModelPublication {
+        primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new(
+                "override-account",
+                "override-upstream",
+                "genai",
+            ),
+        ),
+        candidates: Vec::new(),
+    };
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    app.set_model_publication_resolver(Arc::new(RecordingModelPublication {
+        publication: publication.clone(),
+        requests: requests.clone(),
+    }));
+
+    let reused = app
+        .resolve_session_model_override(
+            "workspace",
+            "published-model",
+            "published-model",
+            Default::default(),
+        )
+        .await
+        .expect("equal model id reuses the publication");
+    assert!(reused.publication.is_none());
+    assert!(requests.lock().expect("model requests").is_empty());
+
+    let resolved = app
+        .resolve_session_model_override(
+            "workspace",
+            "requested-model",
+            "published-model",
+            Default::default(),
+        )
+        .await
+        .expect("mismatched model id resolves a complete publication");
+    assert_eq!(resolved.publication.as_deref(), Some(&publication));
+    assert_eq!(
+        requests.lock().expect("model requests").as_slice(),
+        [("workspace".to_string(), "requested-model".to_string())]
+    );
 }
 
 #[tokio::test]

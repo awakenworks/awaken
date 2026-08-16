@@ -53,7 +53,7 @@ pub(super) type RestoredRuntime = (
 /// A runtime that reports a non-empty committed transcript, so a session can
 /// rehydrate. Every operational method is unused by these tests.
 #[derive(Clone, Default)]
-pub(super) struct RehydrateFake {
+pub(crate) struct RehydrateFake {
     pub(super) restored: Arc<
         std::sync::Mutex<
             Vec<(

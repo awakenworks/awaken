@@ -995,6 +995,21 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// One index avoids parallel per-feature recovery registries and scans.
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError>;
 
+    /// Healthy Sessions whose immutable authoring baseline references a Vault.
+    /// This is the durable index used by credential rollout controllers; an
+    /// in-memory cache or one process's active-runtime list is never complete in
+    /// HA. Adapters that cannot provide the scan fail closed and leave the
+    /// credential outbox event pending.
+    async fn sessions_referencing_vault(
+        &self,
+        _workspace_id: &str,
+        _vault_id: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        Err(SessionRepositoryError::Unavailable(
+            "Session repository does not support Vault rollout indexing".into(),
+        ))
+    }
+
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
     /// second command registry.

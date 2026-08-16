@@ -12,6 +12,7 @@
 use sha2::{Digest, Sha256};
 
 pub mod agents_registry;
+pub mod credential_rollouts;
 pub mod deployments;
 pub mod dreams;
 pub mod environments;

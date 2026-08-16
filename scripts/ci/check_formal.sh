@@ -70,6 +70,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
+    --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
     --harness only_queued_work_is_claimable \
@@ -133,8 +134,17 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness a_pool_with_no_enabled_available_member_fails_closed \
     --harness managed_vault_workspace_admission_is_exact_and_non_widening \
     --harness managed_vault_replacement_requires_exact_revision_successor \
+    --harness managed_vault_delete_is_monotonic_identity_bound_and_absorbing \
+    --harness managed_vault_delete_fence_allows_only_absorbing_child_delete \
     --harness managed_credential_workspace_admission_requires_exact_parent_and_owner \
-    --harness managed_credential_insert_requires_every_aggregate_invariant
+    --harness managed_credential_insert_requires_every_aggregate_invariant \
+    --harness managed_credential_replacement_requires_both_fences_and_exact_successor \
+    --harness deleted_managed_credential_is_absorbing \
+    --harness managed_creation_pair_requires_every_binding_axis \
+    --harness managed_creation_begin_rejects_every_published_identity \
+    --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
+    --harness managed_material_attempt_requires_owner_and_exact_physical_namespace \
+    --harness managed_rollout_never_precedes_exact_pair_publication
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
     --harness hand_protocol_requires_supported_version_and_v2_operation_identity
@@ -142,7 +152,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness provider_scope_never_widens_endpoint_scope
   run_kani awaken-agent-config \
-    --harness processing_geography_requires_exact_evidence_from_every_candidate
+    --harness processing_geography_requires_exact_evidence_from_every_candidate \
+    --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness environment_credential_custody_selects_exactly_one_authorized_profile \
@@ -176,6 +187,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
     --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup \
+    --harness rollout_update_revision_is_monotonic_and_covers_event \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \
     --harness idempotency_key_length_and_summary_policy_is_exact \
     --harness idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte
@@ -250,6 +262,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
     --harness hand_availability_has_only_explicit_recovery_and_terminal_transitions \
     --harness hand_binding_can_only_become_ready_through_tracked_starting \
+    --harness hand_generation_advance_never_wraps_and_exhaustion_is_terminal \
     --harness read_only_tree_publication_requires_a_complete_restricted_safe_stage \
     --harness session_realization_control_disposition_projects_exact_worker_effect \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
@@ -456,6 +469,22 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-inventory" \
     -config formal/tla/CredentialInventory.cfg formal/tla/CredentialInventory.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-credential-creation" \
+    -config formal/tla/ManagedCredentialCreation.cfg \
+    formal/tla/ManagedCredentialCreation.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-credential-rollout" \
+    -config formal/tla/ManagedCredentialRollout.cfg \
+    formal/tla/ManagedCredentialRollout.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/rollout-event-identity" \
+    -config formal/tla/RolloutEventIdentity.cfg \
+    formal/tla/RolloutEventIdentity.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-vault-deletion" \
+    -config formal/tla/ManagedVaultDeletion.cfg \
+    formal/tla/ManagedVaultDeletion.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/mcp-server" \
     -config formal/tla/McpServer.cfg formal/tla/McpServer.tla

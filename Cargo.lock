@@ -777,6 +777,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -792,6 +793,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1546,6 +1548,7 @@ dependencies = [
  "awaken-resource-store",
  "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
+ "awaken-service-auth-contract",
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
@@ -1557,6 +1560,7 @@ dependencies = [
  "chrono-tz",
  "form_urlencoded",
  "http-body-util",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",

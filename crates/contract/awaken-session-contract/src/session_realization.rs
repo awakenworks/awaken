@@ -459,14 +459,15 @@ impl SessionRealizationControlFailure {
 #[cfg(kani)]
 #[kani::proof]
 fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
-    let selector = kani::any::<u8>() % 7;
+    let selector = kani::any::<u8>() % 8;
     let failure = match selector {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::Terminal,
-        3 => SessionRealizationControlFailure::StaleOwnership,
-        4 => SessionRealizationControlFailure::Conflict,
-        5 => SessionRealizationControlFailure::Invalid(String::new()),
+        2 => SessionRealizationControlFailure::Retired,
+        3 => SessionRealizationControlFailure::Terminal,
+        4 => SessionRealizationControlFailure::StaleOwnership,
+        5 => SessionRealizationControlFailure::Conflict,
+        6 => SessionRealizationControlFailure::Invalid(String::new()),
         _ => SessionRealizationControlFailure::Unavailable(String::new()),
     };
     // This oracle is deliberately derived from the symbolic variant selector,
@@ -474,7 +475,7 @@ fn session_realization_control_failure_disposition_is_total_exact_and_fail_close
     // change the expected result at the same time.
     let expected = match selector {
         1 => SessionRealizationControlDisposition::NotReady,
-        3 | 4 | 6 => SessionRealizationControlDisposition::Retryable,
+        4 | 5 | 7 => SessionRealizationControlDisposition::Retryable,
         _ => SessionRealizationControlDisposition::Terminal,
     };
 
