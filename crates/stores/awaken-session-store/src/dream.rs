@@ -408,6 +408,7 @@ mod tests {
             workspace_id: "workspace".into(),
             status: awaken_session_contract::DreamStatus::Pending,
             source_memory_store_id: "store".into(),
+            output_behavior: awaken_session_contract::DreamOutputBehavior::CreateNew,
             session_ids: vec!["session".into()],
             model: awaken_session_contract::DreamModelConfig {
                 id: "claude-sonnet-5".into(),

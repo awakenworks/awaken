@@ -18,7 +18,10 @@ pub struct ReadTool;
 
 #[derive(Deserialize)]
 pub struct ReadArgs {
+    #[serde(rename = "file_path", alias = "path")]
     pub path: String,
+    #[serde(default)]
+    pub view_range: Option<Vec<i64>>,
 }
 
 #[async_trait]
@@ -29,8 +32,37 @@ impl Tool for ReadTool {
         "read"
     }
     async fn call(&self, args: ReadArgs) -> Result<String, ToolError> {
-        std::fs::read_to_string(&args.path)
-            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))
+        let content = std::fs::read_to_string(&args.path)
+            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
+        let Some(range) = args.view_range else {
+            return Ok(content);
+        };
+        if range.len() != 2 || range[0] < 1 {
+            return Err(ToolError::InvalidArguments(
+                "read view_range must be [start_line, end_line] with start_line >= 1".into(),
+            ));
+        }
+        let start = usize::try_from(range[0] - 1).map_err(|_| {
+            ToolError::InvalidArguments("read view_range start is too large".into())
+        })?;
+        let end = if range[1] <= 0 {
+            usize::MAX
+        } else {
+            usize::try_from(range[1]).map_err(|_| {
+                ToolError::InvalidArguments("read view_range end is too large".into())
+            })?
+        };
+        if end <= start {
+            return Err(ToolError::InvalidArguments(
+                "read view_range end must be at least start_line".into(),
+            ));
+        }
+        Ok(content
+            .lines()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
 
@@ -40,6 +72,8 @@ pub struct GlobTool;
 #[derive(Deserialize)]
 pub struct GlobArgs {
     pub pattern: String,
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[async_trait]
@@ -50,14 +84,31 @@ impl Tool for GlobTool {
         "glob"
     }
     async fn call(&self, args: GlobArgs) -> Result<String, ToolError> {
-        let entries = glob::glob(&args.pattern)
-            .map_err(|err| ToolError::InvalidArguments(format!("glob {}: {err}", args.pattern)))?;
+        let pattern = args.path.as_ref().map_or_else(
+            || args.pattern.clone(),
+            |root| {
+                std::path::Path::new(root)
+                    .join(&args.pattern)
+                    .display()
+                    .to_string()
+            },
+        );
+        let entries = glob::glob(&pattern)
+            .map_err(|err| ToolError::InvalidArguments(format!("glob {pattern}: {err}")))?;
         let mut paths = Vec::new();
         for entry in entries {
             let path = entry.map_err(|err| ToolError::Execution(format!("glob walk: {err}")))?;
-            paths.push(path.display().to_string());
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            paths.push((modified, path.display().to_string()));
         }
-        Ok(paths.join("\n"))
+        paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        Ok(paths
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
 
@@ -67,6 +118,7 @@ pub struct GrepTool;
 #[derive(Deserialize)]
 pub struct GrepArgs {
     pub pattern: String,
+    #[serde(default)]
     pub path: String,
 }
 
@@ -80,16 +132,52 @@ impl Tool for GrepTool {
     async fn call(&self, args: GrepArgs) -> Result<String, ToolError> {
         let re = regex::Regex::new(&args.pattern)
             .map_err(|err| ToolError::InvalidArguments(format!("grep pattern: {err}")))?;
-        let content = std::fs::read_to_string(&args.path)
-            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
+        let root = if args.path.is_empty() {
+            std::path::Path::new(".")
+        } else {
+            std::path::Path::new(&args.path)
+        };
+        let mut files = Vec::new();
+        collect_files(root, &mut files)?;
+        files.sort();
         let mut hits = Vec::new();
-        for (index, line) in content.lines().enumerate() {
-            if re.is_match(line) {
-                hits.push(format!("{}:{}:{}", args.path, index + 1, line));
+        for path in files {
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (index, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    hits.push(format!("{}:{}:{}", path.display(), index + 1, line));
+                }
             }
         }
         Ok(hits.join("\n"))
     }
+}
+
+fn collect_files(
+    path: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> Result<(), ToolError> {
+    if path.is_file() {
+        files.push(path.to_path_buf());
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(path)
+        .map_err(|err| ToolError::Execution(format!("read directory {}: {err}", path.display())))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|err| ToolError::Execution(format!("walk {}: {err}", path.display())))?;
+        let file_type = entry.file_type().map_err(|err| {
+            ToolError::Execution(format!("stat {}: {err}", entry.path().display()))
+        })?;
+        if file_type.is_dir() {
+            collect_files(&entry.path(), files)?;
+        } else if file_type.is_file() {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
 }
 
 /// Write `content` to a file, creating or truncating it. Returns a confirmation.
@@ -97,6 +185,7 @@ pub struct WriteTool;
 
 #[derive(Deserialize)]
 pub struct WriteArgs {
+    #[serde(rename = "file_path", alias = "path")]
     pub path: String,
     pub content: String,
 }
@@ -134,9 +223,14 @@ pub struct EditTool;
 
 #[derive(Deserialize)]
 pub struct EditArgs {
+    #[serde(rename = "file_path", alias = "path")]
     pub path: String,
+    #[serde(rename = "old_string", alias = "old")]
     pub old: String,
+    #[serde(rename = "new_string", alias = "new")]
     pub new: String,
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[async_trait]
@@ -170,6 +264,12 @@ impl Tool for EditTool {
                 std::fs::write(&args.path, &updated)
                     .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
                 Ok(format!("edited {}", args.path))
+            }
+            n if args.replace_all => {
+                let updated = content.replace(&args.old, &args.new);
+                std::fs::write(&args.path, &updated)
+                    .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+                Ok(format!("edited {} ({n} replacements)", args.path))
             }
             n => Err(ToolError::Execution(format!(
                 "edit {}: `old` text is ambiguous ({n} occurrences); add context to make it unique",
@@ -255,7 +355,12 @@ pub struct BashTool;
 
 #[derive(Deserialize)]
 pub struct BashArgs {
+    #[serde(default)]
     pub command: String,
+    #[serde(default)]
+    pub restart: bool,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[async_trait]
@@ -266,6 +371,19 @@ impl Tool for BashTool {
         "bash"
     }
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
+        if args.restart {
+            if !args.command.is_empty() {
+                return Err(ToolError::InvalidArguments(
+                    "bash restart must not include command".into(),
+                ));
+            }
+            return Ok("bash session restarted".into());
+        }
+        if args.command.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "bash command is required unless restart is true".into(),
+            ));
+        }
         // The async child wait yields to authority heartbeats and, unlike a
         // `spawn_blocking(Command::output)` task, remains cancellation-safe. Each
         // shell leads a private process group: finishing or dropping this tool call
@@ -305,10 +423,19 @@ impl Tool for BashTool {
             let mut bytes = Vec::new();
             child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
         });
-        let status = child
-            .wait()
-            .await
-            .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?;
+        let status = if let Some(timeout_ms) = args.timeout_ms.filter(|value| *value > 0) {
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait())
+                .await
+                .map_err(|_| {
+                    ToolError::Execution(format!("bash command timed out after {timeout_ms} ms"))
+                })?
+                .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?
+        } else {
+            child
+                .wait()
+                .await
+                .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?
+        };
         // `wait_with_output` waits for pipe EOF as well as the foreground shell.
         // An unredirected `server &` keeps both pipes open indefinitely even
         // after that shell has exited. Reap the private process group as soon as
@@ -361,6 +488,8 @@ mod bash_tests {
         BashTool
             .call(BashArgs {
                 command: "sleep 0.15".into(),
+                restart: false,
+                timeout_ms: None,
             })
             .await
             .expect("sleep command");
@@ -384,7 +513,11 @@ mod bash_tests {
             ready.display(),
             leaked.display()
         );
-        let call = tokio::spawn(BashTool.call(BashArgs { command }));
+        let call = tokio::spawn(BashTool.call(BashArgs {
+            command,
+            restart: false,
+            timeout_ms: None,
+        }));
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !ready.is_file() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -418,7 +551,11 @@ mod bash_tests {
 
         let output = tokio::time::timeout(
             std::time::Duration::from_millis(200),
-            BashTool.call(BashArgs { command }),
+            BashTool.call(BashArgs {
+                command,
+                restart: false,
+                timeout_ms: None,
+            }),
         )
         .await
         .expect("an unredirected background child must not hold the tool pipe open")
