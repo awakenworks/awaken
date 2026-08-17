@@ -13,6 +13,7 @@ pub(super) fn egress_label(network: &crate::NetworkMode) -> &'static str {
     match network {
         crate::NetworkMode::Open => "open",
         crate::NetworkMode::None => "restricted",
+        crate::NetworkMode::Allowlist => "allowlist",
     }
 }
 
@@ -22,7 +23,12 @@ pub(super) fn admit_network(
     network: &crate::NetworkMode,
     restricted_policy: bool,
 ) -> Result<(), crate::RuntimeError> {
-    if matches!(network, crate::NetworkMode::Open) || restricted_policy {
+    if matches!(network, crate::NetworkMode::Open)
+        || (matches!(
+            network,
+            crate::NetworkMode::None | crate::NetworkMode::Allowlist
+        ) && restricted_policy)
+    {
         Ok(())
     } else {
         Err(crate::RuntimeError::Backend(
