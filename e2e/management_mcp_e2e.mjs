@@ -199,7 +199,11 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${gatedAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      const gated = await client.beta.sessions.create({ agent: gatedAgent, betas: BETAS });
+      const gated = await client.beta.sessions.create({
+        agent: gatedAgent,
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
       await sendMessage(client, gated.id, 'add 9 4');
       let gatedEvents = await listEvents(client, gated.id);
       const gatedUse = gatedEvents.find((event) => event.type === 'agent.mcp_tool_use');
@@ -280,7 +284,11 @@ async function main() {
       r = await req(base, 'POST', `/v1/config/agents/${badAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       await assert.rejects(
-        client.beta.sessions.create({ agent: badAgent, betas: BETAS }),
+        client.beta.sessions.create({
+          agent: badAgent,
+          environment_id: 'env_local',
+          betas: BETAS,
+        }),
         (error) => error?.status === 500 &&
           error?.message?.includes('auth challenge: HTTP 401') &&
           !error?.message?.includes('wrong-mcp-token'),
@@ -303,7 +311,11 @@ async function main() {
       r = await req(base, 'POST', `/v1/config/agents/${offlineAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       await assert.rejects(
-        client.beta.sessions.create({ agent: offlineAgent, betas: BETAS }),
+        client.beta.sessions.create({
+          agent: offlineAgent,
+          environment_id: 'env_local',
+          betas: BETAS,
+        }),
         (error) => error?.status === 503 && error?.message?.includes('offline'),
         'F3: an unreachable MCP target must fail creation before activation',
       );
