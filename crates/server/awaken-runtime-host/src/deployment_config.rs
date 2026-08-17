@@ -277,6 +277,9 @@ pub struct SandboxSettings {
     pub warm_pool_idle_ttl_secs: u64,
     /// Optional HTTP(S) proxy used by the container provider.
     pub container_forward_proxy: Option<String>,
+    /// Capability-authenticated proxy used only when the container runtime has
+    /// independently attested a no-bypass allowlist network boundary.
+    pub container_allowlist_proxy: Option<awaken_sandbox_container::AllowlistProxy>,
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
@@ -327,6 +330,7 @@ impl Default for SandboxSettings {
             warm_pool_total_size: 16,
             warm_pool_idle_ttl_secs: 300,
             container_forward_proxy: None,
+            container_allowlist_proxy: None,
             k8s_namespace: "default".to_owned(),
             k8s_image_pull_secrets: Vec::new(),
             k8s_continuation_volume: None,

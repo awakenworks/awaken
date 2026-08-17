@@ -42,6 +42,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .sandbox_warm_pool_idle_ttl_secs
             .unwrap_or(sandbox_defaults.warm_pool_idle_ttl_secs),
         container_forward_proxy: file.container_forward_proxy.clone(),
+        // A no-bypass allowlist requires a deployment-mounted signing key and
+        // an attested gateway; standalone configuration cannot synthesize it.
+        container_allowlist_proxy: None,
         k8s_namespace: file
             .k8s_namespace
             .clone()

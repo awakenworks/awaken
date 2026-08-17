@@ -114,6 +114,9 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
             url: url.to_owned(),
         });
     }
+    if let Some(proxy) = &settings.container_allowlist_proxy {
+        provider = provider.with_allowlist_proxy(proxy.clone());
+    }
     Ok(wrap(provider, settings))
 }
 

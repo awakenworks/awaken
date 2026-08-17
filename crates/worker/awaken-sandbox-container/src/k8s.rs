@@ -611,6 +611,10 @@ impl ContainerRuntime for K8sRuntime {
         self.network_policy_attestation.current()
     }
 
+    fn enforces_network_allowlist(&self) -> bool {
+        self.network_policy_attestation.allowlist_current()
+    }
+
     async fn probe_ready(&self) -> Result<(), RuntimeError> {
         self.network_policy_attestation
             .refresh(&self.clients.control, &self.namespace)

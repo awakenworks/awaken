@@ -6,10 +6,20 @@ use awaken_provisioning_contract as pc;
 
 use crate::ContainerPlan;
 
+/// A no-bypass claim is publishable only when both independent deployment
+/// evidence sources exist: runtime isolation and a capability issuer.
+pub(crate) const fn allowlist_capability_advertised(
+    runtime_attested: bool,
+    issuer_installed: bool,
+) -> bool {
+    runtime_attested && issuer_installed
+}
+
 /// Capabilities common to one concrete container runtime. Network denial is
 /// runtime evidence rather than an isolation-class assumption.
 pub(crate) fn container_capabilities(
     network_isolation: bool,
+    enforced_network_allowlist: bool,
     package_provisioning: bool,
 ) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
@@ -18,12 +28,34 @@ pub(crate) fn container_capabilities(
         path_fidelity: true,
         enforced_readonly: true,
         network_isolation,
-        enforced_network_allowlist: false,
+        enforced_network_allowlist,
         secret_egress_substitution: false,
         resource_limits: true,
         custom_rootfs: true,
         package_provisioning,
     }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::allowlist_capability_advertised;
+
+    #[test]
+    fn allowlist_claim_requires_runtime_and_issuer() {
+        assert!(!allowlist_capability_advertised(false, false));
+        assert!(!allowlist_capability_advertised(false, true));
+        assert!(!allowlist_capability_advertised(true, false));
+        assert!(allowlist_capability_advertised(true, true));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn allowlist_claim_never_exceeds_its_evidence() {
+    let runtime_attested: bool = kani::any();
+    let issuer_installed: bool = kani::any();
+    let advertised = allowlist_capability_advertised(runtime_attested, issuer_installed);
+    assert!(!advertised || (runtime_attested && issuer_installed));
 }
 
 /// A memory-store mount carried into a remote container runtime. The canonical
@@ -91,6 +123,12 @@ pub trait PackageImageProvisioner: Send + Sync {
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
     fn enforces_network_none(&self) -> bool {
+        false
+    }
+
+    /// Live evidence that arbitrary workload traffic can reach the public
+    /// network only through the configured allowlist proxy.
+    fn enforces_network_allowlist(&self) -> bool {
         false
     }
 

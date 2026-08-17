@@ -17,18 +17,29 @@ use crate::RuntimeError;
 
 const SANDBOX_DENY_POLICY: &str = "awaken-sandbox-default-deny";
 const SANDBOX_OPEN_POLICY: &str = "awaken-sandbox-open-egress";
+const SANDBOX_ALLOWLIST_POLICY: &str = "awaken-sandbox-allowlist-egress";
 
 /// Mutable live evidence owned by one runtime instance. All refresh and
 /// fail-closed state transitions pass through this type.
-pub(super) struct Attestation(AtomicBool);
+pub(super) struct Attestation {
+    network_none: AtomicBool,
+    network_allowlist: AtomicBool,
+}
 
 impl Attestation {
     pub(super) const fn new() -> Self {
-        Self(AtomicBool::new(false))
+        Self {
+            network_none: AtomicBool::new(false),
+            network_allowlist: AtomicBool::new(false),
+        }
     }
 
     pub(super) fn current(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.network_none.load(Ordering::Acquire)
+    }
+
+    pub(super) fn allowlist_current(&self) -> bool {
+        self.network_allowlist.load(Ordering::Acquire)
     }
 
     pub(super) async fn refresh(
@@ -39,12 +50,16 @@ impl Attestation {
         let attested = match attest(client, namespace).await {
             Ok(attested) => attested,
             Err(error) => {
-                self.0.store(false, Ordering::Release);
+                self.network_none.store(false, Ordering::Release);
+                self.network_allowlist.store(false, Ordering::Release);
                 return Err(error);
             }
         };
-        self.0.store(attested, Ordering::Release);
-        if attested {
+        self.network_none
+            .store(attested.network_none, Ordering::Release);
+        self.network_allowlist
+            .store(attested.network_allowlist, Ordering::Release);
+        if attested.network_none {
             Ok(())
         } else {
             Err(backend(format!(
@@ -54,13 +69,25 @@ impl Attestation {
     }
 }
 
-pub(super) async fn attest(client: &kube::Client, namespace: &str) -> Result<bool, RuntimeError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Evidence {
+    network_none: bool,
+    network_allowlist: bool,
+}
+
+pub(super) async fn attest(
+    client: &kube::Client,
+    namespace: &str,
+) -> Result<Evidence, RuntimeError> {
     let policies: Api<NetworkPolicy> = Api::namespaced(client.clone(), namespace);
     let policies = policies
         .list(&ListParams::default())
         .await
         .map_err(backend)?;
-    Ok(attests_contract(&policies.items))
+    Ok(Evidence {
+        network_none: attests_contract(&policies.items),
+        network_allowlist: attests_allowlist_contract(&policies.items),
+    })
 }
 
 fn selector_matches(selector: &LabelSelector, labels: &BTreeMap<String, String>) -> bool {
@@ -156,10 +183,57 @@ fn attests_contract(policies: &[NetworkPolicy]) -> bool {
     deny.is_some() && open_allow.is_some() && restricted_is_not_widened
 }
 
+fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
+    let allowlist = BTreeMap::from([
+        ("app".to_owned(), "awaken-sandbox".to_owned()),
+        ("awaken-egress".to_owned(), "allowlist".to_owned()),
+    ]);
+    let exact = policies.iter().find(|policy| {
+        policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
+            && policy.spec.as_ref().is_some_and(|spec| {
+                has_exact_labels(&spec.pod_selector, &allowlist)
+                    && controls(policy, "Egress")
+                    && spec.egress.as_ref().is_some_and(|rules| {
+                        rules.len() == 1
+                            && rules[0].to.as_ref().is_some_and(|peers| {
+                                peers.len() == 1
+                                    && peers[0].ip_block.is_none()
+                                    && peers[0].namespace_selector.is_none()
+                                    && peers[0].pod_selector.as_ref().is_some_and(|selector| {
+                                        has_exact_labels(
+                                            selector,
+                                            &BTreeMap::from([(
+                                                "app.kubernetes.io/component".to_owned(),
+                                                "egress-gateway".to_owned(),
+                                            )]),
+                                        )
+                                    })
+                            })
+                            && rules[0].ports.as_ref().is_some_and(|ports| {
+                                ports.len() == 1
+                                    && ports[0].protocol.as_deref() == Some("TCP")
+                                    && ports[0].port.is_some()
+                            })
+                    })
+            })
+    });
+    exact.is_some()
+        && policies.iter().all(|policy| {
+            policy.spec.as_ref().is_none_or(|spec| {
+                !selector_matches(&spec.pod_selector, &allowlist)
+                    || !allows_any_egress(policy)
+                    || policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use k8s_openapi::api::networking::v1::{NetworkPolicyEgressRule, NetworkPolicySpec};
+    use k8s_openapi::api::networking::v1::{
+        NetworkPolicyEgressRule, NetworkPolicyPeer, NetworkPolicyPort, NetworkPolicySpec,
+    };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelectorRequirement, ObjectMeta};
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
     use super::*;
 
@@ -206,6 +280,34 @@ mod tests {
                 &["Egress"],
                 Some(vec![NetworkPolicyEgressRule::default()]),
             ),
+            policy(
+                SANDBOX_ALLOWLIST_POLICY,
+                LabelSelector {
+                    match_labels: Some(BTreeMap::from([
+                        ("app".into(), "awaken-sandbox".into()),
+                        ("awaken-egress".into(), "allowlist".into()),
+                    ])),
+                    ..Default::default()
+                },
+                &["Egress"],
+                Some(vec![NetworkPolicyEgressRule {
+                    to: Some(vec![NetworkPolicyPeer {
+                        pod_selector: Some(LabelSelector {
+                            match_labels: Some(BTreeMap::from([(
+                                "app.kubernetes.io/component".into(),
+                                "egress-gateway".into(),
+                            )])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }]),
+                    ports: Some(vec![NetworkPolicyPort {
+                        protocol: Some("TCP".into()),
+                        port: Some(IntOrString::Int(8081)),
+                        end_port: None,
+                    }]),
+                }]),
+            ),
         ]
     }
 
@@ -218,6 +320,7 @@ mod tests {
         // explicit sandbox exclusion preserves E1.
         let canonical = canonical();
         assert!(attests_contract(&canonical), "P1");
+        assert!(attests_allowlist_contract(&canonical), "P1 allowlist");
         assert!(!attests_contract(&canonical[1..]), "P2");
 
         let mut widened = canonical.clone();
@@ -228,6 +331,7 @@ mod tests {
             Some(vec![NetworkPolicyEgressRule::default()]),
         ));
         assert!(!attests_contract(&widened), "P3");
+        assert!(!attests_allowlist_contract(&widened), "P3 allowlist");
 
         let mut excluded = canonical;
         excluded.push(policy(
