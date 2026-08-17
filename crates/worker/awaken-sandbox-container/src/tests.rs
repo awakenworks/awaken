@@ -76,7 +76,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities(true, false);
+    let c = container_capabilities(true, false, false);
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
@@ -98,7 +98,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     let mut requested = spec("egress-only");
     requested.env[1].visibility = pc::EnvVisibility::EgressOnly;
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities(true, false)),
+        pc::prepare_environment(&requested, &container_capabilities(true, false, false)),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
     );
@@ -114,7 +114,7 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
         ..Default::default()
     };
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities(true, false)),
+        pc::prepare_environment(&requested, &container_capabilities(true, false, false)),
         Err(pc::PrepareError::PackageProvisioningUnsupported),
         "Kubernetes and out-of-tree runtimes without immutable image builds must fail before a workload exists"
     );

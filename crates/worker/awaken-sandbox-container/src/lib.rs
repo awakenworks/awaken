@@ -30,6 +30,7 @@ mod live_inputs;
 mod packages;
 mod podman_plan;
 mod process_env;
+mod provider_contract;
 use process_env::environment_keepalive_command;
 pub use process_env::runtime_configuration_homes;
 mod recovery;
@@ -38,17 +39,21 @@ mod runtime;
 mod secret;
 mod writable;
 pub use cgroup::CgroupCaps;
-pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
+pub use egress::{
+    AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, ForwardProxy, NetworkMode,
+    egress_plan, egress_plan_with_allowlist, normalize_hostname,
+};
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
+pub use provider_contract::{ContainerEnvironment, ContainerEnvironmentProvider, EnvironmentFile};
 pub use resident_hand::ResidentHandConfig;
-use runtime::container_capabilities;
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
     RuntimeAgentProcess, RuntimeError,
 };
+use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
 pub use writable::{checkpoint_writable_roots, validate_checkpoint_writable_roots, writable_dirs};
 
@@ -1023,7 +1028,18 @@ pub fn container_plan(
     command: &[String],
     forward_proxy: Option<&ForwardProxy>,
 ) -> Result<ContainerPlan, EgressError> {
-    let egress = egress_plan(&spec.network, forward_proxy)?;
+    container_plan_with_allowlist(spec, default_image, command, forward_proxy, None)
+}
+
+fn container_plan_with_allowlist(
+    spec: &pc::SandboxSpec,
+    default_image: &str,
+    command: &[String],
+    forward_proxy: Option<&ForwardProxy>,
+    allowlist_proxy: Option<&AllowlistProxy>,
+) -> Result<ContainerPlan, EgressError> {
+    let egress =
+        egress_plan_with_allowlist(&spec.network, forward_proxy, allowlist_proxy, &spec.scope)?;
     let mut env = inline_env(spec);
     env.extend(egress.proxy_env);
     Ok(ContainerPlan {
@@ -1088,6 +1104,10 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// Optional connectivity proxy for unrestricted traffic. It is never treated
     /// as network-policy enforcement.
     forward_proxy: Option<ForwardProxy>,
+    /// Capability issuer plus proxy coordinate. Presence is not enough to
+    /// advertise support: the runtime must independently attest that direct
+    /// workload egress cannot bypass this proxy.
+    allowlist_proxy: Option<AllowlistProxy>,
     /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
     /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
     blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
@@ -1115,6 +1135,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             package_provisioner: None,
             default_image: default_image.into(),
             forward_proxy: None,
+            allowlist_proxy: None,
             blobs: Arc::new(std::collections::HashMap::new()),
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
@@ -1142,6 +1163,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     #[must_use]
     pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Self {
         self.forward_proxy = Some(proxy);
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowlist_proxy(mut self, proxy: AllowlistProxy) -> Self {
+        self.allowlist_proxy = Some(proxy);
         self
     }
 
@@ -1196,6 +1223,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             spec,
             &container_capabilities(
                 self.runtime.enforces_network_none(),
+                allowlist_capability_advertised(
+                    self.runtime.enforces_network_allowlist(),
+                    self.allowlist_proxy.is_some(),
+                ),
                 self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
             ),
         )
@@ -1220,11 +1251,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .resident_hand
             .as_ref()
             .map_or_else(environment_keepalive_command, ResidentHandConfig::command);
-        let mut plan = container_plan(
+        let mut plan = container_plan_with_allowlist(
             spec,
             &self.default_image,
             &command,
             self.forward_proxy.as_ref(),
+            self.allowlist_proxy.as_ref(),
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         if let Some(hand) = &self.resident_hand {
@@ -1455,6 +1487,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         container_capabilities(
             self.runtime.enforces_network_none(),
+            allowlist_capability_advertised(
+                self.runtime.enforces_network_allowlist(),
+                self.allowlist_proxy.is_some(),
+            ),
             self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
         )
     }
@@ -1491,6 +1527,10 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     fn capabilities(&self) -> pc::SandboxCapabilities {
         container_capabilities(
             self.runtime.enforces_network_none(),
+            allowlist_capability_advertised(
+                self.runtime.enforces_network_allowlist(),
+                self.allowlist_proxy.is_some(),
+            ),
             self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
         )
     }
@@ -1562,64 +1602,6 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     }
 }
 
-/// Object-safe live container environment owned by one Session.  This is the
-/// container counterpart of a local/namespace sandbox plus its segregated opaque
-/// agent-channel capability.
-#[async_trait]
-pub trait ContainerEnvironment: pc::Sandbox {
-    /// Absolute directory exposed to the Agent for out-of-band output artifacts.
-    /// Keeping it on the live environment prevents host projections from assuming
-    /// that container outputs live below `/workspace`.
-    fn outputs_path(&self) -> &str {
-        "/outputs"
-    }
-
-    /// Whether this wrapper adopted an environment whose original in-process
-    /// lifecycle guards were lost with the prior owner.
-    fn is_recovered(&self) -> bool {
-        false
-    }
-
-    fn supports_live_mount_replacement(
-        &self,
-        _previous: &[pc::MountRequirement],
-        _next: &[pc::MountRequirement],
-    ) -> bool {
-        false
-    }
-
-    async fn remove_live_input_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
-            "late mount removal is unsupported on this container tier",
-        ))
-    }
-
-    async fn spawn_agent_process(
-        &self,
-        command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
-
-    /// Open the provider's private channel to the resident environment process.
-    /// The concrete runtime owns authentication (for Kubernetes, the Pod
-    /// subresource under Worker workload identity).
-    async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
-            "container environment does not expose a resident agent channel",
-        ))
-    }
-
-    /// Read regular files below an absolute sandbox directory over the environment's
-    /// attached exec channel. Implementations enforce an archive-size bound.
-    async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError>;
-}
-
-/// One file harvested from a live container environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvironmentFile {
-    pub path: String,
-    pub bytes: Vec<u8>,
-}
-
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
     fn outputs_path(&self) -> &str {
@@ -1658,67 +1640,6 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 
     async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
         files::read_files(self, root).await
-    }
-}
-
-/// Backend-erased provider for Session-owned container environments.
-#[async_trait]
-pub trait ContainerEnvironmentProvider: Send + Sync {
-    /// Exact provider evidence used by Host admission before any secret opens.
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        // Existing/out-of-tree providers remain source compatible but acquire no
-        // security claim until they explicitly report enforceable behavior.
-        pc::SandboxCapabilities {
-            isolation: pc::IsolationClass::Workdir,
-            tool_transparent: false,
-            path_fidelity: false,
-            enforced_readonly: false,
-            network_isolation: false,
-            enforced_network_allowlist: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-            package_provisioning: false,
-        }
-    }
-
-    /// Exact filesystem-continuation formats implemented end to end by this
-    /// provider. The Worker projects these into its existing manifest authority.
-    fn checkpoint_formats(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
-
-    fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
-
-    /// Revalidate mutable provider-side evidence used by Worker placement.
-    /// The Worker calls this before Ready and on every heartbeat; failure
-    /// drains the incarnation through the existing authority-loss path.
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError>;
-
-    async fn create_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    async fn adopt_environment(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    /// Restore a distinct environment from the canonical checkpoint byte port.
-    /// Production Kubernetes implementations override this only when their
-    /// mutable filesystem is fully exportable/importable or snapshot-backed.
-    async fn restore_environment(
-        &self,
-        _spec: &pc::SandboxSpec,
-        _checkpoint: &pc::SandboxCheckpointRef,
-        _store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
-            "container provider does not implement checkpoint restore",
-        ))
     }
 }
 
