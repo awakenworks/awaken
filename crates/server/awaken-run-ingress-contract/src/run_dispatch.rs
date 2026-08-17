@@ -267,6 +267,17 @@ pub struct RunDispatch {
 }
 
 impl RunDispatch {
+    fn canonicalized(&self) -> Self {
+        let mut canonical = self.clone();
+        canonical.traceparent = None;
+        canonical
+    }
+
+    fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.canonicalized())
+            .expect("RunDispatch's serializable contract has no fallible value")
+    }
+
     pub fn new(activation: RunActivation) -> Self {
         Self {
             activation,
@@ -280,6 +291,23 @@ impl RunDispatch {
             inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
         }
+    }
+
+    /// Stable dispatch identity for caller-owned Run ids. Distributed tracing is
+    /// intentionally excluded: a retry may arrive under another request span,
+    /// while every execution-bearing field must remain byte-equivalent.
+    #[must_use]
+    pub fn canonical_fingerprint(&self) -> String {
+        let fingerprint = awaken_runtime_contract::content_fingerprint(&self.canonicalized())
+            .expect("RunDispatch's serializable contract has no fallible value");
+        format!("sha256:{fingerprint}")
+    }
+
+    /// Canonical-byte replay comparison for a live row. Hashes are needed only
+    /// once the full dispatch has been compacted into a completion tombstone.
+    #[must_use]
+    pub fn same_canonical_dispatch(&self, other: &Self) -> bool {
+        self.canonical_bytes() == other.canonical_bytes()
     }
 
     /// Route execution through an existing session without changing the Run's
@@ -471,6 +499,49 @@ mod tests {
         assert_eq!(back.run_id(), req.run_id());
         assert_eq!(back.thread_id(), req.thread_id());
         assert_eq!(back.traceparent.as_deref(), Some("00-abc-01"));
+    }
+
+    #[test]
+    fn live_and_tombstone_identity_share_canonical_bytes() {
+        // Identity decision rule I1: C1 two dispatch values are Rust-equal but
+        // their serialized execution payload differs (`-0.0` versus `0.0`);
+        // E1 live comparison rejects them and E2 tombstone fingerprints differ.
+        // I2: C2 only traceparent differs => E3 both comparisons replay. This
+        // locks live and compacted identity to one byte equivalence relation.
+        let mut negative_zero = RunDispatch::new(activation());
+        negative_zero
+            .activation
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .insert("number".into(), serde_json::json!(-0.0));
+        let mut positive_zero = negative_zero.clone();
+        positive_zero
+            .activation
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .insert("number".into(), serde_json::json!(0.0));
+        assert_eq!(negative_zero, positive_zero, "I1/C1 precondition");
+        assert!(
+            !negative_zero.same_canonical_dispatch(&positive_zero),
+            "I1/E1"
+        );
+        assert_ne!(
+            negative_zero.canonical_fingerprint(),
+            positive_zero.canonical_fingerprint(),
+            "I1/E2"
+        );
+
+        let retraced = negative_zero.clone().with_traceparent(Some(
+            "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into(),
+        ));
+        assert!(negative_zero.same_canonical_dispatch(&retraced), "I2/E3");
+        assert_eq!(
+            negative_zero.canonical_fingerprint(),
+            retraced.canonical_fingerprint(),
+            "I2/E3"
+        );
     }
 
     /// Resource-envelope compatibility causes/effects: C1 current dispatch has a

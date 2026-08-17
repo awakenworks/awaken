@@ -272,12 +272,125 @@ pub async fn assert_dispatch_conformance_with_clock(
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
+    caller_owned_run_identity_is_exact(store, namespace).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
     if capabilities.completion_events {
         committed_terminal_recovery_reuses_fenced_settlement(store, namespace).await;
     }
+}
+
+/// Caller-owned Run-id cause/effect table. C1 same RunId; C2 live/completed;
+/// C3 canonical dispatch same/different; C4 traceparent same/different; C5 the
+/// incoming collision is ineligible for the local/selected Worker; C6 two
+/// different payloads race before either row exists. Effects:
+/// E1 same payload replays, including exact claim of a runnable live row; E2 a
+/// collision fails before mutation; E3 trace-only change remains observational.
+/// Rules: I1=C1+C2+C3(same)=>E1; I2=C1+C2+C3(diff)=>E2;
+/// I3=I1+C4(diff)=>E1+E3; I4=I2+C5=>E2 (identity precedes eligibility);
+/// I5=C1+C3(diff)+C6=>exactly one admission and one rejection.
+/// Both live and tombstone phases exercise every backend.
+async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str) {
+    let request = dispatch(ns, "caller-owned", "caller-owned-thread");
+    let run_id = request.run_id().clone();
+    store
+        .enqueue(request.clone())
+        .await
+        .expect("I1 live enqueue");
+
+    let mut retraced = request.clone();
+    retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
+    let claim = store
+        .claim_new_run(
+            retraced.clone(),
+            "caller-owned-worker",
+            LEASE_MS,
+            90_000,
+            &Default::default(),
+        )
+        .await
+        .expect("I3 live replay")
+        .expect("I1 exact live row remains claimable");
+
+    let mut collision = request.clone();
+    collision.activation.thread_id = ThreadId(format!("{ns}-collision-thread"));
+    collision.placement = PlacementRequirements::remote_required();
+    assert!(store.enqueue(collision.clone()).await.is_err(), "I2 live");
+    assert!(
+        store
+            .claim_new_run(
+                collision.clone(),
+                "ineligible-local",
+                LEASE_MS,
+                89_999,
+                &Default::default(),
+            )
+            .await
+            .is_err(),
+        "I4 local eligibility cannot mask collision"
+    );
+    let manifest = WorkerManifest::default();
+    let ineligible_worker = WorkerSnapshot {
+        identity: WorkerIdentity::new(format!("{ns}-ineligible"), "boot", 1),
+        capability_fingerprint: manifest.fingerprint().expect("manifest fingerprints"),
+        manifest,
+        state: WorkerState::Draining,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+        expires_at_ms: 100_000,
+    };
+    assert!(
+        store
+            .claim_new_run_compatible(collision.clone(), &ineligible_worker, LEASE_MS, 89_999)
+            .await
+            .is_err(),
+        "I4 Worker eligibility cannot mask collision"
+    );
+
+    assert_eq!(
+        store
+            .settle(&run_id, claim.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("settle caller-owned run"),
+        SettleOutcome::Applied
+    );
+    store.enqueue(retraced).await.expect("I3 tombstone replay");
+    assert!(store.enqueue(collision).await.is_err(), "I2 tombstone");
+
+    let left = dispatch(ns, "caller-race", "caller-race-left");
+    let mut right = left.clone();
+    right.activation.thread_id = ThreadId(format!("{ns}-caller-race-right"));
+    let (left_result, right_result) =
+        tokio::join!(store.enqueue(left.clone()), store.enqueue(right.clone()));
+    assert_ne!(left_result.is_ok(), right_result.is_ok(), "I5");
+    let winner = if left_result.is_ok() { left } else { right };
+    let winner_id = winner.run_id().clone();
+    let winner_claim = store
+        .claim_new_run(
+            winner,
+            "caller-race-worker",
+            LEASE_MS,
+            91_000,
+            &Default::default(),
+        )
+        .await
+        .expect("I5 winner replay")
+        .expect("I5 winner remains claimable");
+    assert_eq!(
+        store
+            .settle(
+                &winner_id,
+                winner_claim.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle I5 winner"),
+        SettleOutcome::Applied
+    );
 }
 
 /// Committed-terminal recovery cause/effect table. Causes: C1 a dispatch is

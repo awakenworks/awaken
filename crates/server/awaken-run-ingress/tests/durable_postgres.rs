@@ -29,6 +29,7 @@ use awaken_run_ingress::{
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
+use sqlx::Executor as _;
 
 use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
 
@@ -69,6 +70,35 @@ fn stream_checkpoint(run_id: &str, text: &str) -> StreamCheckpoint {
             raw_arguments: "{\"incomplete\":".to_owned(),
         }],
     }
+}
+
+#[tokio::test]
+async fn legacy_completion_without_dispatch_identity_fails_closed() {
+    // Legacy-tombstone decision rule L1: C1 a completed Run id exists, C2 its
+    // pre-V0024 fingerprint is NULL, C3 a caller submits an otherwise plausible
+    // dispatch under that id => E1 reject the replay and E2 create no live row.
+    // This proves the SQL authority does not infer equality from missing history.
+    let Some(pool) = harness::schema_pool("t_pg_legacy_completion_identity").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch store");
+    pool.execute(
+        "INSERT INTO runtime_dispatch_completion (run_id, request_fingerprint) \
+         VALUES ('legacy-completed', NULL)",
+    )
+    .await
+    .expect("insert historical tombstone");
+
+    assert!(
+        store
+            .enqueue(RunDispatch::new(activation("legacy-completed")))
+            .await
+            .is_err(),
+        "L1/E1"
+    );
+    assert!(store.list_dispatches().await.unwrap().is_empty(), "L1/E2");
 }
 
 #[tokio::test]

@@ -43,3 +43,11 @@ guidance.
 - Fact: queued work, recovery, and projections are valid only when they preserve the runtime commit path and derive public views after commit.
 - Links: guardrails G1 and G13
 - Verification: staged commit, projection ordering, and transactional store tests.
+
+## FACT-DISPATCH-005: A caller-owned Run id binds one canonical dispatch
+
+- Status: active
+- Owner: [ADR-0060 D6](../adr/0060-durable-dispatch-completion-tombstone.md#d6-a-caller-owned-run-id-identifies-one-canonical-dispatch)
+- Fact: exact retries ignore only request-local tracing; a different or historically unverifiable payload under the same Run id fails closed before eligibility, and completion retains the canonical identity on the existing tombstone.
+- Links: guardrail G35
+- Verification: shared memory/SQLite/Postgres dispatch cause/effect conformance table plus SQL legacy-NULL migration fixtures.

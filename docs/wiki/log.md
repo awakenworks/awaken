@@ -1,5 +1,13 @@
 # Wiki Update Log
 
+## 2026-08-18
+
+- Bound caller-owned Run ids to the canonical dispatch fingerprint on the
+  existing durable completion tombstone; no collision registry or second Run
+  authority was added.
+- Made different, ineligible, concurrent, and historically unverifiable
+  payloads fail closed while trace-only retries preserve first-accepted options.
+
 ## 2026-08-15
 
 - **Consolidation**: Amended ADR-0061 so Control and Resources retain distinct

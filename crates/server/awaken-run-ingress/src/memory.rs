@@ -21,9 +21,10 @@ use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
-    compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    normalize_pending_millis, verify_credential_realization_receipt,
+    RunIdentityDecision, SettleOutcome, StoredRunIdentity, SubmitOptions,
+    can_admit_attempt_credentials, compile_attempt_credential_bindings, decide_run_identity,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -510,18 +511,12 @@ fn claim_new_local(
     now_ms: u64,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    let run_id = request.run_id().clone();
+    let known = known_run_identity(state, &request)?;
     if !can_claim_locally(&request.placement) {
         return Ok(None);
     }
-    let run_id = request.run_id().clone();
-    if state
-        .completions
-        .iter()
-        .any(|completion| completion.run_id == run_id)
-    {
-        return Ok(None);
-    }
-    if !state.rows.contains_key(&run_id) {
+    if !known {
         state.rows.insert(
             run_id.clone(),
             Row {
@@ -544,6 +539,24 @@ fn claim_new_local(
         state.order.push(run_id.clone());
     }
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
+}
+
+/// Same-Run replay is permitted only for the exact canonical dispatch. This is
+/// evaluated by the queue authority before any supersession or claim mutation.
+fn known_run_identity(state: &State, request: &RunDispatch) -> Result<bool, DispatchError> {
+    let run_id = request.run_id();
+    let stored = if let Some(row) = state.rows.get(run_id) {
+        StoredRunIdentity::Live(&row.request)
+    } else if let Some(completion) = state
+        .completions
+        .iter()
+        .find(|completion| &completion.run_id == run_id)
+    {
+        StoredRunIdentity::Completed(completion.request_fingerprint.as_deref())
+    } else {
+        StoredRunIdentity::Absent
+    };
+    decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
 }
 
 fn deliver_and_claim_local(
@@ -626,14 +639,9 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
-        // Idempotent by run id; and a no-op while a live dispatch shares the
-        // caller's dedupe key.
-        if state.rows.contains_key(&run_id)
-            || state
-                .completions
-                .iter()
-                .any(|completion| completion.run_id == run_id)
-        {
+        // Exact canonical replays are no-ops; same-id payload collisions fail
+        // before supersession can mutate sibling rows.
+        if known_run_identity(&state, &request)? {
             return Ok(());
         }
         if let Some(key) = &options.dedupe_key
@@ -710,20 +718,14 @@ impl DispatchQueue for MemoryDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            return Ok(None);
-        }
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
-        if state
-            .completions
-            .iter()
-            .any(|completion| completion.run_id == run_id)
-        {
+        let known = known_run_identity(&state, &request)?;
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
             return Ok(None);
         }
-        if !state.rows.contains_key(&run_id) {
+        if !known {
             state.rows.insert(
                 run_id.clone(),
                 Row {
@@ -1173,9 +1175,14 @@ impl DispatchQueue for MemoryDispatchStore {
             DispatchOutcome::Done => {
                 debug_assert_eq!(transition, GuardedTransition::Removed);
                 let sequence = state.completions.len() as u64 + 1;
+                let request_fingerprint = state
+                    .rows
+                    .get(run_id)
+                    .map(|row| row.request.canonical_fingerprint());
                 state.completions.push(DispatchCompletion {
                     sequence,
                     run_id: run_id.clone(),
+                    request_fingerprint,
                 });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);

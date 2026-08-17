@@ -31,6 +31,8 @@ pub mod memory;
 mod pool;
 #[cfg(feature = "durable")]
 mod postgres;
+#[cfg(feature = "durable")]
+mod postgres_identity;
 mod recovery_projection;
 mod send_message;
 mod service;

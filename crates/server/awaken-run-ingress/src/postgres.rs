@@ -27,6 +27,7 @@ use crate::dispatch::{
     normalize_pending_millis, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
+use crate::postgres_identity::{exact_run_replay, load_completion_events, lock_run_identity};
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
@@ -264,19 +265,12 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<(), DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
 
         // Run-id idempotency survives successful completion: a live row or the
         // permanent completion tombstone makes the whole command a no-op. Check
         // before supersession so replay cannot mutate sibling dispatches.
-        let already_known: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE run_id = $1) OR \
-             EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(reject)?;
-        if already_known {
+        if exact_run_replay(&mut tx, p, &request).await? {
             tx.commit().await.map_err(reject)?;
             return Ok(());
         }
@@ -306,7 +300,7 @@ impl DispatchQueue for PostgresDispatchStore {
 
         // Insert unless the run id exists, or a live (non-dead-letter) dispatch
         // already carries the same dedupe key. A NULL dedupe key never matches.
-        sqlx::query(&format!(
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch \
              (run_id, thread_id, request, status, priority, epoch, dedupe_key) \
              SELECT $1, $2, $3, 'pending', $4, $5, $6 \
@@ -323,7 +317,32 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(options.dedupe_key.as_deref())
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 {
+            if exact_run_replay(&mut tx, p, &request).await? {
+                tx.commit().await.map_err(reject)?;
+                return Ok(());
+            }
+            if let Some(dedupe_key) = options.dedupe_key.as_deref() {
+                let deduped: bool = sqlx::query_scalar(&format!(
+                    "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
+                     WHERE dedupe_key = $1 AND status <> 'dead_letter')"
+                ))
+                .bind(dedupe_key)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(reject)?;
+                if deduped {
+                    tx.commit().await.map_err(reject)?;
+                    return Ok(());
+                }
+            }
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run or dedupe identity",
+                request.run_id().0
+            )));
+        }
         tx.commit().await.map_err(reject)?;
         Ok(())
     }
@@ -336,12 +355,29 @@ impl DispatchQueue for PostgresDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !can_claim_locally(&request.placement) {
-            return Ok(None);
-        }
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        if exact_run_replay(&mut tx, p, &request).await? {
+            let run_id = request.run_id().clone();
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                &run_id,
+                owner,
+                lease_ms,
+                now_ms,
+                None,
+                capabilities,
+            )
+            .await?;
+            tx.commit().await.map_err(reject)?;
+            return Ok(claimed);
+        }
+        if !can_claim_locally(&request.placement) {
+            tx.commit().await.map_err(reject)?;
+            return Ok(None);
+        }
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
              SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
@@ -352,7 +388,14 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(Json(&request))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 && !exact_run_replay(&mut tx, p, &request).await? {
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run identity",
+                request.run_id().0
+            )));
+        }
         let run_id = request.run_id().clone();
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -375,13 +418,30 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            return Ok(None);
-        }
         let p = NS;
         let owner = worker.identity.lease_owner();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        if exact_run_replay(&mut tx, p, &request).await? {
+            let run_id = request.run_id().clone();
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                &run_id,
+                &owner,
+                lease_ms,
+                now_ms,
+                Some(worker),
+                &installed_worker_credential_capabilities(worker)?,
+            )
+            .await?;
+            tx.commit().await.map_err(reject)?;
+            return Ok(claimed);
+        }
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
+            tx.commit().await.map_err(reject)?;
+            return Ok(None);
+        }
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
              SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
@@ -392,7 +452,14 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(Json(&request))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 && !exact_run_replay(&mut tx, p, &request).await? {
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run identity",
+                request.run_id().0
+            )));
+        }
         let run_id = request.run_id().clone();
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -995,8 +1062,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let owner = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT lease_owner FROM {p}_dispatch WHERE run_id = $1 \
+        let authority = sqlx::query(&format!(
+            "SELECT lease_owner, request FROM {p}_dispatch WHERE run_id = $1 \
              AND status = 'running' AND lease_epoch = $2 AND lease_owner IS NOT NULL \
              FOR UPDATE"
         ))
@@ -1005,10 +1072,13 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        let Some(owner) = owner else {
+        let Some(authority) = authority else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
+        let owner: String = authority.try_get("lease_owner").map_err(reject)?;
+        let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(reject)?;
+        let request_fingerprint = request.canonical_fingerprint();
         let claim = RunClaim {
             run_id: run_id.clone(),
             owner,
@@ -1049,10 +1119,12 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         if outcome == DispatchOutcome::Done {
             sqlx::query(&format!(
-                "INSERT INTO {p}_dispatch_completion (run_id) VALUES ($1) \
+                "INSERT INTO {p}_dispatch_completion (run_id, request_fingerprint) \
+                 VALUES ($1, $2) \
                  ON CONFLICT (run_id) DO NOTHING"
             ))
             .bind(&run_id.0)
+            .bind(&request_fingerprint)
             .execute(&mut *tx)
             .await
             .map_err(reject)?;
@@ -1091,36 +1163,7 @@ impl DispatchQueue for PostgresDispatchStore {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
-            DispatchError::Rejected("completion cursor exceeds BIGINT range".to_string())
-        })?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT sequence, run_id FROM {p}_dispatch_completion \
-             WHERE sequence > $1 ORDER BY sequence LIMIT $2"
-        ))
-        .bind(after_sequence)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
-        rows.into_iter()
-            .map(|row| {
-                let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
-                Ok(DispatchCompletion {
-                    sequence: u64::try_from(sequence).map_err(|_| {
-                        DispatchError::Rejected(
-                            "persisted completion sequence is negative".to_string(),
-                        )
-                    })?,
-                    run_id: RunId(row.try_get("run_id").map_err(reject)?),
-                })
-            })
-            .collect()
+        load_completion_events(&self.pool, NS, after_sequence, limit).await
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

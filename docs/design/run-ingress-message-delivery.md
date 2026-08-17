@@ -196,6 +196,14 @@ cannot be verified without a server,
 [ADR-0028](../adr/0028-nats-store-deferral.md); the NATS wake signal is built
 and live-tested).
 
+Caller-owned Run ids retain one canonical dispatch identity across every
+admission path ([ADR-0060](../adr/0060-durable-dispatch-completion-tombstone.md)).
+A live retry compares the complete `RunDispatch` except request-local
+`traceparent`; an applied `Done` atomically retains the same identity as a
+SHA-256 fingerprint on the existing completion tombstone. Different or legacy
+unverifiable payloads fail closed before placement or supersession policy can
+mask the collision. Exact retries preserve the first accepted dispatch options.
+
 ## Durable Semantics
 
 Durable behavior is additive:

@@ -86,12 +86,35 @@ owner. The worker checks committed truth both before and after the claim; a stal
 proof restores `Awaiting`. This adds no cleanup table, outcome status, or direct
 row-deletion path.
 
+### D6: A caller-owned Run id identifies one canonical dispatch
+
+Every admission path compares identity before placement, scheduling, or
+supersession eligibility. A live row is replayable only when its complete
+`RunDispatch` has byte-equal canonical JSON after excluding `traceparent`; any
+other execution-bearing difference is rejected. Once `Done` compacts the live row,
+the same transaction stores that canonical dispatch identity as a SHA-256
+fingerprint on the existing completion tombstone. A retry with the same Run id
+and canonical dispatch is a no-op; a different or unverifiable payload is
+rejected. This ordering also applies to concurrent first admission, so an
+incompatible placement cannot mask a collision and two contenders cannot both
+authorize different payloads.
+
+`SubmitOptions` are delivery policy rather than Run identity. The first
+accepted options remain authoritative on an exact Run-id replay; retry options
+cannot mutate or supersede the existing dispatch. A live `dedupe_key` collision
+remains the separate caller-key no-op defined by ADR-0018.
+
+Migration V0024 adds the nullable fingerprint to the existing tombstone rather
+than creating a collision registry. `NULL` is reserved for historical rows
+whose dispatch payload is no longer provable; those Run ids fail closed on
+replay instead of treating absence of evidence as identity equality.
+
 ## Consequences
 
 - A separate process can project terminal delivery after either side restarts,
   without coupling to a backend schema or adding a second run authority.
 - The queue's stated run-id idempotency becomes durable across successful
-  completion.
+  completion and rejects caller-owned Run-id reuse with another payload.
 - One compact row is retained per completed run. That storage cost is the price
   of permanent identity deduplication; operational retention must preserve the
   tombstone invariant.

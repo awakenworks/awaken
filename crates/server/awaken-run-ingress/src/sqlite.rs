@@ -15,15 +15,16 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
-    compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    normalize_pending_millis, verify_credential_realization_receipt,
+    RunIdentityDecision, SettleOutcome, StoredRunIdentity, SubmitOptions,
+    can_admit_attempt_credentials, compile_attempt_credential_bindings, decide_run_identity,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -51,6 +52,43 @@ pub enum StoreError {
 /// The component namespace for this runtime's tables (see the Postgres store).
 /// Built in, not configured — one runtime is one component.
 const NS: &str = "runtime";
+
+fn exact_run_replay(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    request: &RunDispatch,
+) -> Result<bool, DispatchError> {
+    let run_id = &request.run_id().0;
+    let live = tx
+        .query_row(
+            &format!("SELECT request FROM {prefix}_dispatch WHERE run_id = ?1"),
+            params![run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(reject)?
+        .map(|stored| serde_json::from_str::<RunDispatch>(&stored).map_err(json_err))
+        .transpose()?;
+    let completed = if live.is_none() {
+        tx.query_row(
+            &format!(
+                "SELECT request_fingerprint FROM {prefix}_dispatch_completion WHERE run_id = ?1"
+            ),
+            params![run_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(reject)?
+    } else {
+        None
+    };
+    let stored = match (&live, &completed) {
+        (Some(live), _) => StoredRunIdentity::Live(live),
+        (None, Some(completed)) => StoredRunIdentity::Completed(completed.as_deref()),
+        (None, None) => StoredRunIdentity::Absent,
+    };
+    decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
+}
 
 pub struct SqliteDispatchStore {
     conn: Arc<Mutex<Connection>>,
@@ -177,17 +215,7 @@ impl DispatchQueue for SqliteDispatchStore {
 
             // A replayed completed run is a no-op before supersession, so it
             // cannot mutate sibling rows on its thread (ADR-0060).
-            let already_known = tx
-                .query_row(
-                    &format!(
-                        "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE run_id = ?1) OR \
-                         EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1)"
-                    ),
-                    params![run_id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(reject)?;
-            if already_known {
+            if exact_run_replay(&tx, p, &request)? {
                 tx.commit().map_err(reject)?;
                 return Ok(());
             }
@@ -255,9 +283,6 @@ impl DispatchQueue for SqliteDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !can_claim_locally(&request.placement) {
-            return Ok(None);
-        }
         let run_id = request.run_id().0.clone();
         let thread_id = request.thread_id().0.clone();
         let request_json = json(&request)?;
@@ -267,6 +292,23 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
+            if exact_run_replay(&tx, p, &request)? {
+                let claimed = claim_exact_transaction(
+                    &tx,
+                    &run_id,
+                    &owner,
+                    lease_ms,
+                    now_ms,
+                    None,
+                    &capabilities,
+                )?;
+                tx.commit().map_err(reject)?;
+                return Ok(claimed);
+            }
+            if !can_claim_locally(&request.placement) {
+                tx.commit().map_err(reject)?;
+                return Ok(None);
+            }
             let inserted = tx
                 .execute(
                     &format!(
@@ -302,9 +344,6 @@ impl DispatchQueue for SqliteDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            return Ok(None);
-        }
         let run_id = request.run_id().0.clone();
         let thread_id = request.thread_id().0.clone();
         let request_json = json(&request)?;
@@ -314,6 +353,23 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let owner = worker.identity.lease_owner();
+            if exact_run_replay(&tx, p, &request)? {
+                let claimed = claim_exact_transaction(
+                    &tx,
+                    &run_id,
+                    &owner,
+                    lease_ms,
+                    now_ms,
+                    Some(&worker),
+                    &installed_worker_credential_capabilities(&worker)?,
+                )?;
+                tx.commit().map_err(reject)?;
+                return Ok(claimed);
+            }
+            if can_assign(&worker, &request.placement, None, false, now_ms).is_err() {
+                tx.commit().map_err(reject)?;
+                return Ok(None);
+            }
             tx
                 .execute(
                     &format!(
@@ -1041,22 +1097,23 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            let owner: Option<String> = tx
+            let authority: Option<(String, String)> = tx
                 .query_row(
                     &format!(
-                        "SELECT lease_owner FROM {p}_dispatch \
+                        "SELECT lease_owner, request FROM {p}_dispatch \
                          WHERE run_id = ?1 AND status = 'running' AND lease_epoch = ?2"
                     ),
                     params![run_id, epoch_i64],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(reject)?
-                .flatten();
-            let Some(owner) = owner else {
+                .map_err(reject)?;
+            let Some((owner, request_json)) = authority else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
+            let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+            let request_fingerprint = request.canonical_fingerprint();
             let claim = RunClaim {
                 run_id: RunId(run_id.clone()),
                 owner,
@@ -1095,10 +1152,11 @@ impl DispatchQueue for SqliteDispatchStore {
             if outcome == DispatchOutcome::Done {
                 tx.execute(
                     &format!(
-                        "INSERT INTO {p}_dispatch_completion (run_id) VALUES (?1) \
+                        "INSERT INTO {p}_dispatch_completion (run_id, request_fingerprint) \
+                         VALUES (?1, ?2) \
                          ON CONFLICT(run_id) DO NOTHING"
                     ),
-                    params![run_id],
+                    params![run_id, request_fingerprint],
                 )
                 .map_err(reject)?;
             }
@@ -1152,18 +1210,22 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let mut statement = conn
                 .prepare(&format!(
-                    "SELECT sequence, run_id FROM {p}_dispatch_completion \
+                    "SELECT sequence, run_id, request_fingerprint FROM {p}_dispatch_completion \
                      WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
                 ))
                 .map_err(reject)?;
             let rows = statement
                 .query_map(params![after_sequence, limit], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
                 })
                 .map_err(reject)?;
             let mut events = Vec::new();
             for row in rows {
-                let (sequence, run_id) = row.map_err(reject)?;
+                let (sequence, run_id, request_fingerprint) = row.map_err(reject)?;
                 events.push(DispatchCompletion {
                     sequence: u64::try_from(sequence).map_err(|_| {
                         DispatchError::Rejected(
@@ -1171,6 +1233,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         )
                     })?,
                     run_id: RunId(run_id),
+                    request_fingerprint,
                 });
             }
             Ok(events)

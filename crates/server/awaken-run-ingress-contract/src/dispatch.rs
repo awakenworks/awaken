@@ -292,6 +292,11 @@ pub enum SettleOutcome {
 pub struct DispatchCompletion {
     pub sequence: u64,
     pub run_id: RunId,
+    /// Canonical identity of the accepted dispatch. Historical tombstones that
+    /// predate collision detection retain `None` and therefore cannot authorize
+    /// a caller-owned Run-id replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_fingerprint: Option<String>,
 }
 
 /// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
@@ -405,14 +410,17 @@ pub struct SubmitOptions {
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {
     /// Idempotently record an accepted run at default options. Re-enqueueing the
-    /// same run id is a no-op, so an at-least-once submit has an exactly-once
+    /// same run id and exact canonical dispatch is a no-op; reusing that id for a
+    /// different dispatch is rejected, so an at-least-once submit has one exact
     /// effect per run.
     async fn enqueue(&self, request: RunDispatch) -> Result<(), DispatchError> {
         self.enqueue_with(request, SubmitOptions::default()).await
     }
 
     /// Record an accepted run with dispatch options (priority, dedupe key). A
-    /// dedupe key already live makes this a no-op.
+    /// dedupe key already live makes this a no-op. On an exact canonical Run-id
+    /// replay the first accepted options remain authoritative; retry options do
+    /// not mutate or supersede the existing dispatch.
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -423,9 +431,11 @@ pub trait DispatchQueue: Send + Sync {
     ///
     /// Parent-mediated child creation uses this command so the process-wide
     /// dispatcher cannot claim the new row between a separate enqueue and exact
-    /// claim. Existing rows remain idempotent: an existing runnable row may be
-    /// claimed under the ordinary exact-claim rules; an already leased or settled
-    /// row returns `None`. The returned lease is otherwise identical to
+    /// claim. Existing rows remain idempotent only when their canonical dispatch
+    /// is exact; a different payload under the same Run id is rejected before
+    /// placement eligibility is considered. An exact existing runnable row may
+    /// be claimed under the ordinary exact-claim rules; an already leased or
+    /// settled row returns `None`. The returned lease is otherwise identical to
     /// [`claim`](Self::claim), including its fencing epoch.
     async fn claim_new_run(
         &self,
