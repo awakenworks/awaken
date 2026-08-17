@@ -556,7 +556,7 @@ impl SharedHost {
     /// The durable ingress for `thread`, building the session if needed. Errors
     /// unless the server runs in durable mode (`typed durable ingress`). This is
     /// the operational entry for the ADR-0009 follow-on verbs (slice E): recover
-    /// (ADR-0011), reap / dead-letter GC (ADR-0015), and superseding submit
+    /// (ADR-0011), manual quarantine / GC (ADR-0015), and superseding submit
     /// (ADR-0022).
     pub(crate) async fn durable_ingress(
         &self,
@@ -580,11 +580,10 @@ impl SharedHost {
         Ok(processed.into_iter().map(|(id, _)| id.0).collect())
     }
 
-    /// Reap crashed dispatches on `thread` that have exhausted `max_attempts`
-    /// crash-recoveries as of `now_ms` (ADR-0015, slice E). Returns how many were
-    /// dead-lettered. `now_ms` is an as-of cutoff so an operator (or a test) can
-    /// reap against a chosen clock.
-    pub async fn reap(
+    /// Explicitly quarantine crashed dispatches on `thread` selected by an
+    /// operator. Automatic retry exhaustion instead commits terminal Run truth.
+    /// `now_ms` is the operator-selected as-of cutoff (ADR-0015, slice E).
+    pub async fn quarantine_retry_exhausted(
         &self,
         thread: &str,
         max_attempts: u64,
@@ -592,7 +591,7 @@ impl SharedHost {
     ) -> Result<usize, HostError> {
         self.durable_ingress(thread)
             .await?
-            .reap(max_attempts, now_ms)
+            .quarantine_retry_exhausted(max_attempts, now_ms)
             .await
             .map_err(|e| HostError::internal(e.to_string()))
     }

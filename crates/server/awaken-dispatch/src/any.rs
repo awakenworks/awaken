@@ -405,20 +405,6 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim(owner, lease_ms, now_ms, capabilities))
     }
 
-    async fn reap_and_claim(
-        &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
-        max_attempts: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            reap_and_claim(owner, lease_ms, now_ms, capabilities, max_attempts)
-        )
-    }
-
     async fn claim_compatible(
         &self,
         worker: &WorkerSnapshot,
@@ -466,6 +452,19 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(
             self,
             claim_for_terminal_recovery(run_id, owner, lease_ms, now_ms)
+        )
+    }
+
+    async fn claim_retry_exhausted(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            claim_retry_exhausted(owner, lease_ms, now_ms, max_attempts)
         )
     }
 
@@ -520,8 +519,12 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, completion_events_after(after_sequence, limit))
     }
 
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
-        delegate!(self, reap(max_attempts, now_ms))
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        delegate!(self, quarantine_retry_exhausted(max_attempts, now_ms))
     }
 
     async fn bind_sandbox(

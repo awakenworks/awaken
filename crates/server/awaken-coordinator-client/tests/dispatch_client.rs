@@ -877,7 +877,7 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
     let _ = &run;
 
     assert!(matches!(
-        queue.reap(5, 0).await,
+        queue.quarantine_retry_exhausted(5, 0).await,
         Err(DispatchError::Rejected(_))
     ));
     assert!(matches!(

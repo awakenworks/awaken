@@ -31,6 +31,10 @@ pub mod memory;
 mod pool;
 #[cfg(feature = "durable")]
 mod postgres;
+#[cfg(feature = "durable")]
+mod postgres_helpers;
+#[cfg(feature = "durable")]
+mod postgres_identity;
 mod recovery_projection;
 mod send_message;
 mod service;
@@ -63,7 +67,7 @@ pub use awaken_dispatch_contract::{
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
     WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
-    place_assignment, worker_credential_realization_capabilities,
+    place_assignment, retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
 pub use awaken_dispatch_contract::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,

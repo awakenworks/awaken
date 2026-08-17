@@ -269,15 +269,231 @@ pub async fn assert_dispatch_conformance_with_clock(
         local_claims_skip_remote_only_work(store, namespace).await;
     }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
+    retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
+    caller_owned_run_identity_is_exact(store, namespace).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
     if capabilities.completion_events {
         committed_terminal_recovery_reuses_fenced_settlement(store, namespace).await;
     }
+}
+
+/// Retry-exhaustion cause/effect decision table shared by every backend:
+/// C1 state=Leased; C2 lease strictly expired; C3 attempts>=max. R1 !C1 => no
+/// claim; R2 C1+!C2 (including equality) => no claim; R3 C1+C2+!C3 => no claim;
+/// R4 C1+C2+C3 => mint one newer ordinary Claimed epoch without execution
+/// credentials; R5 two concurrent claimants for one eligible row => exactly one
+/// receives the unique newer epoch and one receives None; R6 the losing/stale
+/// epoch is fenced while the current claim settles Done.
+async fn retry_exhaustion_claim_is_atomic_and_policy_exact(store: &dyn DispatchQueue, ns: &str) {
+    let request = dispatch(ns, "retry-exhaustion", "retry-exhaustion-thread");
+    let run_id = request.run_id().clone();
+    store
+        .enqueue(request)
+        .await
+        .expect("enqueue retry-exhaustion row");
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, 0, 1)
+            .await
+            .expect("R1 query")
+            .is_none(),
+        "R1"
+    );
+    let fresh = store
+        .claim_run(&run_id, "crashed-a", LEASE_MS, 10_000, &Default::default())
+        .await
+        .expect("fresh claim")
+        .expect("fresh row claimable");
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, fresh.lease.expires_ms, 0)
+            .await
+            .expect("R2 query")
+            .is_none(),
+        "R2"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, fresh.lease.expires_ms + 1, 1)
+            .await
+            .expect("R3 query")
+            .is_none(),
+        "R3"
+    );
+    let recovered = store
+        .claim_run(
+            &run_id,
+            "crashed-b",
+            LEASE_MS,
+            fresh.lease.expires_ms + 1,
+            &Default::default(),
+        )
+        .await
+        .expect("ordinary recovery")
+        .expect("ordinary recovery is claimable");
+    let terminal_now = recovered.lease.expires_ms + 1;
+    let (left, right) = tokio::join!(
+        store.claim_retry_exhausted("terminal", LEASE_MS, terminal_now, 1),
+        store.claim_retry_exhausted("terminal-racer", LEASE_MS, terminal_now, 1),
+    );
+    let left = left.expect("R5 left query");
+    let right = right.expect("R5 right query");
+    assert_ne!(left.is_some(), right.is_some(), "R5 one winner");
+    let terminal = left.or(right).expect("R4/R5 exhausted row claimable");
+    assert!(terminal.recovered, "R4");
+    assert!(terminal.credential_bindings.is_empty(), "R4");
+    assert_eq!(terminal.lease.run_id, run_id, "R5 unique row");
+    assert_eq!(
+        terminal.lease.epoch,
+        recovered.lease.epoch + 1,
+        "R5 unique newer epoch"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminal-third", LEASE_MS, terminal_now, 1)
+            .await
+            .expect("R5 barrier query")
+            .is_none(),
+        "R5"
+    );
+    assert_eq!(
+        store
+            .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("R6 stale settle"),
+        SettleOutcome::Fenced,
+        "R6"
+    );
+    assert_eq!(
+        store
+            .settle(
+                &terminal.lease.run_id,
+                terminal.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("R6 settle"),
+        SettleOutcome::Applied,
+        "R6"
+    );
+}
+
+/// Caller-owned Run-id cause/effect table. C1 same RunId; C2 live/completed;
+/// C3 canonical dispatch same/different; C4 traceparent same/different; C5 the
+/// incoming collision is ineligible for the local/selected Worker; C6 two
+/// different payloads race before either row exists. Effects:
+/// E1 same payload replays, including exact claim of a runnable live row; E2 a
+/// collision fails before mutation; E3 trace-only change remains observational.
+/// Rules: I1=C1+C2+C3(same)=>E1; I2=C1+C2+C3(diff)=>E2;
+/// I3=I1+C4(diff)=>E1+E3; I4=I2+C5=>E2 (identity precedes eligibility);
+/// I5=C1+C3(diff)+C6=>exactly one admission and one rejection.
+/// Both live and tombstone phases exercise every backend.
+async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str) {
+    let request = dispatch(ns, "caller-owned", "caller-owned-thread");
+    let run_id = request.run_id().clone();
+    store
+        .enqueue(request.clone())
+        .await
+        .expect("I1 live enqueue");
+
+    let mut retraced = request.clone();
+    retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
+    let claim = store
+        .claim_new_run(
+            retraced.clone(),
+            "caller-owned-worker",
+            LEASE_MS,
+            90_000,
+            &Default::default(),
+        )
+        .await
+        .expect("I3 live replay")
+        .expect("I1 exact live row remains claimable");
+
+    let mut collision = request.clone();
+    collision.activation.thread_id = ThreadId(format!("{ns}-collision-thread"));
+    collision.placement = PlacementRequirements::remote_required();
+    assert!(store.enqueue(collision.clone()).await.is_err(), "I2 live");
+    assert!(
+        store
+            .claim_new_run(
+                collision.clone(),
+                "ineligible-local",
+                LEASE_MS,
+                89_999,
+                &Default::default(),
+            )
+            .await
+            .is_err(),
+        "I4 local eligibility cannot mask collision"
+    );
+    let manifest = WorkerManifest::default();
+    let ineligible_worker = WorkerSnapshot {
+        identity: WorkerIdentity::new(format!("{ns}-ineligible"), "boot", 1),
+        capability_fingerprint: manifest.fingerprint().expect("manifest fingerprints"),
+        manifest,
+        state: WorkerState::Draining,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+        expires_at_ms: 100_000,
+    };
+    assert!(
+        store
+            .claim_new_run_compatible(collision.clone(), &ineligible_worker, LEASE_MS, 89_999)
+            .await
+            .is_err(),
+        "I4 Worker eligibility cannot mask collision"
+    );
+
+    assert_eq!(
+        store
+            .settle(&run_id, claim.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("settle caller-owned run"),
+        SettleOutcome::Applied
+    );
+    store.enqueue(retraced).await.expect("I3 tombstone replay");
+    assert!(store.enqueue(collision).await.is_err(), "I2 tombstone");
+
+    let left = dispatch(ns, "caller-race", "caller-race-left");
+    let mut right = left.clone();
+    right.activation.thread_id = ThreadId(format!("{ns}-caller-race-right"));
+    let (left_result, right_result) =
+        tokio::join!(store.enqueue(left.clone()), store.enqueue(right.clone()));
+    assert_ne!(left_result.is_ok(), right_result.is_ok(), "I5");
+    let winner = if left_result.is_ok() { left } else { right };
+    let winner_id = winner.run_id().clone();
+    let winner_claim = store
+        .claim_new_run(
+            winner,
+            "caller-race-worker",
+            LEASE_MS,
+            91_000,
+            &Default::default(),
+        )
+        .await
+        .expect("I5 winner replay")
+        .expect("I5 winner remains claimable");
+    assert_eq!(
+        store
+            .settle(
+                &winner_id,
+                winner_claim.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle I5 winner"),
+        SettleOutcome::Applied
+    );
 }
 
 /// Committed-terminal recovery cause/effect table. Causes: C1 a dispatch is
@@ -829,9 +1045,9 @@ where
         .expect("dead-letter run is recoverable");
     assert_eq!(
         store
-            .reap(1, dead_recovered.lease.expires_ms + 1)
+            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms + 1)
             .await
-            .expect("reap exhausted run"),
+            .expect("manually quarantine exhausted run"),
         1
     );
 

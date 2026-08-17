@@ -28,10 +28,10 @@ pub struct DispatchServiceConfig {
     /// Fallback drain cadence when no nudge arrives. Also the maximum delay
     /// before an expired lease is recovered.
     pub poll_interval: Duration,
-    /// Crash-retry budget: a dispatch reclaimed this many times without a settle
-    /// is dead-lettered instead of run again (ADR-0015).
+    /// Crash-retry budget: after this many recovery claims, the next expired
+    /// claim commits `Ended(Indeterminate)` instead of executing (ADR-0015).
     pub max_attempts: u64,
-    /// If set, dead-letters older than this are GC'd on the poll cadence; `None`
+    /// If set, aged manual quarantines are GC'd on the poll cadence; `None`
     /// keeps them until an operator purges them (ADR-0023).
     pub dead_letter_ttl: Option<Duration>,
     /// Cadence for reconciling a quiescent Awaiting dispatch or expired Running
@@ -146,13 +146,24 @@ async fn run_loop<S: Dispatch + 'static>(
         if shutdown.is_cancelled() {
             break;
         }
-        // Dead-letter poison runs that have exhausted their crash-retry budget,
-        // GC aged dead-letters if a ttl is set, relay staged cross-thread
-        // deliveries, then drain everything runnable now. A store error is
-        // transient: the next tick retries, so swallow it rather than kill the
-        // daemon.
+        // Resolve poison runs through committed terminal truth, GC aged manual
+        // quarantines if a ttl is set, relay staged cross-thread deliveries,
+        // then drain everything runnable now. A store/commit error is transient:
+        // the next tick retries, so keep the daemon alive.
         let now = clock.now_ms();
-        let _ = worker.store().reap(config.max_attempts, now).await;
+        let exhausted = loop {
+            match worker
+                .resolve_one_retry_exhausted(config.max_attempts, now)
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => break Ok(()),
+                Err(error) => break Err(error),
+            }
+        };
+        if let Err(error) = &exhausted {
+            tracing::warn!(%error, "retry-exhaustion terminal resolution failed; retrying");
+        }
         if let Some(ttl) = config.dead_letter_ttl {
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
             let _ = worker.store().purge_dead_letters_before(cutoff).await;
@@ -166,7 +177,13 @@ async fn run_loop<S: Dispatch + 'static>(
             }
             next_terminal_reconciliation = tokio::time::Instant::now() + interval;
         }
-        let _ = worker.run_until_idle(now).await;
+        // Do not enter ordinary execution after a failed terminal commit. The
+        // exhausted claim remains leased and is retried through the same command
+        // after expiry; running an ordinary drain here could reopen another
+        // exhausted row before terminal resolution converges.
+        if exhausted.is_ok() {
+            let _ = worker.run_until_idle(now).await;
+        }
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {}

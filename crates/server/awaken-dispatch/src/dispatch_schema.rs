@@ -118,6 +118,8 @@ const NONNEGATIVE_AUTHORITY_POSTGRES: &str =
     include_str!("migrations/V0023__nonnegative_authority.postgres.sql");
 const NONNEGATIVE_AUTHORITY_SQLITE: &str =
     include_str!("migrations/V0023__nonnegative_authority.sqlite.sql");
+const COMPLETION_FINGERPRINT: &str =
+    include_str!("migrations/V0024__dispatch_completion_fingerprint.sql");
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
 /// that does not carry a positive version yields `0`, which [`Migration::new`]
@@ -159,6 +161,11 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
         NONNEGATIVE_AUTHORITY_POSTGRES.trim(),
         NONNEGATIVE_AUTHORITY_SQLITE.trim(),
     )?);
+    migrations.push(Migration::new(
+        24,
+        "bind completion tombstones to canonical dispatch identity",
+        COMPLETION_FINGERPRINT.trim(),
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -174,10 +181,10 @@ mod tests {
     #[test]
     fn dispatch_bundle_lints_clean() {
         // Causes: C1 every physical filename equals its registered identity; C2
-        // V1..V22 are deterministic portable bodies; C3 V23 is one explicit
-        // dialect pair. Effect E1 one lint-clean stream; any identity mismatch,
-        // conditional body, or cross-bundle reference fails before connection.
-        // Decision rule D1=C1+C2+C3=>E1.
+        // V1..V22 and V24 are deterministic portable bodies; C3 V23 is one
+        // explicit dialect pair. Effect E1 one lint-clean stream; any identity
+        // mismatch, conditional body, or cross-bundle reference fails before
+        // connection. Decision rule D1=C1+C2+C3=>E1.
         let bundle = dispatch_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }
@@ -185,10 +192,10 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Decision table: D1 empty ledger -> exact dense V1..V23; D2 exact
+        // Decision table: D1 empty ledger -> exact dense V1..V24; D2 exact
         // prefix -> only its suffix; D3 duplicate/gap -> bundle rejection.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=23).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=24).collect::<Vec<_>>());
     }
 
     #[test]
@@ -200,7 +207,7 @@ mod tests {
         // CE-TM10 decision rules:
         // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
         // R2 published V1..V21 + legacy negative millis -> V22 maps it to i64::MAX;
-        // R3 current V1..V23 ledger -> reopening applies nothing.
+        // R3 current V1..V24 ledger -> reopening applies nothing.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..21].to_vec())
@@ -224,13 +231,13 @@ mod tests {
         )
         .expect("seed legacy rows");
 
-        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V23");
+        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V24");
         assert_eq!(
             applied
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [22, 23]
+            [22, 23, 24]
         );
         let maximum = i64::MAX;
         assert_eq!(
@@ -379,7 +386,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [23]
+            [23, 24]
         );
     }
 

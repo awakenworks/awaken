@@ -257,12 +257,16 @@ async fn service_relays_a_cross_thread_send() {
 }
 
 #[tokio::test]
-async fn service_dead_letters_a_poison_run() {
-    // The daemon reaps a crashed run that exhausted its budget (M5).
+async fn service_commits_retry_exhaustion_and_settles_done() {
+    // Cause/effect decision table: S1 expired lease + attempts below max => no
+    // terminal claim; S2 expired lease + attempts at max => claim exact epoch,
+    // commit Ended(Indeterminate), publish completion, settle Done; S3 automatic
+    // service path => never create a manual dead-letter quarantine. The setup
+    // selects S2/S3; backend decision-table coverage owns S1.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
     // Drive two crash-recoveries by hand so attempt_count reaches the budget.
     store
@@ -295,16 +299,20 @@ async fn service_dead_letters_a_poison_run() {
     );
     service.notify().await;
 
-    // The daemon's reap dead-letters the poison run.
-    let mut dead = Vec::new();
-    for _ in 0..600 {
-        dead = ingress.dead_letters().await.unwrap();
-        if !dead.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(dead, vec![RunId("run-1".to_string())]);
+    assert!(
+        wait_for(|| state_of(&commit, "run-1") == Some(RunState::Ended(EndCause::Indeterminate)))
+            .await,
+        "S2 terminal Run truth is committed"
+    );
+    assert_eq!(store.dispatch_count(), 0, "S2 exact claim settled Done");
+    assert!(ingress.dead_letters().await.unwrap().is_empty(), "S3");
+    let completions = store.completion_events_after(0, 10).await.unwrap();
+    assert_eq!(
+        completions.len(),
+        1,
+        "S2 publishes one completion tombstone"
+    );
+    assert_eq!(completions[0].run_id, RunId("run-1".to_string()));
 
     service.shutdown().await;
 }

@@ -579,7 +579,7 @@ M9 的可执行测试设计由 `lease.rs` 中紧邻测试和 Kani harness 的注
 | C87 | 线程已有运行中 run(单写者/线程,遮蔽 wake/fresh) | memory.rs:148 |
 | C88 | settle epoch ≠ 当前 lease_epoch → Fenced(否则 Applied) | memory.rs:385 |
 | C89 | 提交栅栏:完整 `RunClaim(run, owner, epoch)` 不匹配 → `CommitError::Rejected` | commit_fence.rs:64 |
-| C90 | reap:过期 且 `attempt_count ≥ max_attempts` → 死信 | memory.rs:420 |
+| C90 | running 租约严格过期 且 `attempt_count ≥ max_attempts` → 特殊终态 claim | dispatch_transition.rs / worker.rs |
 
 ### 果(E71–E78)
 
@@ -592,7 +592,7 @@ M9 的可执行测试设计由 `lease.rs` 中紧邻测试和 Kani harness 的注
 | E75 | `Running` 结果→高声失败 `Error::Execution` | worker.rs:553 |
 | E76 | `SettleOutcome::Fenced`→陈旧属主放弃(遮蔽 E73/E74) | worker.rs:453 |
 | E77 | claim 返回 `Claimed{...}` 并递增 `lease_epoch`;恢复重claim `attempt_count+1` | memory.rs:277 |
-| E78 | reap→死信(`DeadLetter`,`dead_lettered_at`);requeue→pending 满预算 | memory.rs:423 |
+| E78 | 特殊 claim→`Ended(Indeterminate)`→fenced Done+tombstone；失败留租约可重领 | worker.rs |
 
 ### 因果图与约束
 
@@ -603,7 +603,7 @@ Running结果 → E75
 ```
 
 - **O**{提交协调后端 fs/sqlite/pg 每部署};**O**{dispatch store memory/pg/transport};**O**{wake local/nats/pg-notify,pg-notify 要求 pg store}。
-- **R**:C86 wake 要求 awaiting ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 reap 要求过期 ∧ attempt 满(Awaiting 重置 attempt→检查点 run 永不死信);C89 以同一后端事务锁定完整 `RunClaim` 并提交，不再暴露可产生 TOCTOU 的 epoch 观测接口。
+- **R**:C86 wake 要求 awaiting ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 要求严格过期 ∧ attempt 满，实际 drainer 必须 special-first，失败不得继续 ordinary claim；无 drainer 时保留原行；C89 以同一后端事务锁定完整 `RunClaim` 并提交，不再暴露可产生 TOCTOU 的 epoch 观测接口。手工 `quarantine_retry_exhausted` 是独立运维隔离，不属于自动终态规则。
 - **M**:`Fenced` 遮蔽 E73–E75(reclaimer 状态不可侵);单写者/线程(C87)遮蔽 wake/fresh;enqueue 幂等/去重遮蔽新建行(至少一次投递→恰好一次效果);wake 丢失被 poll 兜底遮蔽(只延不丢)。
 
 ### 判定表 M10
@@ -617,14 +617,14 @@ Running结果 → E75
 | C86 唤醒(线程空闲) | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
 | C87 线程已运行 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 |
 | C88 epoch 不符 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| C90 reap 满预算 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| C90 满预算特殊 claim | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 | **E71 执行调度动作** | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | **E72 恢复 awaiting** | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
 | **E73 良性已完成** | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
 | **E77 claim+attempt+1** | 0 | 0 | 0 | 1 | 1 | 0 | 0 | 0 |
 | **claim None(单写遮蔽)** | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 | **E76 Fenced 放弃** | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| **E78 死信** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **E78 Indeterminate+Done** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 
 ---
 

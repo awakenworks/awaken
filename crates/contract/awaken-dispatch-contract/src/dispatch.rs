@@ -292,6 +292,11 @@ pub enum SettleOutcome {
 pub struct DispatchCompletion {
     pub sequence: u64,
     pub run_id: RunId,
+    /// Canonical identity of the accepted dispatch. Historical tombstones that
+    /// predate collision detection retain `None` and therefore cannot authorize
+    /// a caller-owned Run-id replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_fingerprint: Option<String>,
 }
 
 /// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
@@ -405,14 +410,17 @@ pub struct SubmitOptions {
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {
     /// Idempotently record an accepted run at default options. Re-enqueueing the
-    /// same run id is a no-op, so an at-least-once submit has an exactly-once
+    /// same run id and exact canonical dispatch is a no-op; reusing that id for a
+    /// different dispatch is rejected, so an at-least-once submit has one exact
     /// effect per run.
     async fn enqueue(&self, request: RunDispatch) -> Result<(), DispatchError> {
         self.enqueue_with(request, SubmitOptions::default()).await
     }
 
     /// Record an accepted run with dispatch options (priority, dedupe key). A
-    /// dedupe key already live makes this a no-op.
+    /// dedupe key already live makes this a no-op. On an exact canonical Run-id
+    /// replay the first accepted options remain authoritative; retry options do
+    /// not mutate or supersede the existing dispatch.
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -423,9 +431,11 @@ pub trait DispatchQueue: Send + Sync {
     ///
     /// Parent-mediated child creation uses this command so the process-wide
     /// dispatcher cannot claim the new row between a separate enqueue and exact
-    /// claim. Existing rows remain idempotent: an existing runnable row may be
-    /// claimed under the ordinary exact-claim rules; an already leased or settled
-    /// row returns `None`. The returned lease is otherwise identical to
+    /// claim. Existing rows remain idempotent only when their canonical dispatch
+    /// is exact; a different payload under the same Run id is rejected before
+    /// placement eligibility is considered. An exact existing runnable row may
+    /// be claimed under the ordinary exact-claim rules; an already leased or
+    /// settled row returns `None`. The returned lease is otherwise identical to
     /// [`claim`](Self::claim), including its fencing epoch.
     async fn claim_new_run(
         &self,
@@ -487,22 +497,6 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
-
-    /// Reap expired claims that exhausted their crash-retry budget, then claim
-    /// one runnable dispatch using the same authoritative time. Remote worker
-    /// transports override this command so the reap executes beside the durable
-    /// queue instead of crossing the worker boundary as a server-local verb.
-    async fn reap_and_claim(
-        &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-        max_attempts: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        self.reap(max_attempts, now_ms).await?;
-        self.claim(owner, lease_ms, now_ms, capabilities).await
-    }
 
     /// Atomically claim only work compatible with the registered worker snapshot.
     /// Implementations must evaluate the shared compatibility kernel before the
@@ -573,6 +567,22 @@ pub trait DispatchQueue: Send + Sync {
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support committed-terminal dispatch recovery".to_string(),
+        ))
+    }
+
+    /// Claim one strictly expired `running` dispatch at/above `max_attempts`.
+    /// This is delivery authority, not Run truth: route the ordinary [`Claimed`]
+    /// through the canonical Worker `Ended(Indeterminate)` + fenced `Done` path.
+    /// A failed commit stays eligible after expiry; `None` proves no eligible row remains at serialization.
+    async fn claim_retry_exhausted(
+        &self,
+        _owner: &str,
+        _lease_ms: u64,
+        _now_ms: u64,
+        _max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support retry-exhaustion terminal claims".to_string(),
         ))
     }
 
@@ -769,13 +779,15 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Dead-letter every *crashed* dispatch — one whose lease expired without a
-    /// settle — that has used up its crash-retry budget (`attempt_count >=
-    /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
-    /// run cannot be reclaimed forever. Returns how many were dead-lettered
-    /// (ADR-0015). The crash-retry count increments only on recovery re-claims, so
-    /// a normal await/wake never spends the budget.
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
+    /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
+    /// Moves rows to `DeadLetter`; automatic services use
+    /// [`claim_retry_exhausted`](Self::claim_retry_exhausted), so the Run first
+    /// receives committed terminal truth (ADR-0015).
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError>;
 
     /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
     /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
@@ -1921,7 +1933,7 @@ mod tests {
         ) -> Result<SettleOutcome, DispatchError> {
             Self::unsupported()
         }
-        async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
+        async fn quarantine_retry_exhausted(&self, _: u64, _: u64) -> Result<usize, DispatchError> {
             Self::unsupported()
         }
         async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
