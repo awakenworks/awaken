@@ -1,8 +1,8 @@
 //! The durable-ingress operational verbs, end-to-end through their HTTP surface.
 //!
-//! The store-level dispatch state machine (reap / dead-letter / supersede) is proven
+//! The store-level dispatch state machine (manual quarantine / supersede) is proven
 //! in `awaken-run-ingress`; this pins the **host routing layer** — that
-//! `SharedHost::{list_dispatches, reap, dead_letters, requeue_dead_letter,
+//! `SharedHost::{list_dispatches, quarantine_retry_exhausted, dead_letters, requeue_dead_letter,
 //! purge_dead_letters, superseded}`
 //! reach the process-shared dispatch queue and project it onto the wire shape the
 //! `durable_ops_router` returns.
@@ -104,7 +104,7 @@ fn contains_id(list: &Value, key: &str, id: &str) -> bool {
 async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // Cause/effect decision table: C1 durable queue configured, C2 run lease
     // expired, C3 retry budget exhausted, C4 dead letter present, C5 newer turn
-    // submitted. R1 C1 -> list succeeds; R2 C2+C3 -> reap creates dead letter;
+    // submitted. R1 C1 -> list succeeds; R2 C2+C3 -> explicit quarantine creates dead letter;
     // R3 C4 -> purge removes it; R4 C5 -> stale run is superseded. The single
     // sequence also proves every Coordinator HTTP effect reaches the same queue.
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive
@@ -118,7 +118,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
 
-    // ── reap → dead-letter → purge, plus list_dispatches ─────────────────────
+    // Manual quarantine → dead-letter → purge, plus list_dispatches.
     // A fresh run, claimed under a 1ms lease → Leased.
     mem.enqueue(RunDispatch::new(activation("run-A", thread)))
         .await
@@ -143,18 +143,15 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         "dispatches shows run-A Leased: {v}"
     );
 
-    // reap as-of a clock past the 1ms lease → the crashed dispatch is dead-lettered.
+    // Explicit operator quarantine as-of a clock past the 1ms lease.
     let (s, v) = call(
         &router,
         "POST",
-        &format!("{base}/reap?max_attempts=0&now_ms=1000"),
+        &format!("{base}/quarantine-retry-exhausted?max_attempts=0&now_ms=1000"),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(
-        v["dead_lettered"], 1,
-        "one crashed dispatch dead-lettered: {v}"
-    );
+    assert_eq!(v["quarantined"], 1, "one crashed dispatch quarantined: {v}");
 
     // dead-letters lists it; an operator can requeue the exact repaired run
     // with a fresh retry budget.
@@ -194,10 +191,10 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let (_, v) = call(
         &router,
         "POST",
-        &format!("{base}/reap?max_attempts=0&now_ms=2000"),
+        &format!("{base}/quarantine-retry-exhausted?max_attempts=0&now_ms=2000"),
     )
     .await;
-    assert_eq!(v["dead_lettered"], 1);
+    assert_eq!(v["quarantined"], 1);
 
     // Purge removes the newly dead-lettered row; then the list is empty.
     let (_, v) = call(&router, "POST", &format!("{base}/dead-letters/purge")).await;

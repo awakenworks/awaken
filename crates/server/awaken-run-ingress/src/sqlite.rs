@@ -24,7 +24,7 @@ use crate::dispatch::{
     RunIdentityDecision, SettleOutcome, StoredRunIdentity, SubmitOptions,
     can_admit_attempt_credentials, compile_attempt_credential_bindings, decide_run_identity,
     installed_worker_credential_capabilities, normalize_pending_millis,
-    verify_credential_realization_receipt,
+    retry_exhaustion_evidence_is_eligible, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -36,7 +36,9 @@ use crate::{
 use awaken_run_ingress_contract::RunDispatch;
 
 mod claim;
-use claim::{claim_exact_transaction, claim_exact_transaction_with_mode};
+use claim::{
+    claim_exact_transaction, claim_exact_transaction_with_mode, claim_retry_exhausted_transaction,
+};
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].
@@ -839,6 +841,21 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
+    async fn claim_retry_exhausted(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = crate::clock::normalize_millis(now_ms);
+        let owner = owner.to_string();
+        self.with_conn(move |conn, p| {
+            claim_retry_exhausted_transaction(conn, p, &owner, lease_ms, now_ms, max_attempts)
+        })
+        .await
+    }
+
     async fn claim_run_compatible(
         &self,
         requested_run: &RunId,
@@ -1241,7 +1258,11 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
         self.with_conn(move |conn, p| {
             let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
             let tx = conn
@@ -1271,7 +1292,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     .map_err(reject)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
             };
-            let mut reaped = 0;
+            let mut quarantined = 0;
             for (run_id, owner, epoch, attempt_count) in candidates {
                 let Some(owner) = owner else {
                     return Err(DispatchError::Rejected(
@@ -1312,10 +1333,10 @@ impl DispatchQueue for SqliteDispatchStore {
                         attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
                     },
                 )?;
-                reaped += 1;
+                quarantined += 1;
             }
             tx.commit().map_err(reject)?;
-            Ok(reaped)
+            Ok(quarantined)
         })
         .await
     }

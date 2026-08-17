@@ -101,13 +101,13 @@ impl DurableRunOperations for SharedHost {
         self.reconcile(thread).await.map_err(map_error)
     }
 
-    async fn reap(
+    async fn quarantine_retry_exhausted(
         &self,
         thread: &str,
         max_attempts: u64,
         now_ms: u64,
     ) -> Result<usize, ApplicationError> {
-        self.reap(thread, max_attempts, now_ms)
+        self.quarantine_retry_exhausted(thread, max_attempts, now_ms)
             .await
             .map_err(map_error)
     }

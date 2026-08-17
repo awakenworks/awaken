@@ -344,11 +344,19 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.run_until_idle(now_ms).await
     }
 
-    /// Dead-letter crashed runs that have exhausted their crash-retry budget, so
-    /// a poison run is not reclaimed forever (ADR-0015). Returns how many were
-    /// dead-lettered.
-    pub async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, Error> {
-        Ok(self.worker.store().reap(max_attempts, now_ms).await?)
+    /// Explicitly quarantine crashed runs that an operator has chosen to remove
+    /// from automatic terminal resolution. This is not a service maintenance
+    /// path; retry exhaustion normally commits Run terminal truth (ADR-0015).
+    pub async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, Error> {
+        Ok(self
+            .worker
+            .store()
+            .quarantine_retry_exhausted(max_attempts, now_ms)
+            .await?)
     }
 
     /// The run ids currently dead-lettered, for operations.

@@ -116,7 +116,13 @@ fn credential_dispatch(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remote_claim_reaps_exhausted_dispatch_on_the_control_side() {
+async fn remote_special_claim_uses_control_side_retry_policy_without_quarantining() {
+    // Cause/effect decision table: R1 fresh or below-threshold -> special claim
+    // returns None and ordinary execution may claim; R2 threshold reached but
+    // lease live (including exact expiry) -> None; R3 threshold reached and
+    // lease expired -> one ordinary Claimed epoch; R4 caller-supplied max/clock
+    // disagree with Control policy -> Control clock/max still decide; R5 a
+    // concurrent second special claim -> None because the first lease is live.
     let mem = Arc::new(MemoryDispatchStore::new());
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
@@ -146,16 +152,24 @@ async fn remote_claim_reaps_exhausted_dispatch_on_the_control_side() {
 
     assert!(
         queue
-            .reap_and_claim("ignored-by-server", 1_000, 0, &Default::default(), 99)
+            .claim_retry_exhausted("ignored", 1, u64::MAX, 0)
+            .await
+            .unwrap()
+            .is_none(),
+        "R1/R4"
+    );
+    assert!(
+        queue
+            .claim("ignored", 1, u64::MAX, &Default::default())
             .await
             .unwrap()
             .is_some(),
-        "initial attempt is admitted"
+        "R1/R4"
     );
     clock.set(1_001);
     assert!(
         queue
-            .reap_and_claim("ignored-by-server", 1_000, 1_001, &Default::default(), 99,)
+            .claim("ignored", 1, u64::MAX, &Default::default())
             .await
             .unwrap()
             .is_some(),
@@ -164,26 +178,52 @@ async fn remote_claim_reaps_exhausted_dispatch_on_the_control_side() {
     clock.set(2_002);
     assert!(
         queue
-            .reap_and_claim("ignored-by-server", 1_000, 2_002, &Default::default(), 99,)
+            .claim("ignored", 1, u64::MAX, &Default::default())
             .await
             .unwrap()
             .is_some(),
         "the configured second crash recovery is admitted"
     );
-    clock.set(3_003);
+    clock.set(3_002);
     assert!(
         queue
-            .reap_and_claim("ignored-by-server", 1_000, 3_003, &Default::default(), 99,)
+            .claim_retry_exhausted("ignored", 1, u64::MAX, 99)
             .await
             .unwrap()
             .is_none(),
-        "the remote worker cannot reclaim an exhausted dispatch"
+        "R2: exact lease expiry is not expired"
     );
-
+    clock.set(3_003);
+    let terminal_claim = queue
+        .claim_retry_exhausted("ignored", 1, 0, 99)
+        .await
+        .unwrap()
+        .expect("R3/R4: server policy claims exhausted run");
+    assert!(terminal_claim.credential_bindings.is_empty());
+    assert!(
+        queue
+            .claim_retry_exhausted("ignored", 1, u64::MAX, 0)
+            .await
+            .unwrap()
+            .is_none(),
+        "R5"
+    );
     let rows = mem.list_dispatches().await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].state, DispatchState::DeadLetter);
-    assert_eq!(rows[0].attempt_count, 2);
+    assert_eq!(rows[0].state, DispatchState::Leased);
+    assert_eq!(rows[0].attempt_count, 3);
+    assert!(mem.dead_letters().await.unwrap().is_empty());
+    assert_eq!(
+        queue
+            .settle(
+                &terminal_claim.lease.run_id,
+                terminal_claim.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap(),
+        awaken_run_ingress::SettleOutcome::Applied
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

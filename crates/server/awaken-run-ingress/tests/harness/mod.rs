@@ -570,6 +570,8 @@ pub struct FlakyDispatchStore {
     inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
+    fail_retry_exhaustion_claims: AtomicUsize,
+    retry_exhaustion_claim_attempts: AtomicUsize,
 }
 
 #[cfg(feature = "test-support")]
@@ -580,7 +582,15 @@ impl FlakyDispatchStore {
             inner: Arc::new(awaken_run_ingress::MemoryDispatchStore::new()),
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
+            fail_retry_exhaustion_claims: AtomicUsize::new(0),
+            retry_exhaustion_claim_attempts: AtomicUsize::new(0),
         }
+    }
+
+    pub fn with_retry_exhaustion_failures(self, failures: usize) -> Self {
+        self.fail_retry_exhaustion_claims
+            .store(failures, Ordering::SeqCst);
+        self
     }
 
     /// How many injected claim failures remain (test introspection).
@@ -591,6 +601,10 @@ impl FlakyDispatchStore {
     /// Total ordinary queue claims, including injected failures and empty polls.
     pub fn claim_attempts(&self) -> usize {
         self.claim_attempts.load(Ordering::SeqCst)
+    }
+
+    pub fn retry_exhaustion_claim_attempts(&self) -> usize {
+        self.retry_exhaustion_claim_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -654,6 +668,30 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
             .claim(owner, lease_ms, now_ms, capabilities)
             .await
     }
+    async fn claim_retry_exhausted(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        max_attempts: u64,
+    ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        self.retry_exhaustion_claim_attempts
+            .fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail_retry_exhaustion_claims
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(awaken_run_ingress::DispatchError::Rejected(
+                "injected retry-exhaustion claim failure".to_string(),
+            ));
+        }
+        self.inner
+            .claim_retry_exhausted(owner, lease_ms, now_ms, max_attempts)
+            .await
+    }
     async fn claim_run(
         &self,
         run_id: &RunId,
@@ -700,12 +738,14 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
         self.inner.settle(run_id, epoch, outcome, consumed).await
     }
-    async fn reap(
+    async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
         now_ms: u64,
     ) -> Result<usize, awaken_run_ingress::DispatchError> {
-        self.inner.reap(max_attempts, now_ms).await
+        self.inner
+            .quarantine_retry_exhausted(max_attempts, now_ms)
+            .await
     }
     async fn dead_letters(&self) -> Result<Vec<RunId>, awaken_run_ingress::DispatchError> {
         self.inner.dead_letters().await
@@ -1192,7 +1232,11 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
             .unwrap()
             .is_some()
     );
-    assert_eq!(store.reap(2, 200).await.unwrap(), 0, "still within budget");
+    assert_eq!(
+        store.quarantine_retry_exhausted(2, 200).await.unwrap(),
+        0,
+        "still within budget"
+    );
     assert!(
         store
             .claim("w", 100, 200, &Default::default())
@@ -1200,7 +1244,7 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
             .unwrap()
             .is_some()
     );
-    assert_eq!(store.reap(2, 400).await.unwrap(), 0);
+    assert_eq!(store.quarantine_retry_exhausted(2, 400).await.unwrap(), 0);
     assert!(
         store
             .claim("w", 100, 400, &Default::default())
@@ -1209,8 +1253,12 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
             .is_some()
     );
 
-    // Budget exhausted: reap dead-letters it; it is no longer claimable.
-    assert_eq!(store.reap(2, 600).await.unwrap(), 1, "dead-lettered");
+    // Explicit quarantine moves the exhausted row to DeadLetter; it is no longer claimable.
+    assert_eq!(
+        store.quarantine_retry_exhausted(2, 600).await.unwrap(),
+        1,
+        "quarantined"
+    );
     assert!(
         store
             .claim("w", 100, 700, &Default::default())
@@ -1550,7 +1598,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
             .unwrap()
             .is_some()
     );
-    assert_eq!(store.reap(0, 100).await.unwrap(), 1);
+    assert_eq!(store.quarantine_retry_exhausted(0, 100).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
         vec![RunId("poison".to_string())]
@@ -1734,7 +1782,7 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
     use awaken_run_ingress::RunDispatch;
 
     // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
-    // reaped at budget 0 once the lease has expired).
+    // manually quarantined at budget 0 once the lease has expired).
     store
         .enqueue(RunDispatch::new(activation("poison")))
         .await
@@ -1746,7 +1794,7 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
             .unwrap()
             .is_some()
     );
-    assert_eq!(store.reap(0, 1_000).await.unwrap(), 1);
+    assert_eq!(store.quarantine_retry_exhausted(0, 1_000).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
         vec![RunId("poison".to_string())]
@@ -2034,7 +2082,7 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
         ..Default::default()
     };
 
-    // A first run takes the key, is claimed with a 1ms lease, then reaped (budget 0)
+    // A first run takes the key, is claimed with a 1ms lease, then quarantined (budget 0)
     // into the dead-letter status once its lease expires.
     store
         .enqueue_with(RunDispatch::new(activation("run-1")), key())
@@ -2047,7 +2095,11 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
             .unwrap()
             .is_some()
     );
-    assert_eq!(store.reap(0, 100).await.unwrap(), 1, "run-1 dead-lettered");
+    assert_eq!(
+        store.quarantine_retry_exhausted(0, 100).await.unwrap(),
+        1,
+        "run-1 quarantined"
+    );
     assert_eq!(
         store.dead_letters().await.unwrap(),
         vec![RunId("run-1".to_string())]

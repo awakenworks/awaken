@@ -48,6 +48,51 @@ pub(crate) fn decide_run_identity(
 pub(crate) enum ExactClaimMode {
     Runnable,
     TerminalRecovery,
+    RetryExhausted { max_attempts: u64 },
+}
+
+#[cfg(feature = "durable")]
+impl ExactClaimMode {
+    pub(crate) fn bypasses_execution_admission(self) -> bool {
+        !matches!(self, Self::Runnable)
+    }
+
+    pub(crate) fn retry_limit(self) -> Option<u64> {
+        match self {
+            Self::RetryExhausted { max_attempts } => Some(max_attempts),
+            Self::Runnable | Self::TerminalRecovery => None,
+        }
+    }
+}
+
+/// Decode SQL evidence once, then apply the storage-neutral retry policy. Query
+/// filters are advisory; SQLite and PostgreSQL both call this after their
+/// transactional exact-row read before advancing the claim epoch.
+#[cfg(feature = "durable")]
+pub(crate) fn retry_exhaustion_evidence_is_eligible(
+    status: &str,
+    lease_until: Option<i64>,
+    attempt_count: i64,
+    max_attempts: u64,
+    now_ms: u64,
+) -> Result<bool, DispatchError> {
+    let phase = DispatchState::from_db(status)
+        .ok_or_else(|| {
+            DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
+        })?
+        .transition_phase();
+    let lease_until = lease_until
+        .map(crate::clock::millis_from_db)
+        .transpose()
+        .map_err(|error| DispatchError::Rejected(error.to_string()))?;
+    let attempt_count = crate::durable_u64("dispatch attempt count", attempt_count)?;
+    Ok(awaken_run_ingress_contract::retry_exhaustion_eligible(
+        phase,
+        lease_until,
+        attempt_count,
+        max_attempts,
+        now_ms,
+    ))
 }
 
 /// Canonical host-side normalization for every pending/outbox ingress path.

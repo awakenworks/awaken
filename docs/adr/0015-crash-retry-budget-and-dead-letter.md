@@ -1,4 +1,4 @@
-# ADR-0015: A Crash-Retry Budget and Dead-Letter
+# ADR-0015: A Crash-Retry Budget and Committed Terminal Resolution
 
 - Status: Accepted
 - Date: 2026-06-30
@@ -25,30 +25,56 @@ that reaches a checkpoint earned a fresh budget. So `attempt_count` is the count
 of *consecutive crashes without progress*, which is exactly what a retry budget
 should bound.
 
-### D2: A separate reap step dead-letters, kept out of claim
+### D2: Retry exhaustion is a claimed terminal command
 
-A `reap(max_attempts, now)` operation moves every expired-lease running row with
-`attempt_count >= max_attempts` to a `DeadLetter` status. It is one statement per
-backend, run by the daemon each tick *before* draining — so claim never sees a
-dead-lettered row and never needs over-budget logic in its hot path. A
-dead-lettered run is retained (not deleted) for operations: `dead_letters()`
-lists them and `requeue()` returns one to the queue at a fresh budget.
+`claim_retry_exhausted(max_attempts, now)` atomically claims one strictly
+expired `running` row whose `attempt_count >= max_attempts`. It advances the
+ordinary lease epoch and bypasses execution placement and credentials because
+the claim cannot execute the Run. The dispatch service routes that existing
+`Claimed` value through the one `DispatchWorker` pre-execution terminal path,
+which commits `Ended(Indeterminate)`, redelivers terminal observers, and applies
+the ordinary fenced `Done` settlement and completion tombstone.
+
+The store still owns only delivery and retry policy; it never writes or infers
+Run outcome truth. If terminal commit or settlement fails, the row remains
+leased. Once that lease strictly expires, the same command may claim it again
+regardless of how far `attempt_count` has advanced. This makes terminalization
+itself crash-recoverable without reopening execution.
+
+The actual execution drainer checks for terminal-resolution work before every
+ordinary claim: a standalone service, local process pool, or remote Worker pool
+calls the same queue command and Worker terminalization method. Coordinator-only
+maintenance does not compete for these claims. With no drainer the expired row
+stays durable (never dead-lettered); after capacity returns, the first remote
+Worker tick terminalizes it before claiming execution work.
+
+### D3: Dead-letter is explicit operator quarantine only
+
+`quarantine_retry_exhausted(max_attempts, now)` may move matching expired rows
+to `DeadLetter` only when an operator explicitly asks to isolate them. It is not
+called by a daemon, pool, or Worker claim route. `dead_letters()` lists these
+manual quarantines and `requeue()` returns one to the queue at a fresh budget.
+Quarantine is dispatch operations state, not a terminal Run outcome.
 
 ## Consequences
 
-- A poison run is dead-lettered after `max_attempts` crash-recoveries instead of
-  looping forever; `DispatchServiceConfig.max_attempts` (default 5) tunes it.
+- A poison run commits `Ended(Indeterminate)` after `max_attempts`
+  crash-recoveries instead of looping forever or disappearing into dispatch-only
+  state; `DispatchServiceConfig.max_attempts` (default 5) tunes it.
 - The budget is spent only by crashes, not by ordinary awaiting, so HITL or
   long-running runs are not penalised.
-- Dead-letter is a held state with `dead_letters`/`requeue` ops, proven across
-  the memory, Postgres, and SQLite backends against one shared spec.
+- Terminal resolution is claimed and epoch-fenced across memory, Postgres, and
+  SQLite against one shared spec. A failed commit remains retryable through the
+  same claim path.
+- Dead-letter remains a manually requested held state with
+  `dead_letters`/`requeue` operations; automatic services never create it.
 - A run that *returns* a terminal error still settles `Done` immediately (no
   retry): the budget is for crashes that leave the dispatch unsettled, not for
   runs that fail cleanly.
 
 ## References
 
-- [INVARIANTS.md](../INVARIANTS.md) — G5/G6 (durable ingress over runtime control).
+- [INVARIANTS.md](../INVARIANTS.md) — G5/G6/G35 (durable ingress and terminal truth).
 - ADR-0011 — the recovery this bounds.
 - [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) —
   the dispatch failure/recovery boundary.

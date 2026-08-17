@@ -43,7 +43,8 @@ pub use dispatch::{
     worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
-    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError, GuardedTransition,
+    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError,
+    GuardedTransition, retry_exhaustion_eligible,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

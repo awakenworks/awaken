@@ -309,4 +309,69 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].run_id, RunId("run-terminal".to_string()));
     }
+
+    #[tokio::test]
+    async fn host_retry_exhaustion_uses_the_environment_free_boundary_worker() {
+        // Cause/effect table: H1 expired+exhausted exact claim -> boundary Worker
+        // commits Indeterminate and Done; H2 no Session/Environment exists -> no
+        // realization is attempted; H3 current epoch -> one completion tombstone.
+        use awaken_run_ingress::{Clock, DispatchQueue, WorkerResolver};
+
+        let storage = tempfile::tempdir().expect("storage");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_store_dir(storage.path())
+            .with_dispatch_store(store.clone());
+        coordinator.deployment.durable = true;
+        coordinator.deployment.disable_local_pool = true;
+        let host = Arc::new(coordinator);
+        let fresh = claim(&store, "thread-exhausted", "run-exhausted", "crashed", now).await;
+        store
+            .claim_run(
+                &fresh.lease.run_id,
+                "crashed",
+                1_000,
+                fresh.lease.expires_ms + 1,
+                &Default::default(),
+            )
+            .await
+            .expect("recovery claim")
+            .expect("expired row recovers");
+        let claimed = store
+            .claim_retry_exhausted("remote-worker", 1_000, now + 2_002, 1)
+            .await
+            .expect("special claim")
+            .expect("exhausted row claims");
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+        assert_eq!(
+            resolver
+                .terminalize_retry_exhausted(&claimed)
+                .await
+                .expect("H1 terminalization"),
+            Some((
+                RunId("run-exhausted".into()),
+                RunState::Ended(EndCause::Indeterminate),
+            )),
+            "H1"
+        );
+        assert!(
+            host.session_environment("thread-exhausted").await.is_none(),
+            "H2"
+        );
+        assert!(store.list_dispatches().await.expect("H1 rows").is_empty());
+        assert_eq!(
+            store
+                .completion_events_after(0, 10)
+                .await
+                .expect("H3 completions")
+                .len(),
+            1,
+            "H3"
+        );
+    }
 }

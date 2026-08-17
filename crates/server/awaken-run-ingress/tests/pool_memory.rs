@@ -20,9 +20,9 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
-    Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
-    PendingInput, RunDispatch, SystemClock, WakeSignal, WorkerResolver,
+    Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchMaintenance, DispatchPool,
+    DispatchQueue, DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock,
+    MemoryDispatchStore, PendingInput, RunDispatch, SystemClock, WakeSignal, WorkerResolver,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -111,6 +111,40 @@ impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
 struct SettlingRejectingResolver {
     worker: Arc<MemWorker>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct ExhaustionResolver {
+    terminal_worker: Arc<MemWorker>,
+    ordinary_calls: Arc<std::sync::atomic::AtomicUsize>,
+    terminal_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for ExhaustionResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.ordinary_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "retry exhaustion must not resolve an execution worker".into(),
+            ),
+        ))
+    }
+
+    async fn terminalize_retry_exhausted(
+        &self,
+        claimed: &awaken_run_ingress::Claimed,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        self.terminal_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.terminal_worker
+            .terminalize_retry_exhausted(claimed)
+            .await
+    }
 }
 
 #[async_trait]
@@ -211,6 +245,47 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
     assert!(wait_for(|| store.claim_attempts() >= 2).await, "P2 poll");
     assert_eq!(store.claim_attempts(), 2, "P2");
 
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
+    // Cause/effect table: B1 special claim errors -> that drain tick returns an
+    // error and ordinary claim count stays zero; B2 later special claim succeeds
+    // with no exhausted row -> ordinary execution may proceed. This prevents a
+    // transient policy/read failure from bypassing retry exhaustion admission.
+    let store = Arc::new(FlakyDispatchStore::new(0).with_retry_exhaustion_failures(1));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "pool",
+    ));
+    store
+        .enqueue(RunDispatch::new(activation_on("barrier", "thread-barrier")))
+        .await
+        .unwrap();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_millis(150),
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+    assert!(
+        wait_for(|| store.retry_exhaustion_claim_attempts() >= 1).await,
+        "B1 special attempted"
+    );
+    assert_eq!(store.claim_attempts(), 0, "B1");
+    assert!(wait_for(|| commit.commit_count() >= 1).await, "B2");
+    assert!(store.claim_attempts() >= 1, "B2");
     pool.shutdown().await;
 }
 
@@ -1306,15 +1381,16 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
     pool.shutdown().await;
 }
 
-/// A fallback drain and the maintenance loop wake on the same cadence. The
-/// retry-budget check must therefore happen on the claim path as well: otherwise
-/// a fast drain can reclaim the expired poison Run forever before maintenance
-/// records the dead letter.
+/// Pool drain cause/effect table: P1 expired+exhausted -> special claim; P2 the
+/// special claim -> canonical boundary Worker terminal commit and Done settle;
+/// P3 this path -> ordinary execution resolution is never invoked; P4 automatic
+/// terminalization -> no manual dead-letter quarantine.
 #[tokio::test]
-async fn drain_does_not_reclaim_a_run_past_its_retry_budget() {
+async fn drain_terminalizes_retry_exhaustion_without_execution_resolution() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
     store
         .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
@@ -1341,7 +1417,9 @@ async fn drain_does_not_reclaim_a_run_past_its_retry_budget() {
             .is_some()
     );
 
-    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    let ordinary_calls = Arc::new(AtomicUsize::new(0));
+    let terminal_calls = Arc::new(AtomicUsize::new(0));
+    let terminal_worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
         Arc::new(ManualClock::new(6)),
@@ -1352,141 +1430,113 @@ async fn drain_does_not_reclaim_a_run_past_its_retry_budget() {
             max_attempts: 2,
             ..Default::default()
         },
-        Arc::new(RejectingResolver {
-            calls: resolver_calls.clone(),
+        Arc::new(ExhaustionResolver {
+            terminal_worker,
+            ordinary_calls: ordinary_calls.clone(),
+            terminal_calls: terminal_calls.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
     );
 
     assert!(
-        wait_for_async(|| {
-            let store = store.clone();
-            async move {
-                store
-                    .dead_letters()
-                    .await
-                    .unwrap()
-                    .contains(&RunId("poison".to_string()))
-            }
-        })
+        wait_for(|| commit.run_state(&RunId("poison".into()))
+            == Some(RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::Indeterminate
+            )))
         .await,
-        "expired poison Run reaches the dead-letter ledger"
+        "P1/P2"
     );
-    assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.dispatch_count(), 0, "P2");
+    assert_eq!(ordinary_calls.load(Ordering::SeqCst), 0, "P3");
+    assert_eq!(terminal_calls.load(Ordering::SeqCst), 1, "P2");
+    assert!(store.dead_letters().await.unwrap().is_empty(), "P4");
     pool.shutdown().await;
 }
 
-/// The maintenance loop REAPS a poison run (past its crash-retry budget) and later
-/// GCs the dead-letter. The single drain is kept busy on a blocking run so it cannot
-/// reclaim the poison first, making the reap deterministic; then advancing the clock
-/// past the ttl lets the same loop purge the dead-letter.
+/// Drainer-ownership decision table: M1 coordinator maintenance + no drainer ->
+/// preserve the expired row and create neither Run truth nor quarantine; M2 a
+/// Worker drainer returns -> its first special-first tick commits Indeterminate
+/// and Done; M3 throughout -> no ordinary execution resolution.
 #[tokio::test]
-async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
-    use std::sync::atomic::Ordering;
+async fn coordinator_maintenance_preserves_exhaustion_until_a_drainer_returns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let (busy_rt, busy_ran) = blocking_tool_runtime(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let busy_worker = worker_over(busy_rt, store.clone(), commit.clone());
-
-    // A "busy" run enqueued first (so it is the OLDEST recovery candidate) and held
-    // under a LONG lease, so it does not interfere while the poison is driven to its
-    // budget below. The pool's single drain will claim it first and block in its tool,
-    // so the drain can never reach the poison.
-    store
-        .enqueue(RunDispatch::new(activation_on("busy", "thread-busy")))
-        .await
-        .unwrap();
-    assert!(
-        store
-            .claim("dead-a", 1_000, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
-
-    // A poison run pre-driven to its crash-retry budget (attempt_count == 2), with an
-    // expired lease. `busy`'s lease is still live during these claims, so each
-    // recovery pick lands on the poison, not on `busy`.
     store
         .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
         .unwrap();
     assert!(
         store
-            .claim("dead-b", 1, 5, &Default::default())
+            .claim("dead", 1, 0, &Default::default())
             .await
             .unwrap()
             .is_some()
-    ); // fresh -> attempt 0
+    );
     assert!(
         store
-            .claim("dead-b", 1, 10, &Default::default())
+            .claim("dead", 1, 2, &Default::default())
             .await
             .unwrap()
             .is_some()
-    ); // recovery -> attempt 1
-    assert!(
-        store
-            .claim("dead-b", 1, 15, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    ); // recovery -> attempt 2
-
-    let resolver = Arc::new(MapResolver {
-        workers: HashMap::from([("thread-busy".to_string(), busy_worker)]),
-    });
-    // Past both leases (busy expires at 1000, poison at 16): both are recovery-eligible,
-    // but the drain claims the older `busy` first.
-    let clock = Arc::new(ManualClock::new(1_500));
-    let ttl = Duration::from_millis(50);
-    let pool = DispatchPool::spawn(
+    );
+    let ordinary_calls = Arc::new(AtomicUsize::new(0));
+    let terminal_calls = Arc::new(AtomicUsize::new(0));
+    let maintenance = DispatchMaintenance::spawn(
         store.clone(),
-        clock.clone(),
-        "pool",
-        DEFAULT_LEASE_MS,
+        Arc::new(ManualClock::new(4)),
+        Arc::new(BlackholeWake),
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(5),
-            max_attempts: 2,
-            dead_letter_ttl: Some(ttl),
+            max_attempts: 1,
             ..Default::default()
         },
-        resolver,
+        Arc::new(ExhaustionResolver {
+            terminal_worker: worker_over(text_runtime(), store.clone(), commit.clone()),
+            ordinary_calls: ordinary_calls.clone(),
+            terminal_calls: terminal_calls.clone(),
+        }),
+        None,
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(commit.run_state(&RunId("poison".into())).is_none(), "M1");
+    assert_eq!(store.dispatch_count(), 1, "M1");
+    assert_eq!(ordinary_calls.load(Ordering::SeqCst), 0, "M1/M3");
+    assert_eq!(terminal_calls.load(Ordering::SeqCst), 0, "M1");
+    assert!(store.dead_letters().await.unwrap().is_empty(), "M1");
+    maintenance.shutdown().await;
+
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(4)),
+        "remote-worker",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            max_attempts: 1,
+            ..Default::default()
+        },
+        Arc::new(ExhaustionResolver {
+            terminal_worker: worker_over(text_runtime(), store.clone(), commit.clone()),
+            ordinary_calls: ordinary_calls.clone(),
+            terminal_calls: terminal_calls.clone(),
+        }),
         1,
+        Arc::new(BlackholeWake),
     );
-
-    // The drain grabs the older busy run and blocks; the maintenance loop reaps the
-    // poison (attempt 2 >= max 2, lease expired) deterministically.
     assert!(
-        wait_for(|| busy_ran.load(Ordering::SeqCst) >= 1).await,
-        "the drain is busy on the blocking run"
+        wait_for(|| commit.run_state(&RunId("poison".into()))
+            == Some(RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::Indeterminate
+            )))
+        .await,
+        "M2"
     );
-    let dead_lettered = wait_for_async(|| {
-        let store = store.clone();
-        async move {
-            store
-                .dead_letters()
-                .await
-                .unwrap()
-                .contains(&RunId("poison".to_string()))
-        }
-    })
-    .await;
-    assert!(dead_lettered, "the maintenance loop reaped the poison run");
-
-    // Advance the clock past the ttl: the maintenance loop GCs the dead-letter.
-    clock.set(1_500 + ttl.as_millis() as u64 + 50);
-    let gced = wait_for_async(|| {
-        let store = store.clone();
-        async move { store.dead_letters().await.unwrap().is_empty() }
-    })
-    .await;
-    assert!(gced, "the maintenance loop GC'd the aged dead-letter");
-
-    release.add_permits(1);
+    assert_eq!(ordinary_calls.load(Ordering::SeqCst), 0, "M3");
+    assert_eq!(terminal_calls.load(Ordering::SeqCst), 1, "M2");
+    assert!(store.dead_letters().await.unwrap().is_empty(), "M3");
     pool.shutdown().await;
 }
 

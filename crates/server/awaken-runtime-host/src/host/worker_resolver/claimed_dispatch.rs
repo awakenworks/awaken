@@ -476,6 +476,21 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .await
     }
 
+    async fn terminalize_retry_exhausted(
+        &self,
+        claimed: &awaken_run_ingress::Claimed,
+    ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
+        let host = self.host()?;
+        let thread_id = claimed.request.session_thread_id();
+        let commit = Arc::new(
+            host.build_commit(&thread_id.0)
+                .await
+                .map_err(|error| Self::execution_error(error.to_string()))?,
+        );
+        let worker = self.boundary_worker(&host, claimed, commit, false).await?;
+        worker.terminalize_retry_exhausted(claimed).await
+    }
+
     async fn reconcile_committed_terminals(
         &self,
         now_ms: u64,

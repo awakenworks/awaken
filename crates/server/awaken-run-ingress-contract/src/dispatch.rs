@@ -498,22 +498,6 @@ pub trait DispatchQueue: Send + Sync {
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
-    /// Reap expired claims that exhausted their crash-retry budget, then claim
-    /// one runnable dispatch using the same authoritative time. Remote worker
-    /// transports override this command so the reap executes beside the durable
-    /// queue instead of crossing the worker boundary as a server-local verb.
-    async fn reap_and_claim(
-        &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-        max_attempts: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        self.reap(max_attempts, now_ms).await?;
-        self.claim(owner, lease_ms, now_ms, capabilities).await
-    }
-
     /// Atomically claim only work compatible with the registered worker snapshot.
     /// Implementations must evaluate the shared compatibility kernel before the
     /// lease transition and persist the resulting assignment with that transition.
@@ -583,6 +567,22 @@ pub trait DispatchQueue: Send + Sync {
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support committed-terminal dispatch recovery".to_string(),
+        ))
+    }
+
+    /// Claim one strictly expired `running` dispatch at/above `max_attempts`.
+    /// This is delivery authority, not Run truth: route the ordinary [`Claimed`]
+    /// through the canonical Worker `Ended(Indeterminate)` + fenced `Done` path.
+    /// A failed commit stays eligible after expiry; `None` proves no eligible row remains at serialization.
+    async fn claim_retry_exhausted(
+        &self,
+        _owner: &str,
+        _lease_ms: u64,
+        _now_ms: u64,
+        _max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support retry-exhaustion terminal claims".to_string(),
         ))
     }
 
@@ -779,13 +779,15 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Dead-letter every *crashed* dispatch — one whose lease expired without a
-    /// settle — that has used up its crash-retry budget (`attempt_count >=
-    /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
-    /// run cannot be reclaimed forever. Returns how many were dead-lettered
-    /// (ADR-0015). The crash-retry count increments only on recovery re-claims, so
-    /// a normal await/wake never spends the budget.
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
+    /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
+    /// Moves rows to `DeadLetter`; automatic services use
+    /// [`claim_retry_exhausted`](Self::claim_retry_exhausted), so the Run first
+    /// receives committed terminal truth (ADR-0015).
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError>;
 
     /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
     /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
@@ -1931,7 +1933,7 @@ mod tests {
         ) -> Result<SettleOutcome, DispatchError> {
             Self::unsupported()
         }
-        async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
+        async fn quarantine_retry_exhausted(&self, _: u64, _: u64) -> Result<usize, DispatchError> {
             Self::unsupported()
         }
         async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {

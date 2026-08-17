@@ -94,7 +94,7 @@ Extracted from `awaken-run-ingress` so backends can depend on the contract witho
 the host crate (G2). The traits are the current ones, renamed and grouped:
 
 ```rust
-trait DispatchQueue { /* enqueue, claim, renew_lease, settle, reap, cancel,
+trait DispatchQueue { /* enqueue, claim, claim_retry_exhausted, settle, manual quarantine, cancel,
                          awaiting_run, dead_letters, requeue, superseded, list */ }
 trait Inbox         { /* append, list, edit, retract (pending input) */ }
 trait Outbox        { /* stage, relay (cross-thread delivery) */ }

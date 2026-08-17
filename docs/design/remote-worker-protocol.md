@@ -68,7 +68,8 @@ complete create request
 
 ```text
 Worker registers and becomes ready
-  -> claims compatible Run
+  -> first claims any retry-exhausted Run for terminal resolution
+  -> otherwise claims a compatible Run for execution
   -> verifies current owner/epoch/expiry
   -> reads committed recovery prefix
   -> resumes the frozen Session projection
@@ -78,10 +79,24 @@ Worker registers and becomes ready
   -> settles terminal attempt and records completion
 ```
 
+A retry-exhausted claim bypasses execution placement and materialization. The
+Worker uses the same claim-fenced commit transport to append
+`Ended(Indeterminate)` and then the same `Done` settlement/tombstone. The
+Coordinator-owned clock and retry limit select this claim; a remote Worker never
+supplies either value.
+
+The remote Worker pool is the sole retry-exhaustion scheduler in a
+coordinator-only topology. Coordinator maintenance repairs already committed
+terminals but does not compete for special claims. With no Worker, an expired
+row remains unchanged; the first Worker tick resolves it before ordinary work.
+
 ### Recovery
 
 - before claim: no Worker effect exists; another Worker may claim;
 - after claim, before effect: expiry permits a replacement claim;
+- after retry-exhaustion claim, before terminal commit/settle: expiry permits the
+  same terminal-resolution command to claim a newer epoch; execution never
+  reopens;
 - after effect, before commit: exact idempotency identity prevents duplicate
   logical mutation;
 - after commit, before response: replay returns the committed receipt;

@@ -233,9 +233,8 @@ impl WorkerDispatchService {
         self
     }
 
-    /// Set the control-side crash-retry budget enforced immediately before
-    /// every worker claim. The control plane, not the remote worker, owns this
-    /// scheduling policy.
+    /// Set the control-side crash-retry budget used by the dedicated terminal
+    /// claim. The control plane, not the remote worker, owns this policy.
     #[must_use]
     pub fn with_max_attempts(mut self, max_attempts: u64) -> Self {
         self.max_attempts = max_attempts.max(1);
@@ -363,6 +362,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(deliver_and_claim),
         )
         .route("/v1/worker/dispatch/claim", post(claim))
+        .route(
+            "/v1/worker/dispatch/claim_retry_exhausted",
+            post(claim_retry_exhausted),
+        )
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
@@ -1277,11 +1280,6 @@ async fn claim(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
-        service
-            .dispatch
-            .reap(service.max_attempts, authority.now_ms)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
         let claimed = if let Some(snapshot) = &authority.snapshot {
             if let Some(policy) = &service.placement_policy {
                 let workers = directory(&service)?
@@ -1319,6 +1317,29 @@ async fn claim(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "claimed": claimed }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn claim_retry_exhausted(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ClaimWorkerReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let claimed = service
+            .dispatch
+            .claim_retry_exhausted(
+                &authority.owner,
+                authority.lease_ms,
+                authority.now_ms,
+                service.max_attempts,
+            )
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;

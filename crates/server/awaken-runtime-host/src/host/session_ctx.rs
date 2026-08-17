@@ -30,8 +30,8 @@ pub(crate) struct SessionCtx {
     /// queue (`submit_background`) rather than executed inline (slice D).
     pub(crate) durable: bool,
     /// The concrete durable ingress, present iff `durable`. Kept alongside the
-    /// boxed `ingress` so the ADR-0009 operational verbs (recover / reap /
-    /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
+    /// boxed `ingress` so the ADR-0009 operational verbs (recover / manual
+    /// quarantine + GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
     pub(crate) config: ExecutableAgentSnapshot,

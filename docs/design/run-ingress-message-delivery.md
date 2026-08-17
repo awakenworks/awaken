@@ -157,8 +157,13 @@ append-then-delete (no 2PC)
 ([ADR-0013](../adr/0013-pending-lifecycle-and-cross-thread-outbox.md)); a nullable
 `available_at` schedules a delivery the daemon fires when due, so `scheduled_wake`
 is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
-dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
-`requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
+atomically claims a poison run past `max_attempts` recoveries and commits
+`Ended(Indeterminate)` through the ordinary Worker terminal/`Done` path;
+`DeadLetter` is reserved for explicit operator quarantine, with
+`dead_letters`/`requeue` ops
+([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
+The active drainer owns this special-first scheduling; coordinator-only
+maintenance preserves the row while no remote Worker is available.
 A queued or awaiting run is cancelled durably — the dispatch is removed and a
 terminal `Cancelled` fact is committed through the one finish boundary
 ([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
@@ -179,8 +184,8 @@ performed in-process by the worker
 awaiting run is staged as unbound input the thread's next run consumes
 ([ADR-0021](../adr/0021-idle-thread-delivery.md)). A submission can supersede a
 thread's prior pending/awaiting work by epoch, newest-wins
-([ADR-0022](../adr/0022-epoch-supersession.md)). The daemon GCs dead-letters
-older than a configured ttl on its cadence
+([ADR-0022](../adr/0022-epoch-supersession.md)). The daemon GCs aged manual
+dead-letter quarantines on its cadence
 ([ADR-0023](../adr/0023-dead-letter-ttl-gc.md)), a renewal heartbeat keeps a long
 run's lease fresh across a fleet
 ([ADR-0024](../adr/0024-daemon-lease-renewal.md)), and `list_dispatches` is the
@@ -233,7 +238,7 @@ The DDD aggregate split is:
 |---|---|---|
 | Thread | pending input, committed message order, thread-scoped state | dispatch retry policy, product session status |
 | RunRecord | accepted run intent, execution lifecycle, outcome projection | message payload truth, pending queue ownership |
-| RunDispatch | activation opportunity, claim, lease, retry, wake, dead-letter or recovery state | run outcome, committed messages, agent-domain facts |
+| RunDispatch | activation opportunity, claim, lease, retry, wake, manual quarantine, or recovery state | run outcome, committed messages, agent-domain facts |
 | Runtime Core | execution loop and staged `ThreadCommit` | durable queue internals, public message routes |
 | Product adapter | public protocol request and projection names | runtime state names, dispatch truth |
 
@@ -340,6 +345,9 @@ general execution lease.
 - `DirectRunIngress` failure is live-control or direct execution failure only.
 - `DurableRunIngress` recovers by scanning durable pending state and replaying
   from committed facts.
+- Retry exhaustion is first claimed under a newer dispatch epoch, then the one
+  Worker terminal path commits `Ended(Indeterminate)` and settles `Done`; commit
+  failure leaves the dispatch reclaimable after lease expiry.
 - Duplicate wake hints are safe because reconciliation reads authoritative store
   state.
 - An execution crash maps to a typed tool/backend failure or

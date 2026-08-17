@@ -29,7 +29,10 @@ pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router 
         .route("/v1/durable/threads/{thread}/dispatches", get(dispatches))
         .route("/v1/durable/threads/{thread}/messages", get(messages))
         .route("/v1/durable/threads/{thread}/reconcile", post(reconcile))
-        .route("/v1/durable/threads/{thread}/reap", post(reap))
+        .route(
+            "/v1/durable/threads/{thread}/quarantine-retry-exhausted",
+            post(quarantine_retry_exhausted),
+        )
         .route(
             "/v1/durable/threads/{thread}/dead-letters",
             get(dead_letters),
@@ -258,7 +261,7 @@ async fn reconcile(
     )
 }
 
-async fn reap(
+async fn quarantine_retry_exhausted(
     State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Query(query): Query<HashMap<String, String>>,
@@ -267,17 +270,17 @@ async fn reap(
         .get("max_attempts")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
-    // As-of clock for the reap. Defaults to now; a caller may pass a cutoff to
-    // reap dispatches whose lease has expired by that time.
+    // Explicit operator-selected cutoff. Automatic retry exhaustion does not
+    // call this route; it claims and commits terminal Run truth.
     let now = query
         .get("now_ms")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or_else(now_ms);
     respond(
         application
-            .reap(&thread, max_attempts, now)
+            .quarantine_retry_exhausted(&thread, max_attempts, now)
             .await
-            .map(|n| json!({ "dead_lettered": n })),
+            .map(|n| json!({ "quarantined": n })),
     )
 }
 

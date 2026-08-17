@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
-    can_claim_locally, policy_selects_requester,
+    can_claim_locally, policy_selects_requester, retry_exhaustion_eligible,
 };
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -414,11 +414,26 @@ fn claim_exact_with_mode(
             }
             expired_running
         }
+        ExactClaimMode::RetryExhausted { max_attempts } => {
+            let Some(row) = state.rows.get(requested_run) else {
+                return Ok(None);
+            };
+            if !retry_exhaustion_eligible(
+                row.state.transition_phase(),
+                row.lease.as_ref().map(|lease| lease.expires_ms),
+                row.attempt_count,
+                max_attempts,
+                now_ms,
+            ) {
+                return Ok(None);
+            }
+            true
+        }
     };
-    let terminal_recovery = mode == ExactClaimMode::TerminalRecovery;
+    let terminal_resolution = mode.bypasses_execution_admission();
     let run_id = requested_run.clone();
     let row = state.rows.get(&run_id).expect("claimable row exists");
-    if !terminal_recovery
+    if !terminal_resolution
         && worker.is_none()
         && !row.cancellation_requested
         && !can_claim_locally(&row.request.placement)
@@ -431,7 +446,7 @@ fn claim_exact_with_mode(
         return Ok(None);
     };
     let claim_epoch = claim_transition.lease_epoch;
-    let credential_bindings = if terminal_recovery || row.cancellation_requested {
+    let credential_bindings = if terminal_resolution || row.cancellation_requested {
         Vec::new()
     } else {
         compile_attempt_credential_bindings(&row.request, capabilities, claim_epoch, now_ms)
@@ -439,7 +454,7 @@ fn claim_exact_with_mode(
                 DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
             })?
     };
-    let assignment = (!terminal_recovery)
+    let assignment = (!terminal_resolution)
         .then(|| worker.map(WorkerAssignment::from))
         .flatten();
     let (request, sandbox, cancellation_requested, lease) = {
@@ -484,11 +499,16 @@ fn claim_exact_with_mode(
     if let Some(previous) = previous {
         let previous = RunClaim::from(&previous);
         let claim = RunClaim::from(&lease);
+        let reason = if matches!(mode, ExactClaimMode::RetryExhausted { .. }) {
+            LeaseLossReason::RetryExhausted
+        } else {
+            LeaseLossReason::Expired
+        };
         push_operation(
             state,
             DispatchOperation::LeaseLost {
                 claim: previous.clone(),
-                reason: LeaseLossReason::Expired,
+                reason,
             },
         );
         push_operation(state, DispatchOperation::Reclaimed { previous, claim });
@@ -958,6 +978,42 @@ impl DispatchQueue for MemoryDispatchStore {
         )
     }
 
+    async fn claim_retry_exhausted(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let now_ms = crate::clock::normalize_millis(now_ms);
+        let Some(run_id) = state.order.iter().find_map(|run_id| {
+            state.rows.get(run_id).and_then(|row| {
+                retry_exhaustion_eligible(
+                    row.state.transition_phase(),
+                    row.lease.as_ref().map(|lease| lease.expires_ms),
+                    row.attempt_count,
+                    max_attempts,
+                    now_ms,
+                )
+                .then(|| run_id.clone())
+            })
+        }) else {
+            return Ok(None);
+        };
+        claim_exact_with_mode(
+            &mut state,
+            &run_id,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            &Default::default(),
+            ExactClaimMode::RetryExhausted { max_attempts },
+        )
+    }
+
     async fn claim_run_compatible(
         &self,
         requested_run: &RunId,
@@ -1228,7 +1284,11 @@ impl DispatchQueue for MemoryDispatchStore {
             .collect())
     }
 
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let mut operations = Vec::new();
@@ -1254,11 +1314,11 @@ impl DispatchQueue for MemoryDispatchStore {
                 row.dead_lettered_at = Some(now_ms);
             }
         }
-        let reaped = operations.len() / 2;
+        let quarantined = operations.len() / 2;
         for operation in operations {
             push_operation(&mut state, operation);
         }
-        Ok(reaped)
+        Ok(quarantined)
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {

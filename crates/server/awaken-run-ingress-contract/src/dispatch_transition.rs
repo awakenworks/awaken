@@ -45,6 +45,36 @@ pub enum DispatchTransitionError {
     LeaseEpochExhausted,
 }
 
+/// Whether one durable dispatch is eligible for retry-exhaustion terminal
+/// claiming. Store queries may prefilter candidates, but every backend applies
+/// this kernel to the transactionally read evidence before advancing the epoch.
+#[must_use]
+pub fn retry_exhaustion_eligible(
+    phase: DispatchPhase,
+    lease_until_ms: Option<u64>,
+    attempt_count: u64,
+    max_attempts: u64,
+    now_ms: u64,
+) -> bool {
+    phase == DispatchPhase::Leased
+        && attempt_count >= max_attempts
+        && lease_until_ms.is_some_and(|lease_until_ms| lease_until_ms < now_ms)
+}
+
+impl crate::DispatchState {
+    /// Storage-neutral phase used by transactionally rechecked policy kernels.
+    #[must_use]
+    pub fn transition_phase(self) -> DispatchPhase {
+        match self {
+            Self::Pending => DispatchPhase::Pending,
+            Self::Leased => DispatchPhase::Leased,
+            Self::Awaiting => DispatchPhase::Awaiting,
+            Self::DeadLetter => DispatchPhase::DeadLetter,
+            Self::Superseded => DispatchPhase::Superseded,
+        }
+    }
+}
+
 impl DispatchTransition {
     /// Mint exactly one newer claim epoch after the caller has established that
     /// this pending, awaiting, or recovery row is runnable.
@@ -183,6 +213,65 @@ mod tests {
                 revoked_lease: false,
             }
         );
+    }
+
+    /// Retry-exhaustion cause/effect graph:
+    /// C1=phase is Leased; C2=lease expiry is present and strictly before now;
+    /// C3=attempt_count reaches max_attempts. E1=eligible for the one terminal
+    /// claim. Constraints: an exact expiry boundary is still live, and retrying
+    /// terminalization may increase attempts beyond the threshold without
+    /// becoming ineligible.
+    ///
+    /// | Rule | C1 | C2 | C3 | Effect |
+    /// |---|---|---|---|---|
+    /// | R1 | T | T | T | E1 |
+    /// | R2 | F | T | T | not eligible |
+    /// | R3 | T | F/missing | T | not eligible |
+    /// | R4 | T | T | F | not eligible |
+    #[test]
+    fn retry_exhaustion_eligibility_follows_the_shared_decision_table() {
+        assert!(retry_exhaustion_eligible(
+            DispatchPhase::Leased,
+            Some(9),
+            3,
+            3,
+            10
+        ));
+        assert!(retry_exhaustion_eligible(
+            DispatchPhase::Leased,
+            Some(9),
+            4,
+            3,
+            10
+        ));
+        assert!(!retry_exhaustion_eligible(
+            DispatchPhase::Awaiting,
+            Some(9),
+            3,
+            3,
+            10
+        ));
+        assert!(!retry_exhaustion_eligible(
+            DispatchPhase::Leased,
+            None,
+            3,
+            3,
+            10
+        ));
+        assert!(!retry_exhaustion_eligible(
+            DispatchPhase::Leased,
+            Some(10),
+            3,
+            3,
+            10
+        ));
+        assert!(!retry_exhaustion_eligible(
+            DispatchPhase::Leased,
+            Some(9),
+            2,
+            3,
+            10
+        ));
     }
 }
 

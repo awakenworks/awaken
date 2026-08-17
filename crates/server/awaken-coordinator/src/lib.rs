@@ -959,7 +959,7 @@ fn mount_with_managed_over_and_models(
     // perform the same maintenance inside that pool.
     host.ensure_terminal_dispatch_reconciliation();
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
-    // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
+    // (supersede / reconcile / manual quarantine + GC) over the same shared host.
     let durable_ops = durable_ops_router(host.clone());
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.

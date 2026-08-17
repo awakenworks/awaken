@@ -269,6 +269,7 @@ pub async fn assert_dispatch_conformance_with_clock(
         local_claims_skip_remote_only_work(store, namespace).await;
     }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
+    retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
@@ -279,6 +280,108 @@ pub async fn assert_dispatch_conformance_with_clock(
     if capabilities.completion_events {
         committed_terminal_recovery_reuses_fenced_settlement(store, namespace).await;
     }
+}
+
+/// Retry-exhaustion cause/effect decision table shared by every backend:
+/// C1 state=Leased; C2 lease strictly expired; C3 attempts>=max. R1 !C1 => no
+/// claim; R2 C1+!C2 (including equality) => no claim; R3 C1+C2+!C3 => no claim;
+/// R4 C1+C2+C3 => mint one newer ordinary Claimed epoch without execution
+/// credentials; R5 two concurrent claimants for one eligible row => exactly one
+/// receives the unique newer epoch and one receives None; R6 the losing/stale
+/// epoch is fenced while the current claim settles Done.
+async fn retry_exhaustion_claim_is_atomic_and_policy_exact(store: &dyn DispatchQueue, ns: &str) {
+    let request = dispatch(ns, "retry-exhaustion", "retry-exhaustion-thread");
+    let run_id = request.run_id().clone();
+    store
+        .enqueue(request)
+        .await
+        .expect("enqueue retry-exhaustion row");
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, 0, 1)
+            .await
+            .expect("R1 query")
+            .is_none(),
+        "R1"
+    );
+    let fresh = store
+        .claim_run(&run_id, "crashed-a", LEASE_MS, 10_000, &Default::default())
+        .await
+        .expect("fresh claim")
+        .expect("fresh row claimable");
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, fresh.lease.expires_ms, 0)
+            .await
+            .expect("R2 query")
+            .is_none(),
+        "R2"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminal", LEASE_MS, fresh.lease.expires_ms + 1, 1)
+            .await
+            .expect("R3 query")
+            .is_none(),
+        "R3"
+    );
+    let recovered = store
+        .claim_run(
+            &run_id,
+            "crashed-b",
+            LEASE_MS,
+            fresh.lease.expires_ms + 1,
+            &Default::default(),
+        )
+        .await
+        .expect("ordinary recovery")
+        .expect("ordinary recovery is claimable");
+    let terminal_now = recovered.lease.expires_ms + 1;
+    let (left, right) = tokio::join!(
+        store.claim_retry_exhausted("terminal", LEASE_MS, terminal_now, 1),
+        store.claim_retry_exhausted("terminal-racer", LEASE_MS, terminal_now, 1),
+    );
+    let left = left.expect("R5 left query");
+    let right = right.expect("R5 right query");
+    assert_ne!(left.is_some(), right.is_some(), "R5 one winner");
+    let terminal = left.or(right).expect("R4/R5 exhausted row claimable");
+    assert!(terminal.recovered, "R4");
+    assert!(terminal.credential_bindings.is_empty(), "R4");
+    assert_eq!(terminal.lease.run_id, run_id, "R5 unique row");
+    assert_eq!(
+        terminal.lease.epoch,
+        recovered.lease.epoch + 1,
+        "R5 unique newer epoch"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminal-third", LEASE_MS, terminal_now, 1)
+            .await
+            .expect("R5 barrier query")
+            .is_none(),
+        "R5"
+    );
+    assert_eq!(
+        store
+            .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("R6 stale settle"),
+        SettleOutcome::Fenced,
+        "R6"
+    );
+    assert_eq!(
+        store
+            .settle(
+                &terminal.lease.run_id,
+                terminal.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("R6 settle"),
+        SettleOutcome::Applied,
+        "R6"
+    );
 }
 
 /// Caller-owned Run-id cause/effect table. C1 same RunId; C2 live/completed;
@@ -942,9 +1045,9 @@ where
         .expect("dead-letter run is recoverable");
     assert_eq!(
         store
-            .reap(1, dead_recovered.lease.expires_ms + 1)
+            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms + 1)
             .await
-            .expect("reap exhausted run"),
+            .expect("manually quarantine exhausted run"),
         1
     );
 

@@ -2,6 +2,8 @@
 
 ## 2026-08-18
 
+- Replaced automatic store-only retry dead-lettering with one drainer-owned,
+  exact-claim Worker terminalization path; manual quarantine remains separate.
 - Bound caller-owned Run ids to the canonical dispatch fingerprint on the
   existing durable completion tombstone; no collision registry or second Run
   authority was added.

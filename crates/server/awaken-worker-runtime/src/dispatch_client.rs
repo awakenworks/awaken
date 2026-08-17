@@ -5,7 +5,7 @@
 //! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
 //! `renew_lease`, `renew_owned_leases`, and `settle`. Claimed commits use the separate atomic
 //! server operation; this transport exposes no check-then-commit fence read. The
-//! operational verbs (reap, dead-letter, purge, supersede, cancel, requeue,
+//! server-local operational verbs (manual quarantine, purge, supersede, cancel, requeue,
 //! awaiting-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
 //! are server-local: the worker never runs them, so they fail closed (`Rejected`)
 //! rather than pretend a mutation the server didn't perform. The sole exception is
@@ -590,17 +590,34 @@ impl DispatchQueue for HttpDispatchQueue {
         Ok(claimed)
     }
 
-    async fn reap_and_claim(
+    async fn claim_retry_exhausted(
         &self,
-        owner: &str,
+        _owner: &str,
         lease_ms: u64,
         now_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
         _max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        // Retry-budget enforcement is control-side policy. The authenticated
-        // claim endpoint reaps the authoritative queue before selecting work.
-        self.claim(owner, lease_ms, now_ms, capabilities).await
+        // Retry limit, clock, and lease are control-side policy. The Worker
+        // supplies only its authenticated identity and receives an ordinary
+        // claimed epoch to terminalize through its existing commit transport.
+        let value = self
+            .post(
+                "/v1/worker/dispatch/claim_retry_exhausted",
+                &ClaimWorkerRequest {
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        let claimed = serde_json::from_value(
+            value
+                .get("claimed")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
+        let _ = (lease_ms, now_ms);
+        Ok(claimed)
     }
 
     async fn claim_compatible(
@@ -759,16 +776,20 @@ impl DispatchQueue for HttpDispatchQueue {
         )
     }
 
-    // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.
+    // --- server-local operational verbs: the SERVER owns manual quarantine/GC.
     // A database-less worker never legitimately drives them, so they FAIL CLOSED
     // (Rejected) rather than pretend a mutation/read the server didn't perform — a
-    // silent `Ok` no-op here would let a remote worker believe it reaped/purged/
-    // relayed when it did nothing. The pool's maintenance loop ticks reap/purge/
+    // silent `Ok` no-op here would let a remote worker believe it quarantined,
+    // purged, or relayed when it did nothing. The pool's maintenance loop ticks purge/
     // relay but discards their result (`let _ =` / `unwrap_or(0)`), so a rejection
     // is swallowed there; anywhere the result is consumed, the fault surfaces. ---
 
-    async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
-        Self::server_local("reap")
+    async fn quarantine_retry_exhausted(
+        &self,
+        _max_attempts: u64,
+        _now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        Self::server_local("quarantine_retry_exhausted")
     }
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         Self::server_local("dead_letters")
