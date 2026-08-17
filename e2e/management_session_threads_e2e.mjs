@@ -54,8 +54,11 @@ async function main() {
     assert.deepEqual(sessionEvents.map((e) => e.type), [
       'user.message',
       'session.status_running',
+      'span.model_request_start',
+      'span.model_request_end',
       'agent.message',
       'session.status_idle',
+      'session.usage',
     ]);
 
     // The session's single primary thread.
@@ -88,12 +91,30 @@ async function main() {
     pass('beta.sessions.threads.events.list -> primary thread events');
 
     // -- threads.events.stream delivers the same events over SSE --------------
-    const stream = await client.beta.sessions.threads.events.stream(thread.id, {
-      session_id: session.id,
-      betas: BETAS,
-    });
     const streamed = [];
-    for await (const ev of stream) streamed.push(ev.type);
+    const threadStreamTypes = sessionEvents
+      .map((event) => event.type)
+      .filter((type) => type !== 'session.usage');
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 10_000);
+    try {
+      const stream = await client.beta.sessions.threads.events.stream(
+        thread.id,
+        { session_id: session.id, betas: BETAS },
+        { signal: abort.signal },
+      );
+      for await (const ev of stream) {
+        streamed.push(ev.type);
+        if (streamed.length === threadStreamTypes.length) break;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+    assert.deepEqual(
+      streamed,
+      threadStreamTypes,
+      'thread SSE excludes the session-wide usage snapshot',
+    );
     assert.ok(streamed.includes('agent.message'), `stream types: ${streamed}`);
     assert.ok(streamed.includes('session.status_idle'), `stream types: ${streamed}`);
     pass('beta.sessions.threads.events.stream -> SSE frames for the thread');

@@ -69,14 +69,33 @@ async function main() {
       );
       pass('event ids are unique; list() holds the full history');
 
-      // --- B. the SSE stream replays the persisted history (no live push in echo
-      //        mode); draining it fully yields events whose ids all exist in
+      // --- B. the SSE stream replays the persisted history and then remains
+      //        attached for live events. Consume through the third turn's idle
+      //        boundary and close it explicitly; every observed id must exist in
       //        list(). This is the "reopen the stream" half of a reconnect. ---
       await sendMessage(client, session.id, 'three');
-      const stream = await client.beta.sessions.events.stream(session.id, { betas: BETAS });
       const streamed = [];
-      for await (const ev of stream) streamed.push(ev);
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), 10_000);
+      let sawThird = false;
+      try {
+        const stream = await client.beta.sessions.events.stream(
+          session.id,
+          { betas: BETAS },
+          { signal: abort.signal },
+        );
+        for await (const ev of stream) {
+          streamed.push(ev);
+          if (ev.type === 'agent.message' && ev.content?.[0]?.text === 'Echo: three') {
+            sawThird = true;
+          }
+          if (sawThird && ev.type === 'session.status_idle') break;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
       assert.ok(streamed.length > 0, 'the reopened stream delivered events');
+      assert.ok(sawThird, 'the reopened stream reached the third turn before closing');
       assert.ok(streamed.some((e) => e.type === 'agent.message'), 'the stream carries agent.message events');
       assert.ok(streamed.some((e) => e.type === 'session.status_idle'), 'the stream carries status_idle');
       assertUniqueIds(streamed.filter((e) => e.id), 'streamed');

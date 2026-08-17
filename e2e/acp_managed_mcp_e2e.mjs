@@ -1,7 +1,7 @@
 // Managed-API ACP × MCP credential-boundary e2e. It proves two adjacent rules:
-// an authenticated MCP fails closed without provider no-bypass evidence, while an
-// anonymous MCP crosses the REAL ACP `session/new` codec as a route with no auth field.
-// A credential reference or plaintext bearer is never an ACP compatibility fallback.
+// an authenticated MCP reaches a catalog-declared ACP adapter through its
+// process-private `session/new` header, while an anonymous MCP crosses the same
+// codec as a route with no auth field. No credential is echoed into public events.
 //
 // Run: (from e2e/)  node acp_managed_mcp_e2e.mjs
 
@@ -33,6 +33,8 @@ async function main() {
       const acpAgent = await client.beta.agents.create({
         name: 'managed ACP fixture',
         model: 'acp-managed-mcp',
+        mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+        tools: [{ type: 'mcp_toolset', mcp_server_name: 'calc' }],
         betas: BETAS,
       });
 
@@ -47,35 +49,43 @@ async function main() {
       assert.ok(!JSON.stringify(cred).includes(CALC_TOKEN), 'the access token is never echoed');
 
       // Cause-effect graph:
-      // C1 MCP has a credential -> C2 selected holder is Worker
-      // C2 + C3 provider proves no-bypass -> E1 realize relay
-      // C2 + !C3 -> E2 reject before materialization
+      // C1 MCP has a credential -> C2 catalog declares client injection
+      // C1 + C2 -> E1 process-private Session auth
+      // C1 + !C2 -> E2 reject before materialization (unit/conformance slice)
       // !C1 -> E3 project direct route with no ACP auth
       // C4 idle Session replaces active generation -> E4 next ACP launch receives only replacement
       // C5 idle Session removes active generation -> E5 next ACP launch receives an empty MCP set
       //
-      // | Rule | desired set | credential | no-bypass | Result |
-      // | A1 | calc | yes | no | reject |
+      // | Rule | desired set | credential | adapter declaration | Result |
+      // | A1 | calc | yes | yes | process-private auth |
       // | A2 | calc | no | - | initial session/new contains calc |
       // | A3 | search replaces calc | no | - | relaunched ACP contains search, not calc |
       // | A4 | empty replaces search | no | - | relaunched ACP contains neither server |
-      // A provider-backed success rule is covered by the provider conformance slice;
-      // this composition intentionally installs the Workdir provider.
-      await assert.rejects(
-        client.beta.sessions.create({
-          agent: acpAgent.id,
-          mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
-          vault_ids: [vault.id],
-          betas: BETAS,
-        }),
-        (error) => error?.status === 500 &&
-          error?.message?.includes('provider-enforced secret substitution and no-bypass networking'),
-        'A1: authenticated ACP MCP must fail closed without provider evidence',
+      // Unknown/custom-adapter rejection is covered by the adapter declaration
+      // conformance slice; this composition exercises the declared Claude path.
+      const authenticated = await client.beta.sessions.create({
+        agent: acpAgent.id,
+        environment_id: 'env_local',
+        vault_ids: [vault.id],
+        betas: BETAS,
+      });
+      await client.beta.sessions.events.send(authenticated.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'use calc privately' }] }],
+        betas: BETAS,
+      });
+      const authenticatedTexts = await agentTexts(client, authenticated.id);
+      assert.ok(
+        authenticatedTexts.includes('mcp saw-calc process-auth'),
+        `A1: declared adapter receives process-private auth: ${JSON.stringify(authenticatedTexts)}`,
+      );
+      assert.ok(
+        !JSON.stringify(authenticatedTexts).includes(CALC_TOKEN),
+        'A1: public agent output contains no credential material',
       );
 
       const anonymous = await client.beta.sessions.create({
         agent: acpAgent.id,
-        mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+        environment_id: 'env_local',
         betas: BETAS,
       });
       await client.beta.sessions.events.send(anonymous.id, {
@@ -132,6 +142,7 @@ async function main() {
       });
       const session = await client.beta.sessions.create({
         agent: acpAgent.id,
+        environment_id: 'env_local',
         betas: BETAS,
       });
       assert.equal(session.status, 'idle');
