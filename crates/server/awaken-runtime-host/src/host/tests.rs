@@ -986,6 +986,53 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         }
     }
 
+    // Co-located Native baseline installation has the same immutable binding
+    // rules as the claimed Worker projection. Decision table:
+    // B1 valid first install -> accept; B2 identical replay -> idempotent;
+    // B3 empty fingerprint -> reject; B4 different fingerprint -> reject;
+    // B5 Environment already realized -> reject rather than run without the
+    // frozen mounts/env/prompts.
+    let baseline_host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let first_baseline = projection("baseline-a", true).baseline;
+    baseline_host
+        .install_frozen_session_baseline("local-baseline", &first_baseline)
+        .expect("B1 valid baseline installs");
+    baseline_host
+        .install_frozen_session_baseline("local-baseline", &first_baseline)
+        .expect("B2 same baseline is idempotent");
+
+    let mut empty = first_baseline.clone();
+    empty.fingerprint.0.clear();
+    assert!(
+        baseline_host
+            .install_frozen_session_baseline("empty-baseline", &empty)
+            .unwrap_err()
+            .message
+            .contains("fingerprint must not be empty"),
+        "B3"
+    );
+    let conflicting = projection("baseline-b", true).baseline;
+    assert!(
+        baseline_host
+            .install_frozen_session_baseline("local-baseline", &conflicting)
+            .unwrap_err()
+            .message
+            .contains("different frozen Session baseline"),
+        "B4"
+    );
+    baseline_host
+        .ctx_for("realized-before-baseline", None)
+        .await
+        .expect("realize the negative-case Environment");
+    assert!(
+        baseline_host
+            .install_frozen_session_baseline("realized-before-baseline", &first_baseline)
+            .unwrap_err()
+            .message
+            .contains("realized before its frozen Session baseline"),
+        "B5"
+    );
+
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
     let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
@@ -8022,8 +8069,13 @@ async fn end_session_disposes_the_threads_sandbox() {
     )
     .expect("freeze terminal-test Environment");
 
-    // End the session at the terminal edge.
-    managed.end_session("t-end").await.expect("end_session");
+    // Archive/delete and recovery may race on the same durable cleanup intent.
+    // Both callers must join the one lifecycle owner; neither may double-push,
+    // double-harvest, or observe a partially disposed projection.
+    let (archive, recovery) =
+        tokio::join!(managed.end_session("t-end"), managed.end_session("t-end"));
+    archive.expect("archive terminal cleanup");
+    recovery.expect("recovery terminal cleanup replay");
 
     // The cached ctx is evicted ...
     assert!(
@@ -8154,6 +8206,93 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     assert!(
         error.to_string().contains("no immutable Agent publication"),
         "H4"
+    );
+}
+
+#[test]
+fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+    use awaken_session_contract::{SessionModelOverride, SessionModelPublication};
+
+    let base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+            "agent-provider",
+            "base",
+            "genai",
+        )))
+        .model_candidates([ModelBinding::new(
+            "agent-provider",
+            "base-fallback",
+            "genai",
+        )])
+        .build();
+    let primary =
+        ResolvedModelCandidate::host(ModelBinding::new("third-party/gateway", "fast", "genai"));
+    let fallback =
+        ResolvedModelCandidate::host(ModelBinding::new("third-party/gateway", "slow", "genai"));
+    let frozen = SessionModelOverride {
+        publication: Some(Box::new(SessionModelPublication {
+            primary: primary.clone(),
+            candidates: vec![fallback.clone()],
+        })),
+        inference: Default::default(),
+    };
+
+    // Cause/effect table:
+    // O1 complete override -> only its exact primary + roster survive;
+    // O2 replay -> byte-identical fingerprint (idempotent);
+    // O3 equal-id inference-only override -> Agent roster stays authoritative;
+    // O4 malformed frozen roster -> fail before executor materialization.
+    let projected = super::session::project_frozen_session_model_override(
+        base.clone(),
+        Some(&frozen),
+        "workspace",
+    )
+    .expect("O1 exact projection");
+    assert_eq!(projected.resolved_spec.model_binding, primary, "O1");
+    assert_eq!(projected.resolved_spec.model_candidates, [fallback], "O1");
+    assert!(
+        projected
+            .resolved_spec
+            .candidate_for_model("base")
+            .is_none(),
+        "O1 superseded Agent route must not leak"
+    );
+    let replayed = super::session::project_frozen_session_model_override(
+        projected.clone(),
+        Some(&frozen),
+        "workspace",
+    )
+    .expect("O2 idempotent replay");
+    assert_eq!(replayed.fingerprint, projected.fingerprint, "O2");
+
+    let inference_only = SessionModelOverride {
+        publication: None,
+        inference: Default::default(),
+    };
+    let reused = super::session::project_frozen_session_model_override(
+        base.clone(),
+        Some(&inference_only),
+        "workspace",
+    )
+    .expect("O3 Agent publication reuse");
+    assert_eq!(
+        reused.resolved_spec.candidate_bindings(),
+        base.resolved_spec.candidate_bindings(),
+        "O3"
+    );
+
+    let malformed = SessionModelOverride {
+        publication: Some(Box::new(SessionModelPublication {
+            primary: primary.clone(),
+            candidates: vec![primary],
+        })),
+        inference: Default::default(),
+    };
+    assert!(
+        super::session::project_frozen_session_model_override(base, Some(&malformed), "workspace",)
+            .is_err(),
+        "O4 duplicate route must fail closed"
     );
 }
 

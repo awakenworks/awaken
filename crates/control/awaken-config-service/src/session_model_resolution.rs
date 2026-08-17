@@ -119,18 +119,26 @@ mod tests {
             result: Ok(expected.clone()),
         });
         let adapter = ConfigSessionModelPublicationResolver::new(resolver.clone());
-        let model_id = "claude-sonnet-4-5;provider=anthropic;api=anthropic;endpoint=primary";
-        let publication = adapter
-            .resolve_session_model("workspace-a", model_id)
-            .await
-            .expect("R1");
-        assert_eq!(publication.primary, expected.primary, "R1");
-        assert_eq!(publication.candidates, expected.candidates, "R1");
+        let model_ids = [
+            "claude-sonnet-4-5;provider=anthropic;api=anthropic;endpoint=primary",
+            "vendor/model;provider=third-party%2Fgateway;api=vendor_messages_v9;endpoint=regional%2Fedge;executor=acp:opencode",
+            "executor=a2a:https://third-party.example/agents/research",
+        ];
+        for model_id in model_ids {
+            let publication = adapter
+                .resolve_session_model("workspace-a", model_id)
+                .await
+                .expect("R1");
+            assert_eq!(publication.primary, expected.primary, "R1");
+            assert_eq!(publication.candidates, expected.candidates, "R1");
+        }
         let calls = resolver.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "R1");
-        assert_eq!(calls[0].0, ScopeId::from("workspace-a"), "R1");
-        assert_eq!(calls[0].1, parse_managed_model_id(model_id).unwrap(), "R1");
-        assert!(calls[0].2.is_empty(), "R1");
+        assert_eq!(calls.len(), model_ids.len(), "R1");
+        for (call, model_id) in calls.iter().zip(model_ids) {
+            assert_eq!(call.0, ScopeId::from("workspace-a"), "R1");
+            assert_eq!(call.1, parse_managed_model_id(model_id).unwrap(), "R1");
+            assert!(call.2.is_empty(), "R1");
+        }
         drop(calls);
 
         let invalid = adapter
@@ -141,7 +149,7 @@ mod tests {
             matches!(invalid, SessionModelResolutionError::Invalid(_)),
             "R2"
         );
-        assert_eq!(resolver.calls.lock().unwrap().len(), 1, "R2");
+        assert_eq!(resolver.calls.lock().unwrap().len(), model_ids.len(), "R2");
 
         for (rule, source, unavailable) in [
             (

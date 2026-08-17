@@ -116,6 +116,8 @@ async function main() {
       const acpAgent = await client.beta.agents.create({
         name: `${runtime} live ACP`,
         model: selectedModel,
+        mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
+        tools: noMcp ? [] : [{ type: 'mcp_toolset', mcp_server_name: 'calc' }],
         betas: BETAS,
       });
 
@@ -129,10 +131,7 @@ async function main() {
 
       const session = await client.beta.sessions.create({
         agent: acpAgent.id,
-        // The ACP adapter is handed this as its ANTHROPIC_MODEL (the ACP model-delivery
-        // path resolves the run's model_ref), so it must be the real KIMI model name.
-        model: selectedModel,
-        mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
+        environment_id: 'env_local',
         vault_ids: noMcp ? [] : [vault.id],
         betas: BETAS,
       });

@@ -20,13 +20,21 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withServer, pass } from './harness.mjs';
+import { loadKimiConfig } from './kimi_config.mjs';
+import {
+  aggregateUsage,
+  emitEvaluation,
+  makeEvaluation,
+  percentile,
+  taggedFactMetrics,
+} from './llm_eval_metrics.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 // Distinctive test markers, not credentials.
 const TOKEN = 'ZEBRA_QUASAR_4718'; // awaken-allow: secret
 const ARTIFACT = 'DONE_9931'; // awaken-allow: secret
-const MEMTOKEN = 'MOSS_ORBIT_5527'; // awaken-allow: secret
+const MEMTOKEN = 'AWKFACT_NATIVE_MEMORY_MOSS_ORBIT_5527'; // awaken-allow: secret
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -109,6 +117,14 @@ async function driveUntil(client, sid, text, check, { nudges = 2, rounds = 16, n
 }
 
 async function main() {
+  const kimi = loadKimiConfig();
+  if (!process.env.ANTHROPIC_API_KEY && kimi?.anthropicKey) {
+    Object.assign(process.env, {
+      ANTHROPIC_API_KEY: kimi.anthropicKey,
+      ANTHROPIC_BASE_URL: kimi.anthropicBase,
+      ANTHROPIC_MODEL: kimi.anthropicModel,
+    });
+  }
   if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
     console.log('SKIP managed_resources_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
     return;
@@ -116,8 +132,14 @@ async function main() {
   try {
     await withServer('real', 38137, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const memoryOnly = process.env.AWAKEN_EVAL_MEMORY_ONLY === '1';
 
       // ── 1. FILE resource: upload, mount, and read ──────────────────────────────
+      // A host without Namespace/Container support can still run the real-LLM
+      // Memory quality gate. It must opt in explicitly: silently downgrading the
+      // read-only File case to Workdir would claim an isolation property that the
+      // backend cannot enforce.
+      if (!memoryOnly) {
       const uploaded = await client.beta.files.upload({
         file: await toFile(Buffer.from(`the secret pass phrase is ${TOKEN}`), 'secret.txt'),
         betas: BETAS,
@@ -173,11 +195,15 @@ async function main() {
         `downloaded artifact must contain ${ARTIFACT}; got ${JSON.stringify(text.slice(0, 120))}`,
       );
       pass(`artifact written by the model, harvested + downloaded by the host: ${ARTIFACT}`);
+      }
 
       // ── 3. MEMORY: write-back + cross-session read ─────────────────────────────
       // The memory-store endpoints have no typed SDK binding, so we drive them via the
       // SDK's low-level `client.post` / `client.get` (still the TS SDK).
-      const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+      const mem = await client.post('/v1/memory_stores', {
+        body: { name: 'managed real-model memory evaluation' },
+        headers: MEMORY_HEADERS,
+      });
       assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
       pass(`memory store created: ${mem.id}`);
 
@@ -188,11 +214,12 @@ async function main() {
         betas: BETAS,
       });
       let memContent = '';
+      const memoryWriteStarted = performance.now();
       const memWrite = await driveUntil(
         client,
         sessionA.id,
-        `Your sandbox has a memory directory mounted at .mnt/memory. ` +
-          `Using your write tool, write exactly .mnt/memory/note.md so ` +
+        `Your sandbox has a memory directory mounted at /mnt/memory. ` +
+          `Using your write tool, write exactly /mnt/memory/note.md so ` +
           `its entire contents become: ${MEMTOKEN}. Do not create any other file and do ` +
           `not use an absolute path. Reply with "saved" when done.`,
         async () => {
@@ -209,7 +236,18 @@ async function main() {
         { nudgeText: `Use the write tool to save the exact text ${MEMTOKEN} into your persistent memory file.` },
       );
       assert.ok(memWrite.approved.size > 0, 'the memory write should have awaiting for a confirmation');
+      const writerEvents = await listEvents(client, sessionA.id);
+      if (!memWrite.ok) {
+        console.error('Memory writer events:', JSON.stringify(writerEvents.map((event) => ({
+          type: event.type,
+          name: event.name,
+          input: event.input,
+          error: event.error,
+          stop_reason: event.stop_reason,
+        }))));
+      }
       assert.ok(memWrite.ok, `memory store must hold the written note; got ${JSON.stringify(memContent.slice(0, 120))}`);
+      const memoryWriteLatency = performance.now() - memoryWriteStarted;
       pass(`model wrote through the governed Memory mount: ${MEMTOKEN}`);
 
       // Session B: a fresh session mounts the SAME memory id — the note must be there.
@@ -219,6 +257,7 @@ async function main() {
         resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
         betas: BETAS,
       });
+      const memoryReadStarted = performance.now();
       const memRead = await driveUntil(
         client,
         sessionB.id,
@@ -228,12 +267,56 @@ async function main() {
         { nudgeText: 'Use your file tools to read the mounted memory path, then reply with its exact contents.' },
       );
       assert.ok(memRead.ok, 'session B must read the note persisted by session A');
+      const memoryReadLatency = performance.now() - memoryReadStarted;
       pass(`new session read the persisted memory note back: ${MEMTOKEN}`);
+
+      const readerEvents = await listEvents(client, sessionB.id);
+      const quality = taggedFactMetrics({ expected: [MEMTOKEN], text: assistantText(readerEvents) });
+      const usage = aggregateUsage([...writerEvents, ...readerEvents]);
+      emitEvaluation(makeEvaluation({
+        suite: 'managed_memory_real_eval_native',
+        subject: 'memory-write-through-and-cross-session-recall',
+        backend: 'native',
+        model: process.env.ANTHROPIC_MODEL ?? process.env.KIMI_MODEL ?? 'provider-default',
+        sampleSize: 1,
+        metrics: {
+          write_commit_rate: memContent.includes(MEMTOKEN) ? 1 : 0,
+          cross_session_recall: quality.recall,
+          fact_precision: quality.precision,
+          fact_f1: quality.f1,
+          contamination_rate: quality.contamination_rate,
+          approval_enforcement_rate: memWrite.approved.size > 0 ? 1 : 0,
+          latency_p50_ms: percentile([memoryWriteLatency, memoryReadLatency], 0.5),
+          latency_p95_ms: percentile([memoryWriteLatency, memoryReadLatency], 0.95),
+          usage_observed_rate: usage.observed ? 1 : 0,
+          input_tokens: usage.input_tokens,
+          output_tokens: usage.output_tokens,
+        },
+        thresholds: {
+          write_commit_rate: { operator: 'gte', value: 1 },
+          cross_session_recall: { operator: 'gte', value: 1 },
+          fact_precision: { operator: 'gte', value: 1 },
+          fact_f1: { operator: 'gte', value: 1 },
+          contamination_rate: { operator: 'lte', value: 0 },
+          approval_enforcement_rate: { operator: 'gte', value: 1 },
+          latency_p95_ms: {
+            operator: 'lte',
+            value: Number(process.env.AWAKEN_MEMORY_MAX_LATENCY_MS ?? 180_000),
+          },
+        },
+        details: {
+          writer_session_id: sessionA.id,
+          reader_session_id: sessionB.id,
+          matched: quality.matched,
+          missing: quality.missing,
+          unknown: quality.unknown,
+        },
+      }));
     });
 
-    console.log(
-      'E2E PASS: file read + artifact write/retrieve + memory write-back/cross-session read verified end-to-end with a real model via the official SDK.',
-    );
+    console.log(process.env.AWAKEN_EVAL_MEMORY_ONLY === '1'
+      ? 'E2E PASS: memory write-back/cross-session read verified end-to-end with a real model via the official SDK.'
+      : 'E2E PASS: file read + artifact write/retrieve + memory write-back/cross-session read verified end-to-end with a real model via the official SDK.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

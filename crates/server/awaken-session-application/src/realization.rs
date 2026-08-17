@@ -152,6 +152,8 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
             projection.environment.binding().map(str::to_owned),
         )?;
         self.runtime
+            .install_session_baseline(session_id, &projection.baseline)?;
+        self.runtime
             .install_session_request_context(session_id, projection.request_context.clone())?;
         self.runtime
             .prepare_session(session_id, projection.session_init())
@@ -309,6 +311,9 @@ impl SessionApplication {
             .map_err(|error| {
                 SessionRealizationError::Effect(RunError::internal(error.to_string()))
             })?;
+        self.runtime()
+            .install_session_baseline(&session.session_id, &projection.baseline)
+            .map_err(SessionRealizationError::Effect)?;
         self.runtime()
             .install_session_request_context(
                 &session.session_id,

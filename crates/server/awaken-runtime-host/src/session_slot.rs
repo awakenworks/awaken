@@ -49,6 +49,10 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
     /// that must materialize before the first turn (for example sandbox stdio
     /// MCP) use it to resolve the same immutable publication.
     pub agent_id: String,
+    /// Exact secret-free model replacement resolved and frozen by Control.
+    /// Runtime may project this value into an immutable Agent publication, but
+    /// must never resolve a new route from the public model id.
+    pub model_override: Option<awaken_session_contract::SessionModelOverride>,
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,

@@ -59,7 +59,7 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
         };
         let prefix = root.join(cli.id);
         let executable = prefix.join("node_modules").join(".bin").join(bin);
-        if executable.is_file() {
+        if executable.is_file() && installed_wrapper_matches(&prefix, package) {
             return canonical_wrapper_argv(&executable).map(Some);
         }
         std::fs::create_dir_all(&prefix).map_err(|error| {
@@ -98,8 +98,34 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
                 stderr.lines().next().unwrap_or("npm exited unsuccessfully")
             ));
         }
+        if !installed_wrapper_matches(&prefix, package) {
+            return Err(format!(
+                "installed ACP wrapper for {} does not match pinned package {package}",
+                cli.id
+            ));
+        }
         canonical_wrapper_argv(&executable).map(Some)
     }
+}
+
+fn installed_wrapper_matches(prefix: &Path, package: &str) -> bool {
+    let Some((name, version)) = package.rsplit_once('@') else {
+        return false;
+    };
+    if name.is_empty() || version.is_empty() {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(prefix.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    manifest
+        .get("dependencies")
+        .and_then(|dependencies| dependencies.get(name))
+        .and_then(serde_json::Value::as_str)
+        == Some(version)
 }
 
 fn canonical_wrapper_argv(executable: &Path) -> Result<Vec<String>, String> {
@@ -661,6 +687,46 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
 mod tests {
     use super::*;
     use awaken_credential_vault::repo::InMemoryCredentialRepo;
+
+    #[test]
+    fn wrapper_cache_requires_the_exact_pinned_package_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join("package.json");
+        std::fs::write(
+            &manifest,
+            r#"{"dependencies":{"@agentclientprotocol/claude-agent-acp":"0.69.0"}}"#,
+        )
+        .unwrap();
+        assert!(installed_wrapper_matches(
+            directory.path(),
+            "@agentclientprotocol/claude-agent-acp@0.69.0"
+        ));
+        assert!(
+            !installed_wrapper_matches(
+                directory.path(),
+                "@agentclientprotocol/claude-agent-acp@0.64.2"
+            ),
+            "a catalog downgrade or upgrade cannot reuse different bytes"
+        );
+
+        std::fs::write(&manifest, b"not-json").unwrap();
+        assert!(
+            !installed_wrapper_matches(
+                directory.path(),
+                "@agentclientprotocol/claude-agent-acp@0.69.0"
+            ),
+            "a corrupt manifest fails closed"
+        );
+        std::fs::remove_file(&manifest).unwrap();
+        assert!(
+            !installed_wrapper_matches(
+                directory.path(),
+                "@agentclientprotocol/claude-agent-acp@0.69.0"
+            ),
+            "a legacy unversioned cache must be reacquired once"
+        );
+        assert!(!installed_wrapper_matches(directory.path(), "unversioned"));
+    }
 
     struct AvailableDiscovery;
 

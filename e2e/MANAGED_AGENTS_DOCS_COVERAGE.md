@@ -449,6 +449,18 @@ endpoint (`https://api.kimi.com/coding/v1/`, `kimi-for-coding`):
 | Real file read + artifact write/retrieve + memory write-back cross-session | `managed_resources_e2e` | ✅ |
 | **Built-in tool loop with a real model** (`agent.tool_use{bash}` → `requires_action` → `user.tool_confirmation` → sandbox exec → `agent.tool_result` → answer → `end_turn`) | `managed_real_tool_loop_e2e` (new) | ✅ |
 | **Multi-turn context carryover** across a persistent session (real recall of turn-1 facts) | `managed_real_multiturn_e2e` (new) | ✅ |
+| **Dream consolidation quality** through the production provider executor (verified/stale facts, immutable source, isolated output, lifecycle/latency/usage metrics) | `managed_dream_real_eval_e2e.mjs` + [`MANAGED_AGENTS_LLM_EVALUATION.md`](MANAGED_AGENTS_LLM_EVALUATION.md) | ✅ thresholded live lane |
+| **Native Memory quality** (real tool write, HITL, durable commit, fresh-Session recall, precision/F1/contamination/latency/usage) | `managed_resources_e2e.mjs` | ✅ thresholded live lane |
+| **ACP Memory quality** (Kimi/OpenCode/Claude/Hermes writers × readers over one durable store, recall@k/precision/F1/contamination/retry/latency) | `acp_runtime_memory_matrix_e2e.mjs` | ◇ executable threshold gate; requires the pinned external CLI versions |
+
+The live evaluation output is versioned machine-readable JSON prefixed by
+`AWAKEN_LLM_EVAL`; `AWAKEN_EVAL_ARTIFACT_DIR` persists it without credentials.
+The deterministic scorer has non-happy-path unit tests and a 256-state exhaustive
+model check. `conformance/managed_native_acp_causal_coverage_e2e.mjs` additionally
+gates ten Managed feature groups across Native, ACP, A2A, and negative partitions.
+The Managed model-reference parser separately exhausts 1,323 open provider/API/
+endpoint/runtime combinations, including third-party providers and the explicit
+A2A executor-only boundary.
 
 Registered in `package.json` `test:real`. The `when-online` smoke is **not** applicable to
 KIMI — it targets the real Anthropic **Managed Agents** API (`/v1/sessions`), which KIMI

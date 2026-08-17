@@ -50,6 +50,15 @@ impl AcpLaunchRegistry {
             if cli.id.trim().is_empty() {
                 return Err("ACP launch route id must not be empty".into());
             }
+            if launch_argv
+                .as_ref()
+                .is_some_and(|argv| argv.is_empty() || argv[0].trim().is_empty())
+            {
+                return Err(format!(
+                    "ACP launch argv for `{}` must not be empty",
+                    cli.id
+                ));
+            }
             let id = cli.id.to_string();
             if indexed
                 .insert(
@@ -85,6 +94,15 @@ impl AcpLaunchRegistry {
         let default = cli.id.to_string();
         Self::new(vec![(cli, resolver)], Some(default))
             .expect("one known ACP CLI is a valid launch registry")
+    }
+
+    pub fn single_with_resolved_argv(
+        cli: AcpCli,
+        resolver: Arc<dyn LaunchResolver>,
+        launch_argv: Option<Vec<String>>,
+    ) -> Result<Self, String> {
+        let default = cli.id.to_string();
+        Self::with_resolved_argv(vec![(cli, resolver, launch_argv)], Some(default))
     }
 
     pub(super) fn selected(
@@ -288,5 +306,36 @@ mod tests {
                 .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn single_route_preserves_acquired_argv_and_rejects_empty_executables() {
+        let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let registry = AcpLaunchRegistry::single_with_resolved_argv(
+            cli,
+            Arc::new(FakeResolver),
+            Some(vec!["/opt/awaken/claude-agent-acp".to_string()]),
+        )
+        .unwrap();
+        let selected = registry
+            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
+                cli: "claude".to_string(),
+            })
+            .unwrap();
+        assert_eq!(
+            selected.launch_argv.as_deref(),
+            Some(["/opt/awaken/claude-agent-acp".to_string()].as_slice())
+        );
+
+        for invalid in [Vec::new(), vec!["   ".to_string()]] {
+            assert!(
+                AcpLaunchRegistry::single_with_resolved_argv(
+                    cli,
+                    Arc::new(FakeResolver),
+                    Some(invalid),
+                )
+                .is_err()
+            );
+        }
     }
 }

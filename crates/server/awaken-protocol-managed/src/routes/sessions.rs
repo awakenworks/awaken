@@ -1080,6 +1080,32 @@ fn is_terminal(frame: &StreamFrame) -> bool {
     )
 }
 
+/// Track whether the newest turn represented in a replay snapshot has reached a
+/// terminal event. Usage and telemetry are committed after `status_idle`, so
+/// simply asking whether the final snapshot event is terminal leaves a
+/// send-then-stream client tailing forever. Conversely, an older idle must not
+/// close a stream after a newer input or running marker has started another turn.
+fn replay_is_terminal_after(current: bool, event_type: &str) -> bool {
+    match event_type {
+        "session.status_idle"
+        | "session.status_terminated"
+        | "session.deleted"
+        | "session.thread_status_idle"
+        | "session.thread_status_terminated" => true,
+        "user.message"
+        | "user.tool_confirmation"
+        | "user.custom_tool_result"
+        | "user.tool_result"
+        | "user.define_outcome"
+        | "user.interrupt"
+        | "session.status_running"
+        | "session.status_rescheduled"
+        | "session.thread_status_running"
+        | "session.thread_status_rescheduled" => false,
+        _ => current,
+    }
+}
+
 fn sse_frame(frame: &StreamFrame) -> SseEvent {
     // The SDK dispatches on the SSE `event:` name; the JSON body carries the same
     // `type` plus the fields (committed event, or a stream-only preview).
@@ -1109,7 +1135,7 @@ where
             };
             seen.insert(event.id.clone());
             let frame = StreamFrame::Committed(event);
-            backfill_terminal = is_terminal(&frame);
+            backfill_terminal = replay_is_terminal_after(backfill_terminal, frame.type_str());
             yield Ok(sse_frame(&frame));
         }
         // A snapshot that already reached idle/terminated is a completed turn
@@ -1354,7 +1380,7 @@ async fn stream_events(
 
 #[cfg(test)]
 mod managed_json_tests {
-    use super::{error_response, managed_json_message};
+    use super::{error_response, managed_json_message, replay_is_terminal_after};
     use crate::state::{RunError, StateError};
 
     #[test]
@@ -1379,5 +1405,46 @@ mod managed_json_tests {
         )));
         assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE, "R1");
         assert_eq!(body.0.error.kind, "api_error", "R2");
+    }
+
+    #[test]
+    fn replay_terminal_state_survives_trailing_usage_and_telemetry() {
+        let mut terminal = false;
+        for event_type in [
+            "user.message",
+            "session.status_running",
+            "span.model_request_start",
+            "span.model_request_end",
+            "agent.message",
+            "session.status_idle",
+            "session.usage",
+        ] {
+            terminal = replay_is_terminal_after(terminal, event_type);
+        }
+        assert!(
+            terminal,
+            "trailing observational events cannot reopen a turn"
+        );
+    }
+
+    #[test]
+    fn replay_terminal_state_is_reset_by_every_resumption_input() {
+        for event_type in [
+            "user.message",
+            "user.tool_confirmation",
+            "user.custom_tool_result",
+            "user.tool_result",
+            "user.define_outcome",
+            "user.interrupt",
+            "session.status_running",
+            "session.status_rescheduled",
+            "session.thread_status_running",
+            "session.thread_status_rescheduled",
+        ] {
+            assert!(
+                !replay_is_terminal_after(true, event_type),
+                "{event_type} must reopen the replay tail"
+            );
+        }
     }
 }

@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
   pass,
@@ -52,6 +52,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38221);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
+const SKILL_BETAS = ['skills-2025-10-02'];
 const TMP = path.join(os.tmpdir(), `awaken-fullchain-e2e-${process.pid}`);
 const STORE_DIR = `${TMP}/storage`;
 const README = 'SEED_README_FULLCHAIN';
@@ -125,15 +126,21 @@ async function main() {
     // 1) Configure resources via their authoritative APIs. The immutable Agent
     // publication selects `greet`; therefore the durable Skill aggregate must
     // exist before Session pinning (a static side registry is not a second truth).
-    const greet = await c.post('/v1/skills', {
-      body: {
-        id: 'greet',
-        content: '---\ndescription: greet\n---\nGREETING-FROM-SKILL',
-      },
-      headers: SKILL_HEADERS,
+    const greet = await c.beta.skills.create({
+      display_title: 'Greet',
+      files: [
+        await toFile(
+          Buffer.from('---\nname: greet\ndescription: greet\n---\nGREETING-FROM-SKILL'),
+          'SKILL.md',
+        ),
+      ],
+      betas: SKILL_BETAS,
     });
-    assert.equal(greet.id, 'greet');
-    const mem = await c.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    assert.ok(greet.id.startsWith('skill_'));
+    const mem = await c.post('/v1/memory_stores', {
+      body: { name: 'full-chain-memory' },
+      headers: MEMORY_HEADERS,
+    });
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
     pass(`configured a memory_store via the API: ${mem.id}`);
 
@@ -148,7 +155,7 @@ async function main() {
       betas: BETAS,
     });
     const skillIds = (session.agent.skills ?? []).map((s) => s.skill_id ?? s);
-    assert.ok(skillIds.includes('greet'), `the skill is offered: ${JSON.stringify(session.agent.skills)}`);
+    assert.ok(skillIds.includes(greet.id), `the skill is offered: ${JSON.stringify(session.agent.skills)}`);
     assert.equal(session.resources.length, 2, 'both resources bound to the session');
     const remoteHeadBefore = git(['rev-parse', 'main'], bare).trim();
     pass('one session binds memory_store + github_repository and is offered the skill');
@@ -164,6 +171,7 @@ async function main() {
     let evs = [];
     let files = null;
     let memContent = '';
+    let pushed = '';
     for (let i = 0; i < 60; i += 1) {
       await sleep(400);
       evs = await listEvents(c, session.id);
@@ -179,7 +187,7 @@ async function main() {
       'Files GET does not advance the Repository remote',
     );
     await c.beta.sessions.delete(session.id, { betas: BETAS });
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 60; i += 1) {
       // Observation decision table: full+success exposes durable bytes; basic
       // deliberately elides them; transport/decode failure is a test failure,
       // never evidence that the store is merely empty.
@@ -190,8 +198,14 @@ async function main() {
       files = await listArtifacts(c, session.id);
       const listed = files?.data ?? files?.files ?? files ?? [];
       const listedArray = Array.isArray(listed) ? listed : listed.data ?? [];
+      try {
+        pushed = git(['show', 'main:CHAIN.txt'], bare).trim();
+      } catch {
+        pushed = '';
+      }
       if (
         memContent.includes(MEMO_MARKER)
+        && pushed === REPO_MARKER
         && listedArray.some((file) =>
           (file.filename ?? file.path ?? file.logical_path ?? '').includes('result.txt'))
       ) break;
@@ -209,7 +223,6 @@ async function main() {
     pass('Session release reconciled memory_store write under its id');
 
     // 6) Repo commit + push-back to the real bare remote.
-    const pushed = git(['show', 'main:CHAIN.txt'], bare).trim();
     assert.equal(pushed, REPO_MARKER, 'the agent edit was committed + pushed to the remote');
     pass('Session release published the Agent-authored Repository commit');
 
@@ -283,13 +296,24 @@ async function main() {
           (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
         ),
       );
-      await c.beta.sessions.delete(authored.id, { betas: BETAS });
+      // Archive is the synchronous terminal edge: it returns only after Skill
+      // harvest and sandbox cleanup settle. Delete intentionally detaches the
+      // same durable cleanup, so a 404 is not a completion receipt.
+      const archived = await c.beta.sessions.archive(authored.id, { betas: BETAS });
+      assert.equal(archived.status, 'terminated');
     };
+    let authoredSkillId = '';
     const skillVersions = async () => {
-      const response = await c.get('/v1/skills/authored/versions', { headers: SKILL_HEADERS });
+      const response = await c.get(`/v1/skills/${authoredSkillId}/versions`, {
+        headers: SKILL_HEADERS,
+      });
       return response.data ?? [];
     };
     await author('author-skill-v1');
+    const authoredCatalog = await c.get('/v1/skills', { headers: SKILL_HEADERS });
+    authoredSkillId = (authoredCatalog.data ?? [])
+      .find((skill) => skill.id !== greet.id)?.id ?? '';
+    assert.ok(authoredSkillId, 'terminal harvest published the authored Skill aggregate');
     assert.deepEqual((await skillVersions()).map((version) => version.version), ['1']);
     await author('author-skill-v1');
     assert.deepEqual(
@@ -299,12 +323,12 @@ async function main() {
     );
     await author('author-skill-v2');
     assert.deepEqual((await skillVersions()).map((version) => version.version), ['1', '2']);
-    const authoredLatest = await c.get('/v1/skills/authored/versions/latest', {
+    const authoredLatest = await c.get(`/v1/skills/${authoredSkillId}/versions/latest`, {
       headers: SKILL_HEADERS,
     });
     assert.equal(authoredLatest.version, '2');
     assert.match(
-      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/authored/versions/2/content`, {
+      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/${authoredSkillId}/versions/2/content`, {
         headers: SKILL_HEADERS,
       })).text(),
       /AUTHORED_SKILL_V2/u,
@@ -318,12 +342,12 @@ async function main() {
     const selectedSkills = (consumingSession.agent.skills ?? []).map((skill) => skill.skill_id ?? skill);
     assert.deepEqual(
       selectedSkills,
-      ['greet'],
+      [greet.id],
       'persisting an authored Skill does not mutate the immutable Agent publication',
     );
     const skillCatalog = await c.get('/v1/skills', { headers: SKILL_HEADERS });
     assert.ok(
-      (skillCatalog.data ?? []).some((skill) => skill.id === 'authored'),
+      (skillCatalog.data ?? []).some((skill) => skill.id === authoredSkillId),
       'the authored aggregate remains available for an explicit future publication update',
     );
     await c.beta.sessions.delete(consumingSession.id, { betas: BETAS });

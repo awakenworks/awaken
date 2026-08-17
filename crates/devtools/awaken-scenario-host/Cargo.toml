@@ -52,6 +52,7 @@ awaken-resource-store = { workspace = true, features = ["test-support"] }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }
+awaken-acp-application.workspace = true
 # Management plane (ADR-0043): process startup resolves a run's inference
 # (adapter_kind + base_url + already-resolved credential) and builds the host's
 # model executor from it — the runtime never sees the credential binding (D6/D9).
@@ -110,6 +111,7 @@ awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-executable-environment-catalog.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-session-contract.workspace = true
+awaken-dream-application.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.

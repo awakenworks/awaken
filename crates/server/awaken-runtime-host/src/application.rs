@@ -382,6 +382,7 @@ mod acp_context_tests {
             slot.baseline = Some(crate::session_slot::FrozenBaselineRuntimeProjection {
                 fingerprint: awaken_session_contract::SessionBaselineFingerprint("baseline".into()),
                 agent_id: "agent".into(),
+                model_override: None,
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: vec!["frozen session prompt".into()],
@@ -843,6 +844,50 @@ impl crate::SharedHost {
         Ok(())
     }
 
+    /// Install the immutable baseline for the co-located realization path.
+    /// Claimed Workers use `install_frozen_session_projection`; local Native
+    /// execution reaches this method through the protocol-neutral SessionRuntime
+    /// port before `prepare_session`, so both paths expose identical mounts,
+    /// environment values, and prompts.
+    pub(crate) fn install_frozen_session_baseline(
+        &self,
+        thread: &str,
+        baseline: &awaken_session_contract::SessionBaseline,
+    ) -> Result<(), crate::HostError> {
+        if baseline.fingerprint.0.trim().is_empty() {
+            return Err(crate::HostError::internal(
+                "frozen Session baseline fingerprint must not be empty",
+            ));
+        }
+        let baseline = decode_baseline_projection(baseline)?;
+        let current = self.session_slots.read(thread, |slot| {
+            (
+                slot.baseline.clone(),
+                slot.environment.is_some(),
+                slot.resources.mounts.clone(),
+            )
+        });
+        let (existing, environment_realized, resource_mounts) =
+            current.unwrap_or_else(|| (None, false, Vec::new()));
+        if let Some(existing) = existing {
+            if existing.fingerprint != baseline.fingerprint {
+                return Err(crate::HostError::internal(format!(
+                    "thread {thread} is already bound to a different frozen Session baseline"
+                )));
+            }
+            return Ok(());
+        }
+        if environment_realized {
+            return Err(crate::HostError::internal(format!(
+                "thread {thread} was realized before its frozen Session baseline"
+            )));
+        }
+        validate_baseline_projection(&baseline, &resource_mounts)?;
+        self.session_slots
+            .update(thread, |slot| slot.baseline = Some(baseline));
+        Ok(())
+    }
+
     pub(crate) fn install_environment_projection(
         &self,
         thread: &str,
@@ -936,6 +981,7 @@ fn decode_baseline_projection(
     Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
         fingerprint: baseline.fingerprint.clone(),
         agent_id: baseline.agent_id.clone(),
+        model_override: baseline.model_override.clone(),
         mounts,
         env,
         prompts: baseline.prompts.clone(),

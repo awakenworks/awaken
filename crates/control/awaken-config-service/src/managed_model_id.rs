@@ -308,6 +308,7 @@ fn hex(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn parses_the_complete_composable_model_reference_decision_table() {
@@ -382,5 +383,156 @@ mod tests {
         ] {
             assert!(parse_managed_model_id(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn provider_and_runtime_selector_matrix_is_open_and_fail_closed() {
+        // Finite model check of the public grammar, not a provider allowlist.
+        // Every provider/API identifier is opaque; validity depends only on the
+        // documented dependency chain provider -> API -> endpoint and on the
+        // executor's ability to accept an explicit model. This covers built-in
+        // names, third-party names, and all runtime families.
+        let providers = [
+            None,
+            Some("anthropic"),
+            Some("openai"),
+            Some("deepseek"),
+            Some("kimi"),
+            Some("gemini"),
+            Some("vertex"),
+            Some("anyrouter"),
+            Some("third-party/vendor=v2"),
+        ];
+        let apis = [
+            None,
+            Some("anthropic_messages"),
+            Some("open_ai_chat"),
+            Some("open_ai_responses"),
+            Some("gemini"),
+            Some("vertex_gemini"),
+            Some("third-party/messages=v9"),
+        ];
+        let endpoints = [None, Some("primary"), Some("regional/edge=v3")];
+        let executors = [
+            "native",
+            "acp:codex",
+            "acp:claude",
+            "acp:gemini",
+            "acp:opencode",
+            "acp:hermes",
+            "a2a:https://agent.example/a2a",
+        ];
+        let mut checked = 0;
+
+        for provider in providers {
+            for api in apis {
+                for endpoint in endpoints {
+                    for executor in executors {
+                        checked += 1;
+                        let mut wire = "vendor/model-v1".to_string();
+                        if let Some(provider) = provider {
+                            push_qualifier(&mut wire, "provider", provider);
+                        }
+                        if let Some(api) = api {
+                            push_qualifier(&mut wire, "api", api);
+                        }
+                        if let Some(endpoint) = endpoint {
+                            push_qualifier(&mut wire, "endpoint", endpoint);
+                        }
+                        push_qualifier(&mut wire, "executor", executor);
+
+                        let valid_dependencies = api.is_none() || provider.is_some();
+                        let valid_endpoint =
+                            endpoint.is_none() || provider.is_some() && api.is_some();
+                        let executor_accepts_model = !executor.starts_with("a2a:");
+                        let parsed = parse_managed_model_id(&wire);
+                        assert_eq!(
+                            parsed.is_ok(),
+                            valid_dependencies && valid_endpoint && executor_accepts_model,
+                            "matrix case {wire}"
+                        );
+                        if let Ok(selection) = parsed {
+                            let canonical = render_managed_model_id(&selection).expect("render");
+                            assert_eq!(
+                                parse_managed_model_id(&canonical).expect("canonical parse"),
+                                selection,
+                                "round trip {wire}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 1_323);
+
+        for executor in [
+            "acp:codex",
+            "acp:claude",
+            "acp:gemini",
+            "acp:opencode",
+            "acp:hermes",
+        ] {
+            let wire = format!("executor={executor}");
+            let selection = parse_managed_model_id(&wire).expect(&wire);
+            assert_eq!(render_managed_model_id(&selection).unwrap(), wire);
+        }
+        let a2a = "executor=a2a:https://third-party.example/agents/finance";
+        let selection = parse_managed_model_id(a2a).expect("A2A runtime");
+        assert_eq!(render_managed_model_id(&selection).unwrap(), a2a);
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_third_party_components_round_trip_canonically(
+            model in "[A-Za-z0-9_./:;=%-]{1,32}",
+            provider in "[A-Za-z0-9_./:;=%-]{1,32}",
+            api in "[A-Za-z0-9_./:;=%-]{1,32}",
+            endpoint in "[A-Za-z0-9_./:;=%-]{1,32}",
+            cli in "[A-Za-z0-9_.=-]{1,16}",
+            use_acp in any::<bool>(),
+        ) {
+            let selection = ModelSelection::Target {
+                target: ModelTarget {
+                    model_id: model,
+                    provider_id: Some(provider),
+                    api_dialect: Some(api),
+                    protocol_endpoint_id: None,
+                    endpoint_name: Some(endpoint),
+                },
+                backend_ref: if use_acp { format!("acp:{cli}") } else { "genai".into() },
+                configuration: AcpSessionConfiguration::default(),
+            };
+            let wire = render_managed_model_id(&selection).expect("representable selection");
+            let parsed = parse_managed_model_id(&wire).expect("rendered id parses");
+            prop_assert_eq!(&parsed, &selection);
+            prop_assert_eq!(render_managed_model_id(&parsed).unwrap(), wire);
+        }
+
+        #[test]
+        fn malformed_percent_escapes_always_fail_closed(
+            model in "[A-Za-z0-9_./:-]{1,32}",
+            suffix in prop::sample::select(vec!["%", "%0", "%GG", "%0G", "%G0", "%FF"]),
+        ) {
+            let wire = format!("{model}{suffix};provider=third-party");
+            prop_assert!(parse_managed_model_id(&wire).is_err());
+        }
+    }
+
+    #[test]
+    fn unicode_and_large_opaque_components_are_lossless() {
+        let model = format!("模型/{};版本=β%", "m".repeat(4_096));
+        let selection = ModelSelection::Target {
+            target: ModelTarget {
+                model_id: model,
+                provider_id: Some("供应商/网关=v2".into()),
+                api_dialect: Some("消息;协议%9".into()),
+                protocol_endpoint_id: None,
+                endpoint_name: Some("亚洲/边缘=主".into()),
+            },
+            backend_ref: "acp:第三方-cli".into(),
+            configuration: AcpSessionConfiguration::default(),
+        };
+        let wire = render_managed_model_id(&selection).expect("large Unicode selection");
+        assert_eq!(parse_managed_model_id(&wire).unwrap(), selection);
     }
 }

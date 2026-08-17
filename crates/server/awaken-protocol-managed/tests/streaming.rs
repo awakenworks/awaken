@@ -412,7 +412,7 @@ async fn http_create(app: &Router) -> String {
 
 /// A subscriber open BEFORE a turn runs receives that turn's committed events on
 /// the live broadcast, in turn order (`user.message` → `running` →
-/// `agent.message` → `idle`) — the live path, distinct from the send-then-stream
+/// `agent.message` → `idle` → `usage`) — the live path, distinct from the send-then-stream
 /// backfill the adapter suite covers.
 #[tokio::test]
 async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
@@ -434,7 +434,8 @@ async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
             "user.message",
             "session.status_running",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ],
         "the turn's committed frames arrive live, in order"
     );
@@ -460,10 +461,12 @@ async fn live_broadcast_preserves_order_across_two_turns() {
             "session.status_running",
             "agent.message",
             "session.status_idle",
+            "session.usage",
             "user.message",
             "session.status_running",
             "agent.message",
             "session.status_idle",
+            "session.usage",
         ],
         "both turns' brackets arrive live, in commit order"
     );

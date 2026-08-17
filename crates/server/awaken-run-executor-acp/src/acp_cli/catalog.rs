@@ -12,7 +12,7 @@ const CLAUDE: AcpCli = AcpCli {
     description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
         installer: "npm",
-        package: "@agentclientprotocol/claude-agent-acp@0.64.2",
+        package: "@agentclientprotocol/claude-agent-acp@0.69.0",
         bin: "claude-agent-acp",
     },
     discovery: AcpDiscoverySpec {
@@ -50,7 +50,7 @@ const CLAUDE: AcpCli = AcpCli {
     image_requirements: &[
         AcpImageRequirement {
             manager: "npm",
-            requirement: "@agentclientprotocol/claude-agent-acp@0.64.2",
+            requirement: "@agentclientprotocol/claude-agent-acp@0.69.0",
         },
         AcpImageRequirement {
             manager: "npm",

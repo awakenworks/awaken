@@ -446,6 +446,18 @@ pub trait McpAttachmentRealizer: Send + Sync {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Install the complete immutable baseline before local preparation. Remote
+    /// Workers receive this inside `FrozenSessionProjection`; this port keeps
+    /// co-located Native realization causally equivalent instead of dropping
+    /// baseline mounts, environment values, or system prompts from `SessionInit`.
+    fn install_session_baseline(
+        &self,
+        _thread: &str,
+        _baseline: &crate::SessionBaseline,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// Install request-only messages derived from a frozen transcript prefix.
     /// The default preserves compatibility for runtimes without model context;
     /// implementations must never append these messages to `thread`.

@@ -761,6 +761,16 @@ impl ManagedHost {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    fn install_session_baseline(
+        &self,
+        thread: &str,
+        baseline: &awaken_session_contract::SessionBaseline,
+    ) -> Result<(), RunError> {
+        self.host
+            .install_frozen_session_baseline(thread, baseline)
+            .map_err(to_run_error)
+    }
+
     fn install_session_request_context(
         &self,
         thread: &str,
@@ -830,6 +840,17 @@ impl SessionRuntime for ManagedHost {
         &self,
         command: awaken_session_contract::SessionCleanupCommand,
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        // Archive/delete and the recovery scanner may observe the same durable
+        // cleanup intent concurrently. Serialize the complete external-effect
+        // sequence on the Session lifecycle owner: repository push is CAS-based
+        // and cannot safely race an identical retry before the first receipt is
+        // committed. Once the winner removes the slot, the waiter sees an empty
+        // projection and completes as the intended idempotent no-op.
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(&command.thread_id, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
         // Terminal release owns every reverse operation: publish Agent-authored Repo
         // commits (when the Agent did not own publication through MCP), persist
         // run-authored Skills, then dispose. A GET /files poll is never a write edge.

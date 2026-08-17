@@ -1,12 +1,12 @@
 // Real ACP runtime × durable MemoryStore matrix.
 //
-// Kimi Code, OpenCode, Claude Code, and Hermes run as real ACP agents against
-// the same Kimi model. Servers restart between runtimes over one storage root.
+// OpenCode, Claude Code, and Hermes run as real ACP agents against the same
+// Kimi model. Servers restart between runtimes over one storage root.
 // Every runtime must read the marker written by its predecessor through the
 // mounted MemoryStore, then write its own distinct memory file. A second pass
-// makes every runtime recall every runtime's file (4 writers × 4 readers). The
+// makes every runtime recall every runtime's file (N writers × N readers). The
 // Memory API is observation only: all subject writes/reads happen through
-// `.mnt/memory`.
+// `/mnt/memory`.
 //
 // Run:
 //   CARGO_TARGET_DIR=/tmp/awaken-memory-runtime-target \
@@ -20,10 +20,18 @@ import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { cleanupFixtureTree, pass, withServer } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
+import {
+  aggregateUsage,
+  emitEvaluation,
+  makeEvaluation,
+  percentile,
+  taggedFactMetrics,
+} from './llm_eval_metrics.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
-const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'kimi,opencode,claude,hermes')
+const KIMI_PROCESS_SECRET_RUNTIMES = new Set(['opencode', 'claude', 'hermes']);
+const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'opencode,claude,hermes')
   .split(',')
   .map((runtime) => runtime.trim())
   .filter(Boolean);
@@ -159,6 +167,12 @@ async function main() {
   }
 
   const realHome = os.homedir();
+  assert.ok(RUNTIMES.length > 0, 'ACP_RUNTIMES must select at least one runtime');
+  assert.ok(
+    RUNTIMES.every((runtime) => KIMI_PROCESS_SECRET_RUNTIMES.has(runtime)),
+    'the Kimi process-secret matrix accepts opencode, claude, and hermes only; '
+      + 'Codex uses its artifact/host-login gate and Gemini uses its own provider credentials',
+  );
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-home-'));
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-sandboxes-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-store-'));
@@ -173,10 +187,19 @@ async function main() {
 
   const chain = RUNTIMES.map((runtime) => ({
     runtime,
-    marker: `${runtime}-${crypto.randomBytes(10).toString('hex')}`,
+    marker: `AWKFACT_${runtime.toUpperCase().replaceAll(/[^A-Z0-9]/gu, '_')}_${crypto.randomBytes(10).toString('hex').toUpperCase()}`,
   }));
-  const seed = `seed-${crypto.randomBytes(10).toString('hex')}`;
+  const seed = `AWKFACT_SEED_${crypto.randomBytes(10).toString('hex').toUpperCase()}`;
   let storeId = null;
+  const operationLatencies = [];
+  const allEvents = [];
+  let predecessorRecallSuccesses = 0;
+  let committedWrites = 0;
+  let crossRuntimeRecall = 0;
+  let crossRuntimePrecision = 0;
+  let crossRuntimeF1 = 0;
+  let crossRuntimeContamination = 0;
+  let retryCount = 0;
 
   try {
     for (let index = 0; index < chain.length; index += 1) {
@@ -205,7 +228,7 @@ async function main() {
 
         const createSession = () => client.beta.sessions.create({
             agent: acpAgent.id,
-            model: selectedModel,
+            environment_id: 'env_local',
             resources: [{
               type: 'memory_store',
               memory_store_id: storeId,
@@ -228,12 +251,15 @@ async function main() {
         // has its own protocol regression test.
         let readSession;
         let read;
+        let readAttempts = 0;
+        const readStarted = performance.now();
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          readAttempts = attempt;
           readSession = await createSession();
           read = await driveUntil(
             client,
             readSession.id,
-            `Read .mnt/memory/${predecessor.runtime}.md with your file tools and reply with only its exact contents.`,
+            `Read /mnt/memory/${predecessor.runtime}.md with your file tools and reply with only its exact contents.`,
             (events) => assistantText(events).includes(predecessor.marker),
           );
           if (assistantText(read.events).includes(predecessor.marker)) break;
@@ -250,8 +276,14 @@ async function main() {
               type: event.type,
               tool: event.name ?? event.tool_name,
               permission: event.evaluated_permission,
+              error: event.error,
+              stop_reason: event.stop_reason,
             })))}`,
         );
+        retryCount += readAttempts - 1;
+        predecessorRecallSuccesses += 1;
+        operationLatencies.push(performance.now() - readStarted);
+        allEvents.push(...read.events);
         pass(`${runtime} read the predecessor's MemoryStore marker`);
         await client.beta.sessions.delete(readSession.id, { betas: BETAS });
 
@@ -262,11 +294,14 @@ async function main() {
         // ACP permission regression covers ask/cancel/resume behavior.
         configureSession(writeSession);
         let write;
+        let writeAttempts = 0;
+        const writeStarted = performance.now();
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          writeAttempts = attempt;
           write = await driveUntil(
             client,
             writeSession.id,
-            `Use your file write tool to create .mnt/memory/${runtime}.md with exactly ${marker}. `
+            `Use your file write tool to create /mnt/memory/${runtime}.md with exactly ${marker}. `
               + 'Do not write any other content. Reply with only SAVED.',
             (events) => assistantText(events).includes('SAVED'),
           );
@@ -299,6 +334,10 @@ async function main() {
           committed,
           `${runtime} must commit marker ${marker} when its Session is disposed`,
         );
+        retryCount += writeAttempts - 1;
+        committedWrites += 1;
+        operationLatencies.push(performance.now() - writeStarted);
+        allEvents.push(...write.events);
         pass(`${runtime} committed its MemoryStore marker (${write.approved.size} approval(s))`);
       });
     }
@@ -316,10 +355,13 @@ async function main() {
           model: selectedModel,
           betas: BETAS,
         });
-        const paths = chain.map(({ runtime: writer }) => `.mnt/memory/${writer}.md`);
+        const paths = chain.map(({ runtime: writer }) => `/mnt/memory/${writer}.md`);
         let session;
         let recalled;
+        let recallAttempts = 0;
+        const recallStarted = performance.now();
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          recallAttempts = attempt;
           session = await client.beta.sessions.create({
             agent: acpAgent.id,
             model: selectedModel,
@@ -348,11 +390,63 @@ async function main() {
             `${runtime} must recall ${writer}'s marker ${marker}; assistant=${JSON.stringify(text)}`,
           );
         }
+        const quality = taggedFactMetrics({
+          expected: chain.map(({ marker }) => marker),
+          text,
+        });
+        retryCount += recallAttempts - 1;
+        crossRuntimeRecall += quality.recall;
+        crossRuntimePrecision += quality.precision;
+        crossRuntimeF1 += quality.f1;
+        crossRuntimeContamination += quality.contamination_rate;
+        operationLatencies.push(performance.now() - recallStarted);
+        allEvents.push(...recalled.events);
         pass(`${runtime} recalled all ${chain.length} runtime-authored memories`);
         await client.beta.sessions.delete(session.id, { betas: BETAS });
       });
     }
 
+    const usage = aggregateUsage(allEvents);
+    emitEvaluation(makeEvaluation({
+      suite: 'managed_memory_real_eval_acp_runtime_matrix',
+      subject: 'durable-memory-cross-runtime-recall',
+      backend: `acp:${RUNTIMES.join(',')}`,
+      model: kimi.openaiModel,
+      sampleSize: chain.length * chain.length,
+      metrics: {
+        write_commit_rate: committedWrites / chain.length,
+        predecessor_recall_rate: predecessorRecallSuccesses / chain.length,
+        cross_runtime_recall_at_k: crossRuntimeRecall / chain.length,
+        fact_precision: crossRuntimePrecision / chain.length,
+        fact_f1: crossRuntimeF1 / chain.length,
+        contamination_rate: crossRuntimeContamination / chain.length,
+        latency_p50_ms: percentile(operationLatencies, 0.5),
+        latency_p95_ms: percentile(operationLatencies, 0.95),
+        retry_rate: retryCount / (chain.length * 3),
+        usage_observed_rate: usage.observed ? 1 : 0,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+      },
+      thresholds: {
+        write_commit_rate: { operator: 'gte', value: 1 },
+        predecessor_recall_rate: { operator: 'gte', value: 1 },
+        cross_runtime_recall_at_k: { operator: 'gte', value: 1 },
+        fact_precision: { operator: 'gte', value: 1 },
+        fact_f1: { operator: 'gte', value: 1 },
+        contamination_rate: { operator: 'lte', value: 0 },
+        latency_p95_ms: {
+          operator: 'lte',
+          value: Number(process.env.AWAKEN_ACP_MEMORY_MAX_LATENCY_MS ?? 600_000),
+        },
+      },
+      details: {
+        runtimes: RUNTIMES,
+        writers: chain.length,
+        readers: chain.length,
+        retries: retryCount,
+        usage_observed: usage.observed,
+      },
+    }));
     console.log(
       `E2E PASS: ${RUNTIMES.length} writers × ${RUNTIMES.length} readers shared one durable MemoryStore.`,
     );

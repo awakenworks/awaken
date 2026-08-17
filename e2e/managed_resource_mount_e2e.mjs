@@ -22,7 +22,10 @@ async function main() {
       betas: BETAS,
     });
     assert.ok(file.id, 'file uploaded');
-    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const mem = await client.post('/v1/memory_stores', {
+      body: { name: 'resource-mount-memory' },
+      headers: MEMORY_HEADERS,
+    });
     assert.ok(mem.id, 'memory store created');
 
     // Resource realization decision table:
@@ -32,6 +35,7 @@ async function main() {
     // R4 archived frozen Memory -> next turn rejected before inference.
     const session = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/doc.txt' },
         { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
@@ -56,6 +60,7 @@ async function main() {
 
     const memorySession = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' }],
       betas: BETAS,
     });

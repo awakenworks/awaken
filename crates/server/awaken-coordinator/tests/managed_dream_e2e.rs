@@ -189,7 +189,10 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     )
     .await;
     assert_eq!(source["data"][0]["content"], "# Existing\n- Keep me.\n");
-    assert_eq!(output["data"][0]["content"], source["data"][0]["content"]);
+    assert_eq!(
+        output["data"][0]["content"],
+        "# Dream\n- Consolidated by the Dream Agent.\n"
+    );
     assert!(
         auxiliary_events["data"]
             .as_array()
@@ -201,6 +204,13 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
                     && event["input"]["path"] == "/mnt/dream/output-memory/MEMORY.md"
             })
     );
+    let write_result = auxiliary_events["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "agent.tool_result")
+        .expect("Dream write has a correlated tool result");
+    assert_ne!(write_result["is_error"], true, "{write_result}");
 
     let auxiliary = ok(
         &app,

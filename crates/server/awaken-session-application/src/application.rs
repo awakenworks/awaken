@@ -501,19 +501,21 @@ impl SessionApplication {
                 let resolver = self.model_publication_resolver.as_deref().ok_or_else(|| {
                     RunError::unavailable("Session model override resolution is not configured")
                 })?;
-                Some(Box::new(
-                    resolver
-                        .resolve_session_model(workspace_id, requested_model)
-                        .await
-                        .map_err(|error| match error {
-                            awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
-                                RunError::bad_request(error.to_string())
-                            }
-                            awaken_session_contract::SessionModelResolutionError::Unavailable(
-                                _,
-                            ) => RunError::unavailable(error.to_string()),
-                        })?,
-                ))
+                let publication = resolver
+                    .resolve_session_model(workspace_id, requested_model)
+                    .await
+                    .map_err(|error| match error {
+                        awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
+                            RunError::bad_request(error.to_string())
+                        }
+                        awaken_session_contract::SessionModelResolutionError::Unavailable(_) => {
+                            RunError::unavailable(error.to_string())
+                        }
+                    })?;
+                publication
+                    .validate_for_workspace(workspace_id)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                Some(Box::new(publication))
             }
         };
         Ok(awaken_session_contract::SessionModelOverride {

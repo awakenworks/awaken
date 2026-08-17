@@ -516,7 +516,10 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
             serde_json::Value::Null,
         )
         .await;
-        if types(&events).last().map(String::as_str) == Some("session.status_idle") {
+        if types(&events)
+            .iter()
+            .any(|event_type| event_type == "session.status_idle")
+        {
             completed = Some(events);
             break;
         }
@@ -529,7 +532,8 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
             "user.message",
             "session.status_running",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ],
         "C2 preserves inbound-before-output ordering"
     );
@@ -639,7 +643,8 @@ async fn happy_path_projects_message_and_idle() {
             "user.message",
             "session.status_running",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
 }
@@ -1040,7 +1045,8 @@ async fn outcome_loop_projects_evaluations() {
             "span.outcome_evaluation_start",
             "span.outcome_evaluation_ongoing",
             "span.outcome_evaluation_end",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     let ends: Vec<&serde_json::Value> = list["data"]
@@ -1120,7 +1126,8 @@ async fn hitl_await_confirm_resume() {
             "user.message",
             "session.status_running",
             "agent.tool_use",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
 
@@ -1222,12 +1229,14 @@ async fn hitl_await_confirm_resume() {
             "session.status_running",
             "agent.tool_use",
             "session.status_idle",
+            "session.usage",
             "user.tool_confirmation",
             "session.status_running",
             "agent.tool_result",
             "agent.message",
             "session.status_idle",
-            "system.message"
+            "system.message",
+            "session.usage"
         ]
     );
     let last_idle = list["data"]
@@ -1363,7 +1372,8 @@ async fn custom_tool_use_await_and_result() {
             "user.message",
             "session.status_running",
             "agent.custom_tool_use",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     let custom = list["data"]
@@ -1428,15 +1438,22 @@ async fn custom_tool_use_await_and_result() {
         "image/png"
     );
     assert_eq!(tool_result["content"][1]["source"]["data"], "iVBORw0KGgo=");
-    let last = list["data"].as_array().unwrap().last().unwrap();
-    assert_eq!(last["stop_reason"]["type"], "end_turn");
+    let last_idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["type"] == "session.status_idle")
+        .unwrap();
+    assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
 }
 
 #[tokio::test]
 async fn accept_only_events_are_acknowledged() {
     // Causal rule: every accepted inbound event owns the receipt id, is persisted
     // in request order, and eventually receives `processed_at`; accept-only events
-    // produce no additional agent/session projection in this single-machine case.
+    // produce no agent turn, but still append the official cumulative usage
+    // snapshot for the successfully processed request.
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
 
@@ -1465,7 +1482,10 @@ async fn accept_only_events_are_acknowledged() {
         serde_json::Value::Null,
     )
     .await;
-    assert_eq!(types(&list), vec!["system.message", "user.interrupt"]);
+    assert_eq!(
+        types(&list),
+        vec!["system.message", "user.interrupt", "session.usage"]
+    );
     assert!(
         list["data"]
             .as_array()
@@ -1526,8 +1546,14 @@ async fn generic_tool_result_resumes_an_awaiting_run() {
         msgs.iter().any(|m| m.contains("got: 42")),
         "the generic tool_result resumed the run: {msgs:?}"
     );
-    let last = list["data"].as_array().unwrap().last().unwrap();
-    assert_eq!(last["stop_reason"]["type"], "end_turn");
+    let last_idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["type"] == "session.status_idle")
+        .unwrap();
+    assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
 }
 
 /// A runtime that records the `system.message` text and `interrupt` thread it is
@@ -1681,7 +1707,13 @@ async fn system_message_and_interrupt_follow_the_admission_decision_table() {
     .await;
     assert_eq!(
         types(&events),
-        vec!["system.message", "user.interrupt", "system.message"],
+        vec![
+            "system.message",
+            "user.interrupt",
+            "session.usage",
+            "system.message",
+            "session.usage"
+        ],
         "H3 rejects before persistence"
     );
 
@@ -2139,7 +2171,7 @@ async fn events_are_paged_by_cursor() {
      * R2=C1(desc)+C2+C3=>E2+E3; R3=C4=>E4. */
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
-    // Two turns → 8 events (user/running/message/idle × 2).
+    // Two turns → 10 events (user/running/message/idle/usage × 2).
     for text in ["one", "two"] {
         json_call(
             &app,
@@ -2167,7 +2199,7 @@ async fn events_are_paged_by_cursor() {
     )
     .await;
     let full_ids = ids(&full);
-    assert_eq!(full_ids.len(), 8, "two turns produced eight events");
+    assert_eq!(full_ids.len(), 10, "two turns produced ten events");
     assert!(full.get("has_more").is_none());
     assert_eq!(full["next_page"], serde_json::Value::Null);
 

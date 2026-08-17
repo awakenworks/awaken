@@ -475,6 +475,12 @@ export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {}
   return {
     AWAKEN_MODEL_MODE: mode,
     ...(mode === 'real' ? {} : { AWAKEN_MODEL_SOURCE: 'http' }),
+    // scenario-host consumes its typed Deployment from explicit fixture input;
+    // unlike the production CLI it does not rediscover sandbox_tier from
+    // config.toml. Provider-backed fixtures therefore select their portable
+    // Local substrate here. A substrate-specific test can still override this
+    // through extraEnv and must fail closed when that substrate is unavailable.
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
     ANTHROPIC_API_KEY: FAKE_KEY,
     ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
     ANTHROPIC_MODEL: 'fake-haiku',

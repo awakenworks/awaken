@@ -78,9 +78,19 @@ async function createSession(client: Anthropic): Promise<any> {
 }
 
 function assertPinned(session: any, delegate: string, server: string, url: string): void {
-  assert.deepEqual(session.agent.multiagent, {
-    type: 'coordinator',
-    agents: [delegate],
+  assert.equal(session.agent.multiagent.type, 'coordinator');
+  assert.equal(session.agent.multiagent.agents.length, 1);
+  assert.deepEqual(session.agent.multiagent.agents[0], {
+    id: delegate,
+    type: 'agent',
+    version: 1,
+    model: { id: 'fake-haiku' },
+    name: delegate,
+    description: null,
+    system: 'Act only as an installed leaf delegate.',
+    tools: [],
+    mcp_servers: [],
+    skills: [],
   });
   assert.deepEqual(session.agent.mcp_servers, [{
     name: server,

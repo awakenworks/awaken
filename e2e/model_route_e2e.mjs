@@ -1,6 +1,7 @@
 // Model-routing Managed Agents e2e (R1/R2/R5/R6): a session binds its own model,
-// the create response echoes it, and a per-turn `model` on user.message switches
-// mid-conversation. The `model-route` server maps model refs to labeled executors
+// the create response echoes it, and unknown per-event fields fail strictly
+// without changing the Session route. The `model-route` server maps model refs
+// to labeled executors
 // (`fast`/`slow`/default), so the reply text `model=<label>` reveals which model
 // (executor) each turn resolved to.
 //
@@ -42,7 +43,8 @@ async function main() {
       // R1 override object model=fast -> echo fast and route the turn to fast;
       // R2 override object model=slow -> echo/route slow independently;
       // R3 model omitted -> inherit the host default;
-      // R4 user.message model=slow after a fast turn -> rebind only that turn.
+      // R4 user.message model=slow is not part of the Managed event schema ->
+      // reject before commit and preserve the frozen Session route.
       // Metadata is intentionally absent: it is descriptive data, never an
       // execution authority.
       const fast = await client.beta.sessions.create({
@@ -55,6 +57,44 @@ async function main() {
       let texts = await latestAgentText(client, fast.id);
       assert.ok(texts.some((t) => t.startsWith('model=fast')), `R2: fast session ran fast, got ${texts}`);
       pass('per-session model "fast" resolves + echoes (R1/R2/R6)');
+
+      // The provider/dialect/endpoint chain is parsed by the same open model-id
+      // codec as production. Provider names are not allowlisted: a connected
+      // third-party identity can select the ordinary Native runtime.
+      const thirdPartyModel =
+        'fast;provider=third-party%2Fgateway;api=open_ai_chat;endpoint=primary';
+      const thirdParty = await client.beta.sessions.create({
+        agent: agentWithModel(thirdPartyModel),
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
+      assert.equal(thirdParty.agent.model.id, thirdPartyModel);
+      await ask(client, thirdParty.id, 'third party');
+      texts = await latestAgentText(client, thirdParty.id);
+      assert.ok(
+        texts.some((t) => t.startsWith('model=fast')),
+        'third-party route: ' + JSON.stringify(texts),
+      );
+      pass('opaque third-party provider chain resolves through the Native runtime');
+
+      const sessionIdsBeforeInvalid = [];
+      for await (const listed of client.beta.sessions.list({ betas: BETAS })) {
+        sessionIdsBeforeInvalid.push(listed.id);
+      }
+      await assert.rejects(
+        () => client.beta.sessions.create({
+          agent: agentWithModel('fast;api=open_ai_chat'),
+          environment_id: 'env_local',
+          betas: BETAS,
+        }),
+        (error) => error.status === 400,
+      );
+      const sessionIdsAfterInvalid = [];
+      for await (const listed of client.beta.sessions.list({ betas: BETAS })) {
+        sessionIdsAfterInvalid.push(listed.id);
+      }
+      assert.deepEqual(sessionIdsAfterInvalid.sort(), sessionIdsBeforeInvalid.sort());
+      pass('dialect without provider fails before Session persistence');
 
       // A second session bound to `slow` resolves a distinct executor.
       const slow = await client.beta.sessions.create({
@@ -78,21 +118,24 @@ async function main() {
       assert.ok(texts.some((t) => t.startsWith('model=default')), `default session ran default, got ${texts}`);
       pass('no model → host default (backward compatible)');
 
-      // R5: a per-turn `model` override switches the thread mid-conversation.
+      // R5: model selection is Session-scoped in the Managed wire contract.
+      // A model-shaped unknown event field must be rejected strictly and may
+      // neither commit a turn nor mutate the already-frozen route.
       const sw = await client.beta.sessions.create({
         agent: agentWithModel('fast'),
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await ask(client, sw.id, 'first');            // runs fast
-      await ask(client, sw.id, 'second', 'slow');   // per-turn override → slow
+      await ask(client, sw.id, 'first');
+      await assert.rejects(() => ask(client, sw.id, 'rejected', 'slow'), (error) => error.status === 400);
+      await ask(client, sw.id, 'second');
       texts = await latestAgentText(client, sw.id);
-      assert.ok(texts.some((t) => t.startsWith('model=fast')), `R5: first turn fast, got ${texts}`);
-      assert.ok(texts.some((t) => t.startsWith('model=slow')), `R5: overridden turn slow, got ${texts}`);
-      pass('per-turn model override switches mid-conversation (R5)');
+      assert.equal(texts.filter((t) => t.startsWith('model=fast')).length, 2, `R5: route changed, got ${texts}`);
+      assert.ok(!texts.some((t) => t.startsWith('model=slow')), `R5: rejected model leaked, got ${texts}`);
+      pass('unknown per-event model is rejected without route mutation (R5)');
     });
 
-    console.log('E2E PASS: per-session + per-turn model routing (R1/R2/R5/R6) via the managed API.');
+    console.log('E2E PASS: Session-scoped model routing + strict event schema (R1/R2/R5/R6).');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

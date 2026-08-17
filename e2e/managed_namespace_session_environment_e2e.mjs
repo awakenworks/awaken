@@ -168,7 +168,10 @@ async function main() {
   try {
     await waitForPort(PORT, 180_000, server);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: running.baseUrl });
-    const memory = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const memory = await client.post('/v1/memory_stores', {
+      body: { name: 'namespace-session-memory' },
+      headers: MEMORY_HEADERS,
+    });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'NAMESPACE-MEMORY-OK' },
       headers: MEMORY_HEADERS,

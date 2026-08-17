@@ -66,6 +66,39 @@ fn merge_process_local_mcp_servers(
     Ok(merged)
 }
 
+/// Apply the exact Session-scoped model route frozen at admission to an
+/// immutable Agent publication. Both co-located and claimed-Worker paths pass
+/// through this function: replay may therefore apply the same projection more
+/// than once, but may never re-resolve a model or retain candidates from the
+/// Agent's superseded route.
+pub(super) fn project_frozen_session_model_override(
+    mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+    model_override: Option<&awaken_session_contract::SessionModelOverride>,
+    workspace_id: &str,
+) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, HostError> {
+    let Some(model_override) = model_override else {
+        return Ok(snapshot);
+    };
+    if let Some(publication) = &model_override.publication {
+        publication
+            .validate_for_workspace(workspace_id)
+            .map_err(|error| {
+                HostError::internal(format!(
+                    "frozen Session model override publication is invalid: {error}"
+                ))
+            })?;
+        snapshot.resolved_spec.model_binding = publication.primary.clone();
+        snapshot.resolved_spec.model_candidates = publication.candidates.clone();
+    }
+    snapshot.resolved_spec.plugin_config.inference = model_override.inference.clone();
+    snapshot.recompute_fingerprint().map_err(|error| {
+        HostError::internal(format!(
+            "frozen Session model override publication is invalid: {error}"
+        ))
+    })?;
+    Ok(snapshot)
+}
+
 impl SharedHost {
     /// Resolve the one immutable publication selected for a Session and enforce
     /// its projected Agent/backend fences. Context construction and cold
@@ -102,6 +135,19 @@ impl SharedHost {
                 )
             })
         });
+        let model_override = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.baseline
+                    .as_ref()
+                    .and_then(|baseline| baseline.model_override.clone())
+            })
+            .flatten();
+        let installed = installed
+            .map(|snapshot| {
+                project_frozen_session_model_override(snapshot, model_override.as_ref(), &workspace)
+            })
+            .transpose()?;
         let published_backend_ref = installed
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
@@ -1780,7 +1826,12 @@ impl SharedHost {
                 let mounter = self.memory_mounter().ok_or_else(|| {
                     HostError::internal("recovered Memory copy has no MemoryMounter")
                 })?;
-                for mount in self.thread_resources_snapshot(thread).mounts {
+                // Recovered cleanup must reconcile both Resource mounts and
+                // Session-baseline mounts (Dream uses the latter). Normal live
+                // disposal already harvests every MemoryMount guard; omitting
+                // baseline mounts only on recovery would make crash behavior
+                // diverge and could lose a completed Dream output.
+                for mount in self.thread_session_mounts(thread) {
                     if let awaken_provisioning_contract::MountSource::MemoryStore {
                         store_id,
                         materialization_reference,

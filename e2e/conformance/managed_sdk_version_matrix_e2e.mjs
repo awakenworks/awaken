@@ -50,12 +50,12 @@ async function exerciseVersionSelectionBoundary(baseURL, options) {
     agent: options.agent,
     ...(options.environmentId ? { environment_id: options.environmentId } : {}),
   };
-  const request = (userAgent, beta = BETAS[0]) => fetch(`${baseURL}/v1/sessions`, {
+  const request = (userAgent, beta = BETAS[0], version = '2023-06-01') => fetch(`${baseURL}/v1/sessions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-api-key': options.apiKey,
-      'anthropic-version': '2023-06-01',
+      ...(version ? { 'anthropic-version': version } : {}),
       ...(beta ? { 'anthropic-beta': beta } : {}),
       'user-agent': userAgent,
     },
@@ -74,6 +74,33 @@ async function exerciseVersionSelectionBoundary(baseURL, options) {
 
   const absentBeta = await request('anthropic-sdk-typescript/0.117.1', null);
   assert.equal(absentBeta.status, 400, 'the Managed family fails closed without its beta');
+  const unknownBeta = await request('anthropic-sdk-typescript/0.117.1', 'future-managed-beta');
+  assert.equal(unknownBeta.status, 400, 'an unknown beta alone cannot select the contract');
+  const mixedBeta = await request(
+    'anthropic-sdk-typescript/0.117.1',
+    `future-managed-beta, ${BETAS[0]}`,
+  );
+  assert.equal(mixedBeta.status, 200, 'an additive unknown beta does not hide the supported beta');
+  created.push(await mixedBeta.json());
+  const duplicateBeta = await request(
+    'anthropic-sdk-typescript/0.105.0',
+    `${BETAS[0]}, ${BETAS[0]}`,
+  );
+  assert.equal(duplicateBeta.status, 200, 'a duplicated supported beta is idempotent');
+  created.push(await duplicateBeta.json());
+  const wrongVersion = await request(
+    'anthropic-sdk-typescript/0.117.1',
+    BETAS[0],
+    '2099-01-01',
+  );
+  assert.equal(wrongVersion.status, 400, 'an explicit unsupported API version fails closed');
+  const legacyMissingVersion = await request(
+    'awaken-legacy-raw-client/1',
+    BETAS[0],
+    null,
+  );
+  assert.equal(legacyMissingVersion.status, 200, 'legacy raw clients may omit anthropic-version');
+  created.push(await legacyMissingVersion.json());
   for (const session of created) {
     await fetch(`${baseURL}/v1/sessions/${session.id}`, {
       method: 'DELETE',

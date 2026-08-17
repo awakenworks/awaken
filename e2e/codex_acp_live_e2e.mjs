@@ -85,12 +85,15 @@ async function availablePort() {
   return address.port;
 }
 
-async function waitReady(child, baseURL) {
+async function waitReady(child, baseURL, tokenPath) {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseURL}/v1/capabilities`);
-      if (response.ok) return;
+      const apiKey = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : '';
+      const response = await fetch(`${baseURL}/v1/capabilities`, {
+        headers: apiKey === '' ? {} : { 'x-api-key': apiKey },
+      });
+      if (response.ok) return apiKey;
     } catch {
       // Startup is still in progress.
     }
@@ -111,10 +114,13 @@ async function stop(child) {
   await exited;
 }
 
-async function request(baseURL, method, route, body) {
+async function request(baseURL, apiKey, method, route, body) {
   const response = await fetch(`${baseURL}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'x-api-key': apiKey,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json().catch(() => ({}));
@@ -138,8 +144,11 @@ async function startHostLoginProfile() {
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${port}`)}`,
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
-    // Intentionally no sandbox_tier, acp_clis, default backend, or credential
-    // setting: host ACP discovery is the zero-configuration product path.
+    // Host-login is the trusted local-process gate. Container isolation has its
+    // own profile below, and native sandbox availability is host-specific.
+    'sandbox_tier = "local"',
+    // Intentionally no acp_clis, default backend, or credential setting: host
+    // ACP discovery remains the zero-configuration product path.
   ].join('\n'));
   const child = spawn(binary, automatedAllInOneArgs('--config', config), {
     env: process.env,
@@ -147,24 +156,25 @@ async function startHostLoginProfile() {
   });
   const baseURL = `http://127.0.0.1:${port}`;
   try {
-    await waitReady(child, baseURL);
+    const apiKey = await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
     await waitForVerifiedAcpCapability(baseURL, 'codex', {
       timeoutMs: 60_000,
       pollMs: 200,
       requireAvailableLogin: true,
+      apiKey,
     });
 
     const agent = process.env.AWAKEN_ACP_AGENT ?? 'codex-host-login-live';
-    let result = await request(baseURL, 'PUT', `/v1/config/agents/${agent}`, {
+    let result = await request(baseURL, apiKey, 'PUT', `/v1/config/agents/${agent}`, {
       name: 'Real host Codex login',
       system: 'Return exactly the text requested by the user.',
       model: { mode: 'backend_default', backend_ref: 'acp:codex' },
       tools: [],
     });
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    result = await request(baseURL, 'POST', `/v1/config/agents/${agent}/publish`);
+    result = await request(baseURL, apiKey, 'POST', `/v1/config/agents/${agent}/publish`);
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    return { baseURL, agent, cleanup: async () => {
+    return { baseURL, apiKey, agent, cleanup: async () => {
       await stop(child);
       fs.rmSync(temp, { recursive: true, force: true });
     } };
@@ -179,12 +189,13 @@ const deployment = profile === 'host-login'
   ? await startHostLoginProfile()
   : {
       baseURL: process.env.CODEX_ACP_BASE_URL ?? 'http://127.0.0.1:38080',
+      apiKey: process.env.AWAKEN_API_KEY ?? 'local-live-gate',
       agent: process.env.AWAKEN_ACP_AGENT ?? 'codex',
       cleanup: async () => {},
     };
 
 const client = new Anthropic({
-  apiKey: 'local-live-gate', // awaken-allow: secret (dummy; local server ignores it)
+  apiKey: deployment.apiKey,
   baseURL: deployment.baseURL,
 });
 

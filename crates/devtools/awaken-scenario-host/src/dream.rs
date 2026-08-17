@@ -9,16 +9,51 @@ use axum::Json;
 use axum::Router;
 use axum::routing::get;
 
-use crate::{SharedHost, build_router_and_host};
+use crate::{SharedHost, build_router_and_host_with_model_publication_resolver, scenario_model};
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
 pub fn build_dream_router() -> Router {
     build_dream_router_and_host().0
 }
 
+/// Process-level Dream route. Unlike the pure in-process fixture above, this
+/// realizes the configured Session runtime tier so live Native/provider runs
+/// exercise the same Namespace/Container mount semantics as production.
+pub async fn build_dream_runtime_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
+    let resolver = Arc::new(DreamScenarioModelResolver {
+        model_ref: model_ref.clone(),
+    });
+    let platform = crate::deployment::runtime_resource_host_with_deployment(
+        model,
+        model_ref,
+        crate::scenario_deployment(),
+    )
+    .await;
+    let (host, resources) = platform.into_parts();
+    let host = Arc::new(host);
+    let router = crate::scenario_platform::mount_parts_with_model_publication_resolver(
+        host, resources, resolver,
+    );
+    router.merge(dream_auxiliary_routes())
+}
+
 /// Return the same router plus its Host for focused cross-module assertions.
 pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
-    let (router, host) = build_router_and_host(Arc::new(DreamScenarioModel), "claude-sonnet-5");
+    // Keep the Dream lifecycle fixture deterministic by default, but route an
+    // explicitly requested HTTP model through the same production provider
+    // adapter as every other scenario. Dream used to bypass `scenario_model`,
+    // so AWAKEN_MODEL_SOURCE=http silently kept the scripted executor.
+    let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
+    let resolver = Arc::new(DreamScenarioModelResolver {
+        model_ref: model_ref.clone(),
+    });
+    let (router, host) =
+        build_router_and_host_with_model_publication_resolver(model, model_ref, resolver);
+    (router.merge(dream_auxiliary_routes()), host)
+}
+
+fn dream_auxiliary_routes() -> Router {
     let capabilities = awaken_config_service::capabilities_router(
         awaken_runtime_host::authorable_tools(),
         awaken_runtime_host::platform_plugin_capabilities(),
@@ -41,10 +76,62 @@ pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
             "/v1/config/workspace-context",
             get(|| async { Json(serde_json::json!({ "workspace_id": "default" })) }),
         );
-    (router.merge(capabilities).merge(console_context), host)
+    capabilities.merge(console_context)
 }
 
 struct DreamScenarioModel;
+
+struct DreamScenarioModelResolver {
+    model_ref: String,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionModelPublicationResolver for DreamScenarioModelResolver {
+    async fn resolve_session_model(
+        &self,
+        _workspace_id: &str,
+        model_reference: &str,
+    ) -> Result<
+        awaken_session_contract::SessionModelPublication,
+        awaken_session_contract::SessionModelResolutionError,
+    > {
+        let selection =
+            awaken_config_service::parse_managed_model_id(model_reference).map_err(|error| {
+                awaken_session_contract::SessionModelResolutionError::Invalid(error.to_string())
+            })?;
+        let (target, backend_ref) = selection.target().ok_or_else(|| {
+            awaken_session_contract::SessionModelResolutionError::Invalid(
+                "Dream scenario requires an explicit native model target".into(),
+            )
+        })?;
+        if target.model_id != self.model_ref
+            || !matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
+                awaken_runtime_contract::resolved::Backend::Native
+            )
+        {
+            return Err(
+                awaken_session_contract::SessionModelResolutionError::Invalid(format!(
+                    "Dream scenario model `{}` / backend `{backend_ref}` does not match configured provider model `{}`",
+                    target.model_id, self.model_ref
+                )),
+            );
+        }
+        Ok(awaken_session_contract::SessionModelPublication {
+            primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    target
+                        .provider_id
+                        .clone()
+                        .unwrap_or_else(|| "scenario".into()),
+                    self.model_ref.clone(),
+                    "genai",
+                ),
+            ),
+            candidates: Vec::new(),
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {

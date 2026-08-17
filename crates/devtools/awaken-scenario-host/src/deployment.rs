@@ -178,6 +178,26 @@ pub(crate) fn resource_host_with_deployment(
     ScenarioPlatform { host, resources }
 }
 
+/// Build the scenario platform through the same typed Deployment -> Session
+/// environment selection used by production.  Plain deterministic fixtures may
+/// deliberately keep the cheap Workdir adapter; provider-backed and Dream
+/// scenarios use this helper so a requested Namespace/Container tier is not
+/// parsed and then silently discarded by test assembly.
+pub(crate) async fn runtime_resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_runtime_host::DeploymentConfig,
+) -> ScenarioPlatform {
+    resource_host_with_deployment(llm, model_ref, deployment)
+        .map_host_async(|host| async move {
+            host.with_session_environment_from_deployment(Some(
+                awaken_worker::relay_hand_executor_factory(),
+            ))
+            .await
+        })
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

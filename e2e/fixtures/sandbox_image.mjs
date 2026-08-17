@@ -11,7 +11,7 @@ export function ensureCanonicalSandboxImage({
     'image', 'inspect', '--format',
     '{{index .Config.Labels "org.awaken.environment-packages"}}', image,
   ], { encoding: 'utf8', timeout: timeoutMs });
-  if (existing.status === 0 && existing.stdout.trim() === '1') return;
+  if (existing.status === 0 && existing.stdout.trim() === '2') return;
   execFileSync('bash', ['deploy/images/sandbox/build.sh', image, ''], {
     cwd: repoRoot,
     env: { ...process.env, CONTAINER_ENGINE: engine },

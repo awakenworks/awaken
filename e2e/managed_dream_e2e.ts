@@ -47,6 +47,9 @@ import { pass, withServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38_434);
 const MANAGED_BETAS: AnthropicBeta[] = ['managed-agents-2026-04-01'];
+// Dream inputs are private snapshots, so the portable Workdir tier preserves
+// source isolation without pretending to enforce an external read-only bind.
+process.env.SESSION_DEPLOYMENT_SANDBOX_TIER ??= 'local';
 
 async function drain<T>(items: AsyncIterable<T>): Promise<T[]> {
   const drained: T[] = [];
@@ -113,6 +116,24 @@ async function main() {
       view: 'full',
     });
 
+    const beforeInvalid = await drain(client.beta.dreams.list({ betas: MANAGED_BETAS }));
+    for (const model of [
+      'executor=a2a:https://third-party.example/agent',
+      'qwen/qwen3;api=open_ai_chat;executor=acp:opencode',
+    ]) {
+      assert.equal(await status(() => client.beta.dreams.create({
+        inputs: [
+          { type: 'memory_store', memory_store_id: sourceStore.id },
+          { type: 'sessions', session_ids: [sourceSession.id] },
+        ],
+        model,
+        betas: MANAGED_BETAS,
+      })), 400, `P0b unsupported/malformed model reference fails admission: ${model}`);
+    }
+    const afterInvalid = await drain(client.beta.dreams.list({ betas: MANAGED_BETAS }));
+    assert.equal(afterInvalid.length, beforeInvalid.length, 'P0b invalid references persist no Dream');
+    pass('P0b malformed qualifiers and outbound A2A Dream references fail before persistence');
+
     const created = await client.beta.dreams.create({
       inputs: [
         { type: 'memory_store', memory_store_id: sourceStore.id },
@@ -143,8 +164,8 @@ async function main() {
     assert.equal(sourceMemories.length, 1, 'P3 source has one memory');
     assert.equal(outputMemories.length, 1, 'P3 output cloned the source memory');
     assert.equal(sourceMemories[0].content, '# Existing\n- Keep me.\n');
-    assert.equal(outputMemories[0].content, sourceMemories[0].content);
-    pass('P3 source remains unchanged and the independent output starts from the frozen clone');
+    assert.equal(outputMemories[0].content, '# Dream\n- Consolidated by the Dream Agent.\n');
+    pass('P3 source remains unchanged and the independent output contains the tool-written result');
 
     const auxiliary = await client.beta.sessions.retrieve(terminal.session_id!, {
       betas: MANAGED_BETAS,

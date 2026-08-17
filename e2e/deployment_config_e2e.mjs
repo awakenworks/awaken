@@ -154,6 +154,10 @@ async function main() {
     fields: {
       bind: `127.0.0.1:${httpPort}`,
       admin_listen: `127.0.0.1:${adminPort}`,
+      // Deployment topology is the subject of this scenario. Host ACP CLI
+      // discovery has its own exact-install/restart/failure matrix and must not
+      // make this startup depend on whichever tools happen to be installed.
+      acp_clis: [],
     },
   });
   const serve = spawn(bin, automatedAllInOneArgs('--config', configPath(env)), {

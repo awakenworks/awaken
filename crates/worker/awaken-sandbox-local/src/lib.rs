@@ -201,6 +201,19 @@ fn jail_args(
                 return Ok(());
             };
             if Path::new(input).is_absolute() {
+                // Managed Agents use sandbox-absolute `/mnt/...` paths. A
+                // Workdir tier has no kernel path fidelity, so translate only
+                // these public logical roots into its private backing root.
+                // Arbitrary host-absolute paths remain untouched and are then
+                // rejected by `FileContext`, preserving the escape boundary.
+                if matches!(input.as_str(), "/mnt" | "/workspace" | "/outputs")
+                    || input.starts_with("/mnt/")
+                    || input.starts_with("/workspace/")
+                    || input.starts_with("/outputs/")
+                {
+                    let jailed = root.resolve(input).map_err(escape)?;
+                    args[key] = Value::String(jailed.to_string_lossy().into_owned());
+                }
                 return Ok(());
             }
             let jailed = root.resolve(input).map_err(escape)?;
@@ -1062,6 +1075,48 @@ mod tests {
             .unwrap();
             assert_eq!(call["path"], expected, "{rule}");
         }
+    }
+
+    #[test]
+    fn managed_absolute_mount_paths_rebase_but_host_paths_still_fail_closed() {
+        // Workdir has path_fidelity=false: public `/mnt` and `/workspace`
+        // names must resolve beneath its backing root, while an arbitrary
+        // absolute host path must never be translated into reachable content.
+        let root = IsolatedRoot::new("/private/session-root");
+        for (tool, key, logical, expected) in [
+            (
+                "read",
+                "file_path",
+                "/mnt/dream/input-memory/MEMORY.md",
+                "/private/session-root/mnt/dream/input-memory/MEMORY.md",
+            ),
+            (
+                "write",
+                "file_path",
+                "/mnt/dream/output-memory/MEMORY.md",
+                "/private/session-root/mnt/dream/output-memory/MEMORY.md",
+            ),
+            (
+                "glob",
+                "path",
+                "/workspace/project",
+                "/private/session-root/workspace/project",
+            ),
+        ] {
+            let mut arguments = serde_json::json!({});
+            arguments[key] = serde_json::Value::String(logical.into());
+            let mapped = jail_args(tool, arguments, &root, test_outputs(), false).unwrap();
+            assert_eq!(mapped[key], expected, "{tool}:{key}");
+        }
+        let outside = jail_args(
+            "read",
+            serde_json::json!({"file_path":"/etc/passwd"}),
+            &root,
+            test_outputs(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(outside["file_path"], "/etc/passwd");
     }
 
     #[test]

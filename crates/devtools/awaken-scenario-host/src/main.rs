@@ -119,7 +119,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
-        Ok("real") => awaken_scenario_host::build_real_router(),
+        Ok("real") => awaken_scenario_host::build_real_router().await,
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
         Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
@@ -141,7 +141,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
         Ok("memory") => awaken_scenario_host::build_memory_router(),
         Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
-        Ok("dream") => awaken_scenario_host::build_dream_router(),
+        Ok("dream") => awaken_scenario_host::build_dream_runtime_router().await,
         Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
         Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router(),
         Ok("git-repo") => awaken_scenario_host::build_git_repo_router(),

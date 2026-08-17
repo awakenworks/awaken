@@ -47,6 +47,22 @@ function fixtureContainerIds() {
   return result.stdout.trim().split(/\s+/u).filter(Boolean).sort();
 }
 
+function agentWithMcpServer(server) {
+  return {
+    id: AGENT,
+    type: 'agent_with_overrides',
+    mcp_servers: [server],
+    tools: [{
+      type: 'mcp_toolset',
+      mcp_server_name: server.name,
+      default_config: {
+        enabled: true,
+        permission_policy: { type: 'always_allow' },
+      },
+    }],
+  };
+}
+
 function buildFixtureImage() {
   ensureCanonicalSandboxImage({
     engine: 'docker',
@@ -84,7 +100,13 @@ while IFS= read -r line; do
   esac
 done
 `);
-  execFileSync('docker', ['build', '--quiet', '--tag', IMAGE, context], {
+  // The selected Buildx builder may use the docker-container driver, which
+  // cannot resolve the daemon-local canonical base image. The default builder
+  // shares that image store, and --load makes the fixture available to runtime.
+  execFileSync('docker', [
+    'buildx', 'build', '--builder', 'default', '--load', '--quiet',
+    '--tag', IMAGE, context,
+  ], {
     cwd: ROOT,
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -160,7 +182,7 @@ async function publishAgent(base, directoryUrl) {
   });
   await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT,
-    model: 'acp:gemini@gemini/container-upstream',
+    model: 'container-upstream;provider=gemini;api=gemini;executor=acp:gemini',
     system: 'Exercise publication-pinned container ACP provisioning.',
     tools: [],
   });
@@ -202,6 +224,7 @@ async function main() {
     'AWAKEN_ACP_ARGV',
     'AWAKEN_ACP_GATEWAY_URL',
     'AWAKEN_ACP_LEASE_TOKEN',
+    'GEMINI_API_KEY',
   ]) delete environment[key];
   const configPath = path.join(TMP, 'config.toml');
   fs.writeFileSync(configPath, [
@@ -219,10 +242,11 @@ async function main() {
   const server = spawn(binary, automatedAllInOneArgs('--config', configPath), {
     env: {
       ...environment,
-      // Ambient values are discovery hints only. The published endpoint, model,
-      // and credential revision below must be the realized runtime inputs.
+      // Non-secret ambient values are discovery hints only. Provider API keys
+      // are deliberately absent because production rejects them at startup;
+      // the published endpoint, model, and credential revision below must be
+      // the realized runtime inputs.
       GOOGLE_GEMINI_BASE_URL: 'http://ambient-container.invalid/v1',
-      GEMINI_API_KEY: 'ambient-container-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
     },
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -285,9 +309,12 @@ async function main() {
     // projection proves no container was launched without adding another
     // activation path.
     secureSession = await client.beta.sessions.create({
-      agent: AGENT,
+      agent: agentWithMcpServer({
+        name: 'container-fixture-secure',
+        type: 'url',
+        url: fixture.url,
+      }),
       environment_id: environmentResource.id,
-      mcp_servers: [{ name: 'container-fixture-secure', type: 'url', url: fixture.url }],
       vault_ids: [vault.id],
       betas: BETAS,
     });
@@ -321,17 +348,16 @@ async function main() {
       'D1: Docker performs no authenticated MCP I/O without substitution/no-bypass proof',
     );
     session = await client.beta.sessions.create({
-      agent: AGENT,
+      agent: agentWithMcpServer({
+        name: 'container-fixture-anonymous',
+        type: 'url',
+        url: anonymousFixture.url,
+      }),
       environment_id: environmentResource.id,
       resources: [{
         type: 'file',
         file_id: file.id,
         mount_path: '/workspace/container-input.txt',
-      }],
-      mcp_servers: [{
-        name: 'container-fixture-anonymous',
-        type: 'url',
-        url: anonymousFixture.url,
       }],
       betas: BETAS,
     });

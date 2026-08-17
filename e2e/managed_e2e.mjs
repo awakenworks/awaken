@@ -50,8 +50,11 @@ async function main() {
     assert.deepEqual(events.map((e) => e.type), [
       'user.message',
       'session.status_running',
+      'span.model_request_start',
+      'span.model_request_end',
       'agent.message',
       'session.status_idle',
+      'session.usage',
     ]);
     assert.equal(events.find((e) => e.type === 'agent.message').content[0].text, 'Echo: hi there');
     assert.equal(events.find((e) => e.type === 'session.status_idle').stop_reason.type, 'end_turn');
