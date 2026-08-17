@@ -481,6 +481,7 @@ async fn get_provider_descriptors() -> Json<Vec<awaken_model_catalog::ProviderDr
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SaveProviderConnectionRequest {
     pub idempotency_key: String,
@@ -491,12 +492,6 @@ pub struct SaveProviderConnectionRequest {
     /// It is non-secret and does not replace the stable idempotency fingerprint.
     #[serde(default)]
     pub credential_name: Option<String>,
-    /// Deprecated compatibility input. Endpoint identity is canonicalized from
-    /// `(provider_id, dialect)`; retained clients may still send this field, but
-    /// it never creates a second route for the same protocol surface.
-    #[serde(default, rename = "endpoint_id")]
-    #[cfg_attr(feature = "schema", schemars(skip))]
-    pub _legacy_endpoint_id: Option<String>,
     pub dialect: awaken_model_catalog::ApiDialect,
     /// Optional stable qualifier for a second endpoint using the same dialect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
