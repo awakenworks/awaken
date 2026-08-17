@@ -588,11 +588,10 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
 #[tokio::test]
 async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
     // Cause/effect decision table:
-    // R1 provider + dialect, no legacy endpoint_id -> canonical surface id;
+    // R1 provider + dialect -> canonical surface id;
     // R2 same provider, another dialect -> a distinct canonical surface id;
     // R3 same provider + dialect + endpoint_name -> a distinct named surface;
-    // R4 same provider + dialect, arbitrary legacy endpoint_id -> the unnamed
-    // canonical surface is updated, never a parallel client-named endpoint;
+    // R4 removed endpoint_id input -> reject before discovery or persistence;
     // R5 invalid endpoint_name -> reject before discovery or persistence.
     let harness = harness();
     let request =
@@ -654,7 +653,11 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
     assert_eq!(responses_status, StatusCode::CREATED, "{responses}");
     assert_eq!(chat_status, StatusCode::CREATED, "{chat}");
     assert_eq!(named_chat_status, StatusCode::CREATED, "{named_chat}");
-    assert_eq!(legacy_chat_status, StatusCode::CREATED, "{legacy_chat}");
+    assert_eq!(
+        legacy_chat_status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "R4 {legacy_chat}"
+    );
     assert_eq!(invalid_status, StatusCode::UNPROCESSABLE_ENTITY, "R5");
     assert_eq!(
         responses["endpoint"]["id"], "openai.open_ai_responses",
@@ -669,14 +672,13 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
         named_chat["endpoint"]["id"], "openai.open_ai_chat.regional",
         "R3"
     );
-    assert_eq!(legacy_chat["endpoint"]["id"], "openai.open_ai_chat", "R4");
     assert_eq!(
         harness.discovery.secret_calls.lock().unwrap().len(),
         discovery_calls_before_invalid,
-        "R5"
+        "R4+R5"
     );
     let catalog = harness.catalog.snapshot().await.unwrap();
-    assert_eq!(catalog.endpoints.len(), 3, "R2+R3+R4");
+    assert_eq!(catalog.endpoints.len(), 3, "R2+R3");
 }
 
 // Provider-command identity decision table:
