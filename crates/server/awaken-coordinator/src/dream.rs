@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
@@ -22,7 +23,8 @@ const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
 Your only task is to curate durable memories from the frozen inputs into the designated output memory store.
 
-1. Read /mnt/dream/input-memory and the JSONL files under /mnt/dream/session-transcripts.
+1. Start by reading /mnt/dream/input-memory and the JSONL files under /mnt/dream/session-transcripts. Do not search outside /mnt/dream and do not use the web.
+   File tools accept those exact sandbox-absolute paths. In Bash, first run `cd "$AWAKEN_PROJECT_DIR"` and use relative paths under mnt/dream so this works in both path-fidelity and Workdir environments.
 2. Preserve durable project facts, decisions, preferences, constraints, and unresolved work.
 3. Merge into existing topic files; remove duplicates and facts contradicted by newer evidence.
 4. Convert relative dates to absolute dates when the transcript establishes them.
@@ -149,23 +151,7 @@ impl BuiltInDreamAgent {
         transcripts: Vec<(String, Vec<u8>)>,
     ) -> Result<String, DreamFailure> {
         let session_id = format!("sesn_dream_{}", request.job_id);
-        let tools = SessionToolConfiguration {
-            toolsets: vec![awaken_agent_contract::ToolsetPolicy {
-                source: awaken_agent_contract::ToolsetSource::Agent,
-                default: awaken_agent_contract::ToolExecutionPolicy {
-                    enabled: false,
-                    permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
-                },
-                overrides: ["read", "write", "edit", "glob", "grep", "move", "delete"]
-                    .into_iter()
-                    .map(|name| awaken_agent_contract::ToolPolicyOverride {
-                        name: name.into(),
-                        policy: awaken_agent_contract::ToolExecutionPolicy::default(),
-                    })
-                    .collect(),
-            }],
-            client_tools: Vec::new(),
-        };
+        let tools = dream_tool_configuration();
         let mut mounts = vec![
             MountRequirement {
                 mount_id: format!("{}-input-memory", request.job_id),
@@ -175,7 +161,11 @@ impl BuiltInDreamAgent {
                     write_consistency: MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/mnt/dream/input-memory".into(),
-                access: MountAccess::ReadOnly,
+                // The source authority was already frozen into a private
+                // snapshot store. Mounting that disposable snapshot read-write
+                // preserves caller-source immutability even on Workdir providers
+                // that cannot enforce an OS-level read-only mount.
+                access: MountAccess::ReadWrite,
                 lifetime: MountLifetime::PerRun,
                 required: true,
             },
@@ -184,7 +174,9 @@ impl BuiltInDreamAgent {
                 source: MountSource::MemoryStore {
                     store_id: result_store_id.into(),
                     materialization_reference: None,
-                    write_consistency: MemoryWriteConsistency::WriteThroughRequired,
+                    // FUSE writes through immediately; copy-only providers
+                    // harvest atomically during terminal Session disposal.
+                    write_consistency: MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/mnt/dream/output-memory".into(),
                 access: MountAccess::ReadWrite,
@@ -203,7 +195,10 @@ impl BuiltInDreamAgent {
                         content_hash: None,
                     },
                     mount_path: format!("/mnt/dream/session-transcripts/{name}"),
-                    access: MountAccess::ReadOnly,
+                    // Inline transcript bytes have no mutable upstream authority;
+                    // a private writable copy keeps Workdir behavior equivalent
+                    // to enforced read-only providers for source integrity.
+                    access: MountAccess::ReadWrite,
                     lifetime: MountLifetime::PerRun,
                     required: true,
                 }),
@@ -287,6 +282,32 @@ impl BuiltInDreamAgent {
         for file_id in file_ids {
             let _ = self.files.delete(workspace_id, file_id, now_ms()).await;
         }
+    }
+}
+
+fn dream_tool_configuration() -> SessionToolConfiguration {
+    SessionToolConfiguration {
+        toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy {
+                enabled: false,
+                permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
+            },
+            // Managed Dream models commonly inspect their mounted workspace via
+            // Bash before selecting exact file operations. The Environment and
+            // read-only input mounts remain the enforcement boundary; every
+            // unrelated Agent tool stays disabled by the default-deny policy.
+            overrides: [
+                "bash", "read", "write", "edit", "glob", "grep", "move", "delete",
+            ]
+            .into_iter()
+            .map(|name| awaken_agent_contract::ToolPolicyOverride {
+                name: name.into(),
+                policy: awaken_agent_contract::ToolExecutionPolicy::default(),
+            })
+            .collect(),
+        }],
+        client_tools: Vec::new(),
     }
 }
 
@@ -487,9 +508,9 @@ impl DreamExecutor for BuiltInDreamAgent {
                 None,
                 Arc::new(DiscardDreamProgress),
             )
-            .await;
-        run.map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        Ok(())
+            .await
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+        validate_dream_step(run.step.state())
     }
 
     async fn cleanup(
@@ -534,6 +555,42 @@ impl DreamExecutor for BuiltInDreamAgent {
     }
 }
 
+/// Dream completion is stricter than ordinary interactive Session settlement:
+/// an interactive turn always returns to `idle` after projecting a terminal
+/// `session.error`, while a background Dream must surface that same terminal
+/// Run fact as a failed Dream. Keeping this as an exhaustive match prevents a
+/// new Runtime terminal variant from being silently classified as success.
+fn validate_dream_step(state: &RunState) -> Result<(), DreamFailure> {
+    let failure = match state {
+        RunState::Ended(EndCause::NaturalEnd) => return Ok(()),
+        RunState::Ended(EndCause::Error(failure)) => format!(
+            "Dream Agent Runtime failed ({}): {}",
+            failure.code(),
+            failure.message()
+        ),
+        RunState::Ended(EndCause::MaxSteps) => {
+            "Dream Agent reached its step limit before completing consolidation".into()
+        }
+        RunState::Ended(EndCause::Cancelled) => {
+            "Dream Agent Runtime ended as canceled before consolidation completed".into()
+        }
+        RunState::Ended(EndCause::Stopped(reason)) => {
+            format!("Dream Agent Runtime stopped before completion: {reason}")
+        }
+        RunState::Ended(EndCause::Indeterminate) => {
+            "Dream Agent Runtime outcome is indeterminate; output was not committed as complete"
+                .into()
+        }
+        RunState::Awaiting => {
+            "Dream Agent awaited external input; unattended Dream execution cannot continue".into()
+        }
+        RunState::Running => {
+            "Dream Agent returned before its Runtime step reached a terminal boundary".into()
+        }
+    };
+    Err(DreamFailure::new("internal_error", failure))
+}
+
 struct DiscardDreamProgress;
 
 #[async_trait::async_trait]
@@ -560,6 +617,7 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
+    use awaken_agent_contract::agent::run::Failure;
 
     #[test]
     fn jsonl_export_preserves_every_committed_message_and_tool_payload_in_order() {
@@ -606,5 +664,69 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn dream_run_terminal_decision_table_fails_closed() {
+        // Causal decision table: only a natural terminal model turn proves the
+        // unattended consolidation completed. Provider failures, tool awaits,
+        // cancellation, policy stops, step exhaustion, asynchronous ambiguity,
+        // and an impossible escaped Running state must all fail the Dream.
+        let natural = RunState::Ended(EndCause::NaturalEnd);
+        assert!(validate_dream_step(&natural).is_ok(), "R1 natural end");
+
+        let failures = [
+            RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "unsupported_model".into(),
+                message: "provider rejected model".into(),
+            })),
+            RunState::Ended(EndCause::MaxSteps),
+            RunState::Ended(EndCause::Cancelled),
+            RunState::Ended(EndCause::Stopped("budget".into())),
+            RunState::Ended(EndCause::Indeterminate),
+            RunState::Awaiting,
+            RunState::Running,
+        ];
+        for state in failures {
+            let error = validate_dream_step(&state).expect_err("non-natural state must fail");
+            assert_eq!(error.kind, "internal_error", "{state:?}");
+        }
+        let provider_error =
+            validate_dream_step(&RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "unsupported_model".into(),
+                message: "provider rejected model".into(),
+            })))
+            .expect_err("provider fault");
+        assert!(provider_error.message.contains("unsupported_model"));
+        assert!(provider_error.message.contains("provider rejected model"));
+    }
+
+    #[test]
+    fn dream_tool_policy_allows_bash_and_files_but_denies_everything_else() {
+        let tools = dream_tool_configuration();
+        assert!(tools.client_tools.is_empty());
+        assert_eq!(tools.toolsets.len(), 1);
+        let policy = &tools.toolsets[0];
+        assert!(!policy.default.enabled, "unknown tools fail closed");
+        let allowed = policy
+            .overrides
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            allowed,
+            [
+                "bash", "delete", "edit", "glob", "grep", "move", "read", "write"
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(policy.overrides.iter().all(|entry| {
+            entry.policy.enabled
+                && entry.policy.permission
+                    == awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
+        }));
+        assert!(!allowed.contains("computer"));
+        assert!(!allowed.contains("delegate"));
     }
 }

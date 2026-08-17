@@ -6,7 +6,12 @@
 export async function waitForVerifiedAcpCapability(
   baseURL,
   cli,
-  { timeoutMs = 120_000, pollMs = 100, requireAvailableLogin = false } = {},
+  {
+    timeoutMs = 120_000,
+    pollMs = 100,
+    requireAvailableLogin = false,
+    apiKey,
+  } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let lastRuntime;
@@ -14,7 +19,9 @@ export async function waitForVerifiedAcpCapability(
   let lastError;
   while (performance.now() < deadline) {
     try {
-      const response = await fetch(`${baseURL}/v1/capabilities`);
+      const response = await fetch(`${baseURL}/v1/capabilities`, {
+        headers: apiKey === undefined ? {} : { 'x-api-key': apiKey },
+      });
       lastStatus = response.status;
       if (response.ok) {
         const value = await response.json();

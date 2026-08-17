@@ -392,6 +392,16 @@ pub async fn build_acp_real_mcp_router() -> Router {
         .unwrap_or_else(|| "claude".to_string());
     let cli = *awaken_run_executor_acp::acp_cli(&cli_id)
         .unwrap_or_else(|| panic!("{cli_id} is not an ACP catalog row"));
+    let wrapper_root = store_dir.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+    });
+    let launch_argv = awaken_acp_application::AcpWrapperInstaller::resolved_argv(
+        &awaken_acp_application::NpmWrapperInstaller,
+        &cli,
+        &wrapper_root.join("acp-wrappers"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("acquire pinned ACP wrapper for {cli_id}: {error}"));
     // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
     // the ACP model-delivery reads — so a session that names no model still hands the CLI
     // the real model name (not the scenario label). A session may still override it.
@@ -403,7 +413,12 @@ pub async fn build_acp_real_mcp_router() -> Router {
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
         move |host| {
-            host.with_projected_acp(cli, Arc::new(acp_gateway::ScenarioEnvAcpModel), store_dir)
+            host.with_projected_acp_argv(
+                cli,
+                Arc::new(acp_gateway::ScenarioEnvAcpModel),
+                store_dir,
+                launch_argv,
+            )
         },
     )
     .await

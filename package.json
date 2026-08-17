@@ -3,12 +3,13 @@
   "private": true,
   "packageManager": "pnpm@11.6.0",
   "scripts": {
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "lint": "node web/scripts/lint.mjs",
-    "typecheck": "pnpm -C web typecheck",
-    "build": "pnpm -C web build",
+    "typecheck": "pnpm --filter @awaken/managed-session-projection typecheck && pnpm -C web typecheck",
+    "build": "pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",
     "dev": "pnpm -C web dev",
     "test:e2e-process-policy": "node --test e2e/awaken_cli_args.test.mjs",
-    "test": "pnpm -C web test && pnpm test:e2e-process-policy"
+    "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy"
   },
   "devDependencies": {
     "json-schema-to-typescript": "15.0.4",

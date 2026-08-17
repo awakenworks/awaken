@@ -293,7 +293,32 @@ pub fn local_managed_state(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, None)
+    local_managed_state_over(host, catalog, None, None, None)
+}
+
+/// Scenario variant with the same Session model-publication resolver used by
+/// production. It exists for provider-backed fixtures whose public model
+/// reference differs from the built-in Agent's deterministic default.
+#[cfg(feature = "test-support")]
+pub fn local_managed_state_with_model_publication_resolver(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, None, None, Some(resolver))
+}
+
+/// Scenario variant that freezes both the immutable Agent publication and the
+/// model-reference resolver. Model-routing fixtures need both authorities: the
+/// resolver selects a candidate, while the Agent snapshot proves its backend.
+#[cfg(feature = "test-support")]
+pub fn local_managed_state_with_agent_source_and_model_publication_resolver(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
+    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, None, Some(agent_source), Some(resolver))
 }
 
 /// [`local_managed_state`] with one immutable Agent projection source. Embedded
@@ -305,7 +330,7 @@ pub fn local_managed_state_with_agent_source(
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, Some(agent_source))
+    local_managed_state_over(host, catalog, None, Some(agent_source), None)
 }
 
 /// [`local_managed_state`] with the Environment registry/work queue installed on
@@ -318,7 +343,7 @@ pub fn local_managed_state_with_environments(
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, Some(environments), None)
+    local_managed_state_over(host, catalog, Some(environments), None, None)
 }
 
 /// Scenario/local variant that installs the same Agent projection
@@ -330,7 +355,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
+    local_managed_state_over(host, catalog, Some(environments), Some(agent_source), None)
 }
 
 #[cfg(feature = "test-support")]
@@ -341,6 +366,9 @@ fn local_managed_state_over(
         Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     >,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
+    model_publication_resolver: Option<
+        Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    >,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -408,6 +436,9 @@ fn local_managed_state_over(
     application.set_resource_catalog(catalog);
     if let Some(source) = agent_source {
         application.set_config_source(source);
+    }
+    if let Some(resolver) = model_publication_resolver {
+        application.set_model_publication_resolver(resolver);
     }
     Arc::new(ManagedState::from_application(Arc::new(application)))
 }
@@ -838,23 +869,51 @@ fn mount_with_managed_over_and_models(
             .expect("load durable Dream jobs"),
     );
     dream_application.bind_session_source(managed_state.clone());
-    struct DreamModelReadiness(
-        Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-    );
+    struct DreamModelReadiness {
+        inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
+        sessions: Arc<awaken_session_application::SessionApplication>,
+    }
     #[async_trait::async_trait]
     impl awaken_dream_application::DreamModelReadiness for DreamModelReadiness {
         async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String> {
-            awaken_executable_agent_contract::current_model_references(
-                self.0.as_ref(),
+            if !dream_model_can_consume_local_inputs(model_id)? {
+                return Ok(false);
+            }
+            let current = awaken_executable_agent_contract::current_model_references(
+                self.inventory.as_ref(),
                 workspace_id,
             )
             .await
-            .map(|references| references.iter().any(|reference| reference == model_id))
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+            if current.iter().any(|reference| reference == model_id) {
+                return Ok(true);
+            }
+            // Force the same parser + publication resolver used by ordinary
+            // Session model overrides. The sentinel can never equal a real
+            // requested model, so this is resolution-only and persists nothing.
+            match self
+                .sessions
+                .resolve_session_model_override(
+                    workspace_id,
+                    model_id,
+                    "__awaken_dream_model_resolution_probe__",
+                    Default::default(),
+                )
+                .await
+            {
+                Ok(_) => Ok(true),
+                Err(error) if error.kind == awaken_session_contract::RunErrorKind::BadRequest => {
+                    Ok(false)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
     }
     if let Some(inventory) = model_inventory.clone() {
-        dream_application.bind_model_readiness(Arc::new(DreamModelReadiness(inventory)));
+        dream_application.bind_model_readiness(Arc::new(DreamModelReadiness {
+            inventory,
+            sessions: session_application.clone(),
+        }));
     }
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
@@ -1005,6 +1064,49 @@ fn mount_with_managed_over_and_models(
         worker_transport,
         dream_application,
     ))
+}
+
+/// Dream's ordinary auxiliary Session consumes local Memory/File mounts. Native
+/// and ACP backends share that Session environment; an outbound A2A reference
+/// denotes a complete remote agent and is intentionally executor-only, so it
+/// cannot receive those local authorities.
+fn dream_model_can_consume_local_inputs(model_id: &str) -> Result<bool, String> {
+    let selection = awaken_config_service::parse_managed_model_id(model_id)
+        .map_err(|error| error.to_string())?;
+    Ok(!matches!(
+        selection,
+        awaken_agent_config::ModelSelection::Pinned(ref binding)
+            if matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(&binding.backend_ref),
+                awaken_runtime_contract::resolved::Backend::Remote { .. }
+            )
+    ))
+}
+
+#[cfg(test)]
+mod dream_model_runtime_tests {
+    #[test]
+    fn dream_runtime_admission_matches_the_local_input_boundary() {
+        for model in [
+            "claude-sonnet-5",
+            "deepseek-v4;provider=deepseek;api=anthropic_messages",
+            "qwen/qwen3;provider=anyrouter;api=open_ai_chat;executor=acp:opencode",
+            "executor=acp:claude",
+            "profile=dream-primary",
+        ] {
+            assert!(
+                super::dream_model_can_consume_local_inputs(model).unwrap(),
+                "{model}"
+            );
+        }
+        assert!(
+            !super::dream_model_can_consume_local_inputs(
+                "executor=a2a:https://third-party.example/agent"
+            )
+            .unwrap()
+        );
+        assert!(super::dream_model_can_consume_local_inputs("executor=a2a:").is_err());
+    }
 }
 
 fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {

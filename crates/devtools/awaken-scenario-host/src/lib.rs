@@ -29,13 +29,16 @@ pub use delegation::build_delegation_router;
 pub use deployment::{install_scenario_runtime_authority, scenario_deployment};
 pub use distributed_control::build_distributed_provider_router;
 pub use distributed_control::serve_distributed_control;
-pub use dream::{build_dream_router, build_dream_router_and_host};
+pub use dream::{build_dream_router, build_dream_router_and_host, build_dream_runtime_router};
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
-use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
+use deployment::{
+    resource_host, resource_host_with_deployment, runtime_resource_host_with_deployment,
+    scenario_storage_dir,
+};
 use scenario_platform::{
     fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
     fixed_host_backend_publication_with_mcp, mount, mount_with_agent_source,
@@ -186,7 +189,9 @@ pub fn build_full_chain_router() -> Router {
     mount_with_memory_publication(
         host,
         "full-chain",
-        vec![awaken_agent_contract::AgentSkillBinding::custom("greet")],
+        vec![awaken_agent_contract::AgentSkillBinding::custom(
+            awaken_resource_contract::skill_catalog_id("greet"),
+        )],
     )
 }
 
@@ -316,6 +321,24 @@ pub fn build_router_and_host(
     )
 }
 
+pub(crate) fn build_router_and_host_with_model_publication_resolver(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+) -> (Router, Arc<SharedHost>) {
+    let platform = resource_host(llm, model_ref);
+    let (host, resources) = platform.into_parts();
+    let host = Arc::new(host);
+    (
+        scenario_platform::mount_parts_with_model_publication_resolver(
+            host.clone(),
+            resources,
+            resolver,
+        ),
+        host,
+    )
+}
+
 /// Test/embedder platform with one explicitly resolved deployment snapshot.
 /// Production callers resolve this snapshot from typed configuration before
 /// constructing the host.
@@ -328,12 +351,12 @@ pub fn build_router_with_deployment(
     mount(host)
 }
 
-/// Choose a usable model only when an operator omitted the explicit model. Kimi's
-/// Anthropic-compatible coding endpoint does not accept Anthropic model ids; all
-/// other endpoints retain the ordinary Anthropic default.
+/// Choose a usable model only when an operator omitted the explicit model. Kimi
+/// Code's Anthropic-compatible endpoint currently exposes Claude-compatible
+/// public ids; all other endpoints retain the conservative Anthropic default.
 fn default_anthropic_compatible_model(base_url: &str) -> &'static str {
     if base_url.contains("api.kimi.com/coding") {
-        "kimi-for-coding"
+        "claude-sonnet-5"
     } else {
         "claude-3-5-haiku-latest"
     }
@@ -372,7 +395,7 @@ fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmEx
 /// dialect-aware executor factory used by worker materialization, exposed as a server mode
 /// so the TypeScript e2e can drive a real turn through the managed / ai-sdk / a2a
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
-pub fn build_real_router() -> Router {
+pub async fn build_real_router() -> Router {
     let key = std::env::var("ANTHROPIC_API_KEY")
         .or_else(|_| std::env::var("KIMI_API_KEY"))
         .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real");
@@ -383,11 +406,7 @@ pub fn build_real_router() -> Router {
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
     let executor = anthropic_messages_executor(&base, key);
-    mount(resource_host_with_deployment(
-        executor,
-        model,
-        scenario_deployment(),
-    ))
+    mount(runtime_resource_host_with_deployment(executor, model, scenario_deployment()).await)
 }
 
 /// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
@@ -415,7 +434,10 @@ pub async fn build_real_gemini_router() -> Router {
             .to_string(),
     };
     let executor = GenaiExecutor::vertex_gemini(project, location, token);
-    build_router(Arc::new(executor), model)
+    mount(
+        runtime_resource_host_with_deployment(Arc::new(executor), model, scenario_deployment())
+            .await,
+    )
 }
 
 /// A live-model server whose executor is built through the production
@@ -517,7 +539,14 @@ pub async fn build_resolved_real_router() -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published model candidate");
-    build_router(executor, published.primary.binding.model_ref)
+    mount(
+        runtime_resource_host_with_deployment(
+            executor,
+            published.primary.binding.model_ref,
+            scenario_deployment(),
+        )
+        .await,
+    )
 }
 
 /// The resolved path with an **OAuth** credential (#5): the credential source is
@@ -635,7 +664,14 @@ pub async fn build_oauth_resolved_router() -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published OAuth candidate");
-    build_router(executor, published.primary.binding.model_ref)
+    mount(
+        runtime_resource_host_with_deployment(
+            executor,
+            published.primary.binding.model_ref,
+            scenario_deployment(),
+        )
+        .await,
+    )
 }
 
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
@@ -1184,7 +1220,7 @@ mod compatible_endpoint_tests {
     fn omitted_model_uses_the_endpoint_vocabulary() {
         assert_eq!(
             default_anthropic_compatible_model("https://api.kimi.com/coding/v1/"),
-            "kimi-for-coding"
+            "claude-sonnet-5"
         );
         assert_eq!(
             default_anthropic_compatible_model("https://api.anthropic.com/v1/"),

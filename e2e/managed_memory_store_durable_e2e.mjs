@@ -85,7 +85,10 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const mem = await client.post('/v1/memory_stores', {
+      body: { name: 'durable-memory-store' },
+      headers: MEMORY_HEADERS,
+    });
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
 
     const session = await client.beta.sessions.create({

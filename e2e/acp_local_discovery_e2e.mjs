@@ -237,6 +237,17 @@ async function capability(cli) {
   return value.runtimes.find((runtime) => runtime.id === `acp:${cli}`);
 }
 
+async function waitForCapability(cli, predicate, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    last = await capability(cli);
+    if (last && predicate(last)) return last;
+    await sleep(100);
+  }
+  return last;
+}
+
 async function assertPublicationRejected(id, model, reason) {
   const authored = await request('PUT', `/v1/config/agents/${id}`, {
     name: id,
@@ -378,7 +389,7 @@ async function main() {
   try {
     await ready(server);
     adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
-    const codex = await capability('codex');
+    const codex = await waitForCapability('codex', (row) => row.local.detected);
     assert.equal(codex.local.detected, true, 'L1');
     assert.equal(codex.local.login_state, 'available', 'L1');
     assert.deepEqual(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n'), [
@@ -494,7 +505,11 @@ async function main() {
   try {
     await ready(server);
     adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
-    assert.equal((await capability('codex')).local.detected, true, 'L2');
+    assert.equal(
+      (await waitForCapability('codex', (row) => row.local.detected)).local.detected,
+      true,
+      'L2',
+    );
     await runLocalTurn();
     assert.equal(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n').length, 1, 'L2');
   } finally {
@@ -507,7 +522,10 @@ async function main() {
   try {
     await ready(server);
     adminToken = fs.readFileSync(path.join(FAILURE_DATA, 'admin-token'), 'utf8').trim();
-    const codex = await capability('codex');
+    const codex = await waitForCapability(
+      'codex',
+      (row) => row.local.reason_code === 'acp_wrapper_install_failed',
+    );
     assert.equal(codex.local.detected, false, 'L3');
     assert.equal(codex.local.login_state, 'probe_failed', 'L3');
     assert.equal(codex.local.reason_code, 'acp_wrapper_install_failed', 'L3');

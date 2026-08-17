@@ -239,6 +239,8 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -510,6 +512,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-tenancy",
  "axum",
+ "proptest",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
@@ -2085,6 +2088,7 @@ name = "awaken-scenario-host"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-application",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-config",
@@ -2100,6 +2104,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-dream-application",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-execution-application",
