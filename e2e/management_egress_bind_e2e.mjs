@@ -26,6 +26,7 @@ async function main() {
         ['deny-all', { type: 'limited', allowed_hosts: [], allow_mcp_servers: false, allow_package_managers: false }],
         ['allow-list', { type: 'limited', allowed_hosts: ['api.anthropic.com'], allow_mcp_servers: false, allow_package_managers: false }],
       ];
+      let environmentId;
       for (const [policy, networking] of networkCases) {
         const env = await client.beta.environments.create({
           name: `net-${policy}`,
@@ -34,6 +35,7 @@ async function main() {
           config: { type: 'cloud', networking },
           betas: BETAS,
         });
+        environmentId = env.id;
         const got = await client.beta.environments.retrieve(env.id, { betas: BETAS });
         assert.deepEqual(
           got.config.networking,
@@ -64,7 +66,11 @@ async function main() {
           'anthropic-version': '2023-06-01',
           'anthropic-beta': BETAS[0],
         },
-        body: JSON.stringify({ agent: 'assistant', vault_ids: ['vlt_missing'] }),
+        body: JSON.stringify({
+          agent: 'assistant',
+          environment_id: environmentId,
+          vault_ids: ['vlt_missing'],
+        }),
       });
       assert.equal(res.status, 404, `unknown vault → 404 (got ${res.status})`);
       const body = await res.json();

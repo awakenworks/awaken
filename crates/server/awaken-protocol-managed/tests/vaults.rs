@@ -1,7 +1,7 @@
 //! The Managed vault/credential front door over HTTP: create a vault, enter
 //! `environment_variable` / `static_bearer` / `mcp_oauth` credentials (secrets
-//! write-only), retrieve them secret-free, and confirm an env-var credential
-//! resolves an inference. Also covers the wire constraints (unknown vault 404,
+//! write-only), retrieve them secret-free, and confirm an unscoped env-var
+//! credential cannot be misused for provider inference. Also covers the wire constraints (unknown vault 404,
 //! duplicate key rejected, unknown auth type 400) and the vault→MCP URL-binding
 //! seam (`mcp_credential_source_for_url`).
 
@@ -479,7 +479,10 @@ async fn vault_credential_lifecycle_and_resolution() {
     assert_eq!(validation["type"], "vault_credential_validation");
     assert_eq!(validation["status"], "unknown");
 
-    // The vault credential is a real resolvable domain row: bind it and resolve.
+    // The vault credential is a real material-backed domain row, but the public
+    // environment_variable shape carries no provider scope. Its sealed material
+    // remains retrievable through the Vault port while inference resolution must
+    // reject cross-provider use instead of guessing from the variable name.
     let source_id = h
         .state
         .credential_source_id(&vault_id, &cred_id)
@@ -490,9 +493,17 @@ async fn vault_credential_lifecycle_and_resolution() {
         use awaken_credential_vault::repo::CredentialRepo;
         h.credentials.get(&source_id).await.unwrap()
     };
+    assert_eq!(
+        h.secrets
+            .get(source.material_ref.as_ref().expect("sealed material ref"))
+            .await
+            .unwrap()
+            .expose_secret(),
+        "sk-vault-secret"
+    );
     let mut sources: HashMap<String, CredentialSource> = HashMap::new();
     sources.insert(source.id.0.clone(), source);
-    let resolved = resolve_inference(
+    let error = resolve_inference(
         &catalog,
         "claude-opus-4-8",
         &CredentialBinding::Exact {
@@ -502,11 +513,11 @@ async fn vault_credential_lifecycle_and_resolution() {
         &*h.secrets,
     )
     .await
-    .expect("resolve the vault credential");
-    assert_eq!(
-        resolved.credential.as_ref().unwrap().expose_secret(),
-        "sk-vault-secret"
-    );
+    .expect_err("provider-unscoped environment credential must fail closed");
+    assert!(matches!(
+        error,
+        awaken_config_resolver::ResolveError::IncompatibleCredential { .. }
+    ));
 }
 
 async fn seed_catalog(_h: &Harness) -> awaken_model_catalog::ProviderCatalog {

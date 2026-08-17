@@ -244,7 +244,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           N=noname; case \"$SN\" in *search*) N=saw-search;; *calc*) N=saw-calc;; esac; \
-          A=noref; case \"$SN\" in *'/sesn_'*) A=host-relay;; *'session-mcp:'*) A=credential-leaked;; esac; \
+          A=noref; case \"$SN\" in *'/sesn_'*) A=host-relay;; *'session-mcp:'*) A=credential-leaked;; *'Authorization'*) A=process-auth;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
@@ -358,14 +358,19 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 /// α-secretless into the fake CLI's `session/new`. Proves the D6→D5 chain end to end
 /// through the HTTP managed API. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
 pub async fn build_acp_managed_mcp_router() -> Router {
+    let mut fixture_cli = FAKE_ACP_MCP_CLI;
+    // Keep the deterministic executable, but bind it to a registered adapter
+    // identity so credential-delivery and MCP capability declarations come
+    // from the same production catalog row used by admission.
+    fixture_cli.id = "claude";
     let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
-        scenario_host_acp_cli(FAKE_ACP_MCP_CLI),
+        scenario_host_acp_cli(fixture_cli),
         Arc::new(FixedAcpModel),
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
-        ModelBinding::new("scenario", "acp-managed-mcp", "acp:fake-mcp"),
+        ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
         move |host| host.with_acp(executor),
     )
     .await

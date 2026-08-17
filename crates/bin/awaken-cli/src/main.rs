@@ -6,8 +6,11 @@ use awaken_cli::ServiceRole;
 use awaken_cli::config::{ConfigOverrides, ResolvedDeployment};
 use awaken_cli::console::{self, Command};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    awaken_cli::block_on_service(async_main())
+}
+
+async fn async_main() -> ExitCode {
     let command = match console::parse_args(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(error) => {

@@ -14,16 +14,22 @@ use super::{
 pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
+    let mut fixture_cli = FAKE_ACP_CLI;
+    // The executable is a deterministic fixture, while its id must match the
+    // registered protocol adapter selected by the immutable Agent backend.
+    fixture_cli.id = "claude";
     mount_with_host_backend_publication(
         resource_host(model, model_ref).map_host(|host| {
             host.with_projected_acp(
-                scenario_host_acp_cli(FAKE_ACP_CLI),
+                scenario_host_acp_cli(fixture_cli),
                 Arc::new(ScenarioEnvAcpModel),
                 store_dir,
             )
         }),
         "acp-agent",
-        "acp:fake",
+        // The scenario supplies a fake executable launch, but the immutable
+        // backend reference must still name a registered ACP protocol adapter.
+        "acp:claude",
     )
 }
 

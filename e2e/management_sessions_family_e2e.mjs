@@ -67,7 +67,11 @@ async function main() {
     await withScenarioServer('management', 'mcp', 38146, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const session = await client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
       assert.ok(session.id.startsWith('sesn_'), `id: ${session.id}`);
       assert.equal(session.type, 'session');
       pass('beta.sessions.create -> BetaManagedAgentsSession');
@@ -257,6 +261,7 @@ async function main() {
 
       const deletionCandidate = await client.beta.sessions.create({
         agent: 'assistant',
+        environment_id: 'env_local',
         title: 'delete candidate',
         betas: BETAS,
       });

@@ -73,6 +73,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
+    --harness observability_decorators_cannot_change_step_authority \
     --harness only_queued_work_is_claimable \
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
@@ -210,7 +211,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sensitivity_markers_can_never_widen_a_redacted_projection \
     --harness notification_admission_is_exact_and_unknown_fails_closed
   run_kani awaken-sandbox-container \
-    --harness continuation_writable_roots_share_one_claim_without_aliasing
+    --harness continuation_writable_roots_share_one_claim_without_aliasing \
+    --harness allowlist_claim_never_exceeds_its_evidence
   run_kani awaken-sandbox-container --features k8s --solver kissat \
     --harness continuation_claim_selection_is_total_exact_and_non_widening \
     --harness continuation_claim_deletion_requires_exact_uid_and_resource_version

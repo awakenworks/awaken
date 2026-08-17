@@ -29,6 +29,16 @@ async function listTypes(client, sid) {
   return evs;
 }
 
+async function waitFor(client, sid, predicate, description) {
+  const deadline = Date.now() + 10_000;
+  do {
+    const events = await listTypes(client, sid);
+    if (predicate(events)) return events;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for ${description}`);
+}
+
 async function main() {
   try {
     await withRealServer('echo', PORT, async (baseUrl) => {
@@ -37,8 +47,15 @@ async function main() {
 
       // A first real turn, so the session has a user turn to follow.
       await sendUser(client, session.id, 'first');
-      let events = await listTypes(client, session.id);
+      let events = await waitFor(
+        client,
+        session.id,
+        (listed) => listed.some((event) => event.type === 'agent.message')
+          && listed.some((event) => event.type === 'session.status_idle'),
+        'the first turn to become idle',
+      );
       const beforeCount = events.length;
+      const beforeIds = new Set(events.map((event) => event.id));
       assert.ok(events.some((e) => e.type === 'agent.message'), 'first turn produced an agent.message');
 
       // system.message is accepted and acknowledged with processed_at: null.
@@ -51,13 +68,25 @@ async function main() {
       assert.equal(receipt.data[0].processed_at, null, 'system.message is queued (processed_at: null)');
       pass('system.message accepted + acknowledged (receipt, no error)');
 
-      // It persists exactly one same-id inbound event, emits no agent/status event
-      // of its own, and leaves the session idle.
-      events = await listTypes(client, session.id);
+      // It persists one same-id inbound event and the normal per-request usage
+      // snapshot, emits no agent/status event of its own, and leaves the
+      // session idle.
+      events = await waitFor(
+        client,
+        session.id,
+        (listed) => listed.some((event) => event.id === receipt.data[0].id && event.processed_at),
+        'the persisted system.message acknowledgement',
+      );
       assert.equal(
         events.length,
-        beforeCount + 1,
-        'system.message adds only its persisted inbound event',
+        beforeCount + 2,
+        'system.message adds its persisted inbound event and one usage snapshot',
+      );
+      const added = events.filter((event) => !beforeIds.has(event.id));
+      assert.deepEqual(
+        added.map((event) => event.type).sort(),
+        ['session.usage', 'system.message'],
+        'system.message emits neither an agent turn nor a status transition',
       );
       const persistedSystem = events.find((event) => event.type === 'system.message');
       assert.equal(persistedSystem?.id, receipt.data[0].id, 'receipt and history share system id');
