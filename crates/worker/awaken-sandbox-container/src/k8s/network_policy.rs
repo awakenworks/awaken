@@ -142,6 +142,21 @@ fn has_exact_labels(selector: &LabelSelector, expected: &BTreeMap<String, String
             .is_none_or(Vec::is_empty)
 }
 
+fn has_exact_namespace(selector: Option<&LabelSelector>) -> bool {
+    selector.is_none_or(|selector| {
+        selector
+            .match_expressions
+            .as_ref()
+            .is_none_or(Vec::is_empty)
+            && selector.match_labels.as_ref().is_some_and(|labels| {
+                labels.len() == 1
+                    && labels
+                        .get("kubernetes.io/metadata.name")
+                        .is_some_and(|namespace| !namespace.trim().is_empty())
+            })
+    })
+}
+
 fn attests_contract(policies: &[NetworkPolicy]) -> bool {
     let restricted = BTreeMap::from([
         ("app".to_owned(), "awaken-sandbox".to_owned()),
@@ -198,7 +213,7 @@ fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
                             && rules[0].to.as_ref().is_some_and(|peers| {
                                 peers.len() == 1
                                     && peers[0].ip_block.is_none()
-                                    && peers[0].namespace_selector.is_none()
+                                    && has_exact_namespace(peers[0].namespace_selector.as_ref())
                                     && peers[0].pod_selector.as_ref().is_some_and(|selector| {
                                         has_exact_labels(
                                             selector,
@@ -292,6 +307,13 @@ mod tests {
                 &["Egress"],
                 Some(vec![NetworkPolicyEgressRule {
                     to: Some(vec![NetworkPolicyPeer {
+                        namespace_selector: Some(LabelSelector {
+                            match_labels: Some(BTreeMap::from([(
+                                "kubernetes.io/metadata.name".into(),
+                                "awaken-cloud".into(),
+                            )])),
+                            ..Default::default()
+                        }),
                         pod_selector: Some(LabelSelector {
                             match_labels: Some(BTreeMap::from([(
                                 "app.kubernetes.io/component".into(),
@@ -332,6 +354,23 @@ mod tests {
         ));
         assert!(!attests_contract(&widened), "P3");
         assert!(!attests_allowlist_contract(&widened), "P3 allowlist");
+
+        let mut wildcard_namespace = canonical.clone();
+        wildcard_namespace[2]
+            .spec
+            .as_mut()
+            .unwrap()
+            .egress
+            .as_mut()
+            .unwrap()[0]
+            .to
+            .as_mut()
+            .unwrap()[0]
+            .namespace_selector = Some(LabelSelector::default());
+        assert!(
+            !attests_allowlist_contract(&wildcard_namespace),
+            "a wildcard namespace can select an attacker-controlled gateway"
+        );
 
         let mut excluded = canonical;
         excluded.push(policy(
