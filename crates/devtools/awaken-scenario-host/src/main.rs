@@ -8,8 +8,11 @@
 
 use std::sync::Arc;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    awaken_cli::block_on_service(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let model_mode = std::env::var("AWAKEN_MODEL_MODE");
     // The scenario-only role axis (`AWAKEN_SCENARIO_ROLE`). Worker is an execution
     // endpoint that never starts the HTTP surface; Serve is the default —

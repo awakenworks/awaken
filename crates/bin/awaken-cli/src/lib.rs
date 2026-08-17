@@ -39,6 +39,7 @@ mod worker_observation_wiring;
 mod worker_transport_security;
 
 use std::sync::Arc;
+use std::{future::Future, mem};
 
 use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::ManagedState;
@@ -96,6 +97,27 @@ pub use service::{
     ServiceRole, migrate_service, run_service, run_service_binary, serve_prepared_control,
     serve_prepared_coordinator,
 };
+
+/// Run a service future on the canonical process runtime.
+///
+/// Credential-backed Managed MCP realization crosses the durable ingress,
+/// materializer, and connector stacks in one poll. The Tokio default worker
+/// stack (2 MiB) is insufficient for that valid debug/recovery path and aborts
+/// the whole process before an error can be projected. Keep one explicit
+/// process-level stack budget for every launcher instead of relying on an
+/// operator-only environment-variable workaround.
+pub fn block_on_service<F: Future>(future: F) -> F::Output {
+    const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+    debug_assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024);
+    debug_assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>()));
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("awaken-runtime")
+        .thread_stack_size(SERVICE_WORKER_STACK_BYTES)
+        .build()
+        .expect("build Awaken service runtime")
+        .block_on(future)
+}
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{

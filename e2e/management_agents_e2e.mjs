@@ -599,7 +599,7 @@ async function main() {
         tools: boundaryMcpServers.map(({ name }) => ({
           type: 'mcp_toolset', mcp_server_name: name,
         })),
-        skills: Array.from({ length: 500 }, (_, i) => ({
+        skills: Array.from({ length: 20 }, (_, i) => ({
           type: 'custom', skill_id: `skill-boundary-${i}`,
         })),
       });
@@ -607,7 +607,7 @@ async function main() {
       assert.equal(boundaryAgent.body.mcp_servers.length, 20);
       assert.equal(boundaryAgent.body.mcp_servers[0].name.length, 255);
       assert.equal(boundaryAgent.body.mcp_servers[0].url.length, 2048);
-      assert.equal(boundaryAgent.body.skills.length, 500);
+      assert.equal(boundaryAgent.body.skills.length, 20);
 
       const countBeforeRejectedCreates = (await drain(client.beta.agents.list({
         include_archived: true,
@@ -668,7 +668,7 @@ async function main() {
           { type: 'custom', skill_id: 'skill-a' },
           { type: 'custom', skill_id: 'skill-a' },
         ] }],
-        ['too-many-skills', { skills: Array.from({ length: 501 }, (_, i) => ({
+        ['too-many-skills', { skills: Array.from({ length: 21 }, (_, i) => ({
           type: 'custom', skill_id: `skill-${i}`,
         })) }],
         ['too-many-mcp-servers', {
@@ -705,71 +705,63 @@ async function main() {
         'rejected update creates no revision',
       );
 
-      // Cause/effect graph:
-      // Published --disable--> Disabled removes only the current executable
-      // pointer; a repeated disable is idempotent and mutations fail closed.
-      // Disabled --archive--> Archived appends one terminal revision.
+      // Cause/effect graph: Published --archive--> Archived removes the
+      // current executable pointer, retains immutable history, and prevents
+      // both new Sessions and new Runs in an existing Session. The historical
+      // Awaken-only disable/status fields are deliberately absent from the
+      // official Agent DTO and route surface.
       //
       // Decision table:
-      // | L1 | Published + disable | Disabled; version +1 |
-      // | L2 | Disabled + disable  | same version          |
-      // | L3 | Disabled + update   | 400                   |
-      // | L4 | Disabled + archive  | Archived; version +1  |
-      const preDisableSession = await client.beta.sessions.create({
+      // | L1 | Published + private disable route | 404; no mutation       |
+      // | L2 | Published + archive               | version +1; archived  |
+      // | L3 | Archived + archive                | same version          |
+      // | L4 | Archived + update/start/run       | fail closed           |
+      const preArchiveSession = await client.beta.sessions.create({
         agent: rich.body.id,
+        environment_id: 'env_local',
         betas: BETAS,
       });
-      const richDisabled = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/disable`);
-      assert.equal(richDisabled.status, 200, 'L1');
-      assert.equal(richDisabled.body.status, 'disabled', 'L1');
-      assert.ok(richDisabled.body.disabled_at, 'L1');
-      const disabledAgain = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/disable`);
-      assert.equal(disabledAgain.body.version, richDisabled.body.version, 'L2');
+      const privateDisable = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/disable`);
+      assert.equal(privateDisable.status, 404, 'L1');
+
+      const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
+      assert.equal(richArchived.status, 200, 'L2');
+      assert.ok(richArchived.body.archived_at, 'L2');
+      assert.equal(richArchived.body.version, cleared.version + 1, 'L2');
+      assert.equal(richArchived.body.status, undefined, 'L2: no private status field');
+      assert.equal(richArchived.body.disabled_at, undefined, 'L2: no private disabled_at field');
+      const archivedAgain = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
+      assert.equal(archivedAgain.status, 200, 'L3');
+      assert.equal(archivedAgain.body.version, richArchived.body.version, 'L3');
       await assert.rejects(
         () => client.beta.sessions.create({
           agent: rich.body.id,
+          environment_id: 'env_local',
           betas: BETAS,
         }),
         (error) => error.status === 400 && error.message.includes('cannot start a new session'),
-        'L1: Disabled Agent is rejected before a new Session is admitted',
+        'L4: Archived Agent is rejected before a new Session is admitted',
       );
       await assert.rejects(
-        () => client.beta.sessions.events.send(preDisableSession.id, {
+        () => client.beta.sessions.events.send(preArchiveSession.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'must not start' }] }],
           betas: BETAS,
         }),
         (error) => error.status === 400 && error.message.includes('cannot admit a new event'),
-        'L1: an existing Session cannot admit a new Run after disable',
+        'L4: an existing Session cannot admit a new Run after archive',
       );
-      assert.equal(
-        (await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
-          version: richDisabled.body.version,
-          name: 'must-not-update-disabled',
-        })).status,
-        400,
-        'L3',
-      );
-
-      const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
-      assert.equal(richArchived.status, 200);
-      assert.equal(richArchived.body.status, 'archived', 'L4');
-      assert.equal(richArchived.body.disabled_at, null, 'L4');
-      assert.equal(richArchived.body.version, richDisabled.body.version + 1, 'L4');
-      const archivedAgain = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
-      assert.equal(archivedAgain.status, 200);
-      assert.equal(archivedAgain.body.version, richArchived.body.version);
       assert.equal(
         (await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
           version: richArchived.body.version,
-          name: 'must-not-update',
+          name: 'must-not-update-archived',
         })).status,
         400,
+        'L4',
       );
 
       for (const [method, route, body] of [
         ['GET', '/v1/agents/agent_missing', undefined],
         ['POST', '/v1/agents/agent_missing', { version: 1, name: 'missing' }],
-        ['POST', '/v1/agents/agent_missing/disable', undefined],
         ['POST', '/v1/agents/agent_missing/archive', undefined],
         ['GET', '/v1/agents/agent_missing/versions', undefined],
       ]) {
@@ -787,7 +779,8 @@ async function main() {
       const firstPage = await json(baseUrl, 'GET', '/v1/agents?limit=1&include_archived=true');
       assert.equal(firstPage.status, 200);
       assert.equal(firstPage.body.data.length, 1);
-      assert.equal(firstPage.body.has_more, true);
+      assert.equal(typeof firstPage.body.next_page, 'string');
+      assert.equal(firstPage.body.has_more, undefined, 'PageCursor has no Page-only has_more field');
       const secondPage = await json(
         baseUrl,
         'GET',
