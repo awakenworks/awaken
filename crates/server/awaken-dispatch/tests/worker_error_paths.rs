@@ -25,6 +25,71 @@ use harness::{FailingCommit, activation, schedule_n_runtime, text_runtime};
 
 const LEASE: u64 = 1_000;
 
+#[tokio::test]
+async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
+    // Cause/effect decision table: T1 exhausted+expired and commit fails => keep
+    // the newly claimed row leased, publish no terminal/completion/quarantine;
+    // T2 retry at exact expiry => strict lease fence returns no claim; T3 retry
+    // after expiry, even though the special claim raised attempts above max =>
+    // reclaim, commit Indeterminate, settle Done, publish one tombstone.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let inner = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(FailingCommit::new(inner.clone(), true));
+    store
+        .enqueue(RunDispatch::new(activation("exhausted")))
+        .await
+        .unwrap();
+    store
+        .claim("crashed", 100, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .claim("crashed", 100, 200, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "resolver")
+        .with_lease_ms(LEASE);
+    assert!(
+        worker.resolve_one_retry_exhausted(1, 400).await.is_err(),
+        "T1"
+    );
+    assert!(inner.committed().latest_run.is_none(), "T1");
+    assert!(store.dead_letters().await.unwrap().is_empty(), "T1");
+    assert!(
+        store
+            .completion_events_after(0, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "T1"
+    );
+
+    commit.set_failing(false);
+    assert!(
+        !worker.resolve_one_retry_exhausted(1, 1_400).await.unwrap(),
+        "T2"
+    );
+    assert!(
+        worker.resolve_one_retry_exhausted(1, 1_401).await.unwrap(),
+        "T3"
+    );
+    assert_eq!(
+        inner.committed().latest_run.unwrap().state,
+        RunState::Ended(EndCause::Indeterminate),
+        "T3"
+    );
+    assert_eq!(store.dispatch_count(), 0, "T3");
+    assert_eq!(
+        store.completion_events_after(0, 10).await.unwrap().len(),
+        1,
+        "T3"
+    );
+}
+
 // --- 1. Genuine drive failure is re-raised, not swallowed -------------------
 
 #[tokio::test]

@@ -14,9 +14,9 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime_contract::resume::ResumeResult;
+use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
-use sqlx::{Executor, Postgres, Row};
 
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
@@ -24,9 +24,14 @@ use crate::dispatch::{
     DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
     SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
     compile_attempt_credential_bindings, installed_worker_credential_capabilities,
-    normalize_pending_millis, verify_credential_realization_receipt,
+    normalize_pending_millis, retry_exhaustion_evidence_is_eligible,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
+use crate::postgres_helpers::{
+    append_pending_transaction, idempotency_conflict, retry_exhausted_candidate,
+};
+use crate::postgres_identity::{exact_run_replay, load_completion_events, lock_run_identity};
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
@@ -264,19 +269,12 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<(), DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
 
         // Run-id idempotency survives successful completion: a live row or the
         // permanent completion tombstone makes the whole command a no-op. Check
         // before supersession so replay cannot mutate sibling dispatches.
-        let already_known: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE run_id = $1) OR \
-             EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(reject)?;
-        if already_known {
+        if exact_run_replay(&mut tx, p, &request).await? {
             tx.commit().await.map_err(reject)?;
             return Ok(());
         }
@@ -306,7 +304,7 @@ impl DispatchQueue for PostgresDispatchStore {
 
         // Insert unless the run id exists, or a live (non-dead-letter) dispatch
         // already carries the same dedupe key. A NULL dedupe key never matches.
-        sqlx::query(&format!(
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch \
              (run_id, thread_id, request, status, priority, epoch, dedupe_key) \
              SELECT $1, $2, $3, 'pending', $4, $5, $6 \
@@ -323,7 +321,32 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(options.dedupe_key.as_deref())
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 {
+            if exact_run_replay(&mut tx, p, &request).await? {
+                tx.commit().await.map_err(reject)?;
+                return Ok(());
+            }
+            if let Some(dedupe_key) = options.dedupe_key.as_deref() {
+                let deduped: bool = sqlx::query_scalar(&format!(
+                    "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
+                     WHERE dedupe_key = $1 AND status <> 'dead_letter')"
+                ))
+                .bind(dedupe_key)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(reject)?;
+                if deduped {
+                    tx.commit().await.map_err(reject)?;
+                    return Ok(());
+                }
+            }
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run or dedupe identity",
+                request.run_id().0
+            )));
+        }
         tx.commit().await.map_err(reject)?;
         Ok(())
     }
@@ -336,12 +359,29 @@ impl DispatchQueue for PostgresDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !can_claim_locally(&request.placement) {
-            return Ok(None);
-        }
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        if exact_run_replay(&mut tx, p, &request).await? {
+            let run_id = request.run_id().clone();
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                &run_id,
+                owner,
+                lease_ms,
+                now_ms,
+                None,
+                capabilities,
+            )
+            .await?;
+            tx.commit().await.map_err(reject)?;
+            return Ok(claimed);
+        }
+        if !can_claim_locally(&request.placement) {
+            tx.commit().await.map_err(reject)?;
+            return Ok(None);
+        }
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
              SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
@@ -352,7 +392,14 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(Json(&request))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 && !exact_run_replay(&mut tx, p, &request).await? {
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run identity",
+                request.run_id().0
+            )));
+        }
         let run_id = request.run_id().clone();
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -375,13 +422,30 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            return Ok(None);
-        }
         let p = NS;
         let owner = worker.identity.lease_owner();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        if exact_run_replay(&mut tx, p, &request).await? {
+            let run_id = request.run_id().clone();
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                &run_id,
+                &owner,
+                lease_ms,
+                now_ms,
+                Some(worker),
+                &installed_worker_credential_capabilities(worker)?,
+            )
+            .await?;
+            tx.commit().await.map_err(reject)?;
+            return Ok(claimed);
+        }
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
+            tx.commit().await.map_err(reject)?;
+            return Ok(None);
+        }
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
              SELECT $1,$2,$3,'pending' \
              WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
@@ -392,7 +456,14 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(Json(&request))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .rows_affected();
+        if inserted == 0 && !exact_run_replay(&mut tx, p, &request).await? {
+            return Err(DispatchError::Rejected(format!(
+                "dispatch `{}` was not inserted despite having no matching Run identity",
+                request.run_id().0
+            )));
+        }
         let run_id = request.run_id().clone();
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -419,7 +490,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        append_pending_transaction(&mut tx, &input).await?;
+        append_pending_transaction(&mut tx, NS, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
             &run_id,
@@ -444,7 +515,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        append_pending_transaction(&mut tx, &input).await?;
+        append_pending_transaction(&mut tx, NS, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
             &run_id,
@@ -768,6 +839,42 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(claimed)
     }
 
+    async fn claim_retry_exhausted(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = crate::clock::normalize_millis(now_ms);
+        let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        loop {
+            let run_id = retry_exhausted_candidate(&mut tx, NS, now_ms, max_attempts_i64).await?;
+            let Some(run_id) = run_id else {
+                tx.commit().await.map_err(reject)?;
+                return Ok(None);
+            };
+            if let Some(claimed) = claim_exact_transaction_with_mode(
+                &mut tx,
+                &RunId(run_id),
+                owner,
+                lease_ms,
+                now_ms,
+                None,
+                &Default::default(),
+                ExactClaimMode::RetryExhausted { max_attempts },
+            )
+            .await?
+            {
+                tx.commit().await.map_err(reject)?;
+                return Ok(Some(claimed));
+            }
+            // A concurrent exact claim won the advisory candidate. Search again
+            // before reporting None, which barriers the same-now ordinary claim.
+        }
+    }
+
     async fn claim_run_compatible(
         &self,
         requested_run: &RunId,
@@ -995,8 +1102,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let owner = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT lease_owner FROM {p}_dispatch WHERE run_id = $1 \
+        let authority = sqlx::query(&format!(
+            "SELECT lease_owner, request FROM {p}_dispatch WHERE run_id = $1 \
              AND status = 'running' AND lease_epoch = $2 AND lease_owner IS NOT NULL \
              FOR UPDATE"
         ))
@@ -1005,10 +1112,13 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        let Some(owner) = owner else {
+        let Some(authority) = authority else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
+        let owner: String = authority.try_get("lease_owner").map_err(reject)?;
+        let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(reject)?;
+        let request_fingerprint = request.canonical_fingerprint();
         let claim = RunClaim {
             run_id: run_id.clone(),
             owner,
@@ -1049,10 +1159,12 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         if outcome == DispatchOutcome::Done {
             sqlx::query(&format!(
-                "INSERT INTO {p}_dispatch_completion (run_id) VALUES ($1) \
+                "INSERT INTO {p}_dispatch_completion (run_id, request_fingerprint) \
+                 VALUES ($1, $2) \
                  ON CONFLICT (run_id) DO NOTHING"
             ))
             .bind(&run_id.0)
+            .bind(&request_fingerprint)
             .execute(&mut *tx)
             .await
             .map_err(reject)?;
@@ -1091,39 +1203,14 @@ impl DispatchQueue for PostgresDispatchStore {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
-            DispatchError::Rejected("completion cursor exceeds BIGINT range".to_string())
-        })?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT sequence, run_id FROM {p}_dispatch_completion \
-             WHERE sequence > $1 ORDER BY sequence LIMIT $2"
-        ))
-        .bind(after_sequence)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
-        rows.into_iter()
-            .map(|row| {
-                let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
-                Ok(DispatchCompletion {
-                    sequence: u64::try_from(sequence).map_err(|_| {
-                        DispatchError::Rejected(
-                            "persisted completion sequence is negative".to_string(),
-                        )
-                    })?,
-                    run_id: RunId(row.try_get("run_id").map_err(reject)?),
-                })
-            })
-            .collect()
+        load_completion_events(&self.pool, NS, after_sequence, limit).await
     }
 
-    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+    async fn quarantine_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
         let p = NS;
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
@@ -1438,7 +1525,7 @@ impl Inbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let input = normalize_pending_millis(input);
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let inserted = append_pending_transaction(&mut tx, &input).await?;
+        let inserted = append_pending_transaction(&mut tx, NS, &input).await?;
         tx.commit().await.map_err(reject)?;
         Ok(inserted)
     }
@@ -1588,7 +1675,7 @@ impl Outbox for PostgresDispatchStore {
             // One transaction per message: idempotent target append, then drop
             // the outbox row. A crash before the delete re-appends (a no-op).
             let mut tx = self.pool.begin().await.map_err(reject)?;
-            append_pending_transaction(&mut tx, &input).await?;
+            append_pending_transaction(&mut tx, NS, &input).await?;
             sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
                 .bind(&message_id)
                 .execute(&mut *tx)
@@ -1694,28 +1781,39 @@ async fn claim_exact_transaction_with_mode(
     );
     let eligibility = match mode {
         ExactClaimMode::Runnable => format!(
-            "(d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+            "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
              OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
-             OR (d.status = 'pending' AND {not_running})"
+             OR (d.status = 'pending' AND {not_running})) AND $3::bigint IS NULL"
         ),
         ExactClaimMode::TerminalRecovery => {
             format!(
-                "(d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+                "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
                  OR (d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
-                 AND {not_running})"
+                 AND {not_running})) AND $3::bigint IS NULL"
             )
+        }
+        ExactClaimMode::RetryExhausted { .. } => {
+            "d.status = 'running' AND d.lease_until IS NOT NULL \
+             AND d.lease_until < $2 AND d.attempt_count >= $3"
+                .to_string()
         }
     };
     let sql = format!(
         "SELECT d.request, d.sandbox, d.status, d.worker_assignment, d.cancel_requested, \
-                d.lease_owner, d.lease_epoch FROM {p}_dispatch d \
+                d.lease_owner, d.lease_epoch, d.lease_until, d.attempt_count \
+         FROM {p}_dispatch d \
          WHERE d.run_id = $1 AND ({eligibility}) FOR UPDATE SKIP LOCKED LIMIT 1"
     );
+    let retry_limit = mode
+        .retry_limit()
+        .map(|limit| durable_i64("dispatch retry limit", limit))
+        .transpose()?;
     let Some(row) = sqlx::query(&sql)
         .bind(&requested_run.0)
         .bind(crate::clock::db_millis(now_ms))
+        .bind(retry_limit)
         .fetch_optional(&mut **tx)
         .await
         .map_err(reject)?
@@ -1729,8 +1827,24 @@ async fn claim_exact_transaction_with_mode(
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
     let previous_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
     let previous_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
-    let terminal_recovery = mode == ExactClaimMode::TerminalRecovery;
-    if !terminal_recovery
+    if let ExactClaimMode::RetryExhausted { max_attempts } = mode {
+        let status = row.try_get::<String, _>("status").map_err(reject)?;
+        let lease_until = row
+            .try_get::<Option<i64>, _>("lease_until")
+            .map_err(reject)?;
+        let attempt_count = row.try_get::<i64, _>("attempt_count").map_err(reject)?;
+        if !retry_exhaustion_evidence_is_eligible(
+            &status,
+            lease_until,
+            attempt_count,
+            max_attempts,
+            now_ms,
+        )? {
+            return Ok(None);
+        }
+    }
+    let terminal_resolution = mode.bypasses_execution_admission();
+    if !terminal_resolution
         && cancellation_requested == 0
         && match worker {
             Some(worker) => can_assign(
@@ -1748,7 +1862,7 @@ async fn claim_exact_transaction_with_mode(
     }
     let status: String = row.try_get("status").map_err(reject)?;
     let claim_epoch = crate::next_claim_epoch(previous_epoch)?;
-    let credential_bindings = if terminal_recovery || cancellation_requested != 0 {
+    let credential_bindings = if terminal_resolution || cancellation_requested != 0 {
         Vec::new()
     } else {
         compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
@@ -1773,7 +1887,7 @@ async fn claim_exact_transaction_with_mode(
         )
     })?)
     .bind(
-        (!terminal_recovery)
+        (!terminal_resolution)
             .then(|| worker.map(WorkerAssignment::from))
             .flatten()
             .map(Json),
@@ -1800,11 +1914,16 @@ async fn claim_exact_transaction_with_mode(
                 DispatchError::Rejected("persisted dispatch claim epoch is negative".to_string())
             })?,
         };
+        let reason = if matches!(mode, ExactClaimMode::RetryExhausted { .. }) {
+            LeaseLossReason::RetryExhausted
+        } else {
+            LeaseLossReason::Expired
+        };
         insert_operation(
             tx,
             &DispatchOperation::LeaseLost {
                 claim: previous.clone(),
-                reason: LeaseLossReason::Expired,
+                reason,
             },
         )
         .await?;
@@ -1865,90 +1984,10 @@ async fn claim_exact_transaction_with_mode(
         pending,
         recovered: status == "running",
         sandbox,
-        assignment: (!terminal_recovery)
+        assignment: (!terminal_resolution)
             .then(|| worker.map(WorkerAssignment::from))
             .flatten(),
     }))
-}
-
-/// The one PostgreSQL pending insert path, reused by direct delivery, Inbox
-/// append, and outbox relay so retry/conflict semantics stay transactional.
-async fn append_pending_transaction(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    input: &PendingInput,
-) -> Result<bool, DispatchError> {
-    let prefix = NS;
-    let inserted = sqlx::query(&format!(
-        "INSERT INTO {prefix}_pending \
-         (message_id, run_id, thread_id, correlation_id, result, available_at) \
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
-    ))
-    .bind(&input.message_id)
-    .bind(&input.run_id.0)
-    .bind(&input.thread_id.0)
-    .bind(&input.correlation_id)
-    .bind(Json(&input.result))
-    .bind(input.available_at_ms.map(crate::clock::db_millis))
-    .execute(&mut **tx)
-    .await
-    .map_err(reject)?;
-    if inserted.rows_affected() > 0 {
-        return Ok(true);
-    }
-    match load_pending_input(&mut **tx, prefix, &input.message_id).await? {
-        Some(existing) if existing == *input => Ok(false),
-        Some(_) => Err(idempotency_conflict(&input.message_id, "pending-input")),
-        None => Err(DispatchError::Rejected(format!(
-            "pending-input `{}` vanished during idempotency validation",
-            input.message_id
-        ))),
-    }
-}
-
-async fn load_pending_input<'e, E>(
-    executor: E,
-    prefix: &str,
-    message_id: &str,
-) -> Result<Option<PendingInput>, DispatchError>
-where
-    E: Executor<'e, Database = Postgres>,
-{
-    let row = sqlx::query(&format!(
-        "SELECT run_id, thread_id, correlation_id, result, available_at \
-         FROM {prefix}_pending WHERE message_id = $1"
-    ))
-    .bind(message_id)
-    .fetch_optional(executor)
-    .await
-    .map_err(reject)?;
-    row.map(|row| {
-        let available_at = row
-            .try_get::<Option<i64>, _>("available_at")
-            .map_err(reject)?
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| {
-                DispatchError::Rejected(format!(
-                    "pending-input `{message_id}` has a negative delivery time"
-                ))
-            })?;
-        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
-        Ok(PendingInput {
-            message_id: message_id.to_string(),
-            run_id: RunId(row.try_get("run_id").map_err(reject)?),
-            thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
-            correlation_id: row.try_get("correlation_id").map_err(reject)?,
-            available_at_ms: available_at,
-            result,
-        })
-    })
-    .transpose()
-}
-
-fn idempotency_conflict(message_id: &str, aggregate: &str) -> DispatchError {
-    DispatchError::Rejected(format!(
-        "idempotency key `{message_id}` was reused with another {aggregate} payload"
-    ))
 }
 
 fn reject(err: sqlx::Error) -> DispatchError {

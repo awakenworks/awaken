@@ -103,7 +103,7 @@ pub trait DurableRunOperations: Send + Sync {
         thread: &str,
     ) -> Result<Vec<DurableDispatchStatus>, ApplicationError>;
     async fn reconcile(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
-    async fn reap(
+    async fn quarantine_retry_exhausted(
         &self,
         thread: &str,
         max_attempts: u64,

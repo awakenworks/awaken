@@ -16,12 +16,14 @@ time-windowed GC, the auto-GC named deferred in ADR-0018.
 
 ## Decision
 
-### D1: Reap stamps the dead-letter time in epoch ms
+### D1: Manual quarantine stamps the dead-letter time in epoch ms
 
-`reap` already runs against the injected clock; when it dead-letters a run it now
-records `dead_lettered_at = now_ms`. Epoch ms, not a wall-clock timestamp, keeps
-the column comparable to the daemon's `Clock` and uniform across backends — the
-same machine-time convention as the lease and schedule columns (ADR-0014).
+`quarantine_retry_exhausted` runs against an operator-supplied cutoff; when it
+dead-letters a run it records `dead_lettered_at = now_ms`. Epoch ms, not a
+wall-clock timestamp, keeps the column comparable to the daemon's `Clock` and
+uniform across backends — the same machine-time convention as the lease and
+schedule columns (ADR-0014). Automatic retry exhaustion instead commits a Run
+terminal through ADR-0015 and never creates a dead-letter.
 
 ### D2: GC is by dead-letter time, not enqueue time
 
@@ -34,16 +36,16 @@ no `dead_lettered_at` is never aged out — only the unconditional
 
 ### D3: The daemon GCs on its existing cadence, opt-in
 
-`DispatchServiceConfig.dead_letter_ttl` is `None` by default (retain until an
-operator purges). When set, each daemon tick computes
+`DispatchServiceConfig.dead_letter_ttl` is `None` by default (retain manual
+quarantines until an operator purges). When set, each daemon tick computes
 `cutoff = now - ttl` and calls `purge_dead_letters_before(cutoff)` — no new timer
-or task, just one more step in the existing reap/relay/drain loop. A store error
+or task, just one more step in the existing maintenance loop. A store error
 is swallowed like the loop's other steps; the next tick retries.
 
 ## Consequences
 
-- A fleet reclaims aged dead-letter storage automatically, with a configurable
-  grace window; recent failures stay visible for triage.
+- A fleet may reclaim aged manual-quarantine storage automatically, with a
+  configurable grace window; recent quarantines stay visible for triage.
 - Opt-in: the default daemon behaviour (retain dead-letters) is unchanged.
 - Proven across the three backends against one shared spec (younger spared, aged
   purged).

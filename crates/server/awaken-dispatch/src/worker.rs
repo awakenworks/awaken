@@ -217,6 +217,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         )
     }
 
+    async fn install_claimed_recovery_projection(&self, claim: &RunClaim) -> Result<(), Error> {
+        if let Some(projection) = &self.recovery_projection {
+            let snapshot = self.store.load_recovery_snapshot(claim).await?;
+            projection
+                .install(&claim.run_id, snapshot)
+                .map_err(|error| {
+                    crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                })?;
+        }
+        Ok(())
+    }
+
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
     /// The `commit` handle is the single source of durable truth: it is the
     /// commit coordinator the runtime writes through *and* the read port the
@@ -638,12 +650,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let lease_epoch = claimed.lease.epoch;
         let claim = RunClaim::from(&claimed.lease);
         let _lease_renewal = self.renew_claim_while_driving(&claim);
-        if let Some(projection) = &self.recovery_projection {
-            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
-            projection.install(&run_id, snapshot).map_err(|error| {
-                crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-            })?;
-        }
+        self.install_claimed_recovery_projection(&claim).await?;
         let mut all_pending: Vec<String> = claimed
             .pending
             .iter()
@@ -1081,7 +1088,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// `Ended`) re-executes and tries to append a duplicate transcript — its commit
     /// fails. Surfacing that as a fatal error would strand the dispatch: it would
     /// sit un-settled until its lease lapsed, then be re-driven into the same
-    /// rejected commit, burning crash-retries until it dead-lettered — even though
+    /// rejected commit, burning crash-retries until exhaustion handling — even though
     /// the run is already complete. Instead the worker treats the lost race as
     /// already-done and settles the dispatch `Done` from committed truth, exactly
     /// as the "terminal committed record" recovery branch does. Any other error is
@@ -1123,19 +1130,53 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::agent::run::{EndCause, Failure};
 
-        let run_id = claimed.lease.run_id.clone();
         let cause = EndCause::Error(Failure::Inference {
             code: code.into(),
             message: message.into(),
         });
         let claim = RunClaim::from(&claimed.lease);
-        if let Some(projection) = &self.recovery_projection {
-            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
-            projection.install(&run_id, snapshot).map_err(|error| {
-                Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-            })?;
-        }
+        self.install_claimed_recovery_projection(&claim).await?;
         self.end_claimed_before_execution(claimed, cause).await
+    }
+
+    /// Commit the one neutral terminal outcome for an exact retry-exhaustion
+    /// claim, then reuse the ordinary observer and fenced `Done` settlement.
+    /// The queue command owns only retry eligibility; this Worker method is the
+    /// sole bridge into committed Run truth for every local, pooled, and remote
+    /// automatic path.
+    pub async fn terminalize_retry_exhausted(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let claim = RunClaim::from(&claimed.lease);
+        self.install_claimed_recovery_projection(&claim).await?;
+        self.end_claimed_before_execution(
+            claimed,
+            awaken_agent_contract::agent::run::EndCause::Indeterminate,
+        )
+        .await
+    }
+
+    /// Claim and terminalize at most one exhausted dispatch for the per-Session
+    /// service. Process pools claim centrally and call
+    /// [`terminalize_retry_exhausted`](Self::terminalize_retry_exhausted) on the
+    /// resolved boundary Worker instead.
+    pub async fn resolve_one_retry_exhausted(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<bool, Error> {
+        let Some(claimed) = self
+            .store
+            .claim_retry_exhausted(&self.owner, self.lease_ms, now_ms, max_attempts)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let claim = RunClaim::from(&claimed.lease);
+        let _renewal = self.renew_claim_while_driving(&claim);
+        let _ = self.terminalize_retry_exhausted(&claimed).await?;
+        Ok(true)
     }
 
     /// Commit one deterministic terminal outcome before invoking an executor.

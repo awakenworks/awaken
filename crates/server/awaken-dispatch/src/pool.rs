@@ -11,8 +11,8 @@
 //! from drive precisely so a run always executes on its own session's runtime, not
 //! on whichever task happened to claim it.
 //!
-//! One renewal heartbeat and one maintenance loop (reap poison runs, GC aged
-//! dead-letters, relay the cross-thread outbox) run once per process rather than
+//! One renewal heartbeat and one maintenance loop (GC aged manual quarantines,
+//! relay the cross-thread outbox) run once per process rather than
 //! once per session. Correctness rests on the same durable-claim invariants as the
 //! per-session daemon: `claim` is owner-scoped with `FOR UPDATE SKIP LOCKED`, so N
 //! tasks take distinct runs; a dropped wake only defers work to the poll fallback;
@@ -93,6 +93,23 @@ pub trait WorkerResolver<S>: Send + Sync {
         Err(error)
     }
 
+    /// Resolve an exact retry-exhaustion claim through the canonical Worker
+    /// terminal path. The default reuses the ordinary claimed Worker; hosts that
+    /// can construct an environment-free boundary Worker override only that
+    /// resolution detail. No resolver may author terminal truth itself.
+    async fn terminalize_retry_exhausted(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Option<(RunId, RunState)>, Error>
+    where
+        S: Dispatch + 'static,
+    {
+        self.worker_for_claimed(claimed)
+            .await?
+            .terminalize_retry_exhausted(claimed)
+            .await
+    }
+
     /// Reconcile up to `limit` quiescent or expired dispatches against the
     /// resolver's authoritative committed Run readers. Generic resolvers have no
     /// global reader registry and do nothing; a Runtime Host overrides this once
@@ -134,7 +151,8 @@ pub struct DispatchPool<S> {
 /// durable queue but intentionally runs no local claim drainers.
 ///
 /// Coordinator-only deployments use this handle instead of reproducing the
-/// pool's reap/relay/terminal-reconciliation scheduler in their Runtime Host.
+/// pool's relay/reconciliation scheduler in their Runtime Host. With no drainer,
+/// retry-exhausted rows remain durable until a Worker returns and claims them.
 pub struct DispatchMaintenance {
     shutdown: CancellationToken,
     wake: Arc<dyn WakeSignal>,
@@ -142,7 +160,6 @@ pub struct DispatchMaintenance {
 }
 
 impl DispatchMaintenance {
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn<S: Dispatch + 'static>(
         store: Arc<S>,
         clock: Arc<dyn Clock>,
@@ -706,25 +723,29 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     admission: &Arc<PoolAdmission>,
 ) -> Result<bool, Error> {
     let now = clock.now_ms();
-    let claimed = {
+    let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
         if !gate.open {
             return Ok(false);
         }
-        // Reap under the same short admission fence immediately before claim.
-        // The background maintenance loop remains the periodic owner, but it can
-        // race a fallback drain at the exact lease boundary. Without this final
-        // check, the drain can repeatedly reclaim one poison Run before
-        // maintenance observes it, starving the retry budget indefinitely.
-        store
-            .reap_and_claim(
-                owner,
-                lease_ms,
-                now,
-                &resolver.credential_realization_capabilities(),
-                admission.max_attempts,
-            )
+        if let Some(claimed) = store
+            .claim_retry_exhausted(owner, lease_ms, now, admission.max_attempts)
             .await?
+        {
+            (Some(claimed), true)
+        } else {
+            (
+                store
+                    .claim(
+                        owner,
+                        lease_ms,
+                        now,
+                        &resolver.credential_realization_capabilities(),
+                    )
+                    .await?,
+                false,
+            )
+        }
     };
     let Some(claimed) = claimed else {
         return Ok(false);
@@ -741,23 +762,31 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // sandbox/provider metadata, while a recovery-aware host can adopt it before
     // constructing the session runtime. Legacy resolvers use the default method,
     // which derives the same thread/agent arguments as before.
-    let settled = match resolver.worker_for_claimed(&claimed).await {
-        Ok(worker) => {
-            // Resolution succeeded, so this claim will make forward progress.
-            // Only now hand a permit to a peer: notifying before resolution
-            // would let a temporarily inadmissible head item hot-loop and starve
-            // later runnable work.
-            admission.wake.notify_one();
-            worker.drive_claimed(claimed, now).await?
-        }
-        Err(error) if error.is_terminal_resolution() => {
-            resolver
-                .settle_claimed_resolution_failure(&claimed, error)
-                .await?
-        }
-        Err(error) => {
-            relinquish_after_resolution_failure(store.as_ref(), &claimed).await;
-            return Err(error);
+    let settled = if retry_exhausted {
+        // Retry exhaustion is never execution resolution. Every pool and remote
+        // path calls the same Worker terminal method through this resolver seam;
+        // a failure leaves the exact claim leased for later re-claim.
+        admission.wake.notify_one();
+        resolver.terminalize_retry_exhausted(&claimed).await?
+    } else {
+        match resolver.worker_for_claimed(&claimed).await {
+            Ok(worker) => {
+                // Resolution succeeded, so this claim will make forward progress.
+                // Only now hand a permit to a peer: notifying before resolution
+                // would let a temporarily inadmissible head item hot-loop and starve
+                // later runnable work.
+                admission.wake.notify_one();
+                worker.drive_claimed(claimed, now).await?
+            }
+            Err(error) if error.is_terminal_resolution() => {
+                resolver
+                    .settle_claimed_resolution_failure(&claimed, error)
+                    .await?
+            }
+            Err(error) => {
+                relinquish_after_resolution_failure(store.as_ref(), &claimed).await;
+                return Err(error);
+            }
         }
     };
     if let Some((run_id, state)) = settled
@@ -804,8 +833,9 @@ impl Drop for InFlightGuard {
     }
 }
 
-/// Reap poison runs, GC aged dead-letters, and relay the cross-thread outbox — the
-/// per-process maintenance the per-session daemon used to do per session.
+/// GC aged manual quarantines, relay the cross-thread outbox, and repair
+/// already-committed terminals. Retry exhaustion belongs to the actual drainer,
+/// so coordinator-only maintenance never competes with a remote Worker.
 async fn maintenance_loop<S: Dispatch + 'static>(
     store: Arc<S>,
     clock: Arc<dyn Clock>,
@@ -821,7 +851,6 @@ async fn maintenance_loop<S: Dispatch + 'static>(
             break;
         }
         let now = clock.now_ms();
-        let _ = store.reap(config.max_attempts, now).await;
         if let Some(ttl) = config.dead_letter_ttl {
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
             let _ = store.purge_dead_letters_before(cutoff).await;

@@ -259,6 +259,42 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
 }
 
 #[tokio::test]
+async fn legacy_completion_without_dispatch_identity_fails_closed() {
+    // Legacy-tombstone decision rule L1: C1 a completed Run id exists, C2 its
+    // pre-V0024 fingerprint is NULL, C3 a caller submits an otherwise plausible
+    // dispatch under that id => E1 reject the replay and E2 create no live row.
+    // Absence of the compacted payload cannot become authorization after upgrade.
+    let path = std::env::temp_dir().join(format!(
+        "awaken_sqlite_legacy_completion_{}.db",
+        std::process::id()
+    ));
+    let path = path.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&path);
+    drop(SqliteDispatchStore::open(&path).expect("migrate"));
+    let connection = rusqlite::Connection::open(&path).expect("open legacy fixture");
+    connection
+        .execute(
+            "INSERT INTO runtime_dispatch_completion (run_id, request_fingerprint) \
+             VALUES (?1, NULL)",
+            ["legacy-completed"],
+        )
+        .expect("insert historical tombstone");
+    drop(connection);
+
+    let store = SqliteDispatchStore::open(&path).expect("reopen migrated store");
+    assert!(
+        store
+            .enqueue(RunDispatch::new(activation("legacy-completed")))
+            .await
+            .is_err(),
+        "L1/E1"
+    );
+    assert!(store.list_dispatches().await.unwrap().is_empty(), "L1/E2");
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
 async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
     let base = std::env::temp_dir().join(format!(
         "awaken_sqlite_cancel_recovery_{}_{}",
