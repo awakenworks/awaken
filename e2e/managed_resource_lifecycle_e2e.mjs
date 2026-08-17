@@ -42,11 +42,15 @@ async function main() {
       file: await toFile(Buffer.from('live-attach bytes'), 'doc.txt'),
       betas: BETAS,
     });
-    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const mem = await client.post('/v1/memory_stores', {
+      body: { name: 'resource-lifecycle-memory' },
+      headers: MEMORY_HEADERS,
+    });
 
     // ── create-time backfill: a session created WITH resources echoes them ──────
     const seeded = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       resources: [
         {
           type: 'memory_store',
@@ -66,6 +70,7 @@ async function main() {
 
     const session = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       resources: [{
         type: 'github_repository',
         url: 'https://github.com/owner/repo',

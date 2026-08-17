@@ -315,6 +315,28 @@ async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mism
         requests.lock().expect("model requests").as_slice(),
         [("workspace".to_string(), "requested-model".to_string())]
     );
+
+    let duplicate = publication.primary.clone();
+    app.set_model_publication_resolver(Arc::new(FixedModelPublication {
+        publication: awaken_session_contract::SessionModelPublication {
+            primary: duplicate.clone(),
+            candidates: vec![duplicate],
+        },
+    }));
+    let error = app
+        .resolve_session_model_override(
+            "workspace",
+            "malformed-model",
+            "published-model",
+            Default::default(),
+        )
+        .await
+        .expect_err("malformed resolver output must fail before persistence");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest
+    );
+    assert!(error.message.contains("duplicate model candidate"));
 }
 
 #[tokio::test]

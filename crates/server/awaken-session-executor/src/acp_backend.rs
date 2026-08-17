@@ -333,14 +333,30 @@ impl crate::host::SharedHost {
         resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
+        self.with_projected_acp_argv(cli, resolver, store_dir, None)
+    }
+
+    /// Test/dev startup seam that also consumes startup acquisition evidence.
+    /// Product composition installs the same evidence through
+    /// [`Self::with_acp_from_deployment`].
+    #[must_use]
+    pub fn with_projected_acp_argv(
+        self,
+        cli: awaken_run_executor_acp::AcpCli,
+        resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+        store_dir: Option<std::path::PathBuf>,
+        launch_argv: Option<Vec<String>>,
+    ) -> Self {
         // A projected resolver owns both the opaque process-secret requirement and
         // its broker. Bound ACP launches from the Session Environment, so install
         // that broker on the same authoritative provider before moving the resolver
         // into the launch registry. This is last-mile startup, not a second
         // materialization path: the resolver still emits only the opaque reference.
         let secret_broker = resolver.secret_broker();
-        let source =
-            crate::LaunchSource::Projected(crate::AcpLaunchRegistry::single(cli, resolver));
+        let source = crate::LaunchSource::Projected(
+            crate::AcpLaunchRegistry::single_with_resolved_argv(cli, resolver, launch_argv)
+                .unwrap_or_else(|error| panic!("configure projected ACP launch route: {error}")),
+        );
         // When a session-blob root is configured, recover this CLI's session across
         // directories/machines: harvest it to the (shared) root after a run and
         // restore it before the next, keyed by thread+adapter — under the same

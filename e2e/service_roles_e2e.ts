@@ -86,6 +86,11 @@ async function main() {
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
     `internal_bind = ${JSON.stringify(`127.0.0.1:${PORT + 1}`)}`,
     'identity_mode = "no-login"',
+    // This suite validates process-role routing, not OS isolation. Select the
+    // explicit unsafe tier so a host whose kernel disables bwrap userns still
+    // reaches the intended command/HTTP assertions; namespace fail-closed has
+    // its own dedicated negative suite.
+    'sandbox_tier = "local"',
     'acp_clis = ["gemini"]',
   ].join('\n'));
   const missingTokenControl = spawnSync(bin, ['control', '--config', path.join(configDir, 'config.toml')], {

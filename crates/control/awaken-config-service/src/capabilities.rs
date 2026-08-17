@@ -220,6 +220,10 @@ pub fn dream_capability() -> Value {
     json!({
         "enabled": true,
         "research_preview": true,
+        "model_reference_format": "managed",
+        "supports_connected_models": true,
+        "supported_executors": ["native", "acp"],
+        "model_reference_example": "qwen/qwen3-235b;provider=anyrouter;api=open_ai_responses;endpoint=primary;executor=acp:codex",
         "supported_models": awaken_session_contract::DREAM_SUPPORTED_MODELS,
         "supported_speeds": ["standard"],
         "max_sessions": awaken_session_contract::DREAM_MAX_SESSIONS,
@@ -556,6 +560,9 @@ mod tests {
         assert_eq!(dream["max_sessions"], 100);
         assert_eq!(dream["max_instructions_chars"], 4096);
         assert_eq!(dream["supported_speeds"], json!(["standard"]));
+        assert_eq!(dream["model_reference_format"], "managed");
+        assert_eq!(dream["supports_connected_models"], true);
+        assert_eq!(dream["supported_executors"], json!(["native", "acp"]));
         assert!(
             dream["supported_models"]
                 .as_array()

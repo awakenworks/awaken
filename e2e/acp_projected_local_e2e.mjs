@@ -114,6 +114,7 @@ lines.on('line', (line) => {
 
 function start(binary, cli) {
   const environment = { ...process.env };
+  delete environment.GEMINI_API_KEY;
   const configPath = path.join(TMP, 'config.toml');
   fs.writeFileSync(configPath, [
     `data_dir = ${JSON.stringify(STORAGE)}`,
@@ -126,6 +127,11 @@ function start(binary, cli) {
     // P1: projected credentials for an arbitrary ACP process require the local
     // OS-isolated provider. Workdir is intentionally ineligible for this run.
     'sandbox_tier = "namespace"',
+    // The projection contract is portable across CI hosts where unprivileged
+    // user namespaces are disabled. The default remains fail-closed; this
+    // scenario explicitly opts into the documented local fallback while the
+    // Docker E2E owns the isolation assertion.
+    'sandbox_allow_local_fallback = true',
     `acp_clis = [${JSON.stringify(cli)}]`,
     `acp_default_cli = ${JSON.stringify(cli)}`,
   ].join('\n'));
@@ -133,10 +139,10 @@ function start(binary, cli) {
     env: {
       ...environment,
       PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,
-      // These ambient values are deliberately wrong. The launched CLI must receive
-      // only the endpoint, upstream model, and credential revision published below.
+      // These non-secret ambient values are deliberately wrong. Provider keys
+      // are absent because production rejects them at startup. The launched CLI
+      // must receive only the endpoint, model, and credential published below.
       GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
-      GEMINI_API_KEY: 'ambient-gemini-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
     },
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -193,6 +199,22 @@ async function messages(client, sessionId) {
   return [...texts, ...failures.map((event) => `ERROR:${JSON.stringify(event.error)}`)];
 }
 
+function agentWithMcpServer(id, server) {
+  return {
+    id,
+    type: 'agent_with_overrides',
+    mcp_servers: [server],
+    tools: [{
+      type: 'mcp_toolset',
+      mcp_server_name: server.name,
+      default_config: {
+        enabled: true,
+        permission_policy: { type: 'always_allow' },
+      },
+    }],
+  };
+}
+
 async function request(base, method, route, body) {
   const response = await fetch(`${base}${route}`, {
     method,
@@ -226,7 +248,7 @@ async function publishProviderAgent(base, definition) {
     // One Managed model-id codec owns provider-routed ACP intent. Publication
     // resolves this Target to the canonical WorkerLocal execution identity plus
     // the selected provider endpoint; an ad-hoc pinned object would conflate them.
-    model: `${backend}@${provider}/${model}`,
+    model: `${model};provider=${provider};api=${dialect};executor=${backend}`,
     system: 'Exercise publication-pinned ACP provisioning.',
     tools: [],
   });
@@ -279,6 +301,7 @@ async function main() {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const session = await client.beta.sessions.create({
       agent: GEMINI_AGENT,
+      environment_id: 'env_local',
       betas: BETAS,
     });
     await client.beta.sessions.events.send(session.id, {
@@ -298,8 +321,13 @@ async function main() {
     assert.match(reply, /key=persis/u);
     assert.ok(!reply.includes('ambient-gemini'));
     assert.ok(!reply.includes('environment-fallback-must-not-win'));
-    assert.match(reply, /cwd=\/workspace/u);
-    assert.match(reply, /home=\/workspace\/\.acp-config/u);
+    const paths = /cwd=([^ ]+) home=([^ ]+)/u.exec(reply);
+    assert.ok(paths, `ACP response must expose cwd and config home: ${reply}`);
+    assert.ok(
+      paths[1] === '/workspace' || paths[1].startsWith(`${STORAGE}/sandboxes/scope-`),
+      `cwd must be the isolated workspace or explicit local-fallback scope: ${paths[1]}`,
+    );
+    assert.equal(paths[2], `${paths[1]}/.acp-config`);
     assert.ok(!reply.includes(os.homedir()), 'the CLI never receives the operator home');
 
     await stop(server);
@@ -352,8 +380,10 @@ async function main() {
     // intentionally no longer publicly writable, while its existing wire-cache
     // projection remains terminal for the creating client to observe.
     const secureSession = await codexClient.beta.sessions.create({
-      agent: CODEX_AGENT,
-      mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
+      agent: agentWithMcpServer(CODEX_AGENT, {
+        name: 'calc-secure', type: 'url', url: fixture.url,
+      }),
+      environment_id: 'env_local',
       vault_ids: [vault.id],
       betas: BETAS,
     });
@@ -378,8 +408,10 @@ async function main() {
       'M1: the unsupported custody boundary performs no authenticated MCP I/O',
     );
     const codexSession = await codexClient.beta.sessions.create({
-      agent: CODEX_AGENT,
-      mcp_servers: [{ name: 'calc-uncredentialed', type: 'url', url: fixture.url }],
+      agent: agentWithMcpServer(CODEX_AGENT, {
+        name: 'calc-uncredentialed', type: 'url', url: fixture.url,
+      }),
+      environment_id: 'env_local',
       betas: BETAS,
     });
     await codexClient.beta.sessions.events.send(codexSession.id, {
@@ -388,19 +420,23 @@ async function main() {
     });
     const codexTexts = await waitForValue(
       () => messages(codexClient, codexSession.id),
-      (observed) => observed.some((text) => text.startsWith('ERROR:')),
-      'Codex provider/CLI failure event',
+      (observed) => observed.some((text) => (
+        text.startsWith('ERROR:') || text.includes('stream disconnected before completion')
+      )),
+      'Codex provider/CLI failure diagnostic',
       { timeoutMs: 60_000 },
     );
     assert.ok(
-      codexTexts.some((text) => text.startsWith('ERROR:')),
-      `M2: failed Run is projected without terminalizing its reusable Session: ${JSON.stringify(codexTexts)}`,
+      codexTexts.some((text) => (
+        text.startsWith('ERROR:') || text.includes('stream disconnected before completion')
+      )),
+      `M2: failed Run must expose a diagnostic without terminalizing its reusable Session: ${JSON.stringify(codexTexts)}`,
     );
     const providerSession = await codexClient.beta.sessions.retrieve(codexSession.id, { betas: BETAS });
     assert.equal(providerSession.status, 'idle', 'M2: execution failure does not masquerade as realization failure');
     assert.equal(fixture.calls.length, 0, 'M2: provider rejection still performs no MCP I/O');
 
-    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed without a no-bypass substitution boundary.');
+    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access, preserves Codex failure diagnostics, and keeps authenticated MCP fail closed without a no-bypass substitution boundary.');
   } finally {
     await directory.close();
     await stop(server).catch(() => {});

@@ -16,10 +16,12 @@ awaken-agent-channel.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-credential-vault.workspace = true
 async-trait.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
+tempfile = "3"
 
 [lints]
 workspace = true

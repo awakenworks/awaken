@@ -295,8 +295,8 @@ export const BEHAVIORS = {
   // the exact bytes through the sandbox mount first.
   memoryResource(parsed) {
     switch (toolResults(parsed).length) {
-      case 0: return tool('memres-1', 'write', { path: '.mnt/memory/note.md', content: lastUserText(parsed) });
-      case 1: return tool('memres-2', 'read', { path: '.mnt/memory/note.md' });
+      case 0: return tool('memres-1', 'write', { path: '/mnt/memory/note.md', content: lastUserText(parsed) });
+      case 1: return tool('memres-2', 'read', { path: '/mnt/memory/note.md' });
       default: return text('memory persisted');
     }
   },
@@ -402,7 +402,7 @@ export const BEHAVIORS = {
       case 0: return tool('ls', 'list_skills', {});
       case 1: return tool('sk', 'Skill', { skill: 'greet' });
       // Write into the mounted MemoryStore directory.
-      case 2: return tool('wm', 'write', { path: '.mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
+      case 2: return tool('wm', 'write', { path: '/mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
       // Write into the cloned repo working tree (host commits + pushes on harvest).
       case 3: return tool('wr', 'write', { path: 'workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
       // Produce an output artifact (harvested into the blob store, listed by /v1/files).

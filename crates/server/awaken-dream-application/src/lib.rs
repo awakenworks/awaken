@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_session_contract::{
-    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
-    DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
-    DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
-    DreamPolicyApplicationError, DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord,
-    DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
+    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, Dream, DreamCreateParams, DreamError,
+    DreamInput, DreamListParams, DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput,
+    DreamOutputBehavior, DreamPage, DreamPolicyApplication, DreamPolicyApplicationError,
+    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus,
+    DreamStatusEvent, DreamUsage,
 };
 pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
@@ -63,8 +63,9 @@ pub trait DreamSessionSource: Send + Sync {
     }
 }
 
-/// Workspace-aware readiness seam used before a Dream is persisted. Supported
-/// model ids are a protocol contract; executable readiness is deployment state.
+/// Workspace-aware readiness seam used before a Dream is persisted. The
+/// composition implements the canonical Managed model parser/resolver; the
+/// Dream application owns no provider, model, or runtime allowlist.
 #[async_trait]
 pub trait DreamModelReadiness: Send + Sync {
     async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String>;
@@ -488,7 +489,7 @@ impl DreamApplication {
             || config.max_sessions == 0
             || config.max_sessions > DREAM_MAX_SESSIONS
             || config.min_new_sessions > config.max_sessions
-            || !DREAM_SUPPORTED_MODELS.contains(&config.model.id.as_str())
+            || !valid_model_reference_shape(&config.model.id)
             || config.model.speed == Some(DreamModelSpeed::Fast)
             || config
                 .instructions
@@ -1169,15 +1170,10 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
         DreamModelInput::Id(id) => id,
         DreamModelInput::Config(config) => &config.id,
     };
-    if model.is_empty() || model.chars().count() > 256 {
+    if !valid_model_reference_shape(model) {
         return Err(DreamApiError::BadRequest(
-            "model id must contain 1 to 256 characters".into(),
+            "model reference must contain 1 to 256 non-whitespace characters".into(),
         ));
-    }
-    if !DREAM_SUPPORTED_MODELS.contains(&model.as_str()) {
-        return Err(DreamApiError::BadRequest(format!(
-            "unsupported Dream model `{model}`"
-        )));
     }
     if matches!(
         &params.model,
@@ -1244,6 +1240,11 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
     Ok((memory, sessions))
 }
 
+fn valid_model_reference_shape(model: &str) -> bool {
+    let length = model.chars().count();
+    (1..=256).contains(&length) && !model.chars().any(char::is_whitespace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1297,12 +1298,22 @@ mod tests {
         };
         assert!(validate_create(&duplicate_session).is_err(), "R3");
 
-        let mut unsupported = valid_params();
-        unsupported.model = DreamModelInput::Config(DreamModelConfig {
+        let mut fast = valid_params();
+        fast.model = DreamModelInput::Config(DreamModelConfig {
             id: "claude-sonnet-5".into(),
             speed: Some(DreamModelSpeed::Fast),
         });
-        assert!(validate_create(&unsupported).is_err(), "R4");
+        assert!(validate_create(&fast).is_err(), "R4");
+
+        let mut third_party = valid_params();
+        third_party.model = DreamModelInput::Id(
+            "qwen/qwen3-235b;provider=anyrouter;api=open_ai_chat;executor=acp:codex".into(),
+        );
+        assert!(validate_create(&third_party).is_ok(), "R4b");
+
+        let mut whitespace = valid_params();
+        whitespace.model = DreamModelInput::Id("qwen model".into());
+        assert!(validate_create(&whitespace).is_err(), "R4c");
 
         let mut long_instructions = valid_params();
         long_instructions.instructions = Some("x".repeat(DREAM_MAX_INSTRUCTIONS_CHARS + 1));

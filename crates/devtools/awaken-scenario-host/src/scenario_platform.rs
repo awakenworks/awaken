@@ -74,6 +74,51 @@ pub(super) fn mount_parts(
     awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(host, managed, catalog).0
 }
 
+pub(super) fn mount_parts_with_model_publication_resolver(
+    host: Arc<SharedHost>,
+    resources: awaken_resource_application::ResourcesApplication,
+    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+) -> Router {
+    let catalog = resources.authorities().resource_catalog();
+    let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
+        host.clone(),
+        catalog.clone(),
+        resolver.clone(),
+    );
+    let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(
+        host, managed, catalog,
+    );
+    dreams.bind_model_readiness(Arc::new(ScenarioDreamModelReadiness { resolver }));
+    router
+}
+
+struct ScenarioDreamModelReadiness {
+    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+}
+
+#[async_trait::async_trait]
+impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadiness {
+    async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String> {
+        let publication = match self
+            .resolver
+            .resolve_session_model(workspace_id, model_id)
+            .await
+        {
+            Ok(publication) => publication,
+            Err(awaken_session_contract::SessionModelResolutionError::Invalid(_)) => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok(!matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(
+                &publication.primary.binding.backend_ref
+            ),
+            awaken_runtime_contract::resolved::Backend::Remote { .. }
+        ))
+    }
+}
+
 pub(super) fn mount_with_agent_source(
     platform: ScenarioPlatform,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
@@ -291,6 +336,22 @@ pub(super) fn fixed_host_backend_publication(
     skills: Vec<awaken_agent_contract::AgentSkillBinding>,
 ) -> Arc<FixedAgentPublication> {
     Arc::new(FixedAgentPublication::host_backend(id, backend_ref, skills))
+}
+
+pub(super) fn fixed_host_model_publication(
+    id: &str,
+    primary: ResolvedModelCandidate,
+    candidates: Vec<ResolvedModelCandidate>,
+) -> Arc<FixedAgentPublication> {
+    let snapshot = ExecutableAgentSnapshot::builder(id)
+        .resolved_model(primary)
+        .model_candidates(candidates.into_iter().map(|candidate| candidate.binding))
+        .build();
+    Arc::new(FixedAgentPublication {
+        snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
+            .expect("valid fixed scenario model publication"),
+        resources: Vec::new(),
+    })
 }
 
 /// Install one immutable Agent as the sole backend authority for deterministic

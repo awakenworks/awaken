@@ -573,7 +573,10 @@ async function main() {
     // | M3   | yes       | yes/none  | yes  | yes  | no      | no read-side harvest   |
     // M1 is observed by the in-container seed assertion; M2 by the post-delete
     // repository assertion. The delete boundary between them excludes M3.
-    const memory = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const memory = await client.post('/v1/memory_stores', {
+      body: { name: 'container-agent-memory' },
+      headers: MEMORY_HEADERS,
+    });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
       headers: MEMORY_HEADERS,

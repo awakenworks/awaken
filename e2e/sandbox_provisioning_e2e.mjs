@@ -65,7 +65,10 @@ async function main() {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // ── supply the two writable Workdir resource families ──────────────────────
-    const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
+    const mem = await client.post('/v1/memory_stores', {
+      body: { name: 'sandbox-provisioning-memory' },
+      headers: MEMORY_HEADERS,
+    });
     assert.ok(mem.id, 'memory store created');
     pass('supplied a memory store; local bare repo seeded');
 

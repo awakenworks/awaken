@@ -1539,6 +1539,9 @@ mod tests {
 
     #[tokio::test]
     async fn opaque_processes_and_runtime_projections_share_the_workspace_root() {
+        if !bwrap_usable().await {
+            return;
+        }
         // Cause-effect graph: C1=runtime projects a workspace-relative file;
         // C2=an opaque process reads the same sandbox path; C3=a same-named path
         // does not exist at the outer namespace root. E1=projected bytes are

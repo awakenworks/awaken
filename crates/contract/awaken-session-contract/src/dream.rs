@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// contract rather than copying model or validation lists.
 pub const DREAM_MAX_INSTRUCTIONS_CHARS: usize = 4096;
 pub const DREAM_MAX_SESSIONS: usize = 100;
+/// Anthropic's built-in Dream model ids. Awaken also accepts the canonical
+/// Managed model-reference syntax for connected third-party providers and
+/// external runtimes; this list is an interoperability preset, not an allowlist.
 pub const DREAM_SUPPORTED_MODELS: &[&str] = &[
     "claude-fable-5",
     "claude-opus-4-8",

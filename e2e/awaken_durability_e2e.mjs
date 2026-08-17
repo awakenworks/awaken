@@ -138,10 +138,24 @@ async function main() {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'stream me' }] }],
       betas: BETAS,
     });
-    const stream = await sdk.beta.sessions.events.stream(sessionId, { betas: BETAS });
+    const streamAbort = new AbortController();
+    const streamTimeout = setTimeout(
+      () => streamAbort.abort(new Error('events.stream did not close after a terminal replay')),
+      30_000,
+    );
     const streamedTypes = [];
-    for await (const ev of stream) streamedTypes.push(ev.type);
+    try {
+      const stream = await sdk.beta.sessions.events.stream(
+        sessionId,
+        { betas: BETAS },
+        { signal: streamAbort.signal },
+      );
+      for await (const ev of stream) streamedTypes.push(ev.type);
+    } finally {
+      clearTimeout(streamTimeout);
+    }
     assert.ok(streamedTypes.includes('agent.message'), `stream types: ${streamedTypes}`);
+    assert.ok(streamedTypes.includes('session.status_idle'), `stream types: ${streamedTypes}`);
     console.log('ok: SSE stream (events.stream) carries the agent turn');
   } finally {
     await first.stop();
