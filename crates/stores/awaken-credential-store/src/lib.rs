@@ -12,6 +12,7 @@ pub mod sqlite;
 
 #[cfg(feature = "postgres")]
 pub use postgres::{PostgresCredentialRepo, PostgresSealedBlobStore};
+pub use schema::{BUNDLE_ID, credential_bundle};
 #[cfg(feature = "sealed-aead")]
 pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
 #[cfg(feature = "sqlite")]
