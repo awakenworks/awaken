@@ -536,53 +536,6 @@ pub trait ScopedConfigRegistry: Send + Sync {
     ) -> Result<Vec<StoredPublication>, ConfigStoreError>;
 }
 
-#[cfg(test)]
-mod publication_revision_tests {
-    use super::{PublicationRevisionDecision, publication_revision_decision};
-
-    #[test]
-    fn different_execution_target_does_not_conflict() {
-        let existing = [(Some("workspace-b"), 7, "old")];
-
-        assert_eq!(
-            publication_revision_decision(
-                "authoring-scope",
-                Some("workspace-a"),
-                7,
-                "new",
-                existing,
-            ),
-            PublicationRevisionDecision::Apply
-        );
-    }
-
-    #[test]
-    fn same_execution_target_and_revision_with_different_fingerprint_conflicts() {
-        let existing = [(Some("workspace-a"), 7, "old")];
-
-        assert_eq!(
-            publication_revision_decision(
-                "authoring-scope",
-                Some("workspace-a"),
-                7,
-                "new",
-                existing,
-            ),
-            PublicationRevisionDecision::Conflict
-        );
-    }
-
-    #[test]
-    fn exact_replay_wins_over_conflicting_legacy_row() {
-        let existing = [(None, 7, "old"), (Some("authoring-scope"), 7, "new")];
-
-        assert_eq!(
-            publication_revision_decision("authoring-scope", None, 7, "new", existing),
-            PublicationRevisionDecision::ExactReplay
-        );
-    }
-}
-
 #[cfg(kani)]
 #[kani::proof]
 fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
@@ -725,5 +678,52 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
         self.inner
             .get_publication_scoped(&self.scope, fingerprint)
             .await
+    }
+}
+
+#[cfg(test)]
+mod publication_revision_tests {
+    use super::{PublicationRevisionDecision, publication_revision_decision};
+
+    #[test]
+    fn different_execution_target_does_not_conflict() {
+        let existing = [(Some("workspace-b"), 7, "old")];
+
+        assert_eq!(
+            publication_revision_decision(
+                "authoring-scope",
+                Some("workspace-a"),
+                7,
+                "new",
+                existing,
+            ),
+            PublicationRevisionDecision::Apply
+        );
+    }
+
+    #[test]
+    fn same_execution_target_and_revision_with_different_fingerprint_conflicts() {
+        let existing = [(Some("workspace-a"), 7, "old")];
+
+        assert_eq!(
+            publication_revision_decision(
+                "authoring-scope",
+                Some("workspace-a"),
+                7,
+                "new",
+                existing,
+            ),
+            PublicationRevisionDecision::Conflict
+        );
+    }
+
+    #[test]
+    fn exact_replay_wins_over_conflicting_legacy_row() {
+        let existing = [(None, 7, "old"), (Some("authoring-scope"), 7, "new")];
+
+        assert_eq!(
+            publication_revision_decision("authoring-scope", None, 7, "new", existing),
+            PublicationRevisionDecision::ExactReplay
+        );
     }
 }

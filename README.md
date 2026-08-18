@@ -28,7 +28,7 @@ Useful operational commands:
 awaken all-in-one --no-browser       # Control + Coordinator + local Worker
 awaken control --config /etc/awaken/config.toml
 awaken coordinator --config /etc/awaken/config.toml
-awaken worker --config /etc/awaken/config.toml --server http://coordinator
+awaken worker --config /etc/awaken/config.toml --server https://coordinator
 awaken config                        # effective config and database paths
 awaken config --json                 # redacted machine-readable report
 awaken --version
@@ -64,7 +64,9 @@ equivalent secret-volume provider; Awaken reads only the exact publication pin:
 ```toml
 role = "worker"
 mode = "server"
-worker_server = "http://awaken-coordinator:8080"
+worker_server = "https://awaken-coordinator:8443"
+worker_server_ca_certificate_file = "/run/awaken/worker-server-ca.pem"
+worker_request_credential_file = "/run/awaken/worker-request-credential.json"
 worker_credential_material_root = "/run/awaken/credentials"
 worker_credential_trust_domain = "awaken.worker"
 ```

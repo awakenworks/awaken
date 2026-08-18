@@ -104,7 +104,8 @@ async function main(): Promise<void> {
     assert.ok(pause.body.run_id);
     await firstTurn;
     const pausedEvents = await events(client, paused.id);
-    assert.equal(pausedEvents.at(-1)?.stop_reason?.type, 'requires_action', JSON.stringify(pausedEvents));
+    const pausedIdle = pausedEvents.filter((event) => event.type === 'session.status_idle').at(-1);
+    assert.equal(pausedIdle?.stop_reason?.type, 'requires_action', JSON.stringify(pausedEvents));
     pass('HTTP pause reaches the active ACP attempt and commits a durable ManualPause boundary');
 
     const resume = await post(`/v1/durable/threads/${paused.id}/resume`, {

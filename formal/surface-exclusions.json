@@ -14,6 +14,12 @@
       "evidence": ["crates/control/awaken-control/src/authz.rs"]
     },
     {
+      "path": "crates/control/awaken-control/src/authz_identity_tests.rs",
+      "boundary": "test_only",
+      "reason": "Identity and authorization characterization compiled only through authz_tests.rs; the production authorization decisions remain inventoried in authz.rs.",
+      "evidence": ["crates/control/awaken-control/src/authz.rs", "crates/control/awaken-control/src/authz_tests.rs"]
+    },
+    {
       "path": "crates/bin/awaken-cli/src/config/report.rs",
       "boundary": "presentation_only",
       "reason": "Formats an already-resolved deployment into redacted text or JSON; it owns no authorization, state transition, concurrency, or persistence decision.",

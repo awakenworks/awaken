@@ -40,7 +40,13 @@ pub(crate) async fn run_agent_loop(
     // the run closed before any model call (G30).
     let env = match runtime.resolve_plugin_env_with(&resolved.spec, &context.session_plugins) {
         Ok(env) => env,
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(
+                run_id = %run_id.0,
+                thread_id = %thread_id.0,
+                error = %error,
+                "run plugin environment violates its declared capability boundary"
+            );
             let step = RunStepResult::ended_with_messages(
                 run_id.clone(),
                 EndCause::Error(Failure::CapabilityBound),

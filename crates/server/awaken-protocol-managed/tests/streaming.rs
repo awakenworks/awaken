@@ -314,7 +314,7 @@ async fn state_create(state: &ManagedState) -> String {
         .id
 }
 
-async fn state_send_user(state: &ManagedState, id: &str, text: &str) -> SendEventsResponse {
+async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) -> SendEventsResponse {
     let req = serde_json::from_value(serde_json::json!({
         "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }]
     }))
@@ -416,7 +416,7 @@ async fn http_create(app: &Router) -> String {
 /// backfill the adapter suite covers.
 #[tokio::test]
 async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
-    let state = ManagedState::new(EchoFake);
+    let state = Arc::new(ManagedState::new(EchoFake));
     let id = state_create(&state).await;
 
     // Subscribe first: a fresh session has no committed events, so nothing is
@@ -446,7 +446,7 @@ async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
 /// turns.
 #[tokio::test]
 async fn live_broadcast_preserves_order_across_two_turns() {
-    let state = ManagedState::new(EchoFake);
+    let state = Arc::new(ManagedState::new(EchoFake));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -481,10 +481,10 @@ async fn live_broadcast_preserves_order_across_two_turns() {
 /// committed message text.
 #[tokio::test]
 async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
-    let state = ManagedState::new(StreamingFake {
+    let state = Arc::new(ManagedState::new(StreamingFake {
         reasoning: vec![],
         chunks: vec!["Hel", "lo ", "world"],
-    });
+    }));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -557,10 +557,10 @@ async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
 /// thinking delta or content may cross the Managed wire.
 #[tokio::test]
 async fn thinking_preview_is_start_only_and_reconciles_with_committed_thinking() {
-    let state = ManagedState::new(StreamingFake {
+    let state = Arc::new(ManagedState::new(StreamingFake {
         reasoning: vec!["private", " chain"],
         chunks: vec!["public", " answer"],
-    });
+    }));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -759,7 +759,7 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
 /// backfill).
 #[tokio::test]
 async fn archive_thread_broadcasts_to_an_open_live_stream() {
-    let state = ManagedState::new(DelegateFake);
+    let state = Arc::new(ManagedState::new(DelegateFake));
     let id = state_create(&state).await;
     // Run the delegation turn, then open a subscription and drain the backfill turn
     // frames so the receiver is caught up.
@@ -956,7 +956,7 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
 /// stream's `Lagged => continue` arm tolerates).
 #[tokio::test]
 async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
-    let state = ManagedState::new(EchoFake);
+    let state = Arc::new(ManagedState::new(EchoFake));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 

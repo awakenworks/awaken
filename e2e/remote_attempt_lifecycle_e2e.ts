@@ -319,7 +319,26 @@ async function expectResumeFailure(thread: string, marker: string): Promise<void
       },
     ],
   });
-  assert.equal(response.status, 500, `${marker} failed closed: ${JSON.stringify(response.body)}`);
+  assert.equal(
+    response.status,
+    200,
+    `${marker} input was durably accepted before its terminal validation: ${JSON.stringify(response.body)}`,
+  );
+  const expected = new Map([
+    ['missing endpoint', 'missing endpoint'],
+    ['missing task', 'missing task_id'],
+    ['missing context', 'missing context_id'],
+    ['endpoint mismatch', 'belongs to endpoint'],
+    ['missing reference', 'missing its durable remote task'],
+  ]).get(marker)!;
+  await waitForMessage(thread, expected, 5_000);
+  const deadline = Date.now() + 5_000;
+  while (Date.now() <= deadline) {
+    const dispatches = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
+    if ((dispatches.body.dispatches ?? []).length === 0) return;
+    await sleep(25);
+  }
+  assert.fail(`${marker} terminal failure remained dispatchable`);
 }
 
 function taskReferenceCleared(root: string, thread: string): boolean {
@@ -557,13 +576,15 @@ async function main(): Promise<void> {
     server = spawnServer('config', PORT, environment).server;
     await waitForPort(PORT, 180_000, server);
     assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
+    // Restore the exact publication first so each request reaches the damaged
+    // A2A continuation boundary. Otherwise the publication's correct 503 masks
+    // every corruption case and the test proves only fail-closed startup.
+    await publishRemote(peer.endpoint);
     for (const { marker, thread } of corruptions) await expectResumeFailure(thread, marker);
     assert.ok(
       !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
       'invalid durable continuations never reached the remote peer',
     );
-    await publishRemote(peer.endpoint);
-
     // 4) Cancellation while a root remote attempt is actively polling uses the
     // same task driver as cold/awaiting cancellation and aborts the pinned task.
     const activeCancelThread = await createSession();

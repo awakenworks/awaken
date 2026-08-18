@@ -77,6 +77,7 @@ pub const awaken_control::authz::ADMIN_TOKEN_FILE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
+pub const awaken_control::authz::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::authz::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::authz::BOOTSTRAP_WORKSPACE: &str
@@ -337,6 +338,7 @@ pub const awaken_control::ADMIN_TOKEN_FILE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
+pub const awaken_control::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::BOOTSTRAP_WORKSPACE: &str

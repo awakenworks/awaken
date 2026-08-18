@@ -118,14 +118,13 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .ok_or_else(|| CredentialError::MutationConflict(
                     "Managed credential mutation has no durable pending fact".into()
                 ))?;
-            if durable != pending || pending.phase != ManagedCredentialMutationPhase::Ready {
-                if durable.phase != ManagedCredentialMutationPhase::Reclaiming
-                    || durable.operation_id != pending.operation_id
-                {
-                    return Err(CredentialError::MutationConflict(
-                        "Managed credential mutation is not ready or does not match its durable fact".into(),
-                    ).into());
-                }
+            if (durable != pending || pending.phase != ManagedCredentialMutationPhase::Ready)
+                && (durable.phase != ManagedCredentialMutationPhase::Reclaiming
+                    || durable.operation_id != pending.operation_id)
+            {
+                return Err(CredentialError::MutationConflict(
+                    "Managed credential mutation is not ready or does not match its durable fact".into(),
+                ).into());
             }
             let vault = tx
                 .query_row(

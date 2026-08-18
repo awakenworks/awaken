@@ -76,7 +76,7 @@ async function main() {
 
     // --- Managed wire: the SAME per-turn accounting ------------------------
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-    const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
       betas: BETAS,
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'first' }] }],

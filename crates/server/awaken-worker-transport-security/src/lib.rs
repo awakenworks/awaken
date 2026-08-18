@@ -869,6 +869,29 @@ impl WorkerUpstream {
             .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(credential))))
     }
 
+    /// Construct the production remote transport and trust one operator-
+    /// projected private CA in addition to the public WebPKI roots. This keeps
+    /// TLS trust material at the Worker boundary and avoids global process TLS
+    /// overrides for private clusters and service meshes.
+    pub fn remote_with_ca_certificate(
+        base_url: impl Into<String>,
+        worker_id: impl Into<String>,
+        credentials: Vec<WorkerSigningCredential>,
+        ca_certificate_pem: &[u8],
+    ) -> Result<Self, String> {
+        let upstream = Self::remote(base_url, worker_id, credentials)?;
+        let certificate = reqwest::Certificate::from_pem(ca_certificate_pem)
+            .map_err(|error| format!("parse Worker server CA certificate: {error}"))?;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .add_root_certificate(certificate)
+            .build()
+            .map_err(|error| format!("build Worker upstream TLS client: {error}"))?;
+        Ok(upstream.with_client(client))
+    }
+
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;

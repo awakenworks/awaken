@@ -1753,10 +1753,11 @@ async fn system_message_and_interrupt_follow_the_admission_decision_table() {
 
 /// Official event-envelope decision table: R1 removed `user_profile_id` present
 /// -> 400 and no Runtime effect; R2 official user.message only -> admitted with
-/// no out-of-contract attribution. User Profiles are a separate resource and do
-/// not add a field to the Session events SDK shape.
+/// no attribution; R3 the same envelope plus request-context header -> the
+/// neutral runtime receives the subject. User Profiles remain a separate resource
+/// and do not add a field to the Session events SDK shape.
 #[tokio::test]
-async fn removed_user_profile_event_field_is_rejected() {
+async fn managed_event_attribution_uses_request_header_not_body_field() {
     let subjects = Arc::new(Mutex::new(Vec::new()));
     let app = router(Arc::new(ManagedState::new(RecordingFake {
         systems: Arc::new(Mutex::new(Vec::new())),
@@ -1792,6 +1793,32 @@ async fn removed_user_profile_event_field_is_rejected() {
     )
     .await;
     assert_eq!(*subjects.lock().unwrap(), vec![None], "R2");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{id}/events"))
+                .header("content-type", "application/json")
+                .header("anthropic-user-profile-id", "user_alice")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({"events": [{
+                        "type": "user.message",
+                        "content": [{"type": "text", "text": "attributed"}]
+                    }]}))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "R3");
+    assert_eq!(
+        *subjects.lock().unwrap(),
+        vec![None, Some("user_alice".into())],
+        "R3"
+    );
 }
 
 /// A runtime that records the ORDER of `interrupt` vs `run` calls and echoes each

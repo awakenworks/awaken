@@ -553,7 +553,7 @@ pub enum AcpError {
     #[error("agent tool permission awaits decision: {correlation_id}")]
     PermissionAwait {
         correlation_id: String,
-        ask: PermissionAsk,
+        ask: Box<PermissionAsk>,
     },
     /// A provider HARD-quota banner arrived as assistant TEXT (`"You've hit your
     /// weekly limit · resets …"`) — the case where the CLI then hangs. The turn is

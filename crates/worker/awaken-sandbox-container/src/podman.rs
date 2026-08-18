@@ -50,6 +50,7 @@ fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsString> {
 /// three subtly different host-environment contracts.
 fn podman_command(bin: &str) -> OsCommand {
     let mut command = OsCommand::new(bin);
+    command.kill_on_drop(true);
     if let Some(address) = rootless_systemd_bus(std::env::var_os("XDG_RUNTIME_DIR").as_deref()) {
         command.env("DBUS_SESSION_BUS_ADDRESS", address);
     }
@@ -211,6 +212,7 @@ pub struct PodmanRuntime {
     package_registry: Option<String>,
     package_registry_auth_file: Option<PathBuf>,
     package_cache_ttl: Option<std::time::Duration>,
+    package_build_timeout: std::time::Duration,
 }
 
 #[derive(serde::Deserialize)]
@@ -240,6 +242,7 @@ impl PodmanRuntime {
             package_registry: None,
             package_registry_auth_file: None,
             package_cache_ttl: None,
+            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
         }
     }
 
@@ -255,6 +258,7 @@ impl PodmanRuntime {
             package_registry: None,
             package_registry_auth_file: None,
             package_cache_ttl: None,
+            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
         }
     }
 
@@ -269,6 +273,14 @@ impl PodmanRuntime {
     #[must_use]
     pub fn with_package_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.package_cache_ttl = Some(ttl);
+        self
+    }
+
+    /// Bound one registry lookup/build/push transaction. A timeout fails the
+    /// Environment activation closed; it never selects the unmodified base image.
+    #[must_use]
+    pub fn with_package_build_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.package_build_timeout = timeout;
         self
     }
 
@@ -566,66 +578,71 @@ impl ContainerRuntime for PodmanRuntime {
         packages: &pc::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
-        if packages.is_empty() {
-            return Ok(base_image.to_string());
-        }
-        let _build_guard = self.package_builds.lock().await;
-        self.prune_package_cache().await;
-        let (dockerfile, fingerprint, image) =
-            self.resolve_package_build(base_image, packages).await?;
-        if self.package_registry.is_none()
-            && self
-                .run(&["image".into(), "exists".into(), image.clone()])
-                .await
-                .is_ok()
-        {
-            return self.package_image_reference(&image).await;
-        }
-        if self.package_registry.is_some()
-            && self
-                .run(&self.registry_command("pull", &image))
-                .await
-                .is_ok()
-        {
-            return self.package_image_reference(&image).await;
-        }
-        if self.package_registry.is_some()
-            && self
-                .run(&["image".into(), "exists".into(), image.clone()])
-                .await
-                .is_ok()
-        {
-            self.run(&self.registry_command("push", &image)).await?;
-            return self.package_image_reference(&image).await;
-        }
-        let mut guard = None;
-        let root =
-            crate::staging_dir(&mut guard, &format!("package-{fingerprint}")).map_err(backend)?;
-        let containerfile = root.join("Containerfile");
-        std::fs::write(&containerfile, dockerfile).map_err(backend)?;
-        let mut build = vec!["build".into()];
-        match network {
-            pc::NetworkPolicy::Unrestricted => {}
-            pc::NetworkPolicy::None => build.extend(["--network".into(), "none".into()]),
-            pc::NetworkPolicy::Allowlist { .. } => {
-                return Err(backend(
-                    "package image build has no no-bypass allowlist network",
-                ));
+        let operation = async {
+            if packages.is_empty() {
+                return Ok(base_image.to_string());
             }
-        }
-        build.extend([
-            "--tag".into(),
-            image.clone(),
-            "--file".into(),
-            containerfile.to_string_lossy().into_owned(),
-            root.to_string_lossy().into_owned(),
-        ]);
-        self.run(&build).await?;
-        if self.package_registry.is_some() {
-            self.run(&self.registry_command("push", &image)).await?;
-            return self.package_image_reference(&image).await;
-        }
-        Ok(image)
+            let _build_guard = self.package_builds.lock().await;
+            self.prune_package_cache().await;
+            let (dockerfile, fingerprint, image) =
+                self.resolve_package_build(base_image, packages).await?;
+            if self.package_registry.is_none()
+                && self
+                    .run(&["image".into(), "exists".into(), image.clone()])
+                    .await
+                    .is_ok()
+            {
+                return self.package_image_reference(&image).await;
+            }
+            if self.package_registry.is_some()
+                && self
+                    .run(&self.registry_command("pull", &image))
+                    .await
+                    .is_ok()
+            {
+                return self.package_image_reference(&image).await;
+            }
+            if self.package_registry.is_some()
+                && self
+                    .run(&["image".into(), "exists".into(), image.clone()])
+                    .await
+                    .is_ok()
+            {
+                self.run(&self.registry_command("push", &image)).await?;
+                return self.package_image_reference(&image).await;
+            }
+            let mut guard = None;
+            let root = crate::staging_dir(&mut guard, &format!("package-{fingerprint}"))
+                .map_err(backend)?;
+            let containerfile = root.join("Containerfile");
+            std::fs::write(&containerfile, dockerfile).map_err(backend)?;
+            let mut build = vec!["build".into()];
+            match network {
+                pc::NetworkPolicy::Unrestricted => {}
+                pc::NetworkPolicy::None => build.extend(["--network".into(), "none".into()]),
+                pc::NetworkPolicy::Allowlist { .. } => {
+                    return Err(backend(
+                        "package image build has no no-bypass allowlist network",
+                    ));
+                }
+            }
+            build.extend([
+                "--tag".into(),
+                image.clone(),
+                "--file".into(),
+                containerfile.to_string_lossy().into_owned(),
+                root.to_string_lossy().into_owned(),
+            ]);
+            self.run(&build).await?;
+            if self.package_registry.is_some() {
+                self.run(&self.registry_command("push", &image)).await?;
+                return self.package_image_reference(&image).await;
+            }
+            Ok(image)
+        };
+        tokio::time::timeout(self.package_build_timeout, operation)
+            .await
+            .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -916,6 +933,15 @@ mod tests {
         calls: Mutex<Vec<Vec<String>>>,
     }
 
+    struct BlockingExec;
+
+    #[async_trait]
+    impl CommandExec for BlockingExec {
+        async fn exec(&self, _bin: &str, _args: &[String]) -> std::io::Result<CmdOutput> {
+            std::future::pending().await
+        }
+    }
+
     #[async_trait]
     impl CommandExec for FakeExec {
         async fn exec(&self, _bin: &str, args: &[String]) -> std::io::Result<CmdOutput> {
@@ -951,6 +977,30 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         (PodmanRuntime::with_exec(port, fake.clone()), fake)
+    }
+
+    #[tokio::test]
+    async fn package_preparation_has_a_fail_closed_deadline() {
+        let runtime = PodmanRuntime::with_exec(8080, Arc::new(BlockingExec))
+            .with_package_build_timeout(std::time::Duration::from_millis(10));
+        let requirements = pc::PackageRequirements {
+            managers: [("npm".to_owned(), vec!["cowsay@1.6.0".to_owned()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let error = ContainerRuntime::prepare_package_image(
+            &runtime,
+            "base:1",
+            &requirements,
+            &pc::NetworkPolicy::Unrestricted,
+        )
+        .await
+        .expect_err("a stuck package resolver must not activate the base image");
+        assert!(
+            error.to_string().contains("exceeded its deadline"),
+            "{error}"
+        );
     }
 
     fn plan() -> ContainerPlan {

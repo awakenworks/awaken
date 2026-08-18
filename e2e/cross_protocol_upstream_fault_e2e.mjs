@@ -169,7 +169,7 @@ async function main() {
   // proves the failure is real and pins the cross-protocol asymmetry.
   await withFaultyUpstream({ alwaysFail: true }, BASE_PORT + 4, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-    const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     let sendError = null;
     try {
       await client.beta.sessions.events.send(session.id, {

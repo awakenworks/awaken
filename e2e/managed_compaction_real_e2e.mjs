@@ -38,7 +38,7 @@ async function main() {
   try {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
     // Each turn carries a large message; after a few, the committed transcript
     // exceeds the 500-token budget and the older slice folds.

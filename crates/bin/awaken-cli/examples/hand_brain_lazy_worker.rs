@@ -107,19 +107,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or_else(|_| "awaken-sandbox:session-e2e".into()),
         );
     }
-    awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        upstream,
-    ))
-    .with_inference_materializer(Arc::new(HostMaterializer))
-    .with_deployment_config(deployment)
-    // Reuse the production CLI's one container Hand relay boundary. Container
-    // providers fail closed without it; local providers accept the same factory
-    // without creating a second execution path.
-    .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
-    .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
-    .with_standard_manifest(Default::default())
-    .without_admin_surface()
-    .build()?
-    .run_until_shutdown()
-    .await
+    let mut upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream);
+    if let Ok(worker_id) = std::env::var("AWAKEN_WORKER_ID") {
+        upstream = upstream.with_worker_id(worker_id);
+    }
+    awaken_worker::WorkerNodeBuilder::new(upstream)
+        .with_inference_materializer(Arc::new(HostMaterializer))
+        .with_deployment_config(deployment)
+        // Reuse the production CLI's one container Hand relay boundary. Container
+        // providers fail closed without it; local providers accept the same factory
+        // without creating a second execution path.
+        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+        .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
+        .with_standard_manifest(Default::default())
+        .without_admin_surface()
+        .prepare_session_environment_from_deployment()
+        .await?
+        .build()?
+        .run_until_shutdown()
+        .await
 }

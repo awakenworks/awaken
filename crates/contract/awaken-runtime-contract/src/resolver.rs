@@ -185,6 +185,35 @@ impl StaticPublishedAgentSnapshots {
     }
 }
 
+impl PublishedAgentSnapshotSource for StaticPublishedAgentSnapshots {
+    fn current(
+        &self,
+        _workspace: &str,
+        agent_id: &crate::snapshot::AgentId,
+    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
+        self.current.get(agent_id).cloned()
+    }
+
+    fn exact(
+        &self,
+        _workspace: &str,
+        fingerprint: &crate::resolved::CatalogFingerprint,
+    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
+        self.exact.get(fingerprint).cloned()
+    }
+
+    fn at_revision(
+        &self,
+        _workspace: &str,
+        agent_id: &crate::snapshot::AgentId,
+        source_revision: u64,
+    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
+        self.revisions
+            .get(&(agent_id.clone(), source_revision))
+            .cloned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,34 +308,5 @@ mod tests {
             Err(Error::SnapshotNotFound),
             "G2/E2"
         );
-    }
-}
-
-impl PublishedAgentSnapshotSource for StaticPublishedAgentSnapshots {
-    fn current(
-        &self,
-        _workspace: &str,
-        agent_id: &crate::snapshot::AgentId,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.current.get(agent_id).cloned()
-    }
-
-    fn exact(
-        &self,
-        _workspace: &str,
-        fingerprint: &crate::resolved::CatalogFingerprint,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.exact.get(fingerprint).cloned()
-    }
-
-    fn at_revision(
-        &self,
-        _workspace: &str,
-        agent_id: &crate::snapshot::AgentId,
-        source_revision: u64,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.revisions
-            .get(&(agent_id.clone(), source_revision))
-            .cloned()
     }
 }

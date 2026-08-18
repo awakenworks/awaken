@@ -72,24 +72,6 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
 // `ChatResponse`. Retries happen inside `infer_with_retry_inner`, within this span.
 // `gen_ai.provider.name` is the neutral `awaken` (the runtime never names a concrete
 // provider SDK — G22); the bound model is the real routing identity.
-#[tracing::instrument(
-    name = "chat",
-    skip_all,
-    fields(
-        otel.name = tracing::field::Empty,
-        otel.kind = "client",
-        gen_ai.operation.name = "chat",
-        gen_ai.provider.name = "awaken",
-        gen_ai.request.model = %request.model_binding.model_ref,
-        gen_ai.response.finish_reasons = tracing::field::Empty,
-        gen_ai.usage.input_tokens = tracing::field::Empty,
-        gen_ai.usage.output_tokens = tracing::field::Empty,
-        gen_ai.input.messages = tracing::field::Empty,
-        gen_ai.output.messages = tracing::field::Empty,
-        error.type = tracing::field::Empty,
-        otel.status_code = tracing::field::Empty,
-    )
-)]
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(super) async fn infer_with_retry(
@@ -123,6 +105,24 @@ pub(super) async fn infer_with_retry(
     .await
 }
 
+#[tracing::instrument(
+    name = "chat",
+    skip_all,
+    fields(
+        otel.name = tracing::field::Empty,
+        otel.kind = "client",
+        gen_ai.operation.name = "chat",
+        gen_ai.provider.name = "awaken",
+        gen_ai.request.model = %request.model_binding.model_ref,
+        gen_ai.response.finish_reasons = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    )
+)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn infer_with_retry_observed(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,

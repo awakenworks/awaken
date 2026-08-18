@@ -11,6 +11,13 @@ use crate::RuntimeError;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 const PACKAGE_RECIPE_VERSION: &str = "4";
 
+/// Package resolution may depend on an external registry, but it must never
+/// occupy an Environment activation forever. Keep this aligned with the
+/// Kubernetes BuildKit Job deadline.
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) const PACKAGE_BUILD_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30 * 60);
+
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 fn requirement_is_pinned(manager: &str, package: &str) -> bool {
     match manager {

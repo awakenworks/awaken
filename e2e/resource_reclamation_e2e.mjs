@@ -46,7 +46,11 @@ async function json(method, url, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : null };
+  let parsed = null;
+  if (text) {
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
+  }
+  return { status: response.status, body: parsed };
 }
 
 async function upload(workspace, content, filename = 'input.txt') {
@@ -56,6 +60,19 @@ async function upload(workspace, content, filename = 'input.txt') {
   const response = await fetch(scoped(workspace, 'files'), { method: 'POST', body: form });
   assert.equal(response.status, 200);
   return (await response.json()).id;
+}
+
+async function uploadSkill(workspace, content) {
+  const form = new FormData();
+  form.append('display_title', 'Reclamation Skill');
+  form.append('files[]', new Blob([content], { type: 'text/markdown' }), 'SKILL.md');
+  const response = await fetch(scoped(workspace, 'skills'), { method: 'POST', body: form });
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try { body = JSON.parse(text); } catch { body = text; }
+  }
+  return { status: response.status, body };
 }
 
 function receipts(directory) {
@@ -335,11 +352,11 @@ async function main() {
 
     // Skill delete hides new resolution immediately, then removes the retained
     // immutable bundle once no Session/Agent binding remains.
-    const skill = await json('POST', scoped(WS_A, 'skills'), {
-      id: 'reclaim-skill',
-      content: '---\nname: reclaim-skill\ndescription: test\n---\nUse safely.',
-    });
-    assert.equal(skill.status, 200);
+    const skill = await uploadSkill(
+      WS_A,
+      '---\nname: reclaim-skill\ndescription: test\n---\nUse safely.',
+    );
+    assert.equal(skill.status, 200, JSON.stringify(skill.body));
     const skillId = skill.body.id;
     assert.equal((await json('DELETE', scoped(WS_A, `skills/${skillId}`))).status, 200);
     assert.equal((await json('GET', scoped(WS_A, `skills/${skillId}`))).status, 404);

@@ -105,7 +105,14 @@ async function main() {
 
     assertOrdered(JSON.stringify(ai.items), markers, 'ai-sdk history');
     assertOrdered(JSON.stringify(agui.items), markers, 'ag-ui history');
-    assertOrdered(JSON.stringify(a2a), markers, 'a2a tasks/get');
+    // `Task.status.message` intentionally repeats the last agent reply before
+    // `history` on the wire. Ordering is therefore a property of the official
+    // history projection, not of the serialized Task object as a whole.
+    assertOrdered(JSON.stringify(a2a.history), markers, 'a2a tasks/get history');
+    assert.ok(
+      JSON.stringify(a2a.status?.message).includes(markers.at(-1)),
+      'a2a task status carries the latest agent reply',
+    );
     pass(`all ${TURNS} interleaved turns present and ordered in every wire's projection`);
 
     // The transcript grew by at least one message per turn (append-only).

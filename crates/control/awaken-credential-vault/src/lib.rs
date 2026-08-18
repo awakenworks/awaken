@@ -547,44 +547,39 @@ mod verification {
     /// fallback: endpoint scope binds both axes, provider scope binds its
     /// provider, and malformed or generic shapes always deny.
     #[kani::proof]
+    #[kani::unwind(5)]
     fn provider_scope_never_widens_endpoint_scope() {
-        let provider_matches = kani::any::<bool>();
-        let endpoint_is_present = kani::any::<bool>();
-        let endpoint_matches = kani::any::<bool>();
-        let scoped_provider = if provider_matches {
-            "provider"
-        } else {
-            "other-provider"
-        };
-        let scoped_endpoint = if endpoint_matches {
-            "endpoint"
-        } else {
-            "other-endpoint"
-        };
-        let requested_endpoint = endpoint_is_present.then_some("endpoint");
-        let scope = match kani::any::<u8>() % 4 {
-            0 => CredentialAuthorizationScope::Generic,
-            1 => CredentialAuthorizationScope::Provider {
-                provider_id: scoped_provider,
-            },
-            2 => CredentialAuthorizationScope::ProtocolEndpoint {
-                provider_id: scoped_provider,
-                protocol_endpoint_id: scoped_endpoint,
-            },
-            _ => CredentialAuthorizationScope::Invalid,
-        };
-        let admitted = scope.authorizes("provider", requested_endpoint);
-        assert_eq!(
-            admitted,
-            match scope {
-                CredentialAuthorizationScope::Provider { .. } => provider_matches,
-                CredentialAuthorizationScope::ProtocolEndpoint { .. } => {
-                    provider_matches && endpoint_is_present && endpoint_matches
-                }
-                CredentialAuthorizationScope::Generic | CredentialAuthorizationScope::Invalid =>
-                    false,
+        // Equality is the only operation on either identity. These one-byte
+        // representatives enumerate its complete equal/unequal partition
+        // without asking CBMC to solve a symbolic fat-pointer/string formula.
+        let provider = CredentialAuthorizationScope::Provider { provider_id: "p" };
+        let other_provider = CredentialAuthorizationScope::Provider { provider_id: "q" };
+        assert!(provider.authorizes("p", None));
+        assert!(provider.authorizes("p", Some("e")));
+        assert!(!other_provider.authorizes("p", None));
+        assert!(!other_provider.authorizes("p", Some("e")));
+
+        for (scoped_provider, provider_matches) in [("p", true), ("q", false)] {
+            for (scoped_endpoint, endpoint_matches) in [("e", true), ("f", false)] {
+                let endpoint = CredentialAuthorizationScope::ProtocolEndpoint {
+                    provider_id: scoped_provider,
+                    protocol_endpoint_id: scoped_endpoint,
+                };
+                assert!(!endpoint.authorizes("p", None));
+                assert_eq!(
+                    endpoint.authorizes("p", Some("e")),
+                    provider_matches && endpoint_matches
+                );
             }
-        );
+        }
+
+        for denied in [
+            CredentialAuthorizationScope::Generic,
+            CredentialAuthorizationScope::Invalid,
+        ] {
+            assert!(!denied.authorizes("p", None));
+            assert!(!denied.authorizes("p", Some("e")));
+        }
     }
 
     #[kani::proof]

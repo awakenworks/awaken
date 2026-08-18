@@ -100,7 +100,7 @@ pub(super) async fn answer_request(
                         .await?;
                         return Err(AcpError::PermissionAwait {
                             correlation_id,
-                            ask,
+                            ask: Box::new(ask),
                         });
                     }
                     verdict => select_outcome(&req, verdict),

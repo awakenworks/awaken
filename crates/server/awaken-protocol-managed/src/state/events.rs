@@ -5,6 +5,7 @@ use super::*;
 use crate::types::SpanModelUsage;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
+use tracing::Instrument as _;
 
 struct DelegateCall {
     run_id: String,
@@ -231,7 +232,7 @@ impl ManagedState {
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             if let Err(error) = state
-                .send_event_batch(&session_id, SendEventsRequest { events }, true)
+                .send_event_batch(&session_id, SendEventsRequest { events }, true, None)
                 .await
             {
                 tracing::warn!(%session_id, %error, "create-time initial events failed");
@@ -820,6 +821,7 @@ impl ManagedState {
         session_id: &str,
         agent_id: &str,
         inbound: &InboundEvent,
+        data_subject_id: Option<&str>,
     ) -> Result<(), StateError> {
         match inbound {
             InboundEvent::UserMessage { content } => {
@@ -830,7 +832,13 @@ impl ManagedState {
                 ));
                 let outcome = self
                     .application
-                    .run_session_message(agent_id, session_id, content.clone(), None, sink.clone())
+                    .run_session_message(
+                        agent_id,
+                        session_id,
+                        content.clone(),
+                        data_subject_id.map(str::to_owned),
+                        sink.clone(),
+                    )
                     .await;
                 let outcome = match outcome {
                     Ok(outcome) => outcome,
@@ -1057,17 +1065,48 @@ impl ManagedState {
         Ok(())
     }
 
+    pub async fn send_events(
+        self: &Arc<Self>,
+        session_id: &str,
+        req: SendEventsRequest,
+    ) -> Result<SendEventsResponse, StateError> {
+        self.send_events_attributed(session_id, req, None).await
+    }
+
+    /// Send an official Managed event envelope with optional request-grain data
+    /// subject attribution supplied by the HTTP adapter. Attribution is context,
+    /// not part of the event DTO, so the SDK wire schema remains exact.
     #[tracing::instrument(
         name = "sessions.events.send",
         skip_all,
         fields(gen_ai.conversation.id = %session_id)
     )]
-    pub async fn send_events(
-        &self,
+    pub async fn send_events_attributed(
+        self: &Arc<Self>,
         session_id: &str,
         req: SendEventsRequest,
+        data_subject_id: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
-        self.send_event_batch(session_id, req, false).await
+        // An admitted event batch is one application task. Heap-owning it here
+        // keeps every caller (HTTP, streaming, deployment, or another adapter)
+        // off the runtime's deeply nested poll stack and lets the command finish
+        // even when its initiating transport is cancelled.
+        let state = Arc::clone(self);
+        let session_id = session_id.to_string();
+        tokio::spawn(
+            async move {
+                state
+                    .send_event_batch(&session_id, req, false, data_subject_id)
+                    .await
+            }
+            .in_current_span(),
+        )
+        .await
+        .map_err(|error| {
+            StateError::Run(RunError::internal(format!(
+                "Session event command task failed: {error}"
+            )))
+        })?
     }
 
     /// One event command for public writes and Deployment initial batches. The
@@ -1079,6 +1118,7 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
         deployment_initial: bool,
+        data_subject_id: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
         // Recover the session from durable truth if its in-memory record was lost
         // (a process restart) before resolving the agent — so a resume continues
@@ -1164,7 +1204,7 @@ impl ManagedState {
             });
 
             let processing = self
-                .process_inbound_event(session_id, &agent_id, inbound)
+                .process_inbound_event(session_id, &agent_id, inbound, data_subject_id.as_deref())
                 .await;
             self.mark_inbound_processed(session_id, &event_id);
             if matches!(

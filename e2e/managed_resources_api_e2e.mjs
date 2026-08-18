@@ -50,7 +50,8 @@ async function main() {
       const meta = await client.get(`/v1/files/${up.id}`);
       assert.equal(meta.id, up.id);
       assert.equal(meta.size_bytes, body.length);
-      assert.equal(meta.purpose, 'input');
+      assert.equal(meta.type, 'file');
+      assert.equal(meta.scope, null, 'Workspace input is not scoped to a Session');
       assert.equal(meta.downloadable, false);
       pass('file metadata reflects stored size');
 
@@ -172,7 +173,7 @@ async function main() {
       assert.equal(
         (await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories/${memoryId}`, {
           content: 'stale must not win',
-          precondition: { content_sha256: 'stale' },
+          precondition: { type: 'content_sha256', content_sha256: '0'.repeat(64) },
         })).status,
         409,
       );
@@ -183,7 +184,7 @@ async function main() {
         {
           path: '/renamed.md',
           content: 'embedded v2',
-          precondition: { content_sha256: initialSha },
+          precondition: { type: 'content_sha256', content_sha256: initialSha },
         },
       );
       assert.equal(updated.status, 200);

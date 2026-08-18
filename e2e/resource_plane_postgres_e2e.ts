@@ -159,10 +159,15 @@ async function proveSandboxPolicyPostgresAuthority(): Promise<void> {
   )).status, 422);
 }
 
-async function uploadSkillVersion(route: string, marker: string, binary?: Uint8Array) {
+async function uploadSkillVersion(
+  route: string,
+  marker: string,
+  binary?: Uint8Array,
+  expectedStatus = 200,
+) {
   const form = new FormData();
   form.append(
-    'file',
+    'files[]',
     new Blob([
       `---\nname: shared-skill-${process.pid}\ndescription: shared resource test\n---\n${marker}`,
     ], { type: 'text/markdown' }),
@@ -170,14 +175,14 @@ async function uploadSkillVersion(route: string, marker: string, binary?: Uint8A
   );
   if (binary !== undefined) {
     form.append(
-      'file',
+      'files[]',
       new Blob([binary], { type: 'application/octet-stream' }),
       'assets/data.bin',
     );
   }
   const response = await fetch(scoped(WORKSPACE, route), { method: 'POST', body: form });
   const body = await response.json().catch(() => ({}));
-  assert.equal(response.status, 200, `${route}: ${JSON.stringify(body)}`);
+  assert.equal(response.status, expectedStatus, `${route}: ${JSON.stringify(body)}`);
   return body;
 }
 
@@ -490,7 +495,7 @@ async function main(): Promise<void> {
     assert.equal(
       (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`), {
         content: 'must not win',
-        precondition: { content_sha256: 'stale' },
+        precondition: { type: 'content_sha256', content_sha256: 'stale' },
       })).status,
       409,
     );
@@ -500,7 +505,7 @@ async function main(): Promise<void> {
       {
         path: '/renamed-fact.md',
         content: 'shared postgres memory v2',
-        precondition: { content_sha256: initialSha },
+        precondition: { type: 'content_sha256', content_sha256: initialSha },
       },
     );
     assert.equal(updatedMemory.status, 200);
@@ -517,19 +522,10 @@ async function main(): Promise<void> {
       200,
     );
 
-    const skill = await json('POST', scoped(WORKSPACE, 'skills'), {
-      id: `shared-skill-${process.pid}`,
-      content: `---\nname: shared-skill-${process.pid}\ndescription: shared resource test\n---\nUse safely.`,
-    });
-    assert.equal(skill.status, 200);
-    const skillId = skill.body.id;
-    assert.equal(
-      (await json('POST', scoped(WORKSPACE, 'skills'), {
-        id: skillId,
-        content: `---\nname: ${skillId}\ndescription: duplicate\n---\nduplicate`,
-      })).status,
-      409,
-    );
+    const skill = await uploadSkillVersion('skills', 'Use safely.');
+    const skillId = skill.id;
+    const duplicateSkill = await uploadSkillVersion('skills', 'duplicate', undefined, 409);
+    assert.equal(duplicateSkill.type, 'error');
     const binaryFixture = Uint8Array.from([0, 159, 146, 150, 255, 13, 0, 10]);
     const skillV2 = await uploadSkillVersion(
       `skills/${skillId}/versions`,

@@ -6,11 +6,9 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
-import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = 'managed-agents-2026-04-01';
-const FAKE_KEY = 'sk-fake-liveinbox'; // awaken-allow: secret
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function li(base, method, uri, body) {
@@ -24,14 +22,14 @@ async function li(base, method, uri, body) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY, { delayMs: 4000 });
   try {
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    await withServer('real', 38271, async (base) => {
+    await withRealServer('default', 38271, async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: [BETAS] });
+      const session = await client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        betas: [BETAS],
+      });
       const id = session.id;
       const inbox = `/v1/awaken/sessions/${id}/live-inbox`;
 
@@ -84,14 +82,12 @@ async function main() {
       pass('live-inbox edit error arms: bad permutation + unknown id -> 4xx');
 
       await turn.catch(() => {}); // let the turn drain
-    });
+    }, { upstream: { delayMs: 4000 } });
     console.log('E2E PASS: live-inbox snapshot/queue/reorder/replace/remove + error arms over an in-flight turn.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
-  } finally {
-    upstream.close();
   }
 }
 

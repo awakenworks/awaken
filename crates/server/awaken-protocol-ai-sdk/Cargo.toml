@@ -26,3 +26,6 @@ tokio-stream = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::{ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, ManagementAuthz, TokenSpec};
 
-/// Mint the first `admin` token, print it once, and persist it owner-only.
+/// Mint the first `admin` token and hand it off through an owner-only file.
 pub(super) fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspace_id: &str) {
     let secret = authz
         .mint_service_token(TokenSpec {
@@ -19,14 +19,17 @@ pub(super) fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspa
         .expect("mint the bootstrap admin token");
     let path = dir.join(ADMIN_TOKEN_FILE);
     write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
-    eprintln!(
+    eprintln!("{}", bootstrap_notice(&path, workspace_id));
+}
+
+fn bootstrap_notice(path: &Path, workspace_id: &str) -> String {
+    format!(
         "awaken-coordinator: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
          for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{workspace_id}`.\n\
-         It is printed ONCE and written to {} (mode 0600).\n\
-         ROTATE IT: anyone holding this token has full management authority.\n\
-         {secret}",
+         Its cleartext is written only to {} (mode 0600), never to logs.\n\
+         ROTATE IT: anyone who can read that file has full management authority.",
         path.display()
-    );
+    )
 }
 
 /// Write `contents` to `path` readable by the owner only (0600 on unix).
@@ -39,4 +42,17 @@ fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
         options.mode(0o600);
     }
     options.open(path)?.write_all(contents.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_notice_is_secret_free() {
+        let notice = bootstrap_notice(Path::new("/run/awaken/admin-token"), "workspace-a");
+        assert!(notice.contains("/run/awaken/admin-token"));
+        assert!(notice.contains("workspace-a"));
+        assert!(!notice.contains("sk-awaken-"));
+    }
 }

@@ -161,7 +161,7 @@ async fn child_thread_archive_is_runtime_backed_fail_closed_and_idempotent() {
 async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     let runtime = EndSessionRecorder::default();
     let interrupted = runtime.interrupted.clone();
-    let state = ManagedState::new(runtime);
+    let state = Arc::new(ManagedState::new(runtime));
     let request = serde_json::from_value(serde_json::json!({
         "agent": "assistant", "environment_id": "env_local"
     }))

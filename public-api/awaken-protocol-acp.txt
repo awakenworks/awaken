@@ -42,7 +42,7 @@ pub awaken_protocol_acp::AcpError::Frame(alloc::string::String)
 pub awaken_protocol_acp::AcpError::HardLimit(awaken_protocol_acp::error::AcpFailure)
 pub awaken_protocol_acp::AcpError::Io(alloc::string::String)
 pub awaken_protocol_acp::AcpError::PermissionAwait
-pub awaken_protocol_acp::AcpError::PermissionAwait::ask: awaken_protocol_acp::PermissionAsk
+pub awaken_protocol_acp::AcpError::PermissionAwait::ask: alloc::boxed::Box<awaken_protocol_acp::PermissionAsk>
 pub awaken_protocol_acp::AcpError::PermissionAwait::correlation_id: alloc::string::String
 pub awaken_protocol_acp::AcpError::Truncated
 pub awaken_protocol_acp::AcpError::UnsupportedSessionMode(alloc::string::String)

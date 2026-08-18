@@ -674,14 +674,15 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         .await
         .expect("R2");
     assert_eq!(created.agent.model.id, requested, "R2 public echo");
-    let prepared = resolved_runtime.prepared.lock().unwrap();
-    assert_eq!(
-        prepared[0].model.as_deref(),
-        Some(primary.binding.model_ref.as_str()),
-        "R2"
-    );
-    assert_eq!(prepared[0].runtime.as_deref(), Some("acp:claude"), "R2");
-    drop(prepared);
+    {
+        let prepared = resolved_runtime.prepared.lock().unwrap();
+        assert_eq!(
+            prepared[0].model.as_deref(),
+            Some(primary.binding.model_ref.as_str()),
+            "R2"
+        );
+        assert_eq!(prepared[0].runtime.as_deref(), Some("acp:claude"), "R2");
+    }
     assert_eq!(
         calls.lock().unwrap().as_slice(),
         &[("default".into(), requested.into())],

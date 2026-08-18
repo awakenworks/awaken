@@ -246,7 +246,15 @@ impl ResourceInput {
                         Some(RepositoryCheckout::Branch { .. }) | None => None,
                     },
                 },
-                access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                // An exact commit is an immutable historical input. Giving it
+                // ReadWrite authority would promise a terminal publication even
+                // though detached HEAD has no unambiguous remote branch. Branch
+                // and default checkouts retain the ordinary write-back contract.
+                access: if matches!(checkout, Some(RepositoryCheckout::Commit { .. })) {
+                    awaken_resource_contract::ResourceAccess::ReadOnly
+                } else {
+                    awaken_resource_contract::ResourceAccess::ReadWrite
+                },
                 instructions: None,
                 implicit_memory_mount: false,
             },
@@ -341,4 +349,39 @@ pub(crate) fn resource_binding_id(
         .strip_prefix(session_id)?
         .strip_prefix(":resource:")?;
     (!binding_id.is_empty()).then(|| awaken_resource_contract::BindingId::from(binding_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repository(checkout: Option<RepositoryCheckout>) -> ResourceInput {
+        ResourceInput::GithubRepository {
+            url: "https://example.invalid/repository.git".into(),
+            authorization_token: None,
+            mount_path: None,
+            checkout,
+        }
+    }
+
+    #[test]
+    fn exact_commit_is_read_only_while_branch_and_default_remain_writable() {
+        use awaken_resource_contract::ResourceAccess::{ReadOnly, ReadWrite};
+
+        assert_eq!(
+            repository(Some(RepositoryCheckout::Commit { sha: "abc".into() }))
+                .to_parsed_input()
+                .access,
+            ReadOnly,
+        );
+        assert_eq!(
+            repository(Some(RepositoryCheckout::Branch {
+                name: "main".into()
+            }))
+            .to_parsed_input()
+            .access,
+            ReadWrite,
+        );
+        assert_eq!(repository(None).to_parsed_input().access, ReadWrite);
+    }
 }

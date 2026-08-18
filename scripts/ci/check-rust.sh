@@ -8,7 +8,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
+source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
+awaken_unset_ambient_api_keys
 
 mode="${1:---full}"
 
