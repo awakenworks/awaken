@@ -37,3 +37,17 @@ pub(super) fn authorization_bearer_token(headers: &HeaderMap) -> Option<String> 
 pub(super) fn is_tunnel_route(path: &str) -> bool {
     super::in_family(path, "/v1/tunnels")
 }
+
+pub(super) fn is_legacy_tunnel_route(path: &str) -> bool {
+    super::in_family(path, "/v1/organizations/tunnels")
+}
+
+/// Extract the plain management workspace selector. Exotic percent-encoded
+/// identifiers intentionally fail the equality fence in the closed direction.
+pub(super) fn query_workspace_id(query: Option<&str>) -> Option<String> {
+    query?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "workspace_id")
+        .map(|(_, value)| value.replace('+', " "))
+}
