@@ -19,7 +19,7 @@ use awaken_resource_contract::{
     skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
 use axum::extract::{Multipart, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -573,16 +573,53 @@ async fn delete_version(
     }
 }
 
-/// `GET /v1/skills/:id/versions/:version/content` — the version's raw SKILL.md.
+fn version_archive(version: &SkillVersion) -> Result<Vec<u8>, String> {
+    let mut archive = tar::Builder::new(Vec::new());
+    let wrapper = skill_stem(&version.name);
+    for file in &version.files {
+        let mut entry = tar::Header::new_gnu();
+        entry.set_size(file.content.len() as u64);
+        entry.set_mode(if file.executable { 0o755 } else { 0o644 });
+        entry.set_uid(0);
+        entry.set_gid(0);
+        entry.set_mtime(version.created_unix_nanos / 1_000_000_000);
+        entry.set_cksum();
+        archive
+            .append_data(
+                &mut entry,
+                format!("{wrapper}/{}", file.path),
+                file.content.as_slice(),
+            )
+            .map_err(|error| format!("build Skill version archive: {error}"))?;
+    }
+    archive
+        .into_inner()
+        .map_err(|error| format!("finish Skill version archive: {error}"))
+}
+
+/// `GET /v1/skills/:id/versions/:version/content` — the immutable bundle as a
+/// tar archive. The official `setupSkills` helper consumes this endpoint through
+/// `skills.versions.download()` and requires an archive, not a bare SKILL.md.
 async fn version_content(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
     match find_version(&state, &workspace, &id, &version).await {
-        Ok(Some(version)) => match version.skill_md() {
-            Some(content) => (StatusCode::OK, content.to_vec()).into_response(),
-            None => err(StatusCode::NOT_FOUND, "skill version content not found"),
+        Ok(Some(version)) => match version_archive(&version) {
+            Ok(content) => {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/x-tar"),
+                );
+                headers.insert(
+                    header::CONTENT_DISPOSITION,
+                    HeaderValue::from_static("attachment; filename=skill.tar"),
+                );
+                (StatusCode::OK, headers, content).into_response()
+            }
+            Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error),
         },
         Ok(None) => err(StatusCode::NOT_FOUND, "skill version not found"),
         Err(error) => store_error(error),

@@ -300,6 +300,19 @@ export const BEHAVIORS = {
       default: return text('memory persisted');
     }
   },
+  // DreamScenarioModel over the real provider wire. A restart test deliberately
+  // delays this response and kills the Coordinator after arrival, then verifies
+  // that the durable Dream is re-dispatched and remains cancelable.
+  dream(parsed) {
+    if (!allUserText(parsed).includes('[dream-job:')) {
+      return text(`Echo: ${lastUserText(parsed)}`);
+    }
+    if (toolResults(parsed).length > 0) return text('Dream consolidation written.');
+    return tool('dream-write-through-1', 'write', {
+      path: '/mnt/dream/output-memory/MEMORY.md',
+      content: '# Dream\n- Consolidated by the Dream Agent.\n',
+    });
+  },
   // GitRepoModel: read the seed file, write a new file, then finish (sequenced off
   // the tool-result count).
   gitRepo(parsed) {

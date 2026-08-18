@@ -1,7 +1,7 @@
 // Cause graph (durable management restart):
 //   C1 domain aggregate is authored before restart -> E1 durable row is restored
 //   C2 secret is sealed with the same key          -> E2 the SDK-entered MCP credential materializes
-//   C3 wire-only vault object is process-local     -> E3 vault wire GET returns 404
+//   C3 official Vault/Credential IDs are durable   -> E3 SDK reads survive restart
 //   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
 //   C5 session explicitly allows the MCP tool      -> E5 transport proof is not paused by HITL
 //   C6 bootstrap identity and platform scope persist -> E6 every durable read/write stays authorized
@@ -10,7 +10,7 @@
 //   Rule  C1  C2  C3  C4  C5  C6  Expected
 //   T1    Y   -   -   -   -   Y   E1 + E6 (catalog/pool/normalized profile/Agent)
 //   T2    Y   Y   -   Y   Y   Y   E2 + E4 + E5 + E6
-//   T3    -   -   Y   -   -   Y   E3 + E6
+//   T3    -   -   Y   -   -   Y   E3 + E6 (secret-free SDK projections)
 //
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
 // awaken-server in `management` mode with a fixed typed data_dir + seal key,
@@ -23,9 +23,8 @@
 //     vault credential included), pool, inference profile, typed Agent MCP
 //     binding — and an MCP conversation still works, i.e. the sealed
 //     access token materialized from SQLite after the restart.
-//   - WIRE state is host-ephemeral by design: the vault wire object 404s after
-//     the restart (VaultState is rebuilt per process) while the domain row it
-//     entered is still resolvable through the admin-authored path.
+//   - SDK resource identity persists: Vault and Credential retrieve by the same
+//     IDs after restart, while their projections remain secret-free.
 //
 // Run: (from e2e/)  npm install && node management_persistence_e2e.mjs
 
@@ -103,8 +102,8 @@ async function main() {
     pass('connected provider under the typed data_dir');
 
     // A vault `mcp_oauth` credential through the OFFICIAL SDK: the wire vault
-    // bookkeeping is host-ephemeral, but the domain row + sealed access token
-    // land in the durable stores.
+    // resource identity, domain row, and sealed access token land in the
+    // durable stores; no plaintext enters either read projection.
     const vault = await client.beta.vaults.create({ display_name: 'persist vault', betas: BETAS });
     const wireCred = await client.beta.vaults.credentials.create(vault.id, {
       type: 'mcp_oauth',
@@ -179,12 +178,15 @@ async function main() {
     const client2 = new Anthropic({ apiKey: null, authToken: adminToken, baseURL: base });
     pass('server killed and respawned on the same port with the same typed data_dir/key');
 
-    // The vault WIRE object is host-ephemeral: gone after the restart (correct).
-    const gone = await client2.beta.vaults
-      .retrieve(vault.id, { betas: BETAS })
-      .then(() => null, (err) => err);
-    assert.equal(gone?.status, 404, `vault wire object should 404 after restart, got ${gone}`);
-    pass('vault wire object 404s after restart (VaultState is host-ephemeral by design)');
+    const restoredVault = await client2.beta.vaults.retrieve(vault.id, { betas: BETAS });
+    assert.equal(restoredVault.id, vault.id);
+    const restoredCredential = await client2.beta.vaults.credentials.retrieve(wireCred.id, {
+      vault_id: vault.id,
+      betas: BETAS,
+    });
+    assert.equal(restoredCredential.id, wireCred.id);
+    assert.ok(!JSON.stringify(restoredCredential).includes(CALC_TOKEN));
+    pass('official SDK Vault/Credential identities persist across restart without secret echo');
 
     // The DOMAIN state persisted: every admin GET returns the authored object.
     r = await request('GET', '/v1/config/catalog');
@@ -230,6 +232,7 @@ async function main() {
           },
         }],
       },
+      environment_id: 'env_local',
       betas: BETAS,
     });
     await client2.beta.sessions.events.send(session.id, {
@@ -253,7 +256,7 @@ async function main() {
     pass('post-restart MCP conversation works with the persisted sealed credential as bearer');
 
     console.log(
-      'E2E PASS: authored config + sealed credentials survive a server restart; wire vault state is ephemeral as documented.',
+      'E2E PASS: authored config plus secret-free Vault/Credential resources and sealed material survive restart.',
     );
     process.exitCode = 0;
   } catch (err) {

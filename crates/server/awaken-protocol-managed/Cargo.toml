@@ -93,6 +93,7 @@ form_urlencoded = "1"
 # Managed operation span (`#[instrument]`) exported through the global subscriber the
 # service binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
+tar = "0.4"
 
 [[test]]
 name = "adapter"

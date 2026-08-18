@@ -492,10 +492,19 @@ impl WorkQueue for InMemoryWorkQueue {
         &self,
         env_id: &str,
         wid: &str,
-        patch: BTreeMap<String, String>,
+        patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         Ok(self.with_owned(env_id, wid, |w| {
-            w.metadata.extend(patch);
+            for (key, value) in patch {
+                match value {
+                    Some(value) => {
+                        w.metadata.insert(key, value);
+                    }
+                    None => {
+                        w.metadata.remove(&key);
+                    }
+                }
+            }
             w.clone()
         }))
     }
@@ -966,13 +975,19 @@ mod tests {
     async fn update_metadata_upserts_and_remove_env_purges() {
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
-        let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
+        let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
         let up = q
             .update_metadata("env_a", &id, patch)
             .await
             .expect("update query")
             .expect("patched");
         assert_eq!(up.metadata.get("k").map(String::as_str), Some("v"));
+        let deleted = q
+            .update_metadata("env_a", &id, BTreeMap::from([("k".to_string(), None)]))
+            .await
+            .expect("delete query")
+            .expect("deleted");
+        assert!(!deleted.metadata.contains_key("k"));
         q.remove_env("env_a").await.unwrap();
         assert!(
             q.get("env_a", &id).await.expect("get").is_none(),

@@ -273,7 +273,7 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         work_id: &str,
-        patch: BTreeMap<String, String>,
+        patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self
@@ -1342,7 +1342,7 @@ mod tests {
             &self,
             env: &str,
             work: &str,
-            patch: BTreeMap<String, String>,
+            patch: BTreeMap<String, Option<String>>,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.update_metadata(env, work, patch).await
         }

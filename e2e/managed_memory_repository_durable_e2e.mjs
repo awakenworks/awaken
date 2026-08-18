@@ -66,7 +66,10 @@ async function main() {
     let c = client();
 
     // -- create path-addressed memories in the durable store ------------------
-    const store = await c.beta.memoryStores.create({ betas: BETAS });
+    const store = await c.beta.memoryStores.create({
+      name: 'durable repository fixture',
+      betas: BETAS,
+    });
     const mem = await c.beta.memoryStores.memories.create(store.id, {
       path: '/notes/a.md',
       content: 'first',

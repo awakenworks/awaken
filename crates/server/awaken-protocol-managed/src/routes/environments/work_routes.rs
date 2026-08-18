@@ -308,6 +308,26 @@ pub(super) async fn stop_work(
         .stop_work(&id, &wid, &owner)
         .await
         .map_err(map_execution_error)?;
+    if matches!(
+        result,
+        awaken_session_contract::work_queue::WorkMutationResult::PreconditionFailed
+    ) {
+        let current = state
+            .get_work(&id, &wid)
+            .await
+            .map_err(map_execution_error)?;
+        if current.is_some_and(|work| {
+            work.state == awaken_session_contract::work_queue::WorkState::Stopped
+        }) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorResponse::new(
+                    "conflict_error",
+                    "Work is already stopped",
+                )),
+            ));
+        }
+    }
     let work = worker_mutation(result)?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
