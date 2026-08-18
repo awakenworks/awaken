@@ -182,9 +182,10 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
     );
 }
 
-/// Entering the network namespace happens once when the Bash process starts.
-/// Shell-local state must therefore survive successful calls, and a failed
-/// command must be reported without discarding that state.
+/// Cause/effect design: after one successful state mutation, a non-zero command
+/// must produce the authoritative typed-tool `Execution` error while preserving
+/// the same shell process; the following successful command must observe both
+/// the working directory and exported variable.
 #[tokio::test]
 async fn deny_egress_bash_preserves_state_across_success_and_failure() {
     if !bwrap_and_bash_available().await {
@@ -209,12 +210,10 @@ async fn deny_egress_bash_preserves_state_across_success_and_failure() {
     .await
     .unwrap();
 
-    let failed = invoke(&tools, "bash", serde_json::json!({ "command": "false" }))
-        .await
-        .unwrap();
+    let failed = invoke(&tools, "bash", serde_json::json!({ "command": "false" })).await;
     assert!(
-        failed.is_error,
-        "a non-zero command must remain model-visible"
+        matches!(failed, Err(ToolError::Execution(ref detail)) if detail == "exit 1"),
+        "a non-zero command must use the typed-tool execution error: {failed:?}"
     );
 
     let state = invoke(
