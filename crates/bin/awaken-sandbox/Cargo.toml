@@ -55,7 +55,7 @@ tokio = { workspace = true, features = [
 awaken-tool-relay = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-connection-plan = { workspace = true, optional = true }
-async-nats = { version = "0.38", optional = true }
+async-nats = { version = "0.50", optional = true }
 futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
