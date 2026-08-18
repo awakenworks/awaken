@@ -670,8 +670,8 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Whether this exact registered Worker incarnation currently owns the live
-    /// lease for `run_id`.
+    /// Return the current live claim only when this exact registered Worker
+    /// incarnation owns `run_id` and no cancellation has been requested.
     ///
     /// Server-side application capability issuers use this shape because they
     /// authenticate a Worker identity and Run id, but must not trust a
@@ -681,7 +681,7 @@ pub trait DispatchQueue: Send + Sync {
         _identity: &WorkerIdentity,
         _run_id: &RunId,
         _now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<Option<RunClaim>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not expose registered-worker run authority".to_string(),
         ))

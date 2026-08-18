@@ -614,15 +614,19 @@ impl DispatchQueue for MemoryDispatchStore {
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<Option<RunClaim>, DispatchError> {
         let owner = identity.lease_owner();
         let state = lock(&self.state)?;
-        Ok(state.rows.get(run_id).is_some_and(|row| {
-            row.state == RowState::Leased
-                && row
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
+        Ok(state.rows.get(run_id).and_then(|row| {
+            (row.state == RowState::Leased && !row.cancellation_requested)
+                .then(|| row.lease.as_ref())
+                .flatten()
+                .filter(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
+                .map(|_| RunClaim {
+                    run_id: run_id.clone(),
+                    owner,
+                    epoch: row.lease_epoch,
+                })
         }))
     }
 
