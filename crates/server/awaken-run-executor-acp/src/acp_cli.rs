@@ -6,7 +6,7 @@
 //! — never agent config itself.
 
 use crate::discovery_spec::{
-    AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate,
+    AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate, AcpVersion,
 };
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
 use awaken_provisioning_contract as pc;
@@ -235,6 +235,7 @@ impl AcpCli {
             "acp_agent_missing" => Some(self.discovery.install_remediation),
             "acp_login_required" => Some(self.discovery.login.remediation),
             "acp_version_probe_failed"
+            | "acp_version_unsupported"
             | "acp_login_probe_failed"
             | "acp_login_probe_unrecognized"
             | "acp_wrapper_install_failed" => {

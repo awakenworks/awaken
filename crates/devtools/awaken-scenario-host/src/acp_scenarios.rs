@@ -171,6 +171,7 @@ const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
             executable: "/bin/true",
             args: &[],
         },
+        minimum_version: awaken_run_executor_acp::AcpVersion::new(0, 0, 0),
         login: awaken_run_executor_acp::AcpLoginProbe {
             command: awaken_run_executor_acp::AcpProbeCommand {
                 executable: "/bin/true",

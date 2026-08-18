@@ -190,55 +190,6 @@ fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
 }
 
 #[test]
-fn identity_modes_accept_product_names_and_legacy_aliases() {
-    assert_eq!(
-        ManagementIdentityMode::parse("no-login"),
-        Some(ManagementIdentityMode::NoLogin)
-    );
-    assert_eq!(
-        ManagementIdentityMode::parse("awaken-cloud"),
-        Some(ManagementIdentityMode::AwakenCloud)
-    );
-    assert_eq!(
-        ManagementIdentityMode::parse("self-managed"),
-        Some(ManagementIdentityMode::SelfManaged)
-    );
-    assert_eq!(
-        ManagementIdentityMode::parse("embedded"),
-        Some(ManagementIdentityMode::SelfManaged)
-    );
-    assert_eq!(ManagementIdentityMode::parse("unknown"), None);
-}
-
-#[test]
-fn embedded_iam_bootstrap_uses_the_platform_provisioned_workspace() {
-    let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam_for_workspace(dir.path(), "workspace_platform_owned");
-    let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
-    let (_, workspace) = iam.authenticate(token.trim()).unwrap();
-    assert_eq!(workspace.0, "workspace_platform_owned");
-}
-
-#[test]
-fn embedded_iam_registers_only_org_to_workspace_scope() {
-    let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam_for_tenant(dir.path(), "org_local", "workspace_local");
-    let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
-    let (principal, _) = iam.authenticate(token.trim()).unwrap();
-
-    assert_eq!(
-        iam.authorize(
-            principal,
-            WORKSPACE_READ,
-            ScopeRef::Workspace {
-                workspace_id: WorkspaceId("workspace_local".into()),
-            },
-        ),
-        AuthorizationDecision::Allow
-    );
-}
-
-#[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // Cause-effect graph:
     // A request inside one registered Management route family is classified by
@@ -393,6 +344,21 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     assert_eq!(
         action_for(&post, "/v1/user_profiles/uprof_1/enrollment_url"),
         Some(WORKSPACE_WRITE)
+    );
+    // Tunnel lifecycle is Cloud-owned but enters this same PEP. Every SDK
+    // read stays read-only; create/archive/token/certificate operations write.
+    assert_eq!(action_for(&get, "/v1/tunnels"), Some(TUNNEL_MANAGE));
+    assert_eq!(
+        action_for(&get, "/v1/tunnels/tnl_1/certificates"),
+        Some(TUNNEL_MANAGE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/tunnels/tnl_1/rotate_token"),
+        Some(TUNNEL_MANAGE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/tunnels/tnl_1/certificates/tcrt_1/archive"),
+        Some(TUNNEL_MANAGE)
     );
     // Concrete route membership belongs to axum; registered aggregate families
     // receive a total read/write policy while unknown families fail closed.
@@ -2019,5 +1985,9 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
     );
 }
 
+#[path = "authz_identity_tests.rs"]
+mod identity_tests;
 #[path = "authz_token_view_tests.rs"]
 mod token_view_tests;
+#[path = "authz_tunnel_guard_tests.rs"]
+mod tunnel_guard_tests;

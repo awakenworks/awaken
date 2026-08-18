@@ -1,9 +1,9 @@
 // When-online conformance smoke — the ONLY way to converge behaviors that a local
 // server can't reproduce (the matrix's WOL items: retries_exhausted, session.status_
 // rescheduled, real workers_polling, etc.). Credential-gated and pre-staged: it runs
-// the official SDK against the REAL Anthropic Managed API only when opted in, and
-// SKIPS CLEANLY (exit 0) otherwise — so it lives in the tree, ready, without needing
-// credentials to be green.
+// the official SDK against the REAL Anthropic Managed API when opted in. Local
+// conformance skips cleanly without credentials; AWAKEN_WHEN_ONLINE_REQUIRED=1
+// makes the controlled release lane fail rather than silently skip.
 //
 // Enable:  AWAKEN_WHEN_ONLINE=1  ANTHROPIC_API_KEY=sk-ant-...  node conformance/when_online_smoke_e2e.mjs
 // Default (no creds): prints SKIP and exits 0.
@@ -14,12 +14,9 @@
 
 import assert from 'node:assert/strict';
 import { rustOutboundTypes, rustInboundTypes } from './catalog.mjs';
+import { whenOnlineMode } from './when_online_mode.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-
-function enabled() {
-  return process.env.AWAKEN_WHEN_ONLINE === '1' && !!process.env.ANTHROPIC_API_KEY;
-}
 
 async function runOnline() {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
@@ -48,7 +45,13 @@ async function runOnline() {
 }
 
 async function main() {
-  if (!enabled()) {
+  const mode = whenOnlineMode(process.env);
+  if (mode.error) {
+    console.error(`WHEN-ONLINE FAIL: ${mode.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!mode.run) {
     console.log('SKIP: when-online smoke not enabled (set AWAKEN_WHEN_ONLINE=1 + ANTHROPIC_API_KEY).');
     console.log('  This suite is pre-staged and intentionally inert without real-API credentials.');
     process.exitCode = 0;

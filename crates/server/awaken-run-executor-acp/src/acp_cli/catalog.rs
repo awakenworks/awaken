@@ -20,6 +20,7 @@ const CLAUDE: AcpCli = AcpCli {
             executable: "claude",
             args: &["--version"],
         },
+        minimum_version: AcpVersion::new(2, 1, 221),
         login: AcpLoginProbe {
             command: AcpProbeCommand {
                 executable: "claude",
@@ -112,6 +113,7 @@ const CODEX: AcpCli = AcpCli {
             executable: "codex",
             args: &["--version"],
         },
+        minimum_version: AcpVersion::new(0, 146, 0),
         login: AcpLoginProbe {
             command: AcpProbeCommand {
                 executable: "codex",
@@ -198,6 +200,7 @@ const GEMINI: AcpCli = AcpCli {
             executable: "gemini",
             args: &["--version"],
         },
+        minimum_version: AcpVersion::new(0, 53, 1),
         login: AcpLoginProbe {
             // Listing local sessions is non-interactive and makes Gemini validate
             // its own selected auth method without issuing a model request.
@@ -283,6 +286,7 @@ const OPENCODE: AcpCli = AcpCli {
             executable: "opencode",
             args: &["--version"],
         },
+        minimum_version: AcpVersion::new(1, 18, 12),
         login: AcpLoginProbe {
             command: AcpProbeCommand {
                 executable: "opencode",
@@ -374,6 +378,7 @@ const HERMES: AcpCli = AcpCli {
             executable: "hermes",
             args: &["version"],
         },
+        minimum_version: AcpVersion::new(0, 19, 0),
         login: AcpLoginProbe {
             command: AcpProbeCommand {
                 executable: "hermes",

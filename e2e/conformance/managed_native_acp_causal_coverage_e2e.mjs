@@ -91,6 +91,13 @@ const groups = [
     a2a: evidence('crates/control/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
     negative: evidence('e2e/managed_dream_e2e.ts', 'completed Dream cannot be canceled'),
   },
+  {
+    id: 'provider-and-runtime-certification',
+    native: evidence('e2e/provider_connection_matrix_real_e2e.mjs', 'AWAKEN_PROVIDER_COMPAT'),
+    acp: evidence('e2e/acp_runtime_profiles.mjs', 'ACP_RUNTIME_IDS'),
+    a2a: evidence('crates/control/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
+    negative: evidence('e2e/provider_compat_cases.test.mjs', 'fails before provider I/O'),
+  },
 ];
 
 const ids = groups.map(({ id }) => id);

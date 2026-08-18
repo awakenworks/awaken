@@ -11,6 +11,19 @@ static gate (`npm run test:conformance`) already pins awaken's event catalog +
 `MANAGED_BETA` + the serde golden to that SDK — the audit below is about *behavioral*
 coverage on top of that structural conformance.
 
+Wire admission intentionally implements a compatible superset at the HTTP edge.
+Officially formed requests remain the conformance oracle, while a missing
+`anthropic-version` is accepted for older raw HTTP clients and unknown beta tokens
+are ignored when the endpoint's required beta is also present. Unknown-only or
+missing required betas still fail before mutation, and `User-Agent` never selects a
+different schema. `managed_sdk_version_matrix_e2e.mjs` exercises SDK 0.105.0 and
+0.117.1 plus these raw-header negative and forward-compatibility partitions.
+`npm run test:sdk-latest-canary` queries the registry and runs the same
+public-declaration fingerprint gate against a temporary latest tarball whenever
+latest differs from the exact pin. The release-only
+`test:when-online-required` lane fails instead of skipping when its genuine
+Anthropic Managed credential is absent.
+
 ## Exhaustive contract baseline (2026-07-29)
 
 The pinned English sitemap contains 28 Managed Agents pages. This document is the
@@ -40,13 +53,13 @@ execute, while the local API/security boundary is still covered.
 | [cloud-sandboxes-reference](https://platform.claude.com/docs/en/managed-agents/cloud-sandboxes-reference) | Cloud configuration and fail-closed provisioning; Anthropic's exact Ubuntu image, CPU/RAM/disk inventory is external infrastructure | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, `sandbox_provisioning_e2e.mjs` | Config equivalence + real provider success/failure; hosted inventory explicitly non-applicable ◇ |
 | [define-outcomes](https://platform.claude.com/docs/en/managed-agents/define-outcomes) | Rubric admission; one active outcome; iterations/spans; satisfied/revision/max/failed/interrupted terminals; output scope | `managed_outcome_e2e.mjs`, `managed_outcome_lifecycle_e2e.mjs`, `managed_outcome_runtime_matrix_e2e.ts` | State-machine transition/pairing + boundary 1..20; G1-G4/H8 ✅ |
 | [dreams](https://platform.claude.com/docs/en/managed-agents/dreams) | Create/retrieve/list/cancel/archive; frozen JSONL with bounded retention; read-only inputs/new writable output; usage/errors/limits; mid-run input invalidation; automatic policy uses same job path | `managed_dream_e2e.ts`, protocol `tests/dreams.rs`, server `managed_dream_e2e.rs` | Dream lifecycle + failure injection + cleanup/restart + official SDK ✅ |
-| [environments](https://platform.claude.com/docs/en/managed-agents/environments) | Cloud/self-hosted config; packages; limited networking defaults/hosts/MCP/package managers; update/archive/delete; no filesystem sharing | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, `managed_package_registry_e2e.mjs`, protocol `tests/environments.rs` | Decision F; config partitions + pre-agent package image + durable single-flight + authenticated OCI digest reuse after local-cache removal + provider fail-closed + lifecycle ✅; no-bypass runtime allowlist still needs a deployment egress gateway ◇ |
+| [environments](https://platform.claude.com/docs/en/managed-agents/environments) | Cloud/self-hosted config; packages; limited networking defaults/hosts/MCP/package managers; update/archive/delete; no filesystem sharing | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, `managed_package_registry_e2e.mjs`, protocol `tests/environments.rs` | Decision F; config partitions + Docker/Podman package image + Kubernetes BuildKit/registry + durable single-flight + provider fail-closed + lifecycle ✅; Kubernetes advertises allowlist only after live exact NetworkPolicy/egress-gateway attestation, and tiers without equivalent evidence reject rather than downgrade ◇ |
 | [events-and-streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) | Send/list/stream; ordering/processed_at; preview admission and reconciliation; reconnect/dedupe; interrupt/redirect; thread/custom/HITL/system/usage events | `managed_reconnect_e2e.mjs`, `managed_real_thinking_e2e.mjs`, `managed_processed_at_e2e.mjs`, `managed_system_message_e2e.mjs` | Decisions E/H; sequence/state transition + 100/101 boundaries + reconnect fault injection ✅ |
 | [files](https://platform.claude.com/docs/en/managed-agents/files) | Upload/download; create-time/live mounts; path defaults/parents; read-only inputs; copy identity; resource lifecycle/authorization | `managed_resources_api_e2e.mjs`, `management_files_models_e2e.mjs`, `managed_resource_mount_e2e.mjs`, `managed_resource_api_edge_e2e.mjs` | Union/path/boundary + authz + sandbox observation; Anthropic-only upload metadata noted ◇ |
 | [github](https://platform.claude.com/docs/en/managed-agents/github) | Token non-disclosure; repository mount/checkout; running-session credential rotation without repository replacement; clone/MCP use | `managed_git_repo_e2e.mjs`, `managed_resource_lifecycle_e2e.mjs`, `secret_nonleak_e2e.mjs`, `managed_full_chain_e2e.mjs` | Secret-flow + lifecycle mutation + real clone partitions ✅ |
 | [mcp-connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector) | URL/name/count/reference validation; normalization; tool filters/policy; vault auth; typed retry/error; reconnect; oversized spill | `managed_mcp_e2e.ts`, `management_mcp_e2e.mjs`, `management_agents_e2e.mjs`, `managed_tool_result_e2e.mjs` | URL/cardinality/reference partitions + D2-D5 + failure taxonomy ✅ |
 | [mcp-tunnels](https://platform.claude.com/docs/en/managed-agents/mcp-tunnels) | Research-preview Tunnel/Certificate wire belongs to Awaken; domain/token/certificate/transport custody and lifecycle are Cloud-only | `management_tunnels_contract_e2e.mjs`, protocol `tunnels.rs`, Cloud Tunnel tests | SDK method/path/header contract locally; aggregate, secret and failure decision tables on Cloud Full target ◇ |
-| [memory](https://platform.claude.com/docs/en/managed-agents/memory) | Exclusive beta; 100KiB/2000 heads; max 8 attachments/4096-char guidance; RO/RW; segment prefix/depth/basic/full; CAS/history/redaction/lifecycle | `managed_memory_repository_durable_e2e.mjs`, `management_memory_stores_e2e.mjs`, `managed_memory_extraction_durable_e2e.mjs`, protocol `session_resources.rs` | ML1-ML7/MC1-MC4/M1-M4; boundary + CAS + restart + mount denial ✅ |
+| [memory](https://platform.claude.com/docs/en/managed-agents/memory) | Exclusive beta; 100KiB/2000 heads; max 8 attachments/4096-char guidance; RO/RW; segment prefix/depth/basic/full; CAS/history/redaction/lifecycle | `managed_memory_repository_durable_e2e.mjs`, `management_memory_stores_e2e.mjs`, `managed_memory_extraction_durable_e2e.mjs`, `acp_runtime_memory_matrix_e2e.mjs`, protocol `session_resources.rs` | ML1-ML7/MC1-MC4/M1-M4; boundary + CAS + restart + mount denial; ACP runtime floor and credential-profile negatives ✅ |
 | [migration](https://platform.claude.com/docs/en/managed-agents/migration) | Messages/Agent-SDK mapping to durable Agent/Environment/Session/events; built-in vs client tools; idle; pinning; resources/vaults/policies | `managed_full_lifecycle_e2e.mjs`, `managed_custom_e2e.mjs`, `management_agents_e2e.mjs`, `management_vaults_family_e2e.mjs` | End-to-end mapping + differential official-SDK DTO check; client-only planning/max-turns excluded ◇ |
 | [multiagent-orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) | Shared sandbox/vault but isolated persistent threads; agent-scoped config; self; frozen version roster; one level; max 20; Advisor reserved member and consultation lifecycle; follow-up/archive/interrupt | `managed_delegation_e2e.mjs`, `management_agents_e2e.mjs`, protocol thread-selector tests | Roster 1/20/21 + advisor 0/1/2, reserved-name/model/geo pairing + consultation failure/redaction/interrupt rules; thread state transitions ✅ |
 | [onboarding](https://platform.claude.com/docs/en/managed-agents/onboarding) | Console prototype/copy-code flow and inline runner map to the same Agent/Environment/Session/events resources | `managed_full_lifecycle_e2e.mjs`, `management_agents_e2e.mjs`, `management_environments_e2e.mjs` | API journey E2E; Anthropic Console rendering/copy UX is external ◇ |
@@ -254,7 +267,7 @@ See the [official session operations contract](https://platform.claude.com/docs/
 and [MCP connector constraints](https://platform.claude.com/docs/en/managed-agents/mcp-connector).
 
 The current inventory contains 246 `*_e2e.mjs` / `*_e2e.ts` files, 136 of them
-managed-named. The 26-page inventory is complete for the sitemap snapshot: locally owned
+managed-named. The 28-page inventory is complete for the sitemap snapshot: locally owned
 contracts have executable evidence, while hosted/cloud/operator-only effects are marked
 `◇` and are not counted as locally executed.
 
@@ -295,13 +308,14 @@ This pass closed the following local contract cases against that Anthropic oracl
 | MCP `always_ask` confirmation | permission policy parks and resumes MCP calls | `management_mcp_e2e.mjs` |
 | Retryable inference and active interrupt/steer | `status_rescheduled` is emitted before retry; active turn can be interrupted and replaced | `managed_error_recovery_e2e.mjs` |
 
-The DeepSeek live-provider lane was also attempted from the shell's
+The DeepSeek live-provider lane was rerun on 2026-08-18 from the shell's
 `DEEPSEEK_API_KEY` configuration with the OpenAI-compatible endpoint and
-`deepseek-v4-flash`. Transport and model resolution succeeded, but the provider returned
-HTTP 402 (`Insufficient Balance`), so no model-output compatibility verdict is claimed
-from that run. Deterministic local compatibility remains green: Rust/SDK event catalogs
-27/27 outbound and 7/7 inbound, beta sentinel, serde golden, TypeScript type-check, and
-the session override/update suites all pass.
+`deepseek-v4-flash`. Discovery, credential reference, Agent publication, and a real
+Managed turn passed without credential bytes entering the evidence artifact. One empty
+choice warning exercised the retry path before convergence. Deterministic local
+compatibility remains green: Rust/SDK event catalogs 35/35 outbound and 7/7 inbound,
+beta sentinel, serde golden, TypeScript type-check, and the session override/update
+suites all pass.
 
 The ACP runtime-selection regression is also closed: a session's
 `metadata["awaken.runtime"] = "acp:<cli>"` is copied into the neutral resolved
@@ -331,7 +345,7 @@ Verified against source before writing: `deployments.rs` (`projected_schedule`/`
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
 the Session-list adapter (order-bound bidirectional cursor over the canonical list), `types/session.rs`
 (`SpanOutcomeEvaluationStart{outcome_id,iteration}`). The behavior E2Es are registered in
-`package.json`; the 26-page matrix is enforced by `test:docs-coverage`.
+`package.json`; the 28-page matrix is enforced by `test:docs-coverage`.
 
 ## Former implemented test gaps
 
@@ -409,7 +423,7 @@ expected in this parity scope.
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
 | **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Implemented over one CAS lifecycle on the selected SQLite/Postgres Session store. Every process freezes the stable ordinary Dream Agent id; publishing that id through the normal Agent surface customizes it without a Dream-specific configuration API. Transient transcript Files are purged at terminal cleanup. | canonical design: [`managed-dream.md`](../docs/design/managed-dream.md); protocol tests: `awaken-protocol-managed/tests/dreams.rs`; Rust cross-module E2E: `awaken-coordinator/tests/managed_dream_e2e.rs`; official SDK E2E: `managed_dream_e2e.ts`; SDK declaration gate: `conformance/sdk_surface_coverage_e2e.mjs` |
-| **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Docker and Podman resolve the selected base image to its exact local ID, build/reuse a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
+| **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Docker and Podman resolve the selected base image to its exact local ID and build/reuse a content-addressed derived image. Kubernetes uses an independently configured BuildKit builder plus shared registry and admits the capability only when both are configured. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; registry behavior: `managed_package_registry_e2e.mjs`; provider/cache/BuildKit side effects: `awaken-sandbox-container` cause-table tests |
 | **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions, ACP Sessions, Dreams, and Dream policies share the appropriate organization buckets. Files, non-Managed routes, and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
 | **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; stable jitter bounded by 15% of the interval, minimum 5 seconds, maximum 9 minutes) | Implemented with durable SQLite/Postgres Deployment/DeploymentRun records and atomic `(Deployment, scheduled_at)` claims. Capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses the official stable interval-derived bound. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | canonical design: [`managed-deployments.md`](../docs/design/managed-deployments.md); `routes::deployments::tests`; `managed_deployment_e2e.rs`; `management_deployment_schedule_e2e.mjs` |
 | **Automatic Dream policy** | Awaken extension, opt-in per `(Workspace, MemoryStore)`, default disabled; exact-version policy advance and Dream insert commit atomically, so multiple scheduler replicas submit one canonical job through the shared Managed periodic driver. | `automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path`; `concurrent_policy_ticks_claim_one_dream_across_replicas`; `dream_policy_api_projects_defaults_validates_and_survives_restart`; `managed_dream_e2e.rs` |
@@ -451,13 +465,13 @@ endpoint (`https://api.kimi.com/coding/v1/`, `kimi-for-coding`):
 | **Multi-turn context carryover** across a persistent session (real recall of turn-1 facts) | `managed_real_multiturn_e2e` (new) | ✅ |
 | **Dream consolidation quality** through the production provider executor (verified/stale facts, immutable source, isolated output, lifecycle/latency/usage metrics) | `managed_dream_real_eval_e2e.mjs` + [`MANAGED_AGENTS_LLM_EVALUATION.md`](MANAGED_AGENTS_LLM_EVALUATION.md) | ✅ thresholded live lane |
 | **Native Memory quality** (real tool write, HITL, durable commit, fresh-Session recall, precision/F1/contamination/latency/usage) | `managed_resources_e2e.mjs` | ✅ thresholded live lane |
-| **ACP Memory quality** (Kimi/OpenCode/Claude/Hermes writers × readers over one durable store, recall@k/precision/F1/contamination/retry/latency) | `acp_runtime_memory_matrix_e2e.mjs` | ◇ executable threshold gate; requires the pinned external CLI versions |
+| **ACP Memory quality** (Claude/Codex/Gemini/OpenCode/Hermes writers × readers over one durable store, recall@k/precision/F1/contamination/retry/latency) | `acp_runtime_memory_matrix_e2e.mjs`, `acp_runtime_profiles.test.mjs` | ◇ executable threshold gate; each selected runtime requires a CLI at or above the catalog's compatible minimum and its catalog-owned credential profile; `ACP_RUNTIMES=all ACP_MEMORY_REQUIRE_RUNTIMES=1` forbids skips |
 
 The live evaluation output is versioned machine-readable JSON prefixed by
 `AWAKEN_LLM_EVAL`; `AWAKEN_EVAL_ARTIFACT_DIR` persists it without credentials.
 The deterministic scorer has non-happy-path unit tests and a 256-state exhaustive
 model check. `conformance/managed_native_acp_causal_coverage_e2e.mjs` additionally
-gates ten Managed feature groups across Native, ACP, A2A, and negative partitions.
+gates eleven Managed feature groups across Native, ACP, A2A, and negative partitions.
 The Managed model-reference parser separately exhausts 1,323 open provider/API/
 endpoint/runtime combinations, including third-party providers and the explicit
 A2A executor-only boundary.

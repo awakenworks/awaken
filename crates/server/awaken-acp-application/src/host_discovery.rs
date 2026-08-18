@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_run_executor_acp::{AcpCli, AcpProbeCommand, AcpProbePredicate, known_acp_clis};
+use awaken_run_executor_acp::{
+    AcpCli, AcpProbeCommand, AcpProbePredicate, AcpVersion, known_acp_clis,
+};
 use awaken_runtime_contract::CredentialObservationState;
 use tokio::process::Command;
 
@@ -51,6 +53,58 @@ impl AcpProbeOutput {
             .find(|line| !line.is_empty())
             .map(str::to_string)
     }
+}
+
+/// Extract the first `major.minor.patch` triple from vendor-decorated version
+/// output such as `codex-cli 0.146.0` or `Hermes Agent v0.19.0 (...)`.
+fn parse_semver_triple(input: &str) -> Option<AcpVersion> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() {
+        if !bytes[start].is_ascii_digit() || start > 0 && bytes[start - 1].is_ascii_digit() {
+            start += 1;
+            continue;
+        }
+        let Some((major, first_dot)) = parse_number(bytes, start) else {
+            start += 1;
+            continue;
+        };
+        if bytes.get(first_dot) != Some(&b'.') {
+            start += 1;
+            continue;
+        }
+        let Some((minor, second_dot)) = parse_number(bytes, first_dot + 1) else {
+            start += 1;
+            continue;
+        };
+        if bytes.get(second_dot) != Some(&b'.') {
+            start += 1;
+            continue;
+        }
+        let Some((patch, _end)) = parse_number(bytes, second_dot + 1) else {
+            start += 1;
+            continue;
+        };
+        return Some(AcpVersion::new(major, minor, patch));
+    }
+    None
+}
+
+fn parse_number(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
+    let mut end = start;
+    let mut value = 0_u64;
+    while let Some(byte) = bytes.get(end).copied().filter(u8::is_ascii_digit) {
+        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
+        end += 1;
+    }
+    (end > start).then_some((value, end))
+}
+
+fn version_is_compatible(version: Option<&str>, minimum: AcpVersion) -> bool {
+    minimum == AcpVersion::new(0, 0, 0)
+        || version
+            .and_then(parse_semver_triple)
+            .is_some_and(|observed| observed >= minimum)
 }
 
 /// Read one top-level boolean from a probe's JSON object without introducing a
@@ -288,6 +342,19 @@ impl AcpDiscovery for AcpHostDiscovery {
             }
             Ok(output) => output.version(),
         };
+        if !version_is_compatible(version.as_deref(), cli.discovery.minimum_version) {
+            return AcpHostObservation {
+                cli_id: cli.id.to_string(),
+                display_name: cli.display_name.to_string(),
+                detection: AcpDetectionState::ProbeFailed,
+                version,
+                credential_state: None,
+                reason_code: Some("acp_version_unsupported".to_string()),
+                capability_state: None,
+                capability_fingerprint: None,
+                capability_reason_code: None,
+            };
+        }
 
         let login_output = match self.process.run(cli.discovery.login.command).await {
             Ok(output) => output,
@@ -449,6 +516,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decorated_versions_are_compared_as_semver_triples() {
+        // Decision table:
+        // V1 exact minimum / decorated output -> accepted
+        // V2 newer minor or major            -> accepted (forward compatible)
+        // V3 older patch                     -> rejected
+        // V4 absent/malformed/overflow       -> rejected
+        let minimum = AcpVersion::new(1, 18, 12);
+        for version in [
+            "1.18.12",
+            "opencode 1.18.12",
+            "OpenCode v1.19.0 (build 7)",
+            "OpenCode 2.0.0",
+        ] {
+            assert!(
+                version_is_compatible(Some(version), minimum),
+                "V1/V2 {version}"
+            );
+        }
+        assert!(
+            !version_is_compatible(Some("opencode 1.18.11"), minimum),
+            "V3"
+        );
+        for version in [
+            None,
+            Some("opencode unknown"),
+            Some("opencode 1.18"),
+            Some("18446744073709551616.18.12"),
+        ] {
+            assert!(!version_is_compatible(version, minimum), "V4 {version:?}");
+        }
+        assert!(
+            version_is_compatible(None, AcpVersion::new(0, 0, 0)),
+            "test-only catalog rows may explicitly disable the version floor"
+        );
+    }
+
     #[tokio::test]
     async fn profile_rules_classify_login_without_cli_id_branches() {
         // Cause graph:
@@ -462,19 +566,25 @@ mod tests {
         // D3 Gemini exit 41    -> LoginRequired
         // D4 OpenCode 0 creds  -> LoginRequired
         let probe = ScriptedProbe::default()
-            .with(&["codex", "--version"], Ok(output(0, "codex 1", "")))
+            .with(
+                &["codex", "--version"],
+                Ok(output(0, "codex-cli 0.146.0", "")),
+            )
             .with(
                 &["codex", "login", "status"],
                 Ok(output(0, "Logged in using ChatGPT", "")),
             )
-            .with(&["claude", "--version"], Ok(output(0, "claude 2", "")))
+            .with(
+                &["claude", "--version"],
+                Ok(output(0, "2.1.221 (Claude Code)", "")),
+            )
             .with(
                 &["claude", "auth", "status", "--json"],
                 Ok(output(1, r#"{"loggedIn":false}"#, "")),
             )
-            .with(&["gemini", "--version"], Ok(output(0, "3", "")))
+            .with(&["gemini", "--version"], Ok(output(0, "0.53.1", "")))
             .with(&["gemini", "--list-sessions"], Ok(output(41, "", "auth")))
-            .with(&["opencode", "--version"], Ok(output(0, "4", "")))
+            .with(&["opencode", "--version"], Ok(output(0, "1.18.12", "")))
             .with(
                 &["opencode", "auth", "list"],
                 Ok(output(0, "0 credentials", "")),
@@ -519,7 +629,7 @@ mod tests {
         assert_eq!(broken.credential_state, None, "D2");
 
         let unknown_probe = ScriptedProbe::default()
-            .with(&["gemini", "--version"], Ok(output(0, "gemini 3", "")))
+            .with(&["gemini", "--version"], Ok(output(0, "gemini 0.53.1", "")))
             .with(
                 &["gemini", "--list-sessions"],
                 Ok(output(9, "", "unexpected")),
@@ -533,6 +643,31 @@ mod tests {
             Some(CredentialObservationState::ProbeFailed),
             "D3"
         );
+    }
+
+    #[tokio::test]
+    async fn outdated_or_unparseable_versions_fail_before_login_probe() {
+        // The probe intentionally contains no login response. Reaching the
+        // login probe would therefore change this result to Detected, proving
+        // the version floor is enforced before capability/login publication.
+        for (raw, case) in [
+            ("opencode 1.18.11", "old"),
+            ("development build", "unknown"),
+        ] {
+            let probe =
+                ScriptedProbe::default().with(&["opencode", "--version"], Ok(output(0, raw, "")));
+            let observed = AcpHostDiscovery::with_process(Arc::new(probe))
+                .discover(acp_cli("opencode").unwrap())
+                .await;
+            assert_eq!(observed.detection, AcpDetectionState::ProbeFailed, "{case}");
+            assert_eq!(observed.version.as_deref(), Some(raw), "{case}");
+            assert_eq!(
+                observed.reason_code.as_deref(),
+                Some("acp_version_unsupported"),
+                "{case}"
+            );
+            assert_eq!(observed.credential_state, None, "{case}");
+        }
     }
 
     #[cfg(unix)]

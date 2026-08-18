@@ -193,7 +193,9 @@ const driftedAnthropicContracts = {};
 const visitedAnthropicContracts = new Set();
 const mappedTests = new Set();
 for (const surface of surfaces) {
-  const packageRoot = resolve(E2E, 'node_modules', surface.package);
+  const packageRoot = surface.package === '@anthropic-ai/sdk' && process.env.ANTHROPIC_SDK_PACKAGE_ROOT
+    ? resolve(process.env.ANTHROPIC_SDK_PACKAGE_ROOT)
+    : resolve(E2E, 'node_modules', surface.package);
   const declarations = declarationClosure(packageRoot, surface.roots);
   assert.ok(declarations.length > 0, `${surface.package} declaration closure is empty`);
   for (const declaration of declarations) {

@@ -277,7 +277,8 @@ fn workspace_publisher_can_discover_but_cannot_administer_model_supply() {
 #[test]
 fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
     // Cause-effect graph: one product-owned profile (C1) + hosted Workspace
-    // role (C2) -> ordinary Workspace/API-key administration and model read
+    // role (C2) -> ordinary Workspace/API-key administration, model read, and
+    // the separately named hosted Tunnel administration action
     // (E1), with no connect/write model-supply grant (E2).
     //
     // Decision table:
@@ -306,6 +307,7 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
             "awaken.workspace::model_supply.read",
             "awaken.workspace::file.*",
             "awaken.workspace::skill.*",
+            "awaken.workspace::tunnel.manage",
         ]
     );
     assert!(

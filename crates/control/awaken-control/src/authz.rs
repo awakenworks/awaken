@@ -145,10 +145,11 @@ use bootstrap::bootstrap_admin_token;
 use profiles::{AUTHORIZATION_PROFILE_EPOCH, AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE};
 pub use profiles::{
     AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_POLICY_NAMESPACE,
-    AWAKEN_WORKSPACE_PUBLISHER_ROLE, AWAKEN_WORKSPACE_USER_ROLE,
-    HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
-    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
-    hosted_runtime_authorization_profile, workspace_authorization_profile,
+    AWAKEN_WORKSPACE_PUBLISHER_ROLE, AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE,
+    AWAKEN_WORKSPACE_USER_ROLE, HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+    HOSTED_RUNTIME_POLICY_NAMESPACE, HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
+    HOSTED_RUNTIME_WORKSPACE_USER_ROLE, hosted_runtime_authorization_profile,
+    workspace_authorization_profile,
 };
 use profiles::{
     LEGACY_MANAGEMENT_POLICY_NAMESPACE, LEGACY_RESOURCE_POLICY_NAMESPACE, qualify_action,
@@ -192,6 +193,7 @@ const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
+const TUNNEL_MANAGE: &str = "tunnel.manage";
 #[cfg(test)]
 const RUN_CREATE: &str = "run.create";
 #[cfg(test)]
@@ -1149,6 +1151,18 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
+        },
+    ),
+    // MCP Tunnels are Cloud-owned resources exposed through the canonical
+    // Management router.  Keep their public ACL in the same Workspace policy
+    // namespace as the injected application port: reads may inspect only the
+    // authenticated Workspace and every lifecycle operation is a write.  An
+    // absent Cloud application still leaves the routes unmounted.
+    RoutePolicyDescriptor::control(
+        "/v1/tunnels",
+        RouteFamilyPolicy::Scoped {
+            read: TUNNEL_MANAGE,
+            write: TUNNEL_MANAGE,
         },
     ),
     RoutePolicyDescriptor::control(

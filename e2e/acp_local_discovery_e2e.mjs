@@ -14,6 +14,7 @@
 // | L4 | absent | any | any | supported diagnostic row, not detected |
 // | L5 | present, not executable | any | any | version probe failed |
 // | L6 | present, times out | any | any | version probe failed |
+// | L7 | present, below minimum | any | any | unsupported before login/route |
 //
 // Publication decision table:
 // | Rule | policy | backend/model | effect |
@@ -161,6 +162,9 @@ EOF
 done
 WRAPPER
 /bin/chmod 755 "$prefix/node_modules/.bin/codex-acp" || exit 23
+/bin/cat > "$prefix/package.json" <<'MANIFEST'
+{"dependencies":{"@agentclientprotocol/codex-acp":"1.1.9"}}
+MANIFEST
 printf '%s\n' "$package" >> ${JSON.stringify(NPM_LOG)}
 `);
 }
@@ -339,6 +343,20 @@ async function main() {
     'acp_version_probe_failed',
     'L6',
   );
+  executable('opencode', `#!/bin/sh
+case "$1 $2" in
+  "--version ") echo "opencode 1.18.11" ;;
+  "auth list") echo "1 credential" ;;
+  *) exit 9 ;;
+esac
+`);
+  const outdatedDoctor = runDoctor(binary);
+  assert.equal(outdatedDoctor.status, 0, outdatedDoctor.stderr);
+  const outdated = JSON.parse(outdatedDoctor.stdout).acp.find((row) => row.id === 'opencode');
+  assert.equal(outdated.detected, false, 'L7');
+  assert.equal(outdated.login_state, null, 'L7: login is intentionally not probed');
+  assert.equal(outdated.reason_code, 'acp_version_unsupported', 'L7');
+  assert.equal(outdated.version, 'opencode 1.18.11', 'L7');
   executable('opencode', opencodeContents);
 
   const doctor = runDoctor(binary);

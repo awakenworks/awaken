@@ -1116,9 +1116,9 @@ pub enum OutboundKind {
     AgentMessage { content: Vec<ContentBlock> },
     /// The agent's extended-thinking block (`agent.thinking`) — `{id, type,
     /// processed_at}`, no payload, mirroring the SDK's
-    /// `BetaManagedAgentsAgentThinkingEvent`. Wire type defined for catalog
-    /// completeness; not yet emitted — awaken's stream carries no thinking channel
-    /// (see the conformance matrix's `agent.thinking` gap).
+    /// `BetaManagedAgentsAgentThinkingEvent`. Provider reasoning is projected
+    /// as this contentless durable marker; reasoning text never crosses the
+    /// public Managed wire.
     #[serde(rename = "agent.thinking")]
     AgentThinking {},
     #[serde(rename = "agent.tool_use")]
@@ -1176,9 +1176,9 @@ pub enum OutboundKind {
     },
     /// The session is recovering from a transient error and is rescheduled for
     /// execution (`session.status_rescheduled`) — `{id, type, processed_at}`, no
-    /// payload. Wire type defined for catalog completeness; not yet emitted — the
-    /// runtime collapses transient retries below the projection seam (see the
-    /// conformance matrix's `session.status_rescheduled` gap).
+    /// payload. Retryable inference errors emit this durable transition before
+    /// the attempt is rescheduled, so list and reconnect clients observe the
+    /// same recovery state.
     #[serde(rename = "session.status_rescheduled")]
     SessionStatusRescheduled {},
     /// The session reached its irreversible terminal state (emitted when the
