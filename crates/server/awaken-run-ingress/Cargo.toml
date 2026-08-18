@@ -30,7 +30,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 rusqlite = { workspace = true, optional = true }
 awaken-scoped-migration.workspace = true
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
-async-nats = { version = "0.38", optional = true }
+async-nats = { version = "0.50", optional = true }
 futures-lite = { version = "2", optional = true }
 
 [features]

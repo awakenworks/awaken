@@ -303,7 +303,7 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::types::{ModelConfig, ModelInferenceGeo};
+    use crate::types::ModelInferenceGeo;
 
     struct FakeRepository {
         agent: Mutex<Option<Agent>>,
