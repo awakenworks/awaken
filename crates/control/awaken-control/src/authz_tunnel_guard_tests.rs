@@ -20,6 +20,7 @@ async fn tunnel_routes_enter_the_workspace_pep_and_stamp_its_scope() {
             "/v1/tunnels/{tunnel_id}/rotate_token",
             axum::routing::post(scope_echo),
         )
+        .route("/v1/organizations/tunnels", axum::routing::get(scope_echo))
         .layer(axum::middleware::from_fn_with_state(iam, management_guard));
 
     let (missing, error) = call(&app, "GET", "/v1/tunnels", None, None).await;
@@ -37,4 +38,11 @@ async fn tunnel_routes_enter_the_workspace_pep_and_stamp_its_scope() {
     )
     .await;
     assert_eq!(rotated, StatusCode::UNAUTHORIZED, "rotate: {error}");
+
+    // The deprecated organization-shaped migration surface intentionally keeps
+    // its Admin API-key contract, but the token's one Workspace remains the
+    // deterministic target; no Organization-to-arbitrary-Workspace rewrite.
+    let (legacy, scope) = call(&app, "GET", "/v1/organizations/tunnels", Some(&admin), None).await;
+    assert_eq!(legacy, StatusCode::OK, "legacy: {scope}");
+    assert_eq!(scope["workspace"], json!("wrkspc_tunnel"));
 }

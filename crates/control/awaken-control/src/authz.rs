@@ -1167,6 +1167,16 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
             write: TUNNEL_MANAGE,
         },
     ),
+    // Deprecated organization-shaped Tunnel wire. The credential remains
+    // workspace-bound in Awaken, providing a deterministic migration mapping
+    // without selecting an arbitrary Workspace from an Organization.
+    RoutePolicyDescriptor::control(
+        "/v1/organizations/tunnels",
+        RouteFamilyPolicy::Scoped {
+            read: TUNNEL_MANAGE,
+            write: TUNNEL_MANAGE,
+        },
+    ),
     RoutePolicyDescriptor::control(
         "/v1/agents",
         RouteFamilyPolicy::Scoped {
