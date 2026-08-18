@@ -99,6 +99,7 @@ pub fn awaken_worker_transport_security::WorkerUpstream::client(&self) -> &reqwe
 pub fn awaken_worker_transport_security::WorkerUpstream::http_client(&self) -> reqwest::async_impl::client::Client
 pub fn awaken_worker_transport_security::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_worker_transport_security::WorkerUpstream::remote(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_worker_transport_security::WorkerSigningCredential>) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_worker_transport_security::WorkerUpstream::remote_with_ca_certificate(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_worker_transport_security::WorkerSigningCredential>, &[u8]) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_worker_transport_security::WorkerUpstream::request_authorizer(&self) -> alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>
 pub fn awaken_worker_transport_security::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
 pub fn awaken_worker_transport_security::WorkerUpstream::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>) -> Self
