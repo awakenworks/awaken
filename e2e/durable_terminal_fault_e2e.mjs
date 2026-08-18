@@ -18,10 +18,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
-import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-
-const FAKE_KEY = 'sk-fake-durable-fault'; // awaken-allow: secret
+import {
+  spawnServer, stopServer, waitForPort, pass, realServerEnv, startUpstream,
+} from './harness.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38620);
 
 function frames(raw) {
@@ -42,13 +41,11 @@ function frames(raw) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-fault-'));
-  const upstream = await startFakeAnthropic(FAKE_KEY, { alwaysFail: true });
-  process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-  process.env.ANTHROPIC_MODEL = 'fake-haiku';
-  process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
+  const upstream = await startUpstream('default', { alwaysFail: true });
   const { server, baseUrl: base } = spawnServer('real', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_STORAGE_DIR: dir,
+    ...realServerEnv('default', upstream),
   });
   try {
     await waitForPort(PORT);

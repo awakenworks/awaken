@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
     ChildRunCancellation, DelegationExecutionError, DelegationRequest, DelegationResume,
@@ -29,6 +30,17 @@ use serde_json::Value;
 struct NativeDelegationContinuation {
     kind: &'static str,
     child_run_id: awaken_agent_contract::agent::run::Id,
+}
+
+fn child_seed_message(
+    child_run_id: &awaken_agent_contract::agent::run::Id,
+    input: String,
+) -> Message {
+    Message::text(
+        MessageId(format!("{}-input", child_run_id.0)),
+        Role::User,
+        input,
+    )
 }
 
 /// Runs delegates behind `agent_run`: local and remote Agents share the same
@@ -297,9 +309,13 @@ impl RunDelegationService for HostRunDelegationService {
         self.native_boundary(
             snapshot,
             ChildRunRequest {
+                // The child Run id is the durable idempotency identity, so its
+                // synthesized seed message must also be stable. A generic
+                // String -> RunInput conversion mints a process-local message
+                // id and makes the same child dispatch differ after restart.
+                seed: Some(child_seed_message(&request.child_run_id, input).into()),
                 run_id: request.child_run_id,
                 origin: request.origin,
-                seed: Some(input.into()),
                 resume: None,
                 parent_thread_id: request.parent_thread_id,
             },
@@ -402,6 +418,18 @@ mod durable_cancel_tests {
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_store_inmem::MemoryCommitCoordinator;
     use std::collections::HashSet;
+
+    #[test]
+    fn delegated_child_seed_identity_is_stable_across_process_reconstruction() {
+        let child = RunId("stable-child".into());
+        let first = child_seed_message(&child, "research".into());
+        let reconstructed = child_seed_message(&child, "research".into());
+        assert_eq!(first, reconstructed);
+        assert_ne!(
+            first.id,
+            child_seed_message(&RunId("other-child".into()), "research".into()).id
+        );
+    }
 
     struct AwaitPermission;
 

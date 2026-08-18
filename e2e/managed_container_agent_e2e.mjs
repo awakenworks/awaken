@@ -29,7 +29,6 @@ import { cargoExecutable } from './cargo_binary.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
-const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const MARKER = 'CONTAINER-AGENT-OK';
 const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
@@ -384,6 +383,16 @@ function cleanupTestContainers() {
   }
 }
 
+async function waitForTestContainersToBeReaped(timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  let containers = testContainers({ all: true });
+  while (containers.length > 0 && Date.now() < deadline) {
+    await sleep(100);
+    containers = testContainers({ all: true });
+  }
+  assert.deepEqual(containers, [], 'Session release must reap its container within the bound');
+}
+
 // Build the canonical production image, but omit network-fetched ACP packages: this
 // hermetic dev scenario supplies a tiny Node newline fixture through its explicit
 // fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
@@ -498,12 +507,10 @@ async function main() {
     await waitForPort(PORT, 60_000, brain);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
     if (process.env.AWAKEN_E2E_PACKAGE_ONLY === '1') {
-      await client.post('/v1/skills', {
-        headers: SKILL_HEADERS,
-        body: {
-          id: 'delivered-container',
-          content: '---\ndescription: package e2e skill\nenvironment: filesystem\n---\nPACKAGE-E2E-SKILL',
-        },
+      await client.beta.skills.create({
+        files: [await toFile(Buffer.from(
+          '---\nname: delivered-container\ndescription: package e2e skill\nenvironment: filesystem\n---\nPACKAGE-E2E-SKILL',
+        ), 'SKILL.md')],
       });
       const registryOnly = process.env.AWAKEN_E2E_PACKAGE_REGISTRY_ONLY === '1';
       await exercisePackageManagerMatrix(client, { registryOnly });
@@ -581,12 +588,10 @@ async function main() {
       body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
       headers: MEMORY_HEADERS,
     });
-    await client.post('/v1/skills', {
-      headers: SKILL_HEADERS,
-      body: {
-        id: 'delivered-container',
-        content: '---\ndescription: delivered container skill\nenvironment: filesystem\n---\nCONTAINER-DELIVERED-SKILL-OK',
-      },
+    const deliveredSkillRecord = await client.beta.skills.create({
+      files: [await toFile(Buffer.from(
+        '---\nname: delivered-container\ndescription: delivered container skill\nenvironment: filesystem\n---\nCONTAINER-DELIVERED-SKILL-OK',
+      ), 'SKILL.md')],
     });
 
     const session = await client.beta.sessions.create({
@@ -632,7 +637,7 @@ async function main() {
       /CONTAINER-SKILL-OK/,
       'the repository-backed workspace skill must be imported into the Session container',
     );
-    const deliveredSkill = '/workspace/.skills/delivered-container/SKILL.md';
+    const deliveredSkill = `/workspace/.skills/${deliveredSkillRecord.id}/SKILL.md`;
     assert.match(
       execFileSync(ENGINE, ['exec', container, 'cat', deliveredSkill], { encoding: 'utf8' }),
       /CONTAINER-DELIVERED-SKILL-OK/,
@@ -647,13 +652,24 @@ async function main() {
       'awaken-skill-check',
       deliveredSkill,
     ]);
-    assert.equal(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/notes/seed.txt'], {
-        encoding: 'utf8',
-      }),
-      'CONTAINER-MEMORY-SEED',
-      'the governed memory filesystem must hydrate into the Session container',
+    const memorySeed = spawnSync(
+      ENGINE,
+      ['exec', container, 'cat', '/mnt/notes/seed.txt'],
+      { encoding: 'utf8' },
     );
+    const workspaceFiles = memorySeed.status === 0
+      ? ''
+      : execFileSync(
+          ENGINE,
+          ['exec', container, 'find', '/workspace', '-maxdepth', '4', '-type', 'f', '-print'],
+          { encoding: 'utf8' },
+        );
+    assert.equal(
+      memorySeed.status,
+      0,
+      `the governed memory filesystem must hydrate into the Session container; files=${workspaceFiles}`,
+    );
+    assert.equal(memorySeed.stdout, 'CONTAINER-MEMORY-SEED');
 
     const liveFile = await client.beta.files.upload({
       file: await toFile(Buffer.from('CONTAINER-LIVE-FILE-OK'), 'live.txt'),
@@ -754,7 +770,7 @@ async function main() {
       container,
       'sh',
       '-c',
-      'printf %s CONTAINER-MEMORY-OK > /workspace/.mnt/notes/container.txt',
+      'printf %s CONTAINER-MEMORY-OK > /mnt/notes/container.txt',
     ]);
     // Copy-backed MemoryRepository mounts reconcile only at the Session's terminal
     // release edge. Read-only resource APIs must never acquire this write side effect.
@@ -764,7 +780,7 @@ async function main() {
     // no duplicate File. This E2E covers O2 and relies on the Rust idempotency test
     // for O3; querying only after delete keeps the read plane side-effect free (O1).
     await client.beta.sessions.delete(session.id, { betas: BETAS });
-    assert.equal(testContainers({ all: true }).length, 0, 'Session release must reap its container');
+    await waitForTestContainersToBeReaped();
     const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
     const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
     assert.ok(artifact, `terminal release must harvest container output: ${JSON.stringify(artifacts)}`);

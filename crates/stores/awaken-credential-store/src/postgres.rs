@@ -467,17 +467,16 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 "Managed credential mutation has no durable pending fact".into(),
             ))
         })?;
-        if durable != *pending || pending.phase != ManagedCredentialMutationPhase::Ready {
-            if durable.phase != ManagedCredentialMutationPhase::Reclaiming
-                || durable.operation_id != pending.operation_id
-            {
-                return Err(ManagedCredentialMutationError::Store(
-                    CredentialError::MutationConflict(
-                        "Managed credential mutation is not ready or does not match its durable fact"
-                            .into(),
-                    ),
-                ));
-            }
+        if (durable != *pending || pending.phase != ManagedCredentialMutationPhase::Ready)
+            && (durable.phase != ManagedCredentialMutationPhase::Reclaiming
+                || durable.operation_id != pending.operation_id)
+        {
+            return Err(ManagedCredentialMutationError::Store(
+                CredentialError::MutationConflict(
+                    "Managed credential mutation is not ready or does not match its durable fact"
+                        .into(),
+                ),
+            ));
         }
 
         // Lock the aggregate root before any child row. Every root mutation uses

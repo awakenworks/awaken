@@ -198,9 +198,6 @@ async function main() {
       model: { id: MODEL },
       system: 'You are a test agent.',
       max_steps: 2,
-      plugins: ['compact'],
-      plugin_config: { compact: {}, acp: {} },
-      compaction: { keep_recent: 2 },
     });
     assert.equal(r.status, 200, `agent config: ${JSON.stringify(r.json)}`);
 
@@ -337,7 +334,7 @@ async function main() {
     const events = [];
     for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
     const msg = events.find((e) => e.type === 'agent.message');
-    assert.ok(msg, `expected an agent.message in ${events.map((e) => e.type)}`);
+    assert.ok(msg, `expected an agent.message in ${JSON.stringify(events)}`);
     const text = (msg.content ?? []).map((c) => c.text ?? '').join('');
     assert.ok(
       text.includes('FAKE:resolve me'),
@@ -417,8 +414,8 @@ async function main() {
 
     // The rejected replacement left the connected endpoint unchanged. The
     // connection-write reconciler republishes the reserved Admin Assistant
-    // against that endpoint. Production keeps management tools approval-gated;
-    // the dedicated adr0052_admin_run_e2e scenario owns their executable chain.
+    // against that endpoint. It is an ordinary Agent with no hidden policy
+    // overlay, so this composition must drive its complete management tool chain.
     const adminDeadline = Date.now() + 10_000;
     let projectedAdmin;
     do {
@@ -439,18 +436,23 @@ async function main() {
       adminEvents.push(event);
     }
     const adminTranscript = JSON.stringify(adminEvents);
-    // Permission decision table: management tool + no operator approval ->
-    // agent.tool_use(always_ask) followed by requires_action, with no side effect.
-    assert.ok(
-      adminTranscript.includes('admin_get_platform_capabilities'),
-      `production Admin Assistant requested its first management tool: ${adminTranscript}`,
-    );
+    for (const tool of [
+      'admin_get_platform_capabilities',
+      'admin_draft_agent',
+      'admin_patch_agent',
+      'admin_validate_agent',
+      'admin_draft_environment',
+      'admin_explain_console',
+    ]) {
+      assert.ok(adminTranscript.includes(tool), `Admin Assistant invoked ${tool}: ${adminTranscript}`);
+    }
     assert.ok(
       adminEvents.some((event) => event.type === 'session.status_idle'
-        && event.stop_reason?.type === 'requires_action'),
-      `production Admin Assistant stopped for approval: ${adminTranscript}`,
+        && event.stop_reason?.type === 'end_turn'),
+      `production Admin Assistant completed naturally: ${adminTranscript}`,
     );
-    console.log('ok: production Admin Assistant exposes management tools through the approval gate');
+    assert.ok(adminTranscript.includes('ADMIN-RUN-DONE'), adminTranscript);
+    console.log('ok: production Admin Assistant completes its ordinary audited management tool chain');
 
     // Exercise the production embedded Resource Catalog adapter through the same
     // Managed Session edge used by cloud mode. Only the persistence adapter differs.

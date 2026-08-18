@@ -92,7 +92,7 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
     json_call(
         app,
         "GET",
-        &format!("/v1/sessions/{session}/events"),
+        &format!("/v1/sessions/{session}/events?limit=500"),
         serde_json::Value::Null,
     )
     .await
@@ -109,7 +109,7 @@ async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::
     json_call(
         app,
         "GET",
-        &format!("/v1/sessions/{session}/events"),
+        &format!("/v1/sessions/{session}/events?limit=500"),
         serde_json::Value::Null,
     )
     .await
@@ -250,7 +250,7 @@ async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json
     json_call(
         app,
         "GET",
-        &format!("/v1/sessions/{session}/events"),
+        &format!("/v1/sessions/{session}/events?limit=500"),
         serde_json::Value::Null,
     )
     .await

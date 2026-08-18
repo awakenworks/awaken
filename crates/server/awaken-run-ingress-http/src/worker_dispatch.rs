@@ -601,9 +601,7 @@ async fn verify_session_realization_authority(
     verify_worker_identity(worker, identity)
         .map_err(HostError::bad_request)
         .map_err(RealizationHttpError::from)?;
-    let authority = claim_authority(service, worker, Some(identity), false)
-        .await
-        .map_err(RealizationHttpError::from)?;
+    let authority = claim_authority(service, worker, Some(identity), false).await?;
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
         || !awaken_session_contract::realization_lease_is_live_at(
@@ -761,8 +759,7 @@ async fn activate_session_realization(
             &request.command.session_id,
             &request.command.lease,
         )
-        .await
-        .map_err(RealizationHttpError::from)?;
+        .await?;
         let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .activate_session_realization(request.command)
@@ -789,8 +786,7 @@ async fn acknowledge_session_realization(
             &request.command.session_id,
             &request.command.lease,
         )
-        .await
-        .map_err(RealizationHttpError::from)?;
+        .await?;
         let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .acknowledge_session_realization(request.command)
@@ -815,8 +811,7 @@ async fn fail_session_realization(
             &request.command.session_id,
             &request.command.lease,
         )
-        .await
-        .map_err(RealizationHttpError::from)?;
+        .await?;
         session_control(&service)
             .map_err(RealizationHttpError::from)?
             .fail_session_realization(request.command)

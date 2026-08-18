@@ -163,6 +163,10 @@ pub fn awaken_session_contract::DreamModelInput::into_config(self) -> awaken_ses
 pub enum awaken_session_contract::DreamModelSpeed
 pub awaken_session_contract::DreamModelSpeed::Fast
 pub awaken_session_contract::DreamModelSpeed::Standard
+pub enum awaken_session_contract::DreamOutputBehavior
+pub awaken_session_contract::DreamOutputBehavior::CreateNew
+pub awaken_session_contract::DreamOutputBehavior::UpdateExisting
+pub awaken_session_contract::DreamOutputBehavior::UpdateExisting::memory_store_id: alloc::string::String
 pub enum awaken_session_contract::DreamPolicyApplicationError
 pub awaken_session_contract::DreamPolicyApplicationError::BadRequest(alloc::string::String)
 pub awaken_session_contract::DreamPolicyApplicationError::Conflict(alloc::string::String)
@@ -600,6 +604,7 @@ pub awaken_session_contract::Dream::inputs: alloc::vec::Vec<awaken_session_contr
 pub awaken_session_contract::Dream::instructions: core::option::Option<alloc::string::String>
 pub awaken_session_contract::Dream::kind: &'static str
 pub awaken_session_contract::Dream::model: awaken_session_contract::DreamModelConfig
+pub awaken_session_contract::Dream::output_behavior: awaken_session_contract::DreamOutputBehavior
 pub awaken_session_contract::Dream::outputs: alloc::vec::Vec<awaken_session_contract::DreamOutput>
 pub awaken_session_contract::Dream::session_id: core::option::Option<alloc::string::String>
 pub awaken_session_contract::Dream::status: awaken_session_contract::DreamStatus
@@ -608,6 +613,7 @@ pub struct awaken_session_contract::DreamCreateParams
 pub awaken_session_contract::DreamCreateParams::inputs: alloc::vec::Vec<awaken_session_contract::DreamInput>
 pub awaken_session_contract::DreamCreateParams::instructions: core::option::Option<alloc::string::String>
 pub awaken_session_contract::DreamCreateParams::model: awaken_session_contract::DreamModelInput
+pub awaken_session_contract::DreamCreateParams::output_behavior: awaken_session_contract::DreamOutputBehavior
 pub struct awaken_session_contract::DreamError
 pub awaken_session_contract::DreamError::kind: alloc::string::String
 pub awaken_session_contract::DreamError::message: alloc::string::String
@@ -659,6 +665,7 @@ pub awaken_session_contract::DreamProcessRecord::created_at: u64
 pub awaken_session_contract::DreamProcessRecord::ended_at: core::option::Option<u64>
 pub awaken_session_contract::DreamProcessRecord::error: core::option::Option<awaken_session_contract::DreamProcessFailure>
 pub awaken_session_contract::DreamProcessRecord::model: awaken_session_contract::DreamModelConfig
+pub awaken_session_contract::DreamProcessRecord::output_behavior: awaken_session_contract::DreamOutputBehavior
 pub awaken_session_contract::DreamProcessRecord::policy_key: core::option::Option<(alloc::string::String, alloc::string::String)>
 pub awaken_session_contract::DreamProcessRecord::process_id: alloc::string::String
 pub awaken_session_contract::DreamProcessRecord::request_guidance: core::option::Option<alloc::string::String>
@@ -1098,6 +1105,8 @@ pub awaken_session_contract::SessionModelOverride::publication: core::option::Op
 pub struct awaken_session_contract::SessionModelPublication
 pub awaken_session_contract::SessionModelPublication::candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub awaken_session_contract::SessionModelPublication::primary: awaken_runtime_contract::resolved::ResolvedModelCandidate
+impl awaken_session_contract::SessionModelPublication
+pub fn awaken_session_contract::SessionModelPublication::validate_for_workspace(&self, &str) -> core::result::Result<(), awaken_session_contract::SessionModelResolutionError>
 pub struct awaken_session_contract::SessionModelUsage
 pub awaken_session_contract::SessionModelUsage::cache_creation_tokens: u64
 pub awaken_session_contract::SessionModelUsage::cache_read_tokens: u64
@@ -1243,11 +1252,15 @@ pub fn awaken_session_contract::StepOutcome::awaiting(alloc::vec::Vec<awaken_age
 pub fn awaken_session_contract::StepOutcome::delegated_runs(&self) -> &[awaken_session_contract::DelegatedRun]
 pub fn awaken_session_contract::StepOutcome::ended(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::EndCause, bool, bool) -> Self
 pub fn awaken_session_contract::StepOutcome::failure(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Failure>
+pub fn awaken_session_contract::StepOutcome::model_requests(&self) -> &[awaken_runtime_contract::llm::ModelRequestObservation]
 pub fn awaken_session_contract::StepOutcome::pending(&self) -> core::option::Option<&awaken_session_contract::Pending>
+pub fn awaken_session_contract::StepOutcome::rescheduled_delegated_run_ids(&self) -> &alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub fn awaken_session_contract::StepOutcome::run_id(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Id>
 pub fn awaken_session_contract::StepOutcome::state(&self) -> &awaken_agent_contract::agent::run::RunState
 pub fn awaken_session_contract::StepOutcome::terminal_event(&self) -> awaken_agent_contract::event::agent::Fact
 pub fn awaken_session_contract::StepOutcome::with_delegated_runs(self, alloc::vec::Vec<awaken_session_contract::DelegatedRun>) -> Self
+pub fn awaken_session_contract::StepOutcome::with_model_requests(self, alloc::vec::Vec<awaken_runtime_contract::llm::ModelRequestObservation>) -> Self
+pub fn awaken_session_contract::StepOutcome::with_rescheduled_delegated_runs(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self
 pub fn awaken_session_contract::StepOutcome::with_run_id(self, awaken_agent_contract::agent::run::Id) -> Self
 pub struct awaken_session_contract::ToolPermissionDecision
 pub awaken_session_contract::ToolPermissionDecision::allow: bool
@@ -1347,6 +1360,7 @@ pub fn awaken_session_contract::SessionRuntime::end_session<'life0, 'life1, 'asy
 pub fn awaken_session_contract::SessionRuntime::execute_terminal_cleanup<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionCleanupCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionCleanupCompletion, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::install_environment_binding_sink(&self, alloc::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>)
 pub fn awaken_session_contract::SessionRuntime::install_expected_environment_binding(&self, &str, core::option::Option<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::RunError>
+pub fn awaken_session_contract::SessionRuntime::install_session_baseline(&self, &str, &awaken_session_contract::SessionBaseline) -> core::result::Result<(), awaken_session_contract::RunError>
 pub fn awaken_session_contract::SessionRuntime::install_session_realization_lease(&self, &str, awaken_session_contract::SessionRealizationLease)
 pub fn awaken_session_contract::SessionRuntime::install_session_request_context(&self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_session_contract::RunError>
 pub fn awaken_session_contract::SessionRuntime::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

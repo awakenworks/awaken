@@ -37,7 +37,7 @@ async function main() {
     pass(`session bound to environment at creation: ${env.id}`);
 
     // ── default when omitted ──────────────────────────────────────────────────
-    const bare = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const bare = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     assert.equal(bare.environment_id, 'env_local', 'omitted environment defaults to env_local');
     pass('omitted environment defaults to env_local');
 

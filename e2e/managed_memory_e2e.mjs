@@ -37,6 +37,7 @@ async function main() {
     });
     const session = () => client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       betas: BETAS,
       resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
     });

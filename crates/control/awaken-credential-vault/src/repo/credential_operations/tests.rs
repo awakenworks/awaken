@@ -5,43 +5,10 @@ use super::*;
 use crate::{CredentialKind, InMemorySecretStore, materialize};
 use awaken_agent_contract::RedactedString;
 
-#[derive(Default)]
-struct RecordingRolloutTarget {
-    fail: AtomicBool,
-    events: std::sync::Mutex<Vec<ManagedCredentialRollout>>,
-}
-
-#[async_trait::async_trait]
-impl ManagedCredentialRolloutTarget for RecordingRolloutTarget {
-    async fn rollout(
-        &self,
-        event: &ManagedCredentialRollout,
-    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(ManagedCredentialAdoptionError::Unavailable(
-                "service controller unavailable".into(),
-            ));
-        }
-        self.events.lock().unwrap().push(event.clone());
-        Ok(ManagedCredentialAdoptionProgress::Converged)
-    }
-}
-
 struct FaultyDeleteStore {
     inner: InMemorySecretStore,
     fail_before_delete: AtomicBool,
     lose_first_response: AtomicBool,
-}
-
-struct PoisonGetStore {
-    inner: InMemorySecretStore,
-    poison: std::sync::Mutex<Option<crate::SecretRef>>,
-}
-
-struct AmbiguousManagedPutStore {
-    inner: InMemorySecretStore,
-    put_landed: tokio::sync::Barrier,
-    release_response: tokio::sync::Barrier,
 }
 
 struct GatedCredentialRepo {
@@ -147,52 +114,6 @@ impl SecretStore for FaultyDeleteStore {
             return Err(CredentialError::Storage("delete response lost".into()));
         }
         Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretStore for PoisonGetStore {
-    async fn put(
-        &self,
-        r: &crate::SecretRef,
-        secret: RedactedString,
-    ) -> Result<(), CredentialError> {
-        self.inner.put(r, secret).await
-    }
-
-    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
-        if self.poison.lock().unwrap().as_ref() == Some(r) {
-            return Err(CredentialError::Storage("poison material read".into()));
-        }
-        self.inner.get(r).await
-    }
-
-    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
-        self.inner.delete(r).await
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretStore for AmbiguousManagedPutStore {
-    async fn put(
-        &self,
-        r: &crate::SecretRef,
-        secret: RedactedString,
-    ) -> Result<(), CredentialError> {
-        self.inner.put(r, secret).await?;
-        self.put_landed.wait().await;
-        self.release_response.wait().await;
-        Err(CredentialError::Storage(
-            "injected lost Managed put response".into(),
-        ))
-    }
-
-    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
-        self.inner.get(r).await
-    }
-
-    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
-        self.inner.delete(r).await
     }
 }
 

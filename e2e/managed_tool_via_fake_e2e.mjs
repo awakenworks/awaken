@@ -33,7 +33,7 @@ async function main() {
     process.env.ANTHROPIC_MODEL = 'fake-haiku';
     await withServer('real', 38261, async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
       // Turn 1: streamed tool round-trip.
       await send(client, session.id, 'use-tool:glob');

@@ -24,7 +24,11 @@ function start(directory) {
   return spawnProduction(directory, PORT, {
     workspace: WORKSPACE,
     controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    fields: { sandbox_tier: 'namespace' },
+    // This scenario validates the resource activation state machine, not the
+    // host's bwrap/Seatbelt availability. Select the explicit local provider in
+    // the fixture's typed deployment instead of inheriting production's
+    // fail-closed namespace default.
+    fields: { sandbox_tier: 'local' },
   });
 }
 
@@ -80,15 +84,6 @@ async function driveSession(sessionId, text) {
   // only after the Worker realizes the exact Resource generation and inference
   // commits. Every error remains visible instead of being treated as recovery.
   assert.equal(response.status, 200, JSON.stringify(response.body));
-}
-
-async function upload(content, filename) {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([content]), filename);
-  const response = await fetch(scoped('files'), { method: 'POST', body: form });
-  assert.equal(response.status, 200);
-  return (await response.json()).id;
 }
 
 function seedRepository(root) {
@@ -273,18 +268,29 @@ async function main() {
     });
     assert.equal(malformed.status, 400);
 
-    const fileId = await upload('recover this binding', 'recovery.txt');
+    // A Workdir-backed MemoryStore exercises the same activation state machine
+    // without claiming the local sandbox can enforce a read-only File mount.
+    // File isolation belongs to the namespace/container suites.
+    const memoryStore = await json('POST', scoped('memory_stores'), {
+      name: 'activation-recovery-memory',
+    });
+    assert.equal(memoryStore.status, 200, JSON.stringify(memoryStore.body));
+    const memoryStoreId = memoryStore.body.id;
     const recovering = await json('POST', scoped('sessions'), {
       agent: AGENT,
       environment_id: 'env_local',
-      resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/recovery.txt' }],
+      resources: [{
+        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/recovery',
+      }],
     });
     assert.equal(recovering.status, 200, JSON.stringify(recovering.body));
 
     const legacy = await json('POST', scoped('sessions'), {
       agent: AGENT,
       environment_id: 'env_local',
-      resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/legacy.txt' }],
+      resources: [{
+        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/legacy',
+      }],
     });
     assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
 
@@ -303,7 +309,9 @@ async function main() {
     const inconsistent = await json('POST', scoped('sessions'), {
       agent: AGENT,
       environment_id: 'env_local',
-      resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/inconsistent.txt' }],
+      resources: [{
+        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/inconsistent',
+      }],
     });
     assert.equal(inconsistent.status, 200, JSON.stringify(inconsistent.body));
 

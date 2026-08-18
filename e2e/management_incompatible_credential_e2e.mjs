@@ -1,7 +1,7 @@
 // can_consume validity join (E3-3), end-to-end over HTTP against the management
 // config plane. A credential scoped to one provider must not authenticate another
 // provider's model: resolving such a binding is fail-closed (422
-// incompatible_credential), while a compatible or unscoped credential resolves.
+// incompatible_credential); only a compatible scoped credential resolves.
 // CI-safe: discovery uses a deterministic local provider fixture; inference is
 // never invoked.
 
@@ -71,10 +71,10 @@ async function main() {
 
     // Cause/effect graph / decision table for credential consumption:
     // C1 authored model provider=anthropic; C2 credential material exists;
-    // C3 credential provider scope is {openai,anthropic,unscoped}.
+    // C3 credential provider scope is {openai,anthropic,absent}.
     // R1 C1+C2+C3=openai -> 422 incompatible_credential, no resolved candidate.
     // R2 C1+C2+C3=anthropic -> 200, credential_present=true.
-    // R3 C1+C2+C3=unscoped -> 200, credential_present=true.
+    // R3 C1+C2+C3=absent -> 422: provider-less material is not a wildcard.
     // The provider connection itself uses a stable idempotency key so all three
     // rules reach the resolver validity join rather than failing input admission.
     const bad = await cfg('POST', '/v1/config/inference/resolve', {
@@ -115,9 +115,9 @@ async function main() {
     assert.equal(okResolve.body.credential_present, true, 'the compatible credential materialized');
     pass('resolve(anthropic model, anthropic key) -> 200 (can_consume permits the match)');
 
-    // ── An unscoped (provider-less) credential consumes any provider ─────────
-    // A vault credential with no provider_id: it materializes from the stored
-    // secret AND passes can_consume for any provider.
+    // ── Provider-less material is not an authorization wildcard ──────────
+    // A vault credential with no provider_id has storage identity but no
+    // authority to authenticate an arbitrary provider.
     const unscoped = await cfg('POST', '/v1/config/credentials', {
       workspace_id: WS,
       kind: 'vault',
@@ -132,12 +132,12 @@ async function main() {
     });
     assert.equal(
       anyResolve.status,
-      200,
-      `an unscoped credential consumes any provider (got ${anyResolve.status}: ${JSON.stringify(anyResolve.body)})`,
+      422,
+      `provider-less material fails closed (got ${anyResolve.status}: ${JSON.stringify(anyResolve.body)})`,
     );
-    pass('resolve(anthropic model, unscoped env key) -> 200 (unscoped consumes any provider)');
+    pass('resolve(anthropic model, provider-less key) -> 422 (not a wildcard)');
 
-    console.log('E2E PASS: can_consume validity join fail-closes provider mismatch and permits compatible/unscoped keys.');
+    console.log('E2E PASS: can_consume permits only explicitly compatible provider credentials.');
     });
   } finally {
     await upstream.close();

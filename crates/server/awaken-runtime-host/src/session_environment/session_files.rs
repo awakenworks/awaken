@@ -22,6 +22,7 @@ enum FileReadRoot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileReadAuthority {
+    #[cfg(any(test, kani))]
     Workspace,
     FrozenMount,
 }
@@ -41,6 +42,7 @@ const fn file_read_authority_admitted(
 ) -> bool {
     facts.lexically_safe
         && match authority {
+            #[cfg(any(test, kani))]
             FileReadAuthority::Workspace => !facts.absolute,
             FileReadAuthority::FrozenMount => facts.absolute,
         }

@@ -463,9 +463,11 @@ mod cgroup_host_config_tests {
     #[test]
     fn with_client_wraps_a_handle_and_connect_local_builds_one() {
         let docker = Docker::connect_with_local_defaults().unwrap();
-        let rt = DockerRuntime::with_client(docker, 9000);
+        let rt = DockerRuntime::with_client(docker, 9000)
+            .with_package_build_timeout(std::time::Duration::from_secs(17));
         assert_eq!(rt.agent_port, 9000);
         assert_eq!(rt.port_key(), "9000/tcp");
+        assert_eq!(rt.package_build_timeout, std::time::Duration::from_secs(17));
     }
 
     #[tokio::test]
@@ -497,6 +499,7 @@ pub struct DockerRuntime {
     package_registry: Option<String>,
     package_registry_credentials: Option<DockerCredentials>,
     package_cache_ttl: Option<std::time::Duration>,
+    package_build_timeout: std::time::Duration,
 }
 
 impl DockerRuntime {
@@ -511,6 +514,7 @@ impl DockerRuntime {
             package_registry: None,
             package_registry_credentials: None,
             package_cache_ttl: None,
+            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
         })
     }
 
@@ -524,6 +528,7 @@ impl DockerRuntime {
             package_registry: None,
             package_registry_credentials: None,
             package_cache_ttl: None,
+            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
         }
     }
 
@@ -539,6 +544,14 @@ impl DockerRuntime {
     #[must_use]
     pub fn with_package_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.package_cache_ttl = Some(ttl);
+        self
+    }
+
+    /// Bound one registry lookup/build/push transaction. A timeout fails the
+    /// Environment activation closed; it never selects the unmodified base image.
+    #[must_use]
+    pub fn with_package_build_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.package_build_timeout = timeout;
         self
     }
 
@@ -774,40 +787,86 @@ impl ContainerRuntime for DockerRuntime {
         packages: &pc::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
-        if packages.is_empty() {
-            return Ok(base_image.to_string());
-        }
-        let _build_guard = self.package_builds.lock().await;
-        self.prune_package_cache().await;
-        let (dockerfile, fingerprint, repository, image) =
-            self.resolve_package_build(base_image, packages).await?;
-        if self.package_registry.is_none() && self.docker.inspect_image(&image).await.is_ok() {
-            return self.package_image_reference(&image, &repository).await;
-        }
-        if self.package_registry.is_some() {
-            let mut pull = self.docker.create_image(
-                Some(CreateImageOptions {
-                    from_image: repository.clone(),
-                    tag: fingerprint.clone(),
-                    ..Default::default()
-                }),
-                None,
-                self.package_registry_credentials.clone(),
-            );
-            let mut pulled = true;
-            while let Some(result) = pull.next().await {
-                if result.is_err() {
-                    pulled = false;
-                    break;
-                }
+        let operation = async {
+            if packages.is_empty() {
+                return Ok(base_image.to_string());
             }
-            if pulled && self.docker.inspect_image(&image).await.is_ok() {
+            let _build_guard = self.package_builds.lock().await;
+            self.prune_package_cache().await;
+            let (dockerfile, fingerprint, repository, image) =
+                self.resolve_package_build(base_image, packages).await?;
+            if self.package_registry.is_none() && self.docker.inspect_image(&image).await.is_ok() {
                 return self.package_image_reference(&image, &repository).await;
             }
-            // A local cache hit is not evidence that another worker can pull the
-            // image. Repair an empty/expired registry from the deterministic local
-            // tag before returning a shared digest.
-            if self.docker.inspect_image(&image).await.is_ok() {
+            if self.package_registry.is_some() {
+                let mut pull = self.docker.create_image(
+                    Some(CreateImageOptions {
+                        from_image: repository.clone(),
+                        tag: fingerprint.clone(),
+                        ..Default::default()
+                    }),
+                    None,
+                    self.package_registry_credentials.clone(),
+                );
+                let mut pulled = true;
+                while let Some(result) = pull.next().await {
+                    if result.is_err() {
+                        pulled = false;
+                        break;
+                    }
+                }
+                if pulled && self.docker.inspect_image(&image).await.is_ok() {
+                    return self.package_image_reference(&image, &repository).await;
+                }
+                // A local cache hit is not evidence that another worker can pull the
+                // image. Repair an empty/expired registry from the deterministic local
+                // tag before returning a shared digest.
+                if self.docker.inspect_image(&image).await.is_ok() {
+                    let mut push = self.docker.push_image(
+                        &repository,
+                        Some(PushImageOptions {
+                            tag: fingerprint.clone(),
+                        }),
+                        self.package_registry_credentials.clone(),
+                    );
+                    while let Some(result) = push.next().await {
+                        result.map_err(docker_backend)?;
+                    }
+                    return self.package_image_reference(&image, &repository).await;
+                }
+            }
+
+            let mut context = tar::Builder::new(Vec::new());
+            let mut header = tar::Header::new_gnu();
+            header.set_size(dockerfile.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            context
+                .append_data(&mut header, "Containerfile", dockerfile.as_bytes())
+                .map_err(backend)?;
+            let context = context.into_inner().map_err(backend)?;
+            let options = BuildImageOptions::<String> {
+                dockerfile: "Containerfile".into(),
+                t: image.clone(),
+                rm: true,
+                forcerm: true,
+                networkmode: match network {
+                    pc::NetworkPolicy::Unrestricted => "default".into(),
+                    pc::NetworkPolicy::None => "none".into(),
+                    pc::NetworkPolicy::Allowlist { .. } => {
+                        return Err(backend(
+                            "package image build has no no-bypass allowlist network",
+                        ));
+                    }
+                },
+                ..Default::default()
+            };
+            let mut build = self.docker.build_image(options, None, Some(context.into()));
+            while let Some(result) = build.next().await {
+                result.map_err(docker_backend)?;
+            }
+            self.docker.inspect_image(&image).await.map_err(backend)?;
+            if self.package_registry.is_some() {
                 let mut push = self.docker.push_image(
                     &repository,
                     Some(PushImageOptions {
@@ -820,52 +879,11 @@ impl ContainerRuntime for DockerRuntime {
                 }
                 return self.package_image_reference(&image, &repository).await;
             }
-        }
-
-        let mut context = tar::Builder::new(Vec::new());
-        let mut header = tar::Header::new_gnu();
-        header.set_size(dockerfile.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        context
-            .append_data(&mut header, "Containerfile", dockerfile.as_bytes())
-            .map_err(backend)?;
-        let context = context.into_inner().map_err(backend)?;
-        let options = BuildImageOptions::<String> {
-            dockerfile: "Containerfile".into(),
-            t: image.clone(),
-            rm: true,
-            forcerm: true,
-            networkmode: match network {
-                pc::NetworkPolicy::Unrestricted => "default".into(),
-                pc::NetworkPolicy::None => "none".into(),
-                pc::NetworkPolicy::Allowlist { .. } => {
-                    return Err(backend(
-                        "package image build has no no-bypass allowlist network",
-                    ));
-                }
-            },
-            ..Default::default()
+            Ok(image)
         };
-        let mut build = self.docker.build_image(options, None, Some(context.into()));
-        while let Some(result) = build.next().await {
-            result.map_err(docker_backend)?;
-        }
-        self.docker.inspect_image(&image).await.map_err(backend)?;
-        if self.package_registry.is_some() {
-            let mut push = self.docker.push_image(
-                &repository,
-                Some(PushImageOptions {
-                    tag: fingerprint.clone(),
-                }),
-                self.package_registry_credentials.clone(),
-            );
-            while let Some(result) = push.next().await {
-                result.map_err(docker_backend)?;
-            }
-            return self.package_image_reference(&image, &repository).await;
-        }
-        Ok(image)
+        tokio::time::timeout(self.package_build_timeout, operation)
+            .await
+            .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {

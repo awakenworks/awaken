@@ -4,15 +4,19 @@
 // and later revokes the exact immutable File projection in its own sandbox.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
-  childDirectories,
-  onlyChildDirectory,
   spawnProduction,
   stopServer,
   waitForPort,
@@ -41,6 +45,7 @@ const SKILL_NAME = `remote-worker-skill-${process.pid}`;
 const SKILL_BINARY = Buffer.from([0, 159, 146, 150, 255, 13, 0, 10]);
 const MEMORY_THREAD = `resource-memory-session-${process.pid}`;
 const MEMORY_BYTES = Buffer.from('mutable memory content from shared resource truth');
+const SESSION_IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -85,6 +90,7 @@ function buildWorker(): string {
     packageName: 'awaken-cli',
     targetName: 'credential_reference_worker',
     targetKind: 'example',
+    features: ['container-docker'],
   });
 }
 
@@ -162,16 +168,17 @@ async function configureSeedModel(upstream: string): Promise<void> {
 }
 
 async function uploadSkill(): Promise<{ skill_id: string; version: number; bundle_sha256: string }> {
+  const skillMarkdown = Buffer.from(
+    `---\nname: ${SKILL_NAME}\ndescription: frozen remote worker Skill\n---\nRead the supporting asset.`,
+  );
   const form = new FormData();
   form.append(
-    'file',
-    new Blob([
-      `---\nname: ${SKILL_NAME}\ndescription: frozen remote worker Skill\n---\nRead the supporting asset.`,
-    ], { type: 'text/markdown' }),
+    'files[]',
+    new Blob([skillMarkdown], { type: 'text/markdown' }),
     'SKILL.md',
   );
   form.append(
-    'file',
+    'files[]',
     new Blob([SKILL_BINARY], { type: 'application/octet-stream' }),
     'assets/data.bin',
   );
@@ -188,10 +195,22 @@ async function uploadSkill(): Promise<{ skill_id: string; version: number; bundl
   const versionText = await version.text();
   assert.equal(version.status, 200, `Skill version retrieved: ${versionText}`);
   const projected = JSON.parse(versionText);
+  const hash = createHash('sha256');
+  for (const [filePath, content] of [
+    ['SKILL.md', skillMarkdown] as const,
+    ['assets/data.bin', SKILL_BINARY] as const,
+  ]) {
+    const pathBytes = Buffer.from(filePath);
+    const pathLength = Buffer.alloc(8);
+    pathLength.writeBigUInt64BE(BigInt(pathBytes.length));
+    const contentLength = Buffer.alloc(8);
+    contentLength.writeBigUInt64BE(BigInt(content.length));
+    hash.update(pathLength).update(pathBytes).update(contentLength).update(content);
+  }
   return {
     skill_id: skillId,
     version: Number(projected.version),
-    bundle_sha256: projected.bundle_sha256,
+    bundle_sha256: `sha256:${hash.digest('hex')}`,
   };
 }
 
@@ -406,18 +425,47 @@ async function waitForDispatchStatus(
   throw new Error(`thread ${thread} never reached ${expected}: ${last}`);
 }
 
-async function waitForFile(file: string, expected: Buffer | undefined, timeoutMs = 30_000): Promise<void> {
+function managedContainerIds(): string[] {
+  const output = docker(
+    'ps', '-aq',
+    '--filter', 'label=awaken.sandbox=1',
+    '--filter', `ancestor=${SESSION_IMAGE}`,
+  );
+  return output ? output.split(/\s+/).filter(Boolean) : [];
+}
+
+async function waitForNewContainer(
+  before: Set<string>,
+  marker: string,
+  timeoutMs = 30_000,
+): Promise<string> {
+  return waitForValue(
+    managedContainerIds,
+    (ids) => ids.filter((id) => !before.has(id)).length === 1,
+    marker,
+    { timeoutMs },
+  ).then((ids) => ids.find((id) => !before.has(id))!);
+}
+
+async function waitForContainerFile(
+  container: string,
+  file: string,
+  expected: Buffer | undefined,
+  timeoutMs = 30_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let observed = '<missing>';
   while (Date.now() <= deadline) {
-    if (expected === undefined) {
-      if (!fs.existsSync(file)) return;
-    } else if (fs.existsSync(file) && fs.readFileSync(file).equals(expected)) {
+    const result = expected === undefined
+      ? spawnSync('docker', ['exec', container, 'test', '!', '-e', file])
+      : spawnSync('docker', ['exec', container, 'cat', file]);
+    if (expected === undefined ? result.status === 0 : result.status === 0 && result.stdout.equals(expected)) {
       return;
     }
+    observed = result.status === 0 ? result.stdout.toString('hex') : result.stderr.toString();
     await sleep(50);
   }
-  const observed = fs.existsSync(file) ? fs.readFileSync(file).toString('hex') : '<missing>';
-  throw new Error(`sandbox projection ${file} did not converge; observed=${observed}`);
+  throw new Error(`container projection ${container}:${file} did not converge; observed=${observed}`);
 }
 
 async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void> {
@@ -490,6 +538,7 @@ async function main(): Promise<void> {
   );
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
+  const ownedSandboxContainers = new Set<string>();
   try {
     await waitForPort(PORT, 180_000, management);
     await waitForPort(INTERNAL_PORT, 180_000, management);
@@ -544,10 +593,16 @@ async function main(): Promise<void> {
     const env = { ...process.env } as Record<string, string>;
     delete env.ANTHROPIC_API_KEY;
     delete env.OPENAI_API_KEY;
+    const preexistingSandboxes = new Set(managedContainerIds());
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: INTERNAL_BASE,
       SESSION_DEPLOYMENT_INGRESS: 'durable',
       SESSION_DEPLOYMENT_STORAGE_DIR: workerStorage,
+      // This scenario requires enforced read-only mounts. Select the available
+      // production Docker tier explicitly; the namespace default must not
+      // silently degrade when bwrap is unavailable.
+      AWAKEN_TEST_SANDBOX_TIER: 'docker',
+      AWAKEN_TEST_CONTAINER_IMAGE: SESSION_IMAGE,
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
       AWAKEN_TEST_CREDENTIAL_ID: GRANT,
       AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
@@ -565,38 +620,19 @@ async function main(): Promise<void> {
     await waitUntilSettled(THREAD).catch((error) => {
       throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`);
     });
-    const sandboxParent = path.join(workerStorage, 'sandboxes');
-    const sandboxRoot = onlyChildDirectory(
-      sandboxParent,
-      'the first frozen manifest owns one opaque sandbox root',
+    const sandboxContainer = await waitForNewContainer(
+      preexistingSandboxes,
+      'the first frozen manifest owns one opaque sandbox container',
     );
+    ownedSandboxContainers.add(sandboxContainer);
     // File path decision rule: a requested path already rooted below
     // `mnt/session/uploads` is preserved; every other safe logical path is
     // projected below that public root. `uploads/input.txt` therefore proves
     // the latter as `/mnt/session/uploads/uploads/input.txt`.
-    const projectedFile = path.join(sandboxRoot, 'mnt', 'session', 'uploads', MOUNT_PATH);
-    const projectedSkill = path.join(
-      sandboxRoot,
-      'workspace',
-      '.skills',
-      skill.skill_id,
-      'assets',
-      'data.bin',
-    );
-    await waitForFile(projectedFile, FILE_BYTES).catch((error) => {
-      const tree = execFileSync('find', [sandboxRoot, '-maxdepth', '6', '-type', 'f'], {
-        encoding: 'utf8',
-      });
-      throw new Error(
-        `${error instanceof Error ? error.message : error}\nfiles:\n${tree}\nworker output:\n${workerOutput}`,
-      );
-    });
-    await waitForFile(projectedSkill, SKILL_BINARY).catch((error) => {
-      const tree = fs.existsSync(sandboxRoot)
-        ? execFileSync('find', [sandboxRoot, '-maxdepth', '5', '-type', 'f'], { encoding: 'utf8' })
-        : '<missing sandbox>';
-      throw new Error(`${error instanceof Error ? error.message : error}\nfiles:\n${tree}\nworker output:\n${workerOutput}`);
-    });
+    const projectedFile = `/mnt/session/uploads/${MOUNT_PATH}`;
+    const projectedSkill = `/workspace/.skills/${skill.skill_id}/assets/data.bin`;
+    await waitForContainerFile(sandboxContainer, projectedFile, FILE_BYTES);
+    await waitForContainerFile(sandboxContainer, projectedSkill, SKILL_BINARY);
 
     // An explicit empty successor is semantically meaningful: it must route to a
     // resource-capable worker and remove the projection from the live Session.
@@ -612,8 +648,8 @@ async function main(): Promise<void> {
         `${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`,
       );
     });
-    await waitForFile(projectedFile, undefined);
-    await waitForFile(path.join(sandboxRoot, 'workspace', '.skills'), undefined);
+    await waitForContainerFile(sandboxContainer, projectedFile, undefined);
+    await waitForContainerFile(sandboxContainer, '/workspace/.skills', undefined);
 
     // Rebinding uses the same immutable shared File bytes; neither the cell nor
     // worker consults a node-local resource copy or current Agent defaults.
@@ -627,8 +663,8 @@ async function main(): Promise<void> {
       ),
       seedWorker.id,
     );
-    await waitForFile(projectedFile, FILE_BYTES);
-    await waitForFile(projectedSkill, SKILL_BINARY);
+    await waitForContainerFile(sandboxContainer, projectedFile, FILE_BYTES);
+    await waitForContainerFile(sandboxContainer, projectedSkill, SKILL_BINARY);
     for (const relative of ['files.db', 'memory_fs.db', 'resources.db', 'skills']) {
       assert.equal(
         fs.existsSync(path.join(workerStorage, relative)),
@@ -646,18 +682,34 @@ async function main(): Promise<void> {
       resourceEnvelope(undefined, WORKSPACE, undefined, memory),
       MEMORY_THREAD,
     );
-    const rootsBeforeMemory = new Set(childDirectories(sandboxParent));
+    const containersBeforeMemory = new Set(managedContainerIds());
     await enqueueAndAwait(memoryRequest, seedWorker.id);
-    const rootsAfterMemory = await waitForValue(
-      () => childDirectories(sandboxParent),
-      (roots) => roots.length === rootsBeforeMemory.size + 1,
-      'Memory projection creates one additional opaque sandbox root',
+    const memoryContainer = await waitForNewContainer(
+      containersBeforeMemory,
+      'Memory projection creates one additional opaque sandbox container',
     );
-    const memoryRoot = rootsAfterMemory.find((root) => !rootsBeforeMemory.has(root));
-    assert.ok(memoryRoot, 'the Memory Session has one newly-created sandbox root');
-    const projectedMemory = path.join(memoryRoot, 'workspace', '.mnt', 'memory', 'fact.md');
-    await waitForFile(projectedMemory, MEMORY_BYTES);
+    ownedSandboxContainers.add(memoryContainer);
+    const projectedMemory = '/mnt/memory/fact.md';
+    await waitForContainerFile(memoryContainer, projectedMemory, MEMORY_BYTES);
 
+    // Workspace equality is checked before opening a sandbox. Give the bad run a
+    // fresh ordinary resource thread so absence of another container is externally
+    // observable without misclassifying it as Managed Session realization.
+    const foreignThread = `${THREAD}-foreign`;
+    const foreign = runRequest(
+      seedClaim.request,
+      'foreign',
+      resourceEnvelope(fileId, `${WORKSPACE}-other`, skill),
+    );
+    foreign.activation.thread_id = foreignThread;
+    const containersBeforeForeign = managedContainerIds();
+    await post('/v1/worker/dispatch/enqueue', { request: foreign }, seedWorker.id);
+    await waitForDispatchStatus(foreignThread, 'Leased');
+    assert.deepEqual(
+      managedContainerIds(),
+      containersBeforeForeign,
+      'scope-mismatched resource dispatch failed before sandbox creation',
+    );
     // The immutable config pin cannot revive a resource after a live lifecycle
     // transition. The retry is genuinely claimed, then denied before model use.
     await resourceRequest('POST', `memory_stores/${memory.memory_store_id}/archive`);
@@ -681,31 +733,18 @@ async function main(): Promise<void> {
       `archived Memory pin was not denied by live state:\n${workerOutput}`,
     );
 
-    // Workspace equality is checked before opening a sandbox. Give the bad run a
-    // fresh thread so absence of its sandbox is externally observable.
-    const foreignThread = `${THREAD}-foreign`;
-    const foreign = runRequest(
-      seedClaim.request,
-      'foreign',
-      resourceEnvelope(fileId, `${WORKSPACE}-other`, skill),
-    );
-    foreign.activation.thread_id = foreignThread;
-    foreign.session_thread_id = foreignThread;
-    const rootsBeforeForeign = childDirectories(sandboxParent);
-    await post('/v1/worker/dispatch/enqueue', { request: foreign }, seedWorker.id);
-    await waitForDispatchStatus(foreignThread, 'Leased');
-    assert.deepEqual(
-      childDirectories(sandboxParent),
-      rootsBeforeForeign,
-      'scope-mismatched resource dispatch failed before sandbox creation',
-    );
-
     assert.ok(!workerOutput.includes(FILE_BYTES.toString()), 'worker logs do not expose File bytes');
     console.log(
       'WORKER RESOURCE MANIFEST TS E2E PASS: frozen File/Skill/Memory realization, exact-tree detach, live Memory deny, capability placement, and cross-Workspace failure crossed real cell/worker processes.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
+    const remainingOwned = [...ownedSandboxContainers].filter((id) =>
+      spawnSync('docker', ['container', 'inspect', id], { stdio: 'ignore' }).status === 0
+    );
+    if (remainingOwned.length > 0) {
+      spawnSync('docker', ['rm', '-f', ...remainingOwned], { stdio: 'ignore' });
+    }
     await stopServer(management).catch(() => {});
     upstream.close();
     fs.rmSync(configStorage, { recursive: true, force: true });

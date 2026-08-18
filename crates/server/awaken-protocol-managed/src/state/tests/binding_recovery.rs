@@ -7,14 +7,14 @@ impl RevisionedProfiles {
         agent_id: &str,
         revision: u64,
     ) -> awaken_executable_agent_contract::ExecutableAgentSessionProfile {
-        let delegates = (agent_id == "coordinator")
-            .then(|| {
-                vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
-                    agent_id: "researcher".into(),
-                    source_revision: Some(revision),
-                }]
-            })
-            .unwrap_or_default();
+        let delegates = if agent_id == "coordinator" {
+            vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                agent_id: "researcher".into(),
+                source_revision: Some(revision),
+            }]
+        } else {
+            Vec::new()
+        };
         awaken_executable_agent_contract::ExecutableAgentSessionProfile {
             name: Some(format!("{agent_id}-v{revision}")),
             description: Some(format!("revision {revision}")),

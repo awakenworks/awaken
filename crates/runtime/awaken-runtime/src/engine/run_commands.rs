@@ -142,7 +142,13 @@ pub(crate) async fn resume_run(
 
     let env = match runtime.resolve_plugin_env_with(&resolved.spec, &context.session_plugins) {
         Ok(env) => env,
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(
+                run_id = %run_id.0,
+                thread_id = %thread_id.0,
+                error = %error,
+                "resumed run plugin environment violates its declared capability boundary"
+            );
             let step = RunStepResult::capability_bound(run_id.clone());
             return finish(runtime, &context, &thread_id, run_id, step).await;
         }

@@ -82,9 +82,38 @@ log "installing canonical Sandbox NetworkPolicy graph"
 kubectl apply -k deploy/k3d/bases/sandbox-network-policy
 
 # The Hand-expiry rule needs the production binary; the canonical importer also
-# loads the cluster's exact Pause/CoreDNS prerequisites into every node.
+# loads the cluster's exact Pause/CoreDNS prerequisites into every node. The
+# retained-filesystem rules additionally need the exact provisioner image:
+# importing it from the host keeps this proof independent of in-node registry
+# access, which is intentionally unavailable in offline CI topologies.
 log "loading images through the shared k3d harness"
-k3d_import_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE"
+LOCAL_PATH_IMAGE="$(kubectl -n kube-system get deploy local-path-provisioner \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')"
+[ -n "$LOCAL_PATH_IMAGE" ] || {
+  echo "local-path provisioner deployment has no image" >&2
+  exit 1
+}
+LOCAL_PATH_HELPER_IMAGE="$(
+  kubectl -n kube-system get configmap local-path-config \
+    -o jsonpath='{.data.helperPod\.yaml}' \
+    | awk '$1 == "image:" { print $2; exit }' \
+    | tr -d '"'
+)"
+[ -n "$LOCAL_PATH_HELPER_IMAGE" ] || {
+  echo "local-path provisioner configuration has no helper image" >&2
+  exit 1
+}
+k3d_import_images \
+  "$CLUSTER" \
+  "$FIXTURE_IMAGE" \
+  "$SESSION_IMAGE" \
+  "$LOCAL_PATH_IMAGE" \
+  "$LOCAL_PATH_HELPER_IMAGE"
+# A provisioner Pod can enter registry backoff before the offline image import
+# completes. Recreate that disposable system Pod so it observes the imported
+# image immediately, then fence the PVC tests on actual provisioner readiness.
+kubectl -n kube-system rollout restart deploy/local-path-provisioner >/dev/null
+kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture

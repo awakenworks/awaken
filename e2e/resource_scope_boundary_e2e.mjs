@@ -71,7 +71,12 @@ async function expectMissingWorkspace(method, pathname, body, contentType = 'app
   });
   assert.equal(response.status, 404, `${method} ${pathname}`);
   const payload = await response.json();
-  assert.equal(payload.error, 'workspace not found', `${method} ${pathname}`);
+  assert.equal(payload.type, 'error', `${method} ${pathname}`);
+  assert.deepEqual(
+    payload.error,
+    { type: 'not_found_error', message: 'workspace not found' },
+    `${method} ${pathname}`,
+  );
 }
 
 async function main() {

@@ -41,7 +41,7 @@ const groups = [
     // An outbound A2A agent owns its remote skills and cannot consume a local
     // Session mount. Compatibility here is the explicit fail-closed boundary.
     a2a: evidence('crates/server/awaken-runtime-host/src/host/tests.rs', 'R2 local input was accepted'),
-    negative: evidence('e2e/managed_skill_store_durable_e2e.mjs', 'missing `content`'),
+    negative: evidence('e2e/managed_skill_store_durable_e2e.mjs', 'missing `files`'),
   },
   {
     id: 'mcp',

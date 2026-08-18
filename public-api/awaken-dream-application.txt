@@ -41,6 +41,7 @@ pub struct awaken_dream_application::DreamRequest
 pub awaken_dream_application::DreamRequest::agent_id: alloc::string::String
 pub awaken_dream_application::DreamRequest::job_id: alloc::string::String
 pub awaken_dream_application::DreamRequest::model: awaken_session_contract::dream::DreamModelConfig
+pub awaken_dream_application::DreamRequest::output_behavior: awaken_session_contract::dream::DreamOutputBehavior
 pub awaken_dream_application::DreamRequest::request_guidance: core::option::Option<alloc::string::String>
 pub awaken_dream_application::DreamRequest::session_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_dream_application::DreamRequest::source_memory_store_id: alloc::string::String

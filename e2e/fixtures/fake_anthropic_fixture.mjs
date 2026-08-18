@@ -98,6 +98,15 @@ function toolResultText(block) {
   return (block?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
 
+function catalogSkillId(block) {
+  const payload = JSON.parse(toolResultText(block));
+  const id = payload?.skills?.[0]?.id;
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error('list_skills returned no canonical skill id');
+  }
+  return id;
+}
+
 function lastUserImages(parsed) {
   const users = (parsed.messages ?? []).filter((m) => m.role === 'user');
   const last = users[users.length - 1];
@@ -411,9 +420,10 @@ export const BEHAVIORS = {
         content: 'remember: the full chain ran end to end',
       });
     }
-    switch (toolResults(parsed).length) {
+    const results = toolResults(parsed);
+    switch (results.length) {
       case 0: return tool('ls', 'list_skills', {});
-      case 1: return tool('sk', 'Skill', { skill: 'greet' });
+      case 1: return tool('sk', 'Skill', { skill: catalogSkillId(results[0]) });
       // Write into the mounted MemoryStore directory.
       case 2: return tool('wm', 'write', { path: '/mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
       // Write into the cloned repo working tree (host commits + pushes on harvest).
@@ -434,7 +444,9 @@ export const BEHAVIORS = {
     const results = last && Array.isArray(last.content) ? last.content.filter((b) => b.type === 'tool_result') : [];
     if (results.length === 0) return tool('l', 'list_skills', {});
     const lastText = results.map(toolResultText).join('');
-    if (lastText.includes('"skills"')) return tool('s', 'Skill', { skill: 'greet' });
+    if (lastText.includes('"skills"')) {
+      return tool('s', 'Skill', { skill: catalogSkillId(results.at(-1)) });
+    }
     return text(`USED-SKILL: ${lastText}`);
   },
   // AdminAssistantModel (ADR-0052): drive the seeded management assistant through all

@@ -10,7 +10,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { REPO_ROOT, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
@@ -21,7 +21,6 @@ import { cargoExecutable } from './cargo_binary.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 39774);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
-const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const MARKER = 'RECOVERY-BINDING-OK';
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
@@ -208,12 +207,10 @@ async function main(): Promise<void> {
     // | absent     | any                | any             | reject route     |
     // | present    | delivered-container| absent          | reject publish   |
     // | present    | delivered-container| present         | realize container|
-    await client.post('/v1/skills', {
-      headers: SKILL_HEADERS,
-      body: {
-        id: 'delivered-container',
-        content: '---\ndescription: recovery fixture skill\n---\nRECOVERY-SKILL-OK',
-      },
+    await client.beta.skills.create({
+      files: [await toFile(Buffer.from(
+        '---\nname: delivered-container\ndescription: recovery fixture skill\n---\nRECOVERY-SKILL-OK',
+      ), 'SKILL.md')],
     });
 
     const cases = new Map<string, string>();

@@ -544,14 +544,14 @@ pub async fn build_acp_container_router() -> Router {
         Ok(other) => panic!("unsupported scenario package image builder: {other}"),
         Err(_) => None,
     };
-    let delivered_skill = match deployment.sandbox_tier {
+    let delivered_skill_name = match deployment.sandbox_tier {
         awaken_runtime_host::SandboxTier::Docker
         | awaken_runtime_host::SandboxTier::Podman
         | awaken_runtime_host::SandboxTier::K8s => "delivered-container",
         _ => "delivered-namespace",
     };
     let skills = vec![awaken_agent_contract::AgentSkillBinding::custom(
-        delivered_skill,
+        awaken_resource_contract::skill_catalog_id(delivered_skill_name),
     )];
     let playwright_mcp = std::env::var("AWAKEN_SCENARIO_PLAYWRIGHT_MCP").as_deref() == Ok("1");
     let native_playwright_mcp =
@@ -584,9 +584,14 @@ pub async fn build_acp_container_router() -> Router {
         );
         (publication, launch, Arc::new(NativePlaywrightMcpModel))
     } else if playwright_mcp {
+        let mut fixture_cli = PLAYWRIGHT_MCP_FIXTURE_CLI;
+        // The fixture supplies the executable, while the immutable Agent
+        // publication still names a production catalog adapter. This preserves
+        // the single adapter authority enforced by the runtime host.
+        fixture_cli.id = "claude";
         let publication = fixed_host_backend_publication_with_acp_mcp(
             "namespace-agent",
-            "acp:playwright-fixture",
+            "acp:claude",
             skills.clone(),
             vec![awaken_runtime_contract::resolved::AcpMcpServer {
                 name: "playwright".into(),
@@ -603,14 +608,13 @@ pub async fn build_acp_container_router() -> Router {
             }],
         );
         let launch = awaken_runtime_host::LaunchSource::Projected(
-            awaken_runtime_host::AcpLaunchRegistry::single(
-                PLAYWRIGHT_MCP_FIXTURE_CLI,
-                Arc::new(FixedAcpModel),
-            ),
+            awaken_runtime_host::AcpLaunchRegistry::single(fixture_cli, Arc::new(FixedAcpModel)),
         );
         (publication, launch, Arc::new(EchoModel))
     } else {
-        let publication = fixed_host_backend_publication("namespace-agent", "acp:custom", skills);
+        // Fixed launch owns only the scenario executable. Runtime capabilities
+        // and MCP projection remain governed by a real catalog adapter id.
+        let publication = fixed_host_backend_publication("namespace-agent", "acp:claude", skills);
         let argv = scenario_argv(
             &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
         );

@@ -87,6 +87,7 @@ async function recallsMarker(storeId, tries = 24) {
     await sleep(500);
     const b = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       betas: BETAS,
       resources: [{ type: 'memory_store', memory_store_id: storeId, mount_path: '/memory' }],
     });
@@ -112,6 +113,7 @@ async function main() {
     });
     const readOnly = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       betas: BETAS,
       resources: [{
         type: 'memory_store',
@@ -142,6 +144,7 @@ async function main() {
 
     const s = await client.beta.sessions.create({
       agent: 'assistant',
+      environment_id: 'env_local',
       betas: BETAS,
       resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
     });

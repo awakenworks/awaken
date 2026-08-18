@@ -194,10 +194,10 @@ pub fn awaken_cli::ManagedServiceAdapters::with_same_origin_managed_runtime(self
 pub fn awaken_cli::ManagedServiceAdapters::with_tunnel_application(self, alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>) -> Self
 pub struct awaken_cli::PreparedLocalAcp
 impl awaken_cli::PreparedLocalAcp
-pub fn awaken_cli::PreparedLocalAcp::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
+pub async fn awaken_cli::PreparedLocalAcp::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub struct awaken_cli::PreparedLocalWorker
 impl awaken_cli::PreparedLocalWorker
-pub fn awaken_cli::PreparedLocalWorker::build_worker(&self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
+pub async fn awaken_cli::PreparedLocalWorker::build_worker(&self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub fn awaken_cli::PreparedLocalWorker::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub struct awaken_cli::PreparedProcess
 pub awaken_cli::PreparedProcess::admin_tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
@@ -207,6 +207,7 @@ pub awaken_cli::PreparedProcess::private_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::public_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::registration_supervisor: core::option::Option<alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>>
 pub awaken_cli::PreparedProcess::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
+pub fn awaken_cli::block_on_service<F: core::future::future::Future>(F) -> <F as core::future::future::Future>::Output
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>

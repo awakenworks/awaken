@@ -10,6 +10,8 @@
 # the complete, sequential local gate.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/ci/_provider_environment.sh
+awaken_unset_ambient_api_keys
 
 groups=(static docs rust api formal postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
@@ -73,6 +75,7 @@ run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_a
 run static "authority-arithmetic" python3 scripts/ci/check_authority_arithmetic.py
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run static "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py

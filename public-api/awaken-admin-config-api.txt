@@ -125,7 +125,6 @@ pub struct awaken_admin_config_api::ResolvedCandidatesView
 pub struct awaken_admin_config_api::ResolvedInferenceView
 pub struct awaken_admin_config_api::RotateCredentialRequest
 pub struct awaken_admin_config_api::SaveProviderConnectionRequest
-pub awaken_admin_config_api::SaveProviderConnectionRequest::_legacy_endpoint_id: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::base_url: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::configuration: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::credential_name: core::option::Option<alloc::string::String>

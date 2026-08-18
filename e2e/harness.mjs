@@ -424,7 +424,13 @@ export async function withServer(mode, port, fn) {
   const listenPort = await availablePort(port);
   const addr = `127.0.0.1:${listenPort}`;
   const server = spawn(bin, {
-    env: serverProcessEnv(addr, { AWAKEN_MODEL_MODE: mode }),
+    // Generic scenario fixtures use the portable Workdir substrate. A test for
+    // Namespace/Container owns its provider selection explicitly and does not
+    // use this convenience wrapper.
+    env: serverProcessEnv(addr, {
+      AWAKEN_MODEL_MODE: mode,
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+    }),
     stdio: ['pipe', 'inherit', 'inherit'],
   });
   try {

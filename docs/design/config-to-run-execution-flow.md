@@ -590,9 +590,10 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   composition removes the Control seal key, authority stores, and implicit
   durable Host stores;
 - `worker_request_credential_file` and `worker_trust_credentials_file` as the
-  role-owned projected inputs to the existing signed Worker transport; one
-  authenticator instance protects dispatch, File, Memory, Skill, Repository,
-  and claimed-commit routes;
+  role-owned projected inputs to the existing signed Worker transport, plus the
+  optional Worker-owned `worker_server_ca_certificate_file` for a private
+  Coordinator PKI; one authenticator instance protects dispatch, File, Memory,
+  Skill, Repository, and claimed-commit routes;
 - `HttpFileContentSource`, `HttpMemorySnapshotSource`,
   `HttpMemoryWritebackClient`, `HttpSkillBundleSource`, and
   `HttpRepositoryBindingVerifier`, paired with their authenticated,

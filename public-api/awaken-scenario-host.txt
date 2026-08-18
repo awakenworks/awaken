@@ -94,6 +94,7 @@ pub fn awaken_scenario_host::build_delegation_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_distributed_provider_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_dream_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_dream_router_and_host() -> (axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::host::SharedHost>)
+pub async fn awaken_scenario_host::build_dream_runtime_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_echo_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_environment_matrix_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_ephemeral_resource_router() -> axum::routing::Router
@@ -107,7 +108,7 @@ pub fn awaken_scenario_host::build_model_route_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_oauth_resolved_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_outcome_matrix_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_real_gemini_router() -> axum::routing::Router
-pub fn awaken_scenario_host::build_real_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_real_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_remote_delegation_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_resolved_real_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_router(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> axum::routing::Router

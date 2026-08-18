@@ -108,8 +108,8 @@ pub use service::{
 /// operator-only environment-variable workaround.
 pub fn block_on_service<F: Future>(future: F) -> F::Output {
     const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
-    debug_assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024);
-    debug_assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>()));
+    const { assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024) };
+    const { assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("awaken-runtime")

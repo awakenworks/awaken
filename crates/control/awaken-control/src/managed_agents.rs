@@ -602,29 +602,29 @@ fn project(revision: AgentConfigRevision) -> Agent {
             let agents = value
                 .agents
                 .into_iter()
-                .filter_map(|target| match target {
+                .map(|target| match target {
                     MultiagentTarget::Agent { id, version } => {
-                        Some(MultiagentRosterEntry::Reference(
+                        MultiagentRosterEntry::Reference(
                             awaken_protocol_managed::types::agent::AgentRosterReference {
                                 id,
                                 kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
                                 version: Some(version.unwrap_or(1)),
                             },
-                        ))
+                        )
                     }
-                    MultiagentTarget::SelfReference => Some(MultiagentRosterEntry::Reference(
+                    MultiagentTarget::SelfReference => MultiagentRosterEntry::Reference(
                         awaken_protocol_managed::types::agent::AgentRosterReference {
                             id: id.clone(),
                             kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
                             version: Some(revision_number),
                         },
-                    )),
-                    MultiagentTarget::Advisor { model } => Some(MultiagentRosterEntry::Advisor(
+                    ),
+                    MultiagentTarget::Advisor { model } => MultiagentRosterEntry::Advisor(
                         AdvisorRosterEntry {
                             model,
                             kind: AdvisorRosterEntryKind::Advisor,
                         },
-                    )),
+                    ),
                 })
                 .collect::<Vec<_>>();
             WireMultiagent::Coordinator { agents }

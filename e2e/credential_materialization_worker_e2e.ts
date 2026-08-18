@@ -13,8 +13,10 @@
 // pointer is constrained to a real Managed Session and fails closed otherwise.
 
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,8 +28,10 @@ import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38823);
 const CONFIG_PORT = Number(process.env.E2E_CONFIG_PORT ?? 40823);
+const TLS_PORT = Number(process.env.E2E_WORKER_PORT ?? 39824);
 const BASE = `http://127.0.0.1:${PORT}`;
 const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
+const WORKER_BASE = `https://127.0.0.1:${TLS_PORT}`;
 const THREAD = 'credential-materialization-worker';
 const SEAL_KEY = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
 const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow: secret
@@ -52,6 +56,88 @@ function workerBinary(): string {
     packageName: 'awaken-worker',
     targetName: 'awaken-worker',
     prebuiltEnvironmentName: WORKER_BIN_ENV,
+  });
+}
+
+function runOpenSsl(args: string[], purpose: string): void {
+  const result = spawnSync('openssl', args, { encoding: 'utf8' });
+  assert.equal(
+    result.status,
+    0,
+    `${purpose}: ${result.stderr || result.stdout || `openssl exited ${result.status}`}`,
+  );
+}
+
+// Generate an ephemeral private CA and a server leaf with an IP SAN. The
+// Worker trusts only the projected CA file; no global TLS bypass is used.
+function createTlsIdentity(storage: string) {
+  const caKey = path.join(storage, 'worker-test-ca.key');
+  const caCertificate = path.join(storage, 'worker-test-ca.pem');
+  const serverKey = path.join(storage, 'worker-test-server.key');
+  const serverCsr = path.join(storage, 'worker-test-server.csr');
+  const serverCertificate = path.join(storage, 'worker-test-server.pem');
+  const extensions = path.join(storage, 'worker-test-server.ext');
+  fs.writeFileSync(extensions, [
+    'basicConstraints=critical,CA:FALSE',
+    'keyUsage=critical,digitalSignature,keyEncipherment',
+    'extendedKeyUsage=serverAuth',
+    'subjectAltName=IP:127.0.0.1',
+  ].join('\n'));
+  runOpenSsl([
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',
+    '-subj', '/CN=Awaken E2E Worker CA', '-keyout', caKey, '-out', caCertificate,
+  ], 'create Worker E2E CA');
+  runOpenSsl([
+    'req', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-subj', '/CN=127.0.0.1',
+    '-keyout', serverKey, '-out', serverCsr,
+  ], 'create Worker E2E server CSR');
+  runOpenSsl([
+    'x509', '-req', '-sha256', '-days', '1', '-in', serverCsr,
+    '-CA', caCertificate, '-CAkey', caKey, '-CAcreateserial',
+    '-extfile', extensions, '-out', serverCertificate,
+  ], 'sign Worker E2E server certificate');
+  return { caCertificate, serverCertificate, serverKey };
+}
+
+async function startTlsProxy(
+  port: number,
+  targetPort: number,
+  certificate: string,
+  key: string,
+): Promise<HttpsServer> {
+  const server = createHttpsServer(
+    { cert: fs.readFileSync(certificate), key: fs.readFileSync(key) },
+    (incoming, outgoing) => {
+      const upstream = httpRequest({
+        hostname: '127.0.0.1',
+        port: targetPort,
+        method: incoming.method,
+        path: incoming.url,
+        headers: incoming.headers,
+      }, (response) => {
+        outgoing.writeHead(response.statusCode ?? 502, response.headers);
+        response.pipe(outgoing);
+      });
+      upstream.on('error', (error) => {
+        if (!outgoing.headersSent) outgoing.writeHead(502);
+        outgoing.end(`TLS proxy upstream failed: ${error.message}`);
+      });
+      incoming.pipe(upstream);
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  return server;
+}
+
+async function stopTlsProxy(server: HttpsServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
   });
 }
 
@@ -129,6 +215,7 @@ async function waitForReply(timeoutMs = 30_000) {
 
 async function main() {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-materialization-worker-'));
+  const tlsIdentity = createTlsIdentity(storage);
   const upstream = await startFakeAnthropic(PROVIDER_KEY);
   const management = spawnServer(
     'management',
@@ -147,10 +234,17 @@ async function main() {
     SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
   }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
+  let tlsProxy: HttpsServer | undefined;
   let output = '';
   try {
     await waitForPort(CONFIG_PORT);
     await waitForPort(PORT);
+    tlsProxy = await startTlsProxy(
+      TLS_PORT,
+      PORT,
+      tlsIdentity.serverCertificate,
+      tlsIdentity.serverKey,
+    );
     const credential = await request('POST', '/v1/config/credentials', {
       workspace_id: 'client-scope-is-overridden',
       kind: 'vault',
@@ -381,6 +475,7 @@ async function main() {
       `data_dir = ${JSON.stringify(path.join(storage, 'worker'))}`,
       'worker_id = "materialization-worker"',
       `worker_request_credential_file = ${JSON.stringify(workerRequestCredential)}`,
+      `worker_server_ca_certificate_file = ${JSON.stringify(tlsIdentity.caCertificate)}`,
       `worker_credential_material_root = ${JSON.stringify(materialRoot)}`,
       'worker_admin_listen = "127.0.0.1:39823"',
       // Credential envelope materialization is this scenario's subject. The
@@ -388,7 +483,7 @@ async function main() {
       // not an unrelated precondition; production remains Namespace by default.
       'sandbox_tier = "local"',
     ].join('\n'));
-    worker = spawn(workerBinary(), ['--config', workerConfig, '--server', BASE], {
+    worker = spawn(workerBinary(), ['--config', workerConfig, '--server', WORKER_BASE], {
       cwd: ROOT,
       env: { ...process.env, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -417,6 +512,7 @@ async function main() {
     console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: a database-less production Worker consumed one exact recipient-bound projection, called the pinned endpoint, and committed once.');
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
+    if (tlsProxy) await stopTlsProxy(tlsProxy).catch(() => {});
     await stopServer(cell).catch(() => {});
     await stopServer(management).catch(() => {});
     upstream.close();

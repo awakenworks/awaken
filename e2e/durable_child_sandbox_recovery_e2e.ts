@@ -293,6 +293,11 @@ async function main(): Promise<void> {
       'stable child recovery did not duplicate its seed',
     );
     assert.equal(
+      childMessages.find((message: any) => message.role === 'User')?.id,
+      `${childRunId}-input`,
+      'the child seed identity is derived from its durable Run id across processes',
+    );
+    assert.equal(
       childMessages.filter(
         (message: any) =>
           message.role === 'Assistant' &&

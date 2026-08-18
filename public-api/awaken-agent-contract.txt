@@ -34,8 +34,18 @@ pub awaken_agent_contract::agent::awaiting::ResumeTicket::snapshot_id: alloc::st
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::thread_id: awaken_agent_contract::agent::thread::Id
 pub mod awaken_agent_contract::agent::content
 pub enum awaken_agent_contract::agent::content::ContentBlock
+pub awaken_agent_contract::agent::content::ContentBlock::Document
+pub awaken_agent_contract::agent::content::ContentBlock::Document::context: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::agent::content::ContentBlock::Document::source: awaken_agent_contract::agent::content::DocumentSource
+pub awaken_agent_contract::agent::content::ContentBlock::Document::title: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::content::ContentBlock::Image
 pub awaken_agent_contract::agent::content::ContentBlock::Image::source: awaken_agent_contract::agent::content::ImageSource
+pub awaken_agent_contract::agent::content::ContentBlock::Redacted
+pub awaken_agent_contract::agent::content::ContentBlock::SearchResult
+pub awaken_agent_contract::agent::content::ContentBlock::SearchResult::citations: awaken_agent_contract::agent::content::SearchResultCitations
+pub awaken_agent_contract::agent::content::ContentBlock::SearchResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::SearchResultContent>
+pub awaken_agent_contract::agent::content::ContentBlock::SearchResult::source: alloc::string::String
+pub awaken_agent_contract::agent::content::ContentBlock::SearchResult::title: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::Text
 pub awaken_agent_contract::agent::content::ContentBlock::Text::text: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::Thinking
@@ -50,7 +60,9 @@ pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::id: alloc::str
 pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::input: serde_json::value::Value
 pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::name: alloc::string::String
 impl awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::document_file(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_base64(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::image_file(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::signed_thinking(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<core::option::Option<alloc::string::String>>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
@@ -58,12 +70,34 @@ pub fn awaken_agent_contract::agent::content::ContentBlock::thinking(impl core::
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result_with_error(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, bool) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_use(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
+pub enum awaken_agent_contract::agent::content::DocumentSource
+pub awaken_agent_contract::agent::content::DocumentSource::Base64
+pub awaken_agent_contract::agent::content::DocumentSource::Base64::data: alloc::string::String
+pub awaken_agent_contract::agent::content::DocumentSource::Base64::media_type: alloc::string::String
+pub awaken_agent_contract::agent::content::DocumentSource::File
+pub awaken_agent_contract::agent::content::DocumentSource::File::file_id: alloc::string::String
+pub awaken_agent_contract::agent::content::DocumentSource::Text
+pub awaken_agent_contract::agent::content::DocumentSource::Text::data: alloc::string::String
+pub awaken_agent_contract::agent::content::DocumentSource::Text::media_type: alloc::string::String
+pub awaken_agent_contract::agent::content::DocumentSource::Url
+pub awaken_agent_contract::agent::content::DocumentSource::Url::url: alloc::string::String
 pub enum awaken_agent_contract::agent::content::ImageSource
 pub awaken_agent_contract::agent::content::ImageSource::Base64
 pub awaken_agent_contract::agent::content::ImageSource::Base64::data: alloc::string::String
 pub awaken_agent_contract::agent::content::ImageSource::Base64::media_type: alloc::string::String
+pub awaken_agent_contract::agent::content::ImageSource::File
+pub awaken_agent_contract::agent::content::ImageSource::File::file_id: alloc::string::String
 pub awaken_agent_contract::agent::content::ImageSource::Url
 pub awaken_agent_contract::agent::content::ImageSource::Url::url: alloc::string::String
+pub enum awaken_agent_contract::agent::content::SearchResultContentType
+pub awaken_agent_contract::agent::content::SearchResultContentType::Text
+pub struct awaken_agent_contract::agent::content::SearchResultCitations
+pub awaken_agent_contract::agent::content::SearchResultCitations::enabled: bool
+pub struct awaken_agent_contract::agent::content::SearchResultContent
+pub awaken_agent_contract::agent::content::SearchResultContent::kind: awaken_agent_contract::agent::content::SearchResultContentType
+pub awaken_agent_contract::agent::content::SearchResultContent::text: alloc::string::String
+impl awaken_agent_contract::agent::content::SearchResultContent
+pub fn awaken_agent_contract::agent::content::SearchResultContent::text(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::extract_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub mod awaken_agent_contract::agent::delegation
 pub enum awaken_agent_contract::agent::delegation::DelegationError

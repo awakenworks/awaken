@@ -846,6 +846,15 @@ impl SessionApplication {
                 .await
             {
                 Ok(session) => report.settled.push(session),
+                Err(SessionPreparationError::NotFound) => {
+                    // An eager terminal-cleanup actor may commit the delete
+                    // tombstone after this scan captured its candidate. The
+                    // missing aggregate is then the authoritative successful
+                    // outcome, not a retryable reconciliation failure. Repair
+                    // the disposable reference projection from that truth.
+                    self.repair_resource_references(&owner_scope, &session_id)
+                        .await;
+                }
                 Err(error) => report.failures.push(SessionReconciliationFailure {
                     session_id,
                     message: error.to_string(),
@@ -859,11 +868,23 @@ impl SessionApplication {
     pub async fn reconcile_persisted_resources(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
-        session = self
+        let session = self
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
+        self.reconcile_prepared_resources(owner_scope, session)
+            .await
+    }
+
+    /// Apply the Resource state machine only after credential migration has
+    /// reached a stable Session root. Keeping these phases as separate futures
+    /// also bounds synchronous poll-stack growth on the HTTP admission path.
+    async fn reconcile_prepared_resources(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, SessionPreparationError> {
         if !session.is_terminal() && self.requires_external_realization(&session) {
             return Ok(session);
         }
@@ -979,6 +1000,31 @@ impl SessionApplication {
     /// Every frozen child Runtime is attempted even when another teardown fails;
     /// durable completion commits only when all external effects succeed.
     pub async fn release_terminal_resources(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+    ) -> Result<Option<PersistedSession>, SessionPreparationError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            match self
+                .release_terminal_resources_once(owner_scope, session_id)
+                .await
+            {
+                Err(SessionPreparationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    // Delete admission deliberately wakes the durable lifecycle
+                    // driver and also starts an eager cleanup attempt. Another
+                    // process may do the same after failover. Every external
+                    // effect below has a durable idempotency identity, so a root
+                    // CAS loser must re-read the aggregate and resume from the
+                    // winning phase instead of stranding a Deleting Session.
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        Err(SessionPreparationError::Conflict)
+    }
+
+    async fn release_terminal_resources_once(
         &self,
         owner_scope: &str,
         session_id: &str,

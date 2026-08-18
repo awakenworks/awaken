@@ -91,8 +91,8 @@ pub fn awaken_worker::WorkerNodeBuilder::with_registered_memory_mounter_factory(
 pub fn awaken_worker::WorkerNodeBuilder::with_remote_attempt_executor(self, awaken_runtime_host::host::RemoteAttemptInstallation) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_remote_session_resource_support(self) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_session_container_environment_components(self, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::container_environment::ContainerEnvironmentComponents) -> Self
-pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>) -> Self
-pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider_and_capacity(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::provider_contract::ContainerEnvironmentProvider>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider_and_capacity(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::provider_contract::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest_config(self, awaken_worker::StandardManifestConfig) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_tool_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self

@@ -882,16 +882,19 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
 
     // The binding carries the stored refresh configuration next to the source
     // id — the sealed refresh token's ref, never the token itself.
-    let staged = h.staged.lock().unwrap();
-    let refresh = staged[0]
-        .credential
-        .as_ref()
-        .and_then(|access| access.refresh.as_ref())
-        .expect("a refreshable credential's binding carries its refresh config");
-    assert_eq!(refresh.token_endpoint, "https://auth.example.com/token");
-    assert_eq!(refresh.client_id, "cli_pub");
-    assert_eq!(refresh.scope.as_deref(), Some("mcp:read"));
-    assert_eq!(refresh.resource, None);
+    let refresh_token_ref = {
+        let staged = h.staged.lock().unwrap();
+        let refresh = staged[0]
+            .credential
+            .as_ref()
+            .and_then(|access| access.refresh.as_ref())
+            .expect("a refreshable credential's binding carries its refresh config");
+        assert_eq!(refresh.token_endpoint, "https://auth.example.com/token");
+        assert_eq!(refresh.client_id, "cli_pub");
+        assert_eq!(refresh.scope.as_deref(), Some("mcp:read"));
+        assert_eq!(refresh.resource, None);
+        refresh.refresh_token_ref.clone()
+    };
     let source_id = h
         .vaults
         .credential_source_id(&vault_id, &cred_id)
@@ -902,8 +905,8 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
         source_id.0,
         awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT
     );
-    assert!(refresh.refresh_token_ref.starts_with(&logical_prefix));
-    assert!(refresh.refresh_token_ref.len() > logical_prefix.len());
+    assert!(refresh_token_ref.starts_with(&logical_prefix));
+    assert!(refresh_token_ref.len() > logical_prefix.len());
 }
 
 #[tokio::test]

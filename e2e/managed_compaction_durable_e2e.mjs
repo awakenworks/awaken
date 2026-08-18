@@ -65,7 +65,7 @@ async function main() {
   try {
     await waitForPort(PORT);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: a.baseUrl });
-    const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
     // The CompactionModel echoes injected system context as `ctx:[...]`; once the
     // fold runs, that context carries the compactor's summary line.

@@ -15,8 +15,8 @@
 //! **Bootstrap contract.** On first boot over an empty token directory a
 //! single `admin`-role token is minted for the service principal
 //! `mgmt-bootstrap` in workspace `wrkspc_default` under the hidden local Org,
-//! logged once to stderr with
-//! a rotate-me warning, and written to `<dir>/admin-token`. That file is the
+//! announced on stderr without its cleartext, and written to
+//! `<dir>/admin-token` with a rotate-me warning. That file is the
 //! single-machine operator hand-off; rotate by minting a successor admin token
 //! through `POST /v1/config/iam/tokens` and revoking the bootstrap token
 //! through `DELETE /v1/config/iam/tokens/{id}` (or from an embedding via
@@ -524,7 +524,8 @@ impl ManagementAuthz {
 /// Open (or create) the embedded IAM state under `dir`: migrate
 /// `<dir>/iam.sqlite`, install the preset role catalog as role grants, hydrate
 /// persisted tokens + bindings into the live evaluator, and — when the token
-/// directory is empty — mint the bootstrap admin token (stderr + `<dir>/admin-token`).
+/// directory is empty — mint the bootstrap admin token into `<dir>/admin-token`
+/// and emit only a secret-free operator notice on stderr.
 ///
 /// Panics on open/migrate failure, like the durable-store boot path: a
 /// management server that silently came up open would be worse than one that

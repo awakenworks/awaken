@@ -232,7 +232,7 @@ impl<'de> serde::Deserialize<'de> for ManagedVaultCredential {
         D: serde::Deserializer<'de>,
     {
         let wire = ManagedVaultCredentialWire::deserialize(deserializer)?;
-        let lifecycle = wire.lifecycle.unwrap_or_else(|| {
+        let lifecycle = wire.lifecycle.unwrap_or({
             if let Some(at) = wire.deleted_at {
                 ManagedCredentialLifecycle::Deleted { at }
             } else if let Some(at) = wire.archived_at {

@@ -1019,18 +1019,20 @@ impl LlmExecutor for SkillDrivingModel {
                 arguments: serde_json::json!({}),
             }]),
             Role::Tool if last_text.contains("\"skills\"") => {
-                // The catalog came back — activate the id it actually advertised.
-                // This keeps the fixture valid for both a legacy `greet` id and the
-                // official multipart API's tagged catalog id.
+                // The catalog came back — activate only the canonical id it
+                // actually advertised. A malformed catalog fails visibly instead
+                // of reviving the removed legacy `greet` identity.
                 let skill = serde_json::from_str::<serde_json::Value>(&last_text)
                     .ok()
-                    .and_then(|value| value["skills"][0]["id"].as_str().map(str::to_string))
-                    .unwrap_or_else(|| "greet".to_string());
-                AssistantOutput::from_tool_calls(vec![ToolCall {
-                    call_id: "s".into(),
-                    tool_id: "Skill".into(),
-                    arguments: serde_json::json!({ "skill": skill }),
-                }])
+                    .and_then(|value| value["skills"][0]["id"].as_str().map(str::to_string));
+                match skill {
+                    Some(skill) => AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "s".into(),
+                        tool_id: "Skill".into(),
+                        arguments: serde_json::json!({ "skill": skill }),
+                    }]),
+                    None => AssistantOutput::text(format!("INVALID-SKILL-CATALOG: {last_text}")),
+                }
             }
             Role::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),
             _ => AssistantOutput::text("hmm"),
@@ -1062,8 +1064,15 @@ pub fn build_skills_router() -> Router {
 pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     let deployment = scenario_deployment();
-    let host = resource_host_with_deployment(model, model_ref, deployment);
-    mount(host)
+    let skill_id = awaken_resource_contract::skill_catalog_id("greet");
+    let publication = fixed_host_backend_publication(
+        "assistant",
+        "default",
+        vec![awaken_agent_contract::AgentSkillBinding::custom(skill_id)],
+    );
+    let host = resource_host_with_deployment(model, model_ref, deployment)
+        .map_host(|host| host.with_agent_publications(publication.clone()));
+    mount_with_agent_source(host, publication)
 }
 pub async fn build_config_router() -> Router {
     // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider

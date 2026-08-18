@@ -22,7 +22,7 @@ async function listEvents(client, sessionId) {
 
 async function runOneTurn(baseUrl, text) {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-  const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+  const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
   // The send itself may reject when the turn fails terminally; the retry/error
   // paths run either way (that is what we are covering).
   let sendError = null;

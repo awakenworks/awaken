@@ -130,7 +130,6 @@ pub fn awaken_run_executor_acp::AcpCli::admits_mcp_client_credential(&self, core
 pub fn awaken_run_executor_acp::AcpCli::remediation(self, core::option::Option<&str>) -> core::option::Option<&'static str>
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project_mcp(&self, &[awaken_runtime_contract::resolved::AcpMcpServer]) -> awaken_run_executor_acp::McpDelivery
-impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::supports_model_api_dialect(self, &str) -> bool
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::try_project(&self, &awaken_run_executor_acp::ResolvedModel, core::option::Option<u64>, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>
@@ -138,6 +137,7 @@ pub fn awaken_run_executor_acp::AcpCli::try_project_with_argv(&self, &awaken_run
 pub struct awaken_run_executor_acp::AcpDiscoverySpec
 pub awaken_run_executor_acp::AcpDiscoverySpec::install_remediation: &'static str
 pub awaken_run_executor_acp::AcpDiscoverySpec::login: awaken_run_executor_acp::AcpLoginProbe
+pub awaken_run_executor_acp::AcpDiscoverySpec::minimum_version: awaken_run_executor_acp::AcpVersion
 pub awaken_run_executor_acp::AcpDiscoverySpec::version: awaken_run_executor_acp::AcpProbeCommand
 pub struct awaken_run_executor_acp::AcpImageRequirement
 pub awaken_run_executor_acp::AcpImageRequirement::manager: &'static str
@@ -178,6 +178,12 @@ pub fn awaken_run_executor_acp::AcpRunExecutor::resume<'life0, 'async_trait>(&'l
 impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
 pub fn awaken_run_executor_acp::AcpRunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_run_executor_acp::AcpVersion
+pub awaken_run_executor_acp::AcpVersion::major: u64
+pub awaken_run_executor_acp::AcpVersion::minor: u64
+pub awaken_run_executor_acp::AcpVersion::patch: u64
+impl awaken_run_executor_acp::AcpVersion
+pub const fn awaken_run_executor_acp::AcpVersion::new(u64, u64, u64) -> Self
 pub struct awaken_run_executor_acp::AgentSession
 pub awaken_run_executor_acp::AgentSession::channel: alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>
 pub awaken_run_executor_acp::AgentSession::codec: awaken_protocol_acp::Codec

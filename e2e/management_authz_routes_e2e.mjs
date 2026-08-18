@@ -30,13 +30,27 @@ async function req(base, method, uri, token, body) {
   const text = await res.text();
   let parsed = null;
   if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = text;
-    }
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
   }
   return { status: res.status, body: parsed };
+}
+
+async function uploadSkill(base, token) {
+  const form = new FormData();
+  form.append(
+    'files[]',
+    new Blob(['---\nname: authz-skill\ndescription: authz\n---\nUse safely.']),
+    'SKILL.md',
+  );
+  const res = await fetch(`${base}/v1/skills`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'anthropic-beta': 'skills-2025-10-02',
+    },
+    body: form,
+  });
+  return { status: res.status };
 }
 
 async function apiKeyReq(base, method, uri, token, body) {
@@ -112,10 +126,7 @@ async function main() {
       (await req(base, 'POST', memoryRoute, token, { description: 'admin update' })).status,
       200,
     );
-    const skill = await req(base, 'POST', '/v1/skills', token, {
-      id: 'authz-skill',
-      content: '---\nname: authz-skill\ndescription: authz\n---\nUse safely.',
-    });
+    const skill = await uploadSkill(base, token);
     assert.ok(skill.status !== 401 && skill.status !== 403, `admin writes Skill: ${skill.status}`);
     pass('resource PEP maps File/Skill/Memory reads and admin writes outside the stores');
 

@@ -378,6 +378,15 @@ async function main(): Promise<void> {
     );
   }
 
+  const fromIndex = process.argv.indexOf('--from');
+  const fromId = fromIndex === -1 ? undefined : process.argv[fromIndex + 1];
+  if (fromIndex !== -1 && !fromId) throw new Error('--from requires a scenario id');
+  const firstScenario = fromId === undefined
+    ? 0
+    : scenarios.findIndex((scenario) => scenario.id === fromId);
+  if (firstScenario === -1) throw new Error(`unknown --from scenario ${fromId}`);
+  const selectedScenarios = scenarios.slice(firstScenario);
+
   const postgres = await startPostgres();
   // Keep stage ports below Linux's default ephemeral range, but probe each port
   // before handing it to a child. PID-derived fixed blocks can alias and also
@@ -385,8 +394,8 @@ async function main(): Promise<void> {
   const nextStagePort = stagePortAllocator();
   const passed = new Set<string>();
   try {
-    for (const [index, scenario] of scenarios.entries()) {
-      console.log(`\n[stage-e2e ${index + 1}/${scenarios.length}] ${scenario.id}`);
+    for (const [index, scenario] of selectedScenarios.entries()) {
+      console.log(`\n[stage-e2e ${firstScenario + index + 1}/${scenarios.length}] ${scenario.id}`);
       const infrastructureGap = unavailableOptionalInfrastructure(scenario);
       if (infrastructureGap) {
         console.log(`  explicit infrastructure gap: ${infrastructureGap}`);
@@ -422,6 +431,13 @@ async function main(): Promise<void> {
     } catch (error) {
       console.error(`failed to remove disposable Postgres ${postgres.container}: ${error}`);
     }
+  }
+
+  if (fromId !== undefined) {
+    console.log(
+      `\nSTAGE CHANGE E2E PARTIAL PASS: ${selectedScenarios.length} scenario(s) from ${fromId}.`,
+    );
+    return;
   }
 
   const covered = obligations.filter((obligation) => obligation.scenario && passed.has(obligation.scenario));

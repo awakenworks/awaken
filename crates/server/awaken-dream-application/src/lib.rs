@@ -216,7 +216,7 @@ impl DreamProcess {
             status: if public_terminal_pending {
                 DreamStatus::Running
             } else {
-                self.status.clone()
+                self.status
             },
             usage,
         }
@@ -227,7 +227,7 @@ fn process_record(process: &DreamProcess) -> DreamProcessRecord {
     DreamProcessRecord {
         process_id: process.id.clone(),
         workspace_id: process.workspace_id.clone(),
-        status: process.status.clone(),
+        status: process.status,
         source_memory_store_id: process.source_memory_store_id.clone(),
         output_behavior: process.output_behavior.clone(),
         session_ids: process.session_ids.clone(),

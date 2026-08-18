@@ -621,12 +621,16 @@ mod mcp_wiring_tests {
             std::slice::from_ref(&authenticated),
         )
         .expect("declared ACP Session auth adapter");
-        assert_eq!(admitted.session_servers, [authenticated.clone()]);
+        assert_eq!(
+            admitted.session_servers.as_slice(),
+            std::slice::from_ref(&authenticated)
+        );
         assert!(admitted.config_file.is_none());
 
         let unsupported = *crate::acp_cli("codex").expect("codex fixture");
         assert!(
-            mcp_injection_from_session_servers(&unsupported, &[authenticated.clone()]).is_err()
+            mcp_injection_from_session_servers(&unsupported, std::slice::from_ref(&authenticated))
+                .is_err()
         );
 
         let mut stdio = authenticated;
@@ -1023,21 +1027,27 @@ mod tests {
         // so an ambient host secret in THIS (parent) process must NOT be inherited by
         // the launched child. Only the PATH/HOME allowlist and the projected launch env
         // cross. Exercises the REAL spawn path (not the ScriptedSource shortcut).
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // A host secret in the parent env. SAFETY (edition 2024): set on the test thread
-        // before the spawn reads the host env; the name is unique to this test and read
-        // only by the child's env dump below, then removed.
-        unsafe {
-            std::env::set_var("AWAKEN_HOST_SENTINEL_LEAK", "leaky-secret-should-not-cross");
-        }
+        // Select one ambient variable that really exists but is not in the
+        // backend allow-list. The test never mutates process-global state and
+        // never logs its value.
+        let ambient_key = std::env::vars()
+            .map(|(key, _)| key)
+            .find(|key| {
+                key != "PATH"
+                    && key != "HOME"
+                    && key != "MY_PROJECTED"
+                    && key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+            .expect("test process has a non-allowlisted ambient variable");
 
-        // A shell agent that, on the prompt line, echoes back three probes: the host
-        // sentinel (must be EMPTY — cleared), whether PATH is set (must be — allowlisted
-        // so `npx`/`node`/binaries resolve), and a projected env value (must arrive).
-        let script = "read _prompt; \
-             printf 'SENTINEL=[%s] PATH_SET=[%s] PROJECTED=[%s]\\n' \
-             \"$AWAKEN_HOST_SENTINEL_LEAK\" \"${PATH:+yes}\" \"$MY_PROJECTED\"";
+        // Dump only the child's final environment after receiving one prompt.
+        // It may contain the backend allow-list and projected values, but no
+        // arbitrary variable selected above.
+        let script = "read _prompt; env";
         let launch = AcpLaunch::custom(
             vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()],
             vec![("MY_PROJECTED".to_string(), "projected-value".to_string())],
@@ -1052,29 +1062,27 @@ mod tests {
             .await
             .expect("send the prompt line");
         channel.flush().await.expect("flush");
-        let mut reader = BufReader::new(&mut channel);
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
+        let mut output = String::new();
+        channel
+            .read_to_string(&mut output)
             .await
             .expect("read the child env dump");
 
-        // SAFETY: same-thread teardown, mirroring the set above.
-        unsafe {
-            std::env::remove_var("AWAKEN_HOST_SENTINEL_LEAK");
-        }
-
         assert!(
-            line.contains("SENTINEL=[]"),
-            "the host sentinel leaked into the env_clear'd child: {line:?}"
+            !output
+                .lines()
+                .any(|line| line.starts_with(&format!("{ambient_key}="))),
+            "ambient variable {ambient_key} leaked into the env_clear'd child"
         );
         assert!(
-            line.contains("PATH_SET=[yes]"),
-            "PATH must pass through the allowlist so the launcher resolves binaries: {line:?}"
+            output.lines().any(|line| line.starts_with("PATH=")),
+            "PATH must pass through the allowlist so the launcher resolves binaries"
         );
         assert!(
-            line.contains("PROJECTED=[projected-value]"),
-            "the projected launch env must reach the child: {line:?}"
+            output
+                .lines()
+                .any(|line| line == "MY_PROJECTED=projected-value"),
+            "the projected launch env must reach the child"
         );
     }
 

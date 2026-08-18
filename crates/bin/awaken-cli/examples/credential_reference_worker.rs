@@ -175,6 +175,20 @@ impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ReferenceMater
     }
 }
 
+fn fixture_deployment() -> Result<awaken_runtime_host::DeploymentConfig, String> {
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    if let Ok(tier) = std::env::var("AWAKEN_TEST_SANDBOX_TIER") {
+        deployment.sandbox_tier = match tier.as_str() {
+            "local" => awaken_runtime_host::SandboxTier::Local,
+            #[cfg(feature = "container-docker")]
+            "docker" => awaken_runtime_host::SandboxTier::Docker,
+            _ => return Err(format!("unsupported E2E sandbox tier `{tier}`")),
+        };
+    }
+    deployment.container_image = std::env::var("AWAKEN_TEST_CONTAINER_IMAGE").ok();
+    Ok(deployment)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&Default::default());
@@ -194,13 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR").ok();
     match (resource, admin, storage) {
         (None, None, None) => {
-            let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-            if let Ok(tier) = std::env::var("AWAKEN_TEST_SANDBOX_TIER") {
-                deployment.sandbox_tier = match tier.as_str() {
-                    "local" => awaken_runtime_host::SandboxTier::Local,
-                    _ => return Err(format!("unsupported E2E sandbox tier `{tier}`").into()),
-                };
-            }
+            let deployment = fixture_deployment()?;
             let credentials =
                 awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                     materializer.clone(),
@@ -209,6 +217,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 awaken_worker_transport_security::WorkerUpstream::new(upstream),
             )
             .with_deployment_config(deployment)
+            .with_standard_manifest_config(
+                awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
+            )
+            .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
             .with_inference_materializer(materializer.clone())
             .with_credential_materializer(credentials)
             .with_worker_local_credential_resolver(materializer)
@@ -216,10 +228,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Ok(address) = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN") {
                 builder = builder.with_admin_listen(address);
             }
-            builder.build()?.run_until_shutdown().await
+            builder
+                .prepare_session_environment_from_deployment()
+                .await?
+                .build()?
+                .run_until_shutdown()
+                .await
         }
         (Some(_resource_url), Some(_admin_url), Some(storage_dir)) => {
-            let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+            let mut deployment = fixture_deployment()?;
             deployment.durable = true;
             deployment.storage_dir = Some(storage_dir.into());
             let credentials =
@@ -236,6 +253,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream)
                 .with_deployment_config(deployment)
+                .with_standard_manifest_config(
+                    awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
+                )
+                .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
                 .with_registered_memory_mounter_factory(
                     awaken_cli::registered_memory_mounter_factory(),
                 )
@@ -246,7 +267,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Ok(address) = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN") {
                 builder = builder.with_admin_listen(address);
             }
-            builder.build()?.run_until_shutdown().await
+            builder
+                .prepare_session_environment_from_deployment()
+                .await?
+                .build()?
+                .run_until_shutdown()
+                .await
         }
         _ => Err("resource Worker fixture requires resource, admin, and storage together".into()),
     }

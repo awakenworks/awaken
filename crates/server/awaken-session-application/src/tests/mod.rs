@@ -370,6 +370,8 @@ impl SessionRuntime for RecordingCleanupRuntime {
 struct FaultingSessionRepository {
     inner: Arc<dyn ManagedSessionRepository>,
     fail_operation_once: Mutex<Option<String>>,
+    conflict_operation_once: Mutex<Option<String>>,
+    get_not_found_once: AtomicBool,
 }
 
 impl FaultingSessionRepository {
@@ -377,11 +379,21 @@ impl FaultingSessionRepository {
         Self {
             inner,
             fail_operation_once: Mutex::new(None),
+            conflict_operation_once: Mutex::new(None),
+            get_not_found_once: AtomicBool::new(false),
         }
     }
 
     fn fail_once(&self, operation: &str) {
         *self.fail_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+
+    fn commit_then_conflict_once(&self, operation: &str) {
+        *self.conflict_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+
+    fn get_not_found_once(&self) {
+        self.get_not_found_once.store(true, Ordering::SeqCst);
     }
 }
 
@@ -424,6 +436,29 @@ impl ManagedSessionRepository for FaultingSessionRepository {
                 ),
             );
         }
+        let should_report_conflict = self
+            .conflict_operation_once
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|operation| mutation.idempotency.key.contains(operation));
+        if should_report_conflict {
+            self.conflict_operation_once.lock().unwrap().take();
+            let result = self.inner.commit_mutation(owner_scope, mutation).await?;
+            let current_revision = match result {
+                awaken_session_contract::SessionMutationResult::Applied { new_revision }
+                | awaken_session_contract::SessionMutationResult::Replayed { new_revision }
+                | awaken_session_contract::SessionMutationResult::Conflict {
+                    current_revision: new_revision,
+                } => new_revision,
+                awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                    return Ok(awaken_session_contract::SessionMutationResult::IdempotencyMismatch);
+                }
+            };
+            return Ok(awaken_session_contract::SessionMutationResult::Conflict {
+                current_revision,
+            });
+        }
         self.inner.commit_mutation(owner_scope, mutation).await
     }
 
@@ -454,6 +489,9 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+        if self.get_not_found_once.swap(false, Ordering::SeqCst) {
+            return Err(awaken_session_contract::SessionRepositoryError::NotFound);
+        }
         self.inner.get(session_id).await
     }
 

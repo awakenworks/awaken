@@ -132,14 +132,15 @@ mod tests {
             assert_eq!(publication.primary, expected.primary, "R1");
             assert_eq!(publication.candidates, expected.candidates, "R1");
         }
-        let calls = resolver.calls.lock().unwrap();
-        assert_eq!(calls.len(), model_ids.len(), "R1");
-        for (call, model_id) in calls.iter().zip(model_ids) {
-            assert_eq!(call.0, ScopeId::from("workspace-a"), "R1");
-            assert_eq!(call.1, parse_managed_model_id(model_id).unwrap(), "R1");
-            assert!(call.2.is_empty(), "R1");
+        {
+            let calls = resolver.calls.lock().unwrap();
+            assert_eq!(calls.len(), model_ids.len(), "R1");
+            for (call, model_id) in calls.iter().zip(model_ids) {
+                assert_eq!(call.0, ScopeId::from("workspace-a"), "R1");
+                assert_eq!(call.1, parse_managed_model_id(model_id).unwrap(), "R1");
+                assert!(call.2.is_empty(), "R1");
+            }
         }
-        drop(calls);
 
         let invalid = adapter
             .resolve_session_model("workspace-a", "model;api=anthropic")

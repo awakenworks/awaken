@@ -44,10 +44,13 @@ pub awaken_webhook::WebhookEvent::kind: alloc::string::String
 impl awaken_webhook::WebhookEvent
 pub fn awaken_webhook::WebhookEvent::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_webhook::WebhookEvent::to_body(&self) -> alloc::string::String
+pub fn awaken_webhook::WebhookEvent::validate(&self) -> core::result::Result<(), &'static str>
+pub fn awaken_webhook::WebhookEvent::with_session_thread_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_webhook::WebhookEventData
 pub awaken_webhook::WebhookEventData::event_type: alloc::string::String
 pub awaken_webhook::WebhookEventData::id: alloc::string::String
 pub awaken_webhook::WebhookEventData::organization_id: core::option::Option<alloc::string::String>
+pub awaken_webhook::WebhookEventData::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_webhook::WebhookEventData::workspace_id: alloc::string::String
 pub const awaken_webhook::DEFAULT_TOLERANCE_SECS: i64
 pub const awaken_webhook::SECRET_PREFIX: &str

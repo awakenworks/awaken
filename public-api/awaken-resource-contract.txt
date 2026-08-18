@@ -19,6 +19,10 @@ pub awaken_resource_contract::DeploymentBackingRole::ResourcesDatabase
 pub enum awaken_resource_contract::FileCatalogError
 pub awaken_resource_contract::FileCatalogError::Invalid(alloc::string::String)
 pub awaken_resource_contract::FileCatalogError::Storage(alloc::string::String)
+pub enum awaken_resource_contract::FileReadPurpose
+pub awaken_resource_contract::FileReadPurpose::ModelContent
+pub awaken_resource_contract::FileReadPurpose::ModelContent::thread_id: alloc::string::String
+pub awaken_resource_contract::FileReadPurpose::SessionResource
 pub enum awaken_resource_contract::InputResourceId
 pub awaken_resource_contract::InputResourceId::File(awaken_resource_contract::FileId)
 pub awaken_resource_contract::InputResourceId::MemoryStore(awaken_resource_contract::MemoryStoreId)
@@ -296,6 +300,12 @@ impl core::convert::From<alloc::string::String> for awaken_resource_contract::Re
 pub fn awaken_resource_contract::RepositoryId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_resource_contract::RepositoryId
 pub fn awaken_resource_contract::RepositoryId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_resource_contract::ResolvedFileContent
+pub awaken_resource_contract::ResolvedFileContent::bytes: alloc::vec::Vec<u8>
+pub awaken_resource_contract::ResolvedFileContent::content_id: alloc::string::String
+pub awaken_resource_contract::ResolvedFileContent::file_id: alloc::string::String
+pub awaken_resource_contract::ResolvedFileContent::filename: alloc::string::String
+pub awaken_resource_contract::ResolvedFileContent::media_type: alloc::string::String
 pub struct awaken_resource_contract::ResourceCatalogRules
 impl awaken_resource_contract::ResourceCatalogRules
 pub fn awaken_resource_contract::ResourceCatalogRules::validate_initial(&str, &str, awaken_resource_contract::ConfigVersion, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
@@ -408,7 +418,7 @@ impl<C: core::marker::Send + core::marker::Sync + 'static> awaken_resource_contr
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ArtifactPublicationReceipt, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_resource_contract::UnavailableFileContentSource
 impl<C: core::marker::Sync> awaken_resource_contract::FileContentSource<C> for awaken_resource_contract::UnavailableFileContentSource
-pub fn awaken_resource_contract::UnavailableFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(alloc::string::String, alloc::vec::Vec<u8>)>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_resource_contract::UnavailableFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_resource_contract::FileReadPurpose, core::option::Option<&'life4 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::ResolvedFileContent>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub struct awaken_resource_contract::UpdateMemoryStoreCommand
 pub awaken_resource_contract::UpdateMemoryStoreCommand::description: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::UpdateMemoryStoreCommand::id: awaken_resource_contract::MemoryStoreId
@@ -439,9 +449,9 @@ pub fn awaken_resource_contract::FileCatalog::get_file<'life0, 'life1, 'life2, '
 pub fn awaken_resource_contract::FileCatalog::list_files<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::FileRecord>, awaken_resource_contract::FileCatalogError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::FileCatalog::mark_file_deleted<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::FileRecord>, awaken_resource_contract::FileCatalogError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_resource_contract::FileContentSource<C: core::marker::Sync>: core::marker::Send + core::marker::Sync
-pub fn awaken_resource_contract::FileContentSource::read<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(alloc::string::String, alloc::vec::Vec<u8>)>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_resource_contract::FileContentSource::read<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_resource_contract::FileReadPurpose, core::option::Option<&'life4 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::ResolvedFileContent>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 impl<C: core::marker::Sync> awaken_resource_contract::FileContentSource<C> for awaken_resource_contract::UnavailableFileContentSource
-pub fn awaken_resource_contract::UnavailableFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(alloc::string::String, alloc::vec::Vec<u8>)>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_resource_contract::UnavailableFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_resource_contract::FileReadPurpose, core::option::Option<&'life4 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::ResolvedFileContent>, awaken_resource_contract::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub trait awaken_resource_contract::FileStore: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::FileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_resource_contract::FileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

@@ -1371,10 +1371,30 @@ async fn delete_resource(
 async fn send_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ManagedJson(req): ManagedJson<SendEventsRequest>,
 ) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Anthropic's Messages SDK projects request-grain `user_profile_id` to this
+    // header. Reuse the context carrier for Managed events without adding an
+    // out-of-contract field to the strict event envelope.
+    let data_subject_id = headers
+        .get("anthropic-user-profile-id")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "anthropic-user-profile-id must be non-empty visible ASCII",
+                    )))
+                })
+        })
+        .transpose()?;
     state
-        .send_events(&id, req)
+        .send_events_attributed(&id, req, data_subject_id)
         .await
         .map(Json)
         .map_err(error_response)

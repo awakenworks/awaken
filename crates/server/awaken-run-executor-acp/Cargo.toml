@@ -38,3 +38,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-u
 serde_json.workspace = true
 # dev-only: the session-home reference impl's recovery tests use temp dirs.
 tempfile = "3"
+
+[lints]
+workspace = true

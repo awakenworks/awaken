@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
@@ -28,7 +28,13 @@ const BETAS = ['managed-agents-2026-04-01'];
 const SKILLS_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const STORE_DIR = `/tmp/awaken-skillstore-durable-e2e-${process.pid}`;
 const MARKER = 'DURABLE_SKILL_MARKER_5501';
-const SKILL_MD = `---\ndescription: greet durably\n---\n${MARKER}`;
+const SKILL_MD = `---\nname: greet\ndescription: greet durably\n---\n${MARKER}`;
+
+async function createSkill(content = SKILL_MD) {
+  return client.beta.skills.create({
+    files: [await toFile(Buffer.from(content), 'SKILL.md')],
+  });
+}
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
@@ -53,7 +59,7 @@ async function useSkill() {
     betas: BETAS,
   });
   const evs = await listEvents(session.id);
-  return JSON.stringify(evs.filter((e) => e.type === 'agent.message').map((m) => m.content));
+  return JSON.stringify(evs);
 }
 
 async function skillIds() {
@@ -83,21 +89,23 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const created = await client.post('/v1/skills', {
-      body: { id: 'greet', content: SKILL_MD }, headers: SKILLS_HEADERS,
-    });
-    assert.equal(created.id, 'greet', 'POST /v1/skills stored the skill under its id');
-    assert.deepEqual(await skillIds(), ['greet'], 'GET /v1/skills lists the uploaded skill');
-    assert.ok((await useSkill()).includes(MARKER), 'the model activated the durable skill (pre-restart)');
+    const created = await createSkill();
+    assert.ok(created.id.startsWith('skill_'), 'the SDK returns the canonical catalog id');
+    assert.deepEqual(await skillIds(), [created.id], 'GET /v1/skills lists the uploaded skill');
+    assert.match(
+      await useSkill(),
+      new RegExp(MARKER),
+      'the model activated the durable skill (pre-restart)',
+    );
     pass('uploaded skill offered, activated, and used within server A');
 
-    // A malformed upload (missing `content`) is rejected, not silently dropped.
+    // A malformed multipart upload (missing `files`) is rejected, not silently dropped.
     await expectStatus(
-      client.post('/v1/skills', { body: { id: 'incomplete' }, headers: SKILLS_HEADERS }),
+      client.beta.skills.create({}),
       400,
-      'POST /v1/skills without content',
+      'POST /v1/skills without files',
     );
-    pass('POST /v1/skills rejects a body missing `content` with 400');
+    pass('POST /v1/skills rejects a multipart body missing `files` with 400');
 
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
@@ -107,9 +115,10 @@ async function main() {
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
-    assert.deepEqual(await skillIds(), ['greet'], 'GET /v1/skills still lists the skill after restart');
-    assert.ok(
-      (await useSkill()).includes(MARKER),
+    assert.deepEqual(await skillIds(), [created.id], 'GET /v1/skills still lists the skill after restart');
+    assert.match(
+      await useSkill(),
+      new RegExp(MARKER),
       'a new session AFTER restart still activates the durably-configured skill',
     );
     pass('durable skill survived a real process restart and still reaches the model');
@@ -126,12 +135,11 @@ async function main() {
     servers.push(noStore.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-    const volatileId = 'volatile-greet';
-    const volatile = await client.post('/v1/skills', {
-      body: { id: volatileId, content: SKILL_MD }, headers: SKILLS_HEADERS,
-    });
-    assert.equal(volatile.id, volatileId);
-    assert.deepEqual(await skillIds(), [volatileId], 'ephemeral Skill is visible before restart');
+    const volatile = await createSkill(
+      `---\nname: volatile-greet\ndescription: volatile greeting\n---\n${MARKER}`,
+    );
+    assert.ok(volatile.id.startsWith('skill_'));
+    assert.deepEqual(await skillIds(), [volatile.id], 'ephemeral Skill is visible before restart');
 
     await stopServer(noStore.server);
     servers.pop();

@@ -54,6 +54,20 @@ async function upload(workspace, content) {
   return response.json();
 }
 
+async function uploadSkill(workspace, content) {
+  const form = new FormData();
+  form.append('display_title', 'Volatile Skill');
+  form.append('files[]', new Blob([content], { type: 'text/markdown' }), 'SKILL.md');
+  const response = await fetch(scoped(workspace, 'skills'), {
+    method: 'POST',
+    headers: { 'anthropic-beta': BETAS },
+    body: form,
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, `create Skill: ${text}`);
+  return JSON.parse(text);
+}
+
 async function main() {
   const server = start();
   try {
@@ -134,12 +148,10 @@ async function main() {
       path: '/notes/a.md', content: 'alpha',
     });
     assert.equal(first.status, 200);
-    assert.equal(
-      (await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
-        path: '/notes/a.md', content: 'duplicate',
-      })).status,
-      409,
-    );
+    const duplicateMemory = await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
+      path: '/notes/a.md', content: 'duplicate',
+    });
+    assert.equal(duplicateMemory.status, 409, JSON.stringify(duplicateMemory.body));
     await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
       path: '/notes/b.md', content: 'displaced',
     });
@@ -155,7 +167,7 @@ async function main() {
       (await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
         content: 'must-not-commit',
         path: 'relative.md',
-        precondition: { content_sha256: first.body.content_sha256 },
+        precondition: { type: 'content_sha256', content_sha256: first.body.content_sha256 },
       })).status,
       400,
     );
@@ -169,14 +181,14 @@ async function main() {
       versionsBeforeRejectedUpdate.body.data.length,
       'invalid target path rolls back content and history',
     );
-    assert.equal(
-      (await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
+    const staleMove = await json(
+      'POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
         content: 'alpha',
         path: '/notes/stale-move.md',
-        precondition: { content_sha256: 'stale' },
-      })).status,
-      409,
+        precondition: { type: 'content_sha256', content_sha256: 'stale' },
+      },
     );
+    assert.equal(staleMove.status, 409, JSON.stringify(staleMove.body));
     assert.equal(
       (await json('POST', WORKSPACE, `memory_stores/${store}/memories/missing-memory`, {
         content: 'cannot update an absent head',
@@ -193,7 +205,7 @@ async function main() {
     const updated = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}?view=full`, {
       content: 'beta',
       path: '/notes/b.md',
-      precondition: { content_sha256: first.body.content_sha256 },
+      precondition: { type: 'content_sha256', content_sha256: first.body.content_sha256 },
     });
     assert.equal(updated.status, 200);
     assert.equal(updated.body.path, '/notes/b.md');
@@ -204,7 +216,7 @@ async function main() {
       'rename-replace appends displaced delete plus one combined head update',
     );
     const idempotent = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
-      content: 'beta', precondition: { content_sha256: 'stale' },
+      content: 'beta', precondition: { type: 'content_sha256', content_sha256: 'stale' },
     });
     assert.equal(idempotent.status, 200);
     assert.equal(idempotent.body.memory_version_id, updated.body.memory_version_id);
@@ -224,13 +236,12 @@ async function main() {
     // Cause/effect rule: the one ephemeral ResourceComponent deliberately owns
     // all resource adapters, including its canonical InMemorySkillStore; a
     // Skill write therefore succeeds through that same aggregate boundary.
-    const skillId = `volatile-skill-${process.pid}`;
-    const skill = await json('POST', WORKSPACE, 'skills', {
-      id: skillId,
-      content: `---\nname: ${skillId}\ndescription: ephemeral\n---\nUse safely.`,
-    });
-    assert.equal(skill.status, 200, JSON.stringify(skill.body));
-    assert.equal(skill.body.id, skillId);
+    const skillName = `volatile-skill-${process.pid}`;
+    const skill = await uploadSkill(
+      WORKSPACE,
+      `---\nname: ${skillName}\ndescription: ephemeral\n---\nUse safely.`,
+    );
+    assert.equal(typeof skill.id, 'string');
 
     assert.equal((await json('DELETE', OTHER, `files/${otherWorkspaceFile.id}`)).status, 200);
     await sleep(5_500);

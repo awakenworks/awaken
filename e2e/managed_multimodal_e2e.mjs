@@ -21,7 +21,7 @@ async function lastAgentText(client, sessionId) {
 async function main() {
   await withRealServer('vision', 38160, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-    const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
       events: [
         {

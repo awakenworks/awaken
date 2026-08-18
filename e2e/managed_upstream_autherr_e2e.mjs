@@ -18,7 +18,7 @@ async function main() {
     process.env.ANTHROPIC_MODEL = 'fake-haiku';
     await withServer('real', 38273, async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       let sendError = null;
       try {
         await client.beta.sessions.events.send(session.id, {

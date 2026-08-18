@@ -43,7 +43,7 @@ async function main() {
     process.env.ANTHROPIC_MODEL = 'fake-haiku';
     await withServer('real', 38194, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await client.beta.sessions.events.send(session.id, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'first turn' }] }],
@@ -65,7 +65,7 @@ async function main() {
       pass('real mode over the fake upstream: multi-turn via GenaiExecutor on the wire');
 
       // --- a tool round-trip through the wire: tool_use -> glob -> final text
-      const toolSession = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const toolSession = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await client.beta.sessions.events.send(toolSession.id, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'use-tool:glob' }] }],

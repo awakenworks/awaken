@@ -271,6 +271,28 @@ fn ensure_endpoint(reference: &TaskReference, endpoint: &str) -> Result<()> {
     }
 }
 
+async fn finish_invalid_task_reference(
+    context: &RuntimeRunContext,
+    activation: &RunActivation,
+    error: Error,
+) -> Result<RunState> {
+    let message = error.to_string();
+    finish_terminal(
+        context,
+        activation,
+        vec![Message::text(
+            MessageId(format!("a2a-state-error-{}", activation.run_id.0)),
+            Role::Assistant,
+            message.clone(),
+        )],
+        EndCause::Error(Failure::Inference {
+            code: "a2a_durable_state_invalid".to_string(),
+            message,
+        }),
+    )
+    .await
+}
+
 fn resume_text(result: &ResumeResult) -> String {
     match result {
         ResumeResult::ToolResult(output) => output.text(),
@@ -345,18 +367,26 @@ impl RunExecutor for A2aRunExecutor {
         };
         let endpoint = endpoint_of(candidate)?;
 
+        let restored = match restored_task_reference(&context, &activation) {
+            Ok(restored) => restored,
+            Err(error) => {
+                return finish_invalid_task_reference(&context, &activation, error).await;
+            }
+        };
+        if let Some(reference) = &restored
+            && let Err(error) = ensure_endpoint(reference, &endpoint)
+        {
+            return finish_invalid_task_reference(&context, &activation, error).await;
+        }
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
             .await
             .map_err(Error::Execution)?;
-        let task = match restored_task_reference(&context, &activation)? {
-            Some(reference) => {
-                ensure_endpoint(&reference, &endpoint)?;
-                get_task(transport.as_ref(), &reference.task_id)
-                    .await
-                    .map_err(|error| Error::Execution(error.to_string()))?
-            }
+        let task = match restored {
+            Some(reference) => get_task(transport.as_ref(), &reference.task_id)
+                .await
+                .map_err(|error| Error::Execution(error.to_string()))?,
             None => {
                 let prompt = prompt_of(&activation.input);
                 let message_id = format!("a2a-msg-{}", activation.run_id.0);
@@ -426,10 +456,23 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .map_err(|error| Error::Execution(format!("invalid A2A resume: {error}")))?;
         let candidate = remote_candidate_of(&activation)?;
         let endpoint = endpoint_of(candidate)?;
-        let reference = restored_task_reference(&context, &activation)?.ok_or_else(|| {
-            Error::Execution("A2A resume is missing its durable remote task".to_string())
-        })?;
-        ensure_endpoint(&reference, &endpoint)?;
+        let reference = match restored_task_reference(&context, &activation) {
+            Ok(Some(reference)) => reference,
+            Ok(None) => {
+                return finish_invalid_task_reference(
+                    &context,
+                    &activation,
+                    Error::Execution("A2A resume is missing its durable remote task".to_string()),
+                )
+                .await;
+            }
+            Err(error) => {
+                return finish_invalid_task_reference(&context, &activation, error).await;
+            }
+        };
+        if let Err(error) = ensure_endpoint(&reference, &endpoint) {
+            return finish_invalid_task_reference(&context, &activation, error).await;
+        }
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
@@ -1817,20 +1860,26 @@ mod tests {
         )
         .await
         .unwrap();
+        let state = executor
+            .resume(
+                activation,
+                ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0),
+                context,
+            )
+            .await
+            .expect("missing durable task is a deterministic terminal Run failure");
         assert!(
-            executor
-                .resume(
-                    activation,
-                    ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0),
-                    context,
-                )
-                .await
-                .is_err()
+            matches!(
+                &state,
+                RunState::Ended(EndCause::Error(Failure::Inference { code, .. }))
+                    if code == "a2a_durable_state_invalid"
+            ),
+            "invalid durable state must not enter transient dispatch retry: {state:?}"
         );
     }
 
     #[tokio::test]
-    async fn execute_rejects_a_task_pinned_to_another_endpoint() {
+    async fn execute_terminalizes_a_task_pinned_to_another_endpoint() {
         let rec = Arc::new(Rec::default());
         let activation = activation("a2a:http://remote.invalid");
         let context = RuntimeRunContext::new()
@@ -1850,11 +1899,17 @@ mod tests {
         .await
         .unwrap();
 
+        let state = A2aRunExecutor::over_http()
+            .execute(activation, context)
+            .await
+            .expect("endpoint mismatch is a deterministic terminal Run failure");
         assert!(
-            A2aRunExecutor::over_http()
-                .execute(activation, context)
-                .await
-                .is_err()
+            matches!(
+                &state,
+                RunState::Ended(EndCause::Error(Failure::Inference { code, .. }))
+                    if code == "a2a_durable_state_invalid"
+            ),
+            "endpoint mismatch must not enter transient dispatch retry: {state:?}"
         );
     }
 

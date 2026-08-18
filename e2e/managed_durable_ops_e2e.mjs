@@ -1,5 +1,6 @@
 // Durable operations surface (slice E): the ADR-0009 follow-on verbs over HTTP —
-// reconcile (ADR-0011), reap + dead-letters + purge (ADR-0015).
+// reconcile (ADR-0011), explicit retry-exhaustion quarantine + dead-letters +
+// purge (ADR-0015).
 //
 // The deep dead-letter / crash-recovery STATE MACHINE is proven deterministically
 // at the store level (awaken-run-ingress `sqlite_dispatch` tests) on this exact
@@ -50,11 +51,15 @@ async function main() {
     assert.deepEqual(rec.body.recovered, [], 'clean queue reconciles to no runs');
     pass('reconcile (ADR-0011) reclaims runnable work — clean queue → []');
 
-    // reap (ADR-0015): dead-letter crashed runs past their budget; none here.
-    const reap = await req('POST', `/v1/durable/threads/${T}/reap?max_attempts=1`);
-    assert.equal(reap.status, 200, 'reap ok');
-    assert.equal(reap.body.dead_lettered, 0, 'no crashed runs to dead-letter');
-    pass('reap (ADR-0015) dead-letters past-budget crashes — none → 0');
+    // Manual quarantine (ADR-0015): explicitly quarantine crashed runs past
+    // their retry budget; none exist on this healthy queue.
+    const quarantine = await req(
+      'POST',
+      `/v1/durable/threads/${T}/quarantine-retry-exhausted?max_attempts=1`,
+    );
+    assert.equal(quarantine.status, 200, 'quarantine ok');
+    assert.equal(quarantine.body.quarantined, 0, 'no crashed runs to quarantine');
+    pass('manual retry-exhaustion quarantine (ADR-0015) — none → 0');
 
     // dead-letters + purge (ADR-0015): observe and GC the dead-letter set.
     const dl = await req('GET', `/v1/durable/threads/${T}/dead-letters`);
@@ -74,7 +79,7 @@ async function main() {
   try {
     for (const [method, path] of [
       ['POST', `/v1/durable/threads/any/reconcile`],
-      ['POST', `/v1/durable/threads/any/reap`],
+      ['POST', `/v1/durable/threads/any/quarantine-retry-exhausted`],
       ['GET', `/v1/durable/threads/any/dead-letters`],
       ['POST', `/v1/durable/threads/any/dead-letters/purge`],
     ]) {

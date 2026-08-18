@@ -514,6 +514,34 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
     );
 }
 
+#[tokio::test]
+async fn recovery_treats_a_concurrently_deleted_terminal_session_as_converged() {
+    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        inner.as_ref(),
+        persisted("deleted-during-scan", false, "terminated"),
+    )
+    .await;
+    let repository = Arc::new(FaultingSessionRepository::new(inner));
+    let application = application(
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    // The recovery scan already holds the terminal candidate when an eager
+    // cleanup actor wins and removes the aggregate before the re-read.
+    repository.get_not_found_once();
+    let report = application.reconcile_resource_activations().await;
+
+    assert!(
+        report.failures.is_empty(),
+        "stale scan is not a retryable outage"
+    );
+}
+
 /// Crash-window matrix for terminal effects. R1 persists the intent before
 /// an injected Runtime failure; R2 recovery reuses the exact effect id and
 /// commits the receipt plus Environment removal atomically; R3 a later
@@ -578,6 +606,50 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
         "R1/R2 stable intent"
     );
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "R1/R2");
+}
+
+/// A competing cleanup worker may win any root CAS after performing the exact
+/// durable phase. The loser must re-read that phase and continue; returning the
+/// conflict would leave a hidden Session and its Environment indefinitely live.
+#[tokio::test]
+async fn terminal_cleanup_rebases_after_competing_root_writer() {
+    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let repo = Arc::new(FaultingSessionRepository::new(durable));
+    let mut session = persisted("cleanup-root-race", false, "terminated");
+    session.environment.set_resident("opaque-environment");
+    create(repo.as_ref(), session).await;
+    repo.commit_then_conflict_once("terminal-cleanup-fence");
+
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let application = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration::default(),
+    );
+
+    let completed = application
+        .release_terminal_resources("workspace", "cleanup-root-race")
+        .await
+        .expect("CAS loser resumes from the winning durable phase")
+        .expect("archived Session remains");
+    assert!(completed.terminal_cleanup.is_completed());
+    assert!(matches!(
+        completed.environment,
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+    ));
+    assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1);
+    assert!(
+        repo.reconcilable_sessions()
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
 }
 
 /// Complete durable terminal-cleanup crash matrix. Causes are the process stop

@@ -55,7 +55,11 @@ async function json(method, tail, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : null };
+  let parsed = null;
+  if (text) {
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
+  }
+  return { status: response.status, body: parsed };
 }
 
 async function upload(content, filename) {
@@ -65,6 +69,21 @@ async function upload(content, filename) {
   const response = await fetch(scoped('files'), { method: 'POST', body: form });
   assert.equal(response.status, 200);
   return (await response.json()).id;
+}
+
+async function uploadSkill(content) {
+  const form = new FormData();
+  form.append('display_title', 'Reclamation Fault Skill');
+  form.append('files[]', new Blob([content], { type: 'text/markdown' }), 'SKILL.md');
+  const response = await fetch(scoped('skills'), { method: 'POST', body: form });
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try { body = JSON.parse(text); } catch { body = text; }
+  }
+  assert.equal(response.status, 200, `create Skill: ${text}`);
+  assert.equal(typeof body?.id, 'string', `create Skill returned an id: ${text}`);
+  return body.id;
 }
 
 function sqlQuote(value) {
@@ -186,11 +205,10 @@ async function main() {
         .map((fileId) => [fileId, blobForFile(files, fileId)]),
     );
     const blob = (fileId) => fileBlobs.get(fileId);
-    const skillId = `fault-skill-${process.pid}`;
-    assert.equal((await json('POST', 'skills', {
-      id: skillId,
-      content: `---\nname: ${skillId}\ndescription: fault recovery\n---\nRecover safely.`,
-    })).status, 200);
+    const skillName = `fault-skill-${process.pid}`;
+    const skillId = await uploadSkill(
+      `---\nname: ${skillName}\ndescription: fault recovery\n---\nRecover safely.`,
+    );
     // Fault-campaign admission table: C1 logical delete is durable; C2 the live
     // reclaimer may race before fault installation; C3 a durable retention hold
     // covers every target. C1+C2+!C3 can silently complete and invalidate the

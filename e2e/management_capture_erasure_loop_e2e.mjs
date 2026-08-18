@@ -72,9 +72,12 @@ async function main() {
         headers: {
           'content-type': 'application/json',
           'anthropic-beta': BETAS.join(','),
+          // The official Managed event JSON has no `user_profile_id` field.
+          // Attribution is request context, carried using the same header that
+          // Anthropic's Messages SDK projects from its `user_profile_id` option.
+          'anthropic-user-profile-id': 'dsub_full',
         },
         body: JSON.stringify({
-          user_profile_id: 'dsub_full',
           events: [{
             type: 'user.message',
             content: [{ type: 'text', text: 'please capture this content' }],

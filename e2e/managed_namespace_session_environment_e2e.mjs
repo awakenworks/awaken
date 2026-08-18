@@ -29,6 +29,14 @@ const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 const AGENT = 'namespace-agent';
 
+async function waitUntil(predicate, message, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(message);
+}
+
 function bwrapAvailable() {
   return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
     stdio: 'ignore',
@@ -72,7 +80,19 @@ function seedAgentFixtureRepository() {
 import readline from 'node:readline';
 const read = (path) => { try { return fs.readFileSync(path, 'utf8'); } catch { return 'ABSENT'; } };
 const readAny = (...paths) => paths.map(read).find((value) => value !== 'ABSENT') ?? 'ABSENT';
+const readProjectedSkill = (...roots) => {
+  for (const root of roots) {
+    try {
+      for (const entry of fs.readdirSync(root).sort()) {
+        const content = read(root + '/' + entry + '/SKILL.md');
+        if (content !== 'ABSENT') return content;
+      }
+    } catch {}
+  }
+  return 'ABSENT';
+};
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
+const writableAny = (...paths) => paths.some((path) => fs.existsSync(path) && writable(path));
 const mutateExisting = (path) => {
   try {
     if (!fs.existsSync(path)) return false;
@@ -93,9 +113,9 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
   fs.mkdirSync(outputs, { recursive: true });
   fs.writeFileSync(outputs + '/result.txt', 'NAMESPACE-ARTIFACT-OK');
   const observations = [
-    ['skill', read('.skills/delivered-namespace/SKILL.md')],
-    ['memory', read('.mnt/notes/seed.txt')],
-    ['memory_writable', writable('.mnt/notes/seed.txt')],
+    ['skill', readProjectedSkill('.skills', 'workspace/.skills')],
+    ['memory', readAny('mnt/notes/seed.txt', '.mnt/notes/seed.txt', 'workspace/.mnt/notes/seed.txt')],
+    ['memory_writable', writableAny('mnt/notes/seed.txt', '.mnt/notes/seed.txt', 'workspace/.mnt/notes/seed.txt')],
     ['live_file', read('/mnt/session/uploads/workspace/live.txt')],
     ['live_file_mutated', mutateExisting('/mnt/session/uploads/workspace/live.txt')],
     ['renamed_file', read('/mnt/session/uploads/workspace/renamed.txt')],
@@ -154,7 +174,6 @@ async function main() {
     SESSION_ENVIRONMENT_TIER: TIER,
     SESSION_DEPLOYMENT_SANDBOX_DIR: `${TMP}/sandboxes`,
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
-    AWAKEN_SCENARIO_SKILL_ID: 'delivered-namespace',
     // JSON preserves Windows executable and fixture paths containing spaces;
     // the scenario host still accepts the legacy whitespace-delimited form.
     AWAKEN_ACP_ARGV: JSON.stringify(TIER === 'namespace'
@@ -176,17 +195,15 @@ async function main() {
       body: { path: '/seed.txt', content: 'NAMESPACE-MEMORY-OK' },
       headers: MEMORY_HEADERS,
     });
-    const createdSkill = await client.post('/v1/skills', {
-      headers: SKILL_HEADERS,
-      body: {
-        id: 'delivered-namespace',
-        content: '---\ndescription: namespace skill\nenvironment: filesystem\n---\nNAMESPACE-SKILL-OK',
-      },
+    const createdSkill = await client.beta.skills.create({
+      files: [await toFile(Buffer.from(
+        '---\nname: delivered-namespace\ndescription: namespace skill\nenvironment: filesystem\n---\nNAMESPACE-SKILL-OK',
+      ), 'SKILL.md')],
     });
-    assert.equal(createdSkill.id, 'delivered-namespace');
+    assert.ok(createdSkill.id.startsWith('skill_'));
     const listedSkills = await client.get('/v1/skills', { headers: SKILL_HEADERS });
     assert.ok(
-      listedSkills.data.some((skill) => skill.id === 'delivered-namespace'),
+      listedSkills.data.some((skill) => skill.id === createdSkill.id),
       'the Skill is visible in the runtime catalog before Session creation',
     );
 
@@ -195,7 +212,7 @@ async function main() {
     // absent because metadata is descriptive and cannot select a backend.
     //
     // Decision table:
-    // projected acp:custom | agent reference || fixed ACP route
+    // projected acp:claude | agent reference || fixed ACP test launch
     // no projection        | assistant       || host default (not this test)
 
     const session = await client.beta.sessions.create({
@@ -352,8 +369,8 @@ async function main() {
     assert.equal(await artifactContent.text(), 'NAMESPACE-ARTIFACT-OK');
 
     await client.beta.sessions.delete(session.id, { betas: BETAS });
-    assert.ok(
-      !fs.existsSync(sandboxRoot),
+    await waitUntil(
+      () => !fs.existsSync(sandboxRoot),
       `${TIER} terminal Session deletion disposes its retained environment`,
     );
 

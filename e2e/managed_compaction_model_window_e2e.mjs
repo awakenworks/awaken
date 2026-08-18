@@ -36,7 +36,7 @@ async function main() {
   try {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
     const big = (n) => `Message ${n}. ` + 'Please keep this context in mind. '.repeat(40);
     let compacted = false;

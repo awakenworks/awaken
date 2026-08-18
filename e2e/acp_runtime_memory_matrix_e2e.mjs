@@ -330,6 +330,7 @@ async function main() {
           recallAttempts = attempt;
           session = await client.beta.sessions.create({
             agent: acpAgent.id,
+            environment_id: 'env_local',
             model: selectedModel,
             resources: [{
               type: 'memory_store',

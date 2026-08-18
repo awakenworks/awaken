@@ -4,11 +4,13 @@
 
 pub use awaken_run_ingress_contract::dispatch::*;
 
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Persistence-independent evidence available when one caller-owned Run id is
 /// admitted. Backends load evidence; this function owns the one identity
 /// decision so memory, SQLite, and Postgres cannot drift.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) enum StoredRunIdentity<'a> {
     Absent,
     Live(&'a RunDispatch),
@@ -16,11 +18,13 @@ pub(crate) enum StoredRunIdentity<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) enum RunIdentityDecision {
     New,
     Replay,
 }
 
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_run_identity(
     stored: StoredRunIdentity<'_>,
     incoming: &RunDispatch,

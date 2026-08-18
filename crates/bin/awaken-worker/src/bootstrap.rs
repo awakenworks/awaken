@@ -89,6 +89,7 @@ struct WorkerFileConfig {
     mode: Option<String>,
     role: Option<String>,
     worker_server: Option<String>,
+    worker_server_ca_certificate_file: Option<PathBuf>,
     worker_id: Option<String>,
     worker_request_credential_file: Option<PathBuf>,
     worker_credential_material_root: Option<PathBuf>,
@@ -114,6 +115,7 @@ struct WorkerFileConfig {
 #[derive(Debug, Clone)]
 pub struct WorkerDaemonConfig {
     server: String,
+    server_ca_certificate_file: Option<PathBuf>,
     pub worker: WorkerBootstrap,
     runtime: awaken_runtime_host::DeploymentConfig,
 }
@@ -176,6 +178,7 @@ impl WorkerDaemonConfig {
         runtime.container_image = file.container_image;
         Ok(Self {
             server,
+            server_ca_certificate_file: file.worker_server_ca_certificate_file,
             worker,
             runtime,
         })
@@ -205,11 +208,27 @@ impl WorkerDaemonConfig {
             awaken_worker_transport_security::parse_projected_signing_credentials(
                 &credential_source,
             )?;
-        let upstream = awaken_worker_transport_security::WorkerUpstream::remote(
-            &self.server,
-            &self.worker.worker_id,
-            transport_credentials,
-        )?;
+        let upstream = match self.server_ca_certificate_file.as_deref() {
+            Some(path) => {
+                let certificate = std::fs::read(path).map_err(|error| {
+                    format!(
+                        "read Worker server CA certificate {}: {error}",
+                        path.display()
+                    )
+                })?;
+                awaken_worker_transport_security::WorkerUpstream::remote_with_ca_certificate(
+                    &self.server,
+                    &self.worker.worker_id,
+                    transport_credentials,
+                    &certificate,
+                )?
+            }
+            None => awaken_worker_transport_security::WorkerUpstream::remote(
+                &self.server,
+                &self.worker.worker_id,
+                transport_credentials,
+            )?,
+        };
 
         let mut manifest = self
             .worker

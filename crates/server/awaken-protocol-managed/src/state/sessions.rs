@@ -80,32 +80,6 @@ fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
     }
 }
 
-#[cfg(test)]
-mod rehydration_publication_policy_tests {
-    use super::*;
-
-    #[test]
-    fn missing_exact_publication_has_one_noninteractive_bypass() {
-        assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
-            RehydrationPublicationDecision::RejectMissingExact
-        );
-        assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::TerminalCleanup, true, false),
-            RehydrationPublicationDecision::TerminalCleanupBypass
-        );
-        for purpose in [
-            RehydrationPurpose::Interactive,
-            RehydrationPurpose::TerminalCleanup,
-        ] {
-            assert_eq!(
-                rehydration_publication_decision(purpose, true, true),
-                RehydrationPublicationDecision::Available
-            );
-        }
-    }
-}
-
 impl ManagedState {
     fn resolved_session_multiagent(
         &self,
@@ -1256,5 +1230,31 @@ impl ManagedState {
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod rehydration_publication_policy_tests {
+    use super::*;
+
+    #[test]
+    fn missing_exact_publication_has_one_noninteractive_bypass() {
+        assert_eq!(
+            rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
+            RehydrationPublicationDecision::RejectMissingExact
+        );
+        assert_eq!(
+            rehydration_publication_decision(RehydrationPurpose::TerminalCleanup, true, false),
+            RehydrationPublicationDecision::TerminalCleanupBypass
+        );
+        for purpose in [
+            RehydrationPurpose::Interactive,
+            RehydrationPurpose::TerminalCleanup,
+        ] {
+            assert_eq!(
+                rehydration_publication_decision(purpose, true, true),
+                RehydrationPublicationDecision::Available
+            );
+        }
     }
 }
