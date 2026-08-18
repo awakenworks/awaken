@@ -48,6 +48,7 @@ pub use resources::{
 /// [`env_registry::EnvRegistry`] contract and its durable adapters.
 mod dream;
 mod env_registry;
+mod inference_policy;
 mod preview;
 mod state;
 mod tunnel;
@@ -55,6 +56,9 @@ mod tunnel;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 mod work_queue;
 
+pub use inference_policy::{
+    InferenceGeoCheckpoint, InferenceGeoPolicyError, ManagedInferenceGeoPolicy, inference_geo_name,
+};
 pub use rate_limit::{
     ManagedOperation, ManagedRateLimitDecision, ManagedRateLimitRequest,
     ManagedRateLimitUnavailable, ManagedRateLimiter, ManagedRateLimits, ManagedRequestLimiter,

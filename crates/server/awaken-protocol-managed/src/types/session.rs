@@ -194,7 +194,7 @@ impl AgentRef {
             AgentRef::Object(object) => match object.as_ref() {
                 AgentRefObject::AgentWithOverrides {
                     model: Some(input), ..
-                } => ModelOverride::Set(input.clone().into_config().into_resolved()),
+                } => ModelOverride::Set(input.clone().into_config().into_session_override()),
                 _ => ModelOverride::Absent,
             },
             _ => ModelOverride::Absent,
@@ -560,6 +560,24 @@ impl ModelConfigParams {
             id: self.id,
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
+            inference_geo: self.inference_geo,
+        }
+    }
+
+    /// Resolve a per-Session model override.
+    ///
+    /// Managed Agents treats the override as a complete model replacement, but
+    /// deliberately does not apply an `effort` value carried by that override:
+    /// the selected model runs at its default effort.  Keep accepting the field
+    /// at the wire boundary for old and forward SDK compatibility while making
+    /// the execution projection match the service contract. Agent authoring
+    /// continues to use [`Self::into_resolved`], where effort is meaningful.
+    #[must_use]
+    pub fn into_session_override(self) -> ModelConfig {
+        ModelConfig {
+            id: self.id,
+            speed: self.speed,
+            effort: None,
             inference_geo: self.inference_geo,
         }
     }
@@ -1116,9 +1134,9 @@ pub enum OutboundKind {
     AgentMessage { content: Vec<ContentBlock> },
     /// The agent's extended-thinking block (`agent.thinking`) — `{id, type,
     /// processed_at}`, no payload, mirroring the SDK's
-    /// `BetaManagedAgentsAgentThinkingEvent`. Wire type defined for catalog
-    /// completeness; not yet emitted — awaken's stream carries no thinking channel
-    /// (see the conformance matrix's `agent.thinking` gap).
+    /// `BetaManagedAgentsAgentThinkingEvent`. Provider reasoning is projected
+    /// as this contentless durable marker; reasoning text never crosses the
+    /// public Managed wire.
     #[serde(rename = "agent.thinking")]
     AgentThinking {},
     #[serde(rename = "agent.tool_use")]
@@ -1176,9 +1194,9 @@ pub enum OutboundKind {
     },
     /// The session is recovering from a transient error and is rescheduled for
     /// execution (`session.status_rescheduled`) — `{id, type, processed_at}`, no
-    /// payload. Wire type defined for catalog completeness; not yet emitted — the
-    /// runtime collapses transient retries below the projection seam (see the
-    /// conformance matrix's `session.status_rescheduled` gap).
+    /// payload. Retryable inference errors emit this durable transition before
+    /// the attempt is rescheduled, so list and reconnect clients observe the
+    /// same recovery state.
     #[serde(rename = "session.status_rescheduled")]
     SessionStatusRescheduled {},
     /// The session reached its irreversible terminal state (emitted when the

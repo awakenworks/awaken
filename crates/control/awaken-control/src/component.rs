@@ -108,6 +108,7 @@ pub struct ControlDependencies {
     /// audit edge; an absent port means no Tunnel routes are mounted.
     pub managed_tunnel_application:
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     pub credential_envelope_issuer:
         Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
@@ -172,6 +173,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         environment_application,
         environment_router,
         managed_tunnel_application,
+        inference_geo_policy,
         managed_request_limiter,
         credential_envelope_issuer,
         data_subjects,
@@ -342,6 +344,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         data_subject_org: data_subject_org.clone(),
         environment_router,
         managed_tunnel_application,
+        inference_geo_policy,
         managed_request_limiter,
         iam,
         local_browser_auth,

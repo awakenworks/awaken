@@ -63,7 +63,20 @@ impl ManagedState {
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
+            inference_geo_policy: None,
         }
+    }
+
+    /// Install the hosted Workspace policy used at Session creation and again
+    /// before every turn. The latter is intentionally dynamic so narrowing an
+    /// allowlist stops an already-created Session on its next turn.
+    #[must_use]
+    pub fn with_inference_geo_policy(
+        mut self,
+        policy: Arc<dyn crate::ManagedInferenceGeoPolicy>,
+    ) -> Self {
+        self.inference_geo_policy = Some(policy);
+        self
     }
 
     /// Canonical protocol-independent Session application used by private

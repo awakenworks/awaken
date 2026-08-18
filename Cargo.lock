@@ -613,6 +613,7 @@ dependencies = [
  "awaken-worker-contract",
  "awaken-worker-registry",
  "axum",
+ "base64 0.22.1",
  "http-body-util",
  "reqwest 0.12.28",
  "rusqlite",

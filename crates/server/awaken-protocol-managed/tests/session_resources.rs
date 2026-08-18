@@ -454,6 +454,40 @@ impl ExecutableAgentProfileSource for AgentWithBackend {
 
 struct AgentWithPublishedModel;
 
+struct MutableInferenceGeoPolicy {
+    allow: std::sync::atomic::AtomicBool,
+    checkpoints: std::sync::Mutex<Vec<awaken_protocol_managed::InferenceGeoCheckpoint>>,
+}
+
+impl MutableInferenceGeoPolicy {
+    fn new(allow: bool) -> Self {
+        Self {
+            allow: std::sync::atomic::AtomicBool::new(allow),
+            checkpoints: Default::default(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::ManagedInferenceGeoPolicy for MutableInferenceGeoPolicy {
+    async fn authorize(
+        &self,
+        workspace_id: &str,
+        inference_geo: Option<ModelInferenceGeo>,
+        checkpoint: awaken_protocol_managed::InferenceGeoCheckpoint,
+    ) -> Result<(), awaken_protocol_managed::InferenceGeoPolicyError> {
+        self.checkpoints.lock().unwrap().push(checkpoint);
+        if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(awaken_protocol_managed::InferenceGeoPolicyError::Denied {
+                workspace_id: workspace_id.into(),
+                geo: awaken_protocol_managed::inference_geo_name(inference_geo),
+            })
+        }
+    }
+}
+
 #[derive(Clone)]
 struct FixedSessionModelResolver {
     result: Result<
@@ -673,7 +707,10 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         model_override.inference,
         awaken_runtime_contract::agent_bindings::InferenceOptions {
             speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
-            effort: Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High),
+            // Managed Agents accepts `effort` in a Session model override for
+            // wire compatibility, but executes the replacement model at its
+            // default effort. Agent-level effort remains independently tested.
+            effort: None,
             inference_geo: Some(awaken_runtime_contract::agent_bindings::InferenceGeography::Us,),
         },
         "R2"
@@ -745,6 +782,67 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
     }));
     assert!(invalid_geo.is_err(), "R5");
+}
+
+#[tokio::test]
+async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_turn() {
+    // Cause/effect graph: C1=Workspace denies `us` at create -> no Session or
+    // Runtime preparation; C2=Workspace allows it -> Session exists; C3=the
+    // same live policy narrows before the next user turn -> the batch is
+    // rejected before an inbound receipt/event can be appended.
+    let runtime = AcceptingFake::default();
+    let policy = std::sync::Arc::new(MutableInferenceGeoPolicy::new(false));
+    let state = ManagedState::new(runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
+        .with_inference_geo_policy(policy.clone());
+    let app = router(std::sync::Arc::new(state));
+    let request = json!({
+        "agent": {
+            "id": "model-agent",
+            "type": "agent_with_overrides",
+            "model": {
+                "id": "gpt-5;provider=openai;api=open_ai_responses;endpoint=edge",
+                "inference_geo": "us"
+            }
+        },
+        "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+    });
+
+    let (status, error) = call(&app, "POST", "/v1/sessions", Some(request.clone())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "C1: {error}");
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "C1");
+
+    policy
+        .allow
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(request)).await;
+    assert_eq!(status, StatusCode::OK, "C2: {session}");
+    let session_id = session["id"].as_str().unwrap();
+
+    policy
+        .allow
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, error) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/events"),
+        Some(json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "must not run"}]
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "C3: {error}");
+    assert_eq!(
+        policy.checkpoints.lock().unwrap().as_slice(),
+        [
+            awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate,
+            awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate,
+            awaken_protocol_managed::InferenceGeoCheckpoint::Turn,
+        ]
+    );
 }
 
 #[tokio::test]

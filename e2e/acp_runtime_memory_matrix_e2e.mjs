@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { cleanupFixtureTree, pass, withServer } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
@@ -27,14 +28,16 @@ import {
   percentile,
   taggedFactMetrics,
 } from './llm_eval_metrics.mjs';
+import {
+  applyAcpRuntimeProfile,
+  assertAcpRuntimeVersions,
+  parseAcpRuntimes,
+  resolveAcpRuntimeProfiles,
+} from './acp_runtime_profiles.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
-const KIMI_PROCESS_SECRET_RUNTIMES = new Set(['opencode', 'claude', 'hermes']);
-const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'opencode,claude,hermes')
-  .split(',')
-  .map((runtime) => runtime.trim())
-  .filter(Boolean);
+const RUNTIMES = parseAcpRuntimes(process.env.ACP_RUNTIMES);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function listEvents(client, sessionId) {
@@ -113,66 +116,27 @@ async function memoryContent(client, storeId) {
   return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
 }
 
-function configureRuntime(runtime, kimi) {
-  Object.assign(process.env, {
-    AWAKEN_ACP_CLI: runtime,
-    AWAKEN_MODEL: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
-    ANTHROPIC_BASE_URL: kimi.anthropicBase,
-    ANTHROPIC_API_KEY: kimi.anthropicKey ?? kimi.key,
-    ANTHROPIC_MODEL: kimi.anthropicModel,
-  });
-  if (runtime === 'kimi') {
-    Object.assign(process.env, {
-      KIMI_MODEL_BASE_URL: kimi.openaiBase,
-      KIMI_MODEL_API_KEY: kimi.key,
-      KIMI_MODEL_NAME: kimi.openaiModel,
-    });
-  } else if (runtime === 'opencode' || runtime === 'codex') {
-    Object.assign(process.env, {
-      OPENAI_BASE_URL: kimi.openaiBase,
-      OPENAI_API_KEY: kimi.key,
-      OPENAI_MODEL: kimi.openaiModel,
-    });
-    if (runtime === 'opencode') {
-      Object.assign(process.env, {
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        model: `awaken-kimi/${kimi.openaiModel}`,
-        small_model: `awaken-kimi/${kimi.openaiModel}`,
-        enabled_providers: ['awaken-kimi'],
-        provider: {
-          'awaken-kimi': {
-            npm: '@ai-sdk/openai-compatible',
-            name: 'Awaken Kimi Code',
-            options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
-            models: { [kimi.openaiModel]: { name: kimi.openaiModel } },
-          },
-        },
-      }),
-      });
-    }
-  } else if (runtime === 'hermes') {
-    Object.assign(process.env, {
-      KIMI_BASE_URL: kimi.openaiBase,
-      KIMI_API_KEY: kimi.key,
-      HERMES_MODEL: kimi.openaiModel,
-    });
-  }
-}
-
 async function main() {
   const kimi = loadKimiConfig();
-  if (!kimi) {
-    console.log('SKIP: no KIMI configuration found in ~/.bashrc');
+  let profiles;
+  let runtimeVersions;
+  try {
+    profiles = resolveAcpRuntimeProfiles({ runtimes: RUNTIMES, kimi });
+    runtimeVersions = assertAcpRuntimeVersions({
+      runtimes: RUNTIMES,
+      probe: ({ executable, args }) => spawnSync(executable, args, {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 10_000,
+      }),
+    });
+  } catch (error) {
+    if (process.env.ACP_MEMORY_REQUIRE_RUNTIMES === '1') throw error;
+    console.log(`SKIP acp_runtime_memory_matrix_e2e: ${error.message}`);
     return;
   }
 
   const realHome = os.homedir();
-  assert.ok(RUNTIMES.length > 0, 'ACP_RUNTIMES must select at least one runtime');
-  assert.ok(
-    RUNTIMES.every((runtime) => KIMI_PROCESS_SECRET_RUNTIMES.has(runtime)),
-    'the Kimi process-secret matrix accepts opencode, claude, and hermes only; '
-      + 'Codex uses its artifact/host-login gate and Gemini uses its own provider credentials',
-  );
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-home-'));
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-sandboxes-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-memory-matrix-store-'));
@@ -204,11 +168,12 @@ async function main() {
   try {
     for (let index = 0; index < chain.length; index += 1) {
       const { runtime, marker } = chain[index];
+      const profile = profiles[index];
       const predecessor = index === 0 ? { runtime: 'seed', marker: seed } : chain[index - 1];
-      configureRuntime(runtime, kimi);
+      applyAcpRuntimeProfile(profile);
       await withServer('acp-real-mcp', 38240 + index, async (baseUrl) => {
         const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
-        const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
+        const selectedModel = profile.model;
         const acpAgent = await client.beta.agents.create({
           name: `${runtime} memory writer`,
           model: selectedModel,
@@ -346,10 +311,11 @@ async function main() {
     // the server and sandbox that performed the writes have been torn down.
     for (let index = 0; index < chain.length; index += 1) {
       const { runtime } = chain[index];
-      configureRuntime(runtime, kimi);
+      const profile = profiles[index];
+      applyAcpRuntimeProfile(profile);
       await withServer('acp-real-mcp', 38340 + index, async (baseUrl) => {
         const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
-        const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
+        const selectedModel = profile.model;
         const acpAgent = await client.beta.agents.create({
           name: `${runtime} memory reader`,
           model: selectedModel,
@@ -441,6 +407,8 @@ async function main() {
       },
       details: {
         runtimes: RUNTIMES,
+        credential_profiles: profiles.map(({ runtime, auth }) => ({ runtime, auth })),
+        runtime_versions: runtimeVersions,
         writers: chain.length,
         readers: chain.length,
         retries: retryCount,

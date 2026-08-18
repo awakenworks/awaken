@@ -24,6 +24,11 @@ pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:cre
 /// Resources access plus read-only platform model supply. Cloud binds this role
 /// instead of local `workspace_admin`, whose BYOK authority remains self-hosted.
 pub const AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str = "awaken.workspace:hosted_admin";
+/// Least-privilege role for a workload-identity principal admitted to the
+/// research-preview MCP Tunnel API. Cloud binds this role after validating its
+/// external `workspace:manage_tunnels` authority; it grants no ordinary
+/// Workspace, credential, model, File, Skill, or Run operation.
+pub const AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str = "awaken.workspace:tunnel_manager";
 pub(super) const AWAKEN_WORKSPACE_LEGACY_HOSTED_ADMIN_ROLE: &str =
     "awaken.workspace:legacy_hosted_admin";
 /// Hosted human member: the existing read-only Workspace role, fully qualified
@@ -83,6 +88,7 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
         "model_supply.*",
         "file.*",
         "skill.*",
+        "tunnel.manage",
     ];
     let mut grants = Vec::new();
     for role in named_role_catalog(&created_at) {
@@ -137,6 +143,18 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
                     role_id: qualify_role(&role.id.0).0,
                 },
                 action_pattern: qualify_action("model_supply.*").0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+            grants.push(GrantSnapshot {
+                id: format!(
+                    "{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:{}:tunnel-manage",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_role(&role.id.0).0,
+                },
+                action_pattern: qualify_action("tunnel.manage").0,
                 scope: ScopeRef::Global,
                 effect: GrantEffect::Allow,
             });
@@ -209,7 +227,27 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
                 effect: GrantEffect::Allow,
             });
         }
+        if profile_role == WorkspaceProfileRole::HostedAdmin {
+            grants.push(GrantSnapshot {
+                id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:{id}:tunnel-manage"),
+                subject: GrantSubjectRef::Role {
+                    role_id: role_id.to_owned(),
+                },
+                action_pattern: qualify_action("tunnel.manage").0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
     }
+    grants.push(GrantSnapshot {
+        id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:tunnel_manager:tunnel-manage"),
+        subject: GrantSubjectRef::Role {
+            role_id: AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE.to_owned(),
+        },
+        action_pattern: qualify_action("tunnel.manage").0,
+        scope: ScopeRef::Global,
+        effect: GrantEffect::Allow,
+    });
 
     CreateAuthorizationProfile {
         namespace: NamespaceId(AWAKEN_WORKSPACE_POLICY_NAMESPACE.to_owned()),
