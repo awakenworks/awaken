@@ -23,7 +23,6 @@ pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:cre
 /// Hosted tenant administrator: ordinary Workspace/API-key administration and
 /// Resources access plus read-only platform model supply. Cloud binds this role
 /// instead of local `workspace_admin`, whose BYOK authority remains self-hosted.
-pub const AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str = "awaken.workspace:hosted_admin";
 /// Least-privilege role for a workload-identity principal admitted to the
 /// research-preview MCP Tunnel API. Cloud binds this role after validating its
 /// external `workspace:manage_tunnels` authority; it grants no ordinary
@@ -33,7 +32,10 @@ pub(super) const AWAKEN_WORKSPACE_LEGACY_HOSTED_ADMIN_ROLE: &str =
     "awaken.workspace:legacy_hosted_admin";
 /// Hosted human member: the existing read-only Workspace role, fully qualified
 /// under the one Awaken Workspace authorization language.
-pub const AWAKEN_WORKSPACE_USER_ROLE: &str = "awaken.workspace:workspace_user";
+pub use awaken_authorization_contract::{
+    AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE,
+    AWAKEN_WORKSPACE_USER_ROLE,
+};
 pub const HOSTED_RUNTIME_POLICY_NAMESPACE: &str = "awaken.runtime";
 pub const HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str = "awaken.runtime:workspace_admin";
 pub const HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str = "awaken.runtime:workspace_user";
@@ -206,6 +208,11 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
             WorkspaceProfileRole::HostedAdmin,
             AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE,
             "hosted_admin",
+        ),
+        (
+            WorkspaceProfileRole::HostedBuilder,
+            AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE,
+            "hosted_builder",
         ),
         (
             WorkspaceProfileRole::LegacyHostedAdmin,
