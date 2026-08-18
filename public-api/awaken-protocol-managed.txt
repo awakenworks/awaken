@@ -366,7 +366,7 @@ pub awaken_protocol_managed::types::environment::WorkQueueStats::oldest_queued_a
 pub awaken_protocol_managed::types::environment::WorkQueueStats::pending: usize
 pub awaken_protocol_managed::types::environment::WorkQueueStats::workers_polling: i64
 pub struct awaken_protocol_managed::types::environment::WorkUpdateParams
-pub awaken_protocol_managed::types::environment::WorkUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
+pub awaken_protocol_managed::types::environment::WorkUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
 pub mod awaken_protocol_managed::types::page
 pub struct awaken_protocol_managed::types::page::Page<T>
 pub awaken_protocol_managed::types::page::Page::data: alloc::vec::Vec<T>
@@ -746,6 +746,7 @@ pub awaken_protocol_managed::types::session::ModelConfigParams::inference_geo: c
 pub awaken_protocol_managed::types::session::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
+pub fn awaken_protocol_managed::types::ModelConfigParams::into_session_override(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::session::MonetaryAmount
 pub awaken_protocol_managed::types::session::MonetaryAmount::amount: alloc::string::String
@@ -1381,6 +1382,7 @@ pub awaken_protocol_managed::types::ModelConfigParams::inference_geo: core::opti
 pub awaken_protocol_managed::types::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
+pub fn awaken_protocol_managed::types::ModelConfigParams::into_session_override(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::MonetaryAmount
 pub awaken_protocol_managed::types::MonetaryAmount::amount: alloc::string::String
@@ -1540,6 +1542,15 @@ pub awaken_protocol_managed::types::Usage::server_tool_use: core::option::Option
 pub fn awaken_protocol_managed::types::paginate<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> &str) -> awaken_protocol_managed::types::page::PageCursor<T>
 pub fn awaken_protocol_managed::types::paginate_by<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> alloc::string::String) -> awaken_protocol_managed::types::page::PageCursor<T>
 pub type awaken_protocol_managed::types::McpServer = awaken_protocol_managed::types::agent::AgentMcpServer
+pub enum awaken_protocol_managed::InferenceGeoCheckpoint
+pub awaken_protocol_managed::InferenceGeoCheckpoint::AgentSave
+pub awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate
+pub awaken_protocol_managed::InferenceGeoCheckpoint::Turn
+pub enum awaken_protocol_managed::InferenceGeoPolicyError
+pub awaken_protocol_managed::InferenceGeoPolicyError::Denied
+pub awaken_protocol_managed::InferenceGeoPolicyError::Denied::geo: &'static str
+pub awaken_protocol_managed::InferenceGeoPolicyError::Denied::workspace_id: alloc::string::String
+pub awaken_protocol_managed::InferenceGeoPolicyError::Unavailable(alloc::string::String)
 pub enum awaken_protocol_managed::ManagedAgentError
 pub awaken_protocol_managed::ManagedAgentError::Conflict(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::Invalid(alloc::string::String)
@@ -1571,6 +1582,7 @@ pub struct awaken_protocol_managed::AgentRegistryState
 impl awaken_protocol_managed::AgentRegistryState
 pub fn awaken_protocol_managed::AgentRegistryState::from_repository(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedAgentRepository>) -> Self
 pub fn awaken_protocol_managed::AgentRegistryState::with_archive_cascade(self, alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>) -> Self
+pub fn awaken_protocol_managed::AgentRegistryState::with_inference_geo_policy(self, alloc::sync::Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>) -> Self
 pub struct awaken_protocol_managed::EnvironmentAuthoringState
 impl awaken_protocol_managed::EnvironmentAuthoringState
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
@@ -1646,9 +1658,11 @@ pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>) -> Self
 pub fn awaken_protocol_managed::ManagedState::session_application(&self) -> alloc::sync::Arc<awaken_session_application::SessionApplication>
+pub fn awaken_protocol_managed::ManagedState::with_inference_geo_policy(self, alloc::sync::Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>) -> Self
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::list_events(&self, &str, core::option::Option<&str>, core::option::Option<usize>, bool) -> core::result::Result<awaken_protocol_managed::types::ListEventsResponse, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::send_events(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::send_events_attributed(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::stream_subscribe(&self, &str) -> core::result::Result<(alloc::vec::Vec<awaken_protocol_managed::types::Event>, tokio::sync::broadcast::Receiver<awaken_protocol_managed::types::StreamFrame>), awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_session_realizations(&self) -> usize
@@ -1700,6 +1714,7 @@ pub fn awaken_protocol_managed::VaultState::mcp_access_for_source<'life0, 'life1
 pub fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 [alloc::string::String], &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_credential_contract::CredentialSourceId>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub const awaken_protocol_managed::ANTHROPIC_API_VERSION: &str
 pub const awaken_protocol_managed::DREAMING_BETA: &str
+pub const awaken_protocol_managed::LEGACY_TUNNELS_BETA: &str
 pub const awaken_protocol_managed::MANAGED_BETA: &str
 pub const awaken_protocol_managed::MEMORY_BETA: &str
 pub const awaken_protocol_managed::SKILLS_BETA: &str
@@ -1712,6 +1727,8 @@ pub fn awaken_protocol_managed::ManagedAgentRepository::list<'life0, 'life1, 'li
 pub fn awaken_protocol_managed::ManagedAgentRepository::retrieve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::update<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_managed::types::agent::AgentUpdateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::versions<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::agent::Agent>, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_protocol_managed::ManagedInferenceGeoPolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_managed::ManagedInferenceGeoPolicy::authorize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>, awaken_protocol_managed::InferenceGeoCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_protocol_managed::InferenceGeoPolicyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_protocol_managed::ManagedRequestLimiter: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_managed::ManagedRequestLimiter::admit<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedRateLimitRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::ManagedRateLimitDecision, awaken_protocol_managed::ManagedRateLimitUnavailable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_protocol_managed::ManagedRequestLimiter for awaken_protocol_managed::ManagedRateLimiter
@@ -1737,6 +1754,7 @@ pub async fn awaken_protocol_managed::enforce_managed_rate_limit(axum::extract::
 pub fn awaken_protocol_managed::environment_authoring_router(alloc::sync::Arc<awaken_protocol_managed::EnvironmentAuthoringState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::environment_work_router(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> axum::routing::Router
+pub fn awaken_protocol_managed::inference_geo_name(core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>) -> &'static str
 pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router_with_inventory(alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>) -> axum::routing::Router
