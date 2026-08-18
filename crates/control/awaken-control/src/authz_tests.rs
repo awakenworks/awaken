@@ -360,6 +360,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&post, "/v1/tunnels/tnl_1/certificates/tcrt_1/archive"),
         Some(TUNNEL_MANAGE)
     );
+    assert_eq!(
+        action_for(&get, "/v1/organizations/tunnels/tnl_1"),
+        Some(TUNNEL_MANAGE)
+    );
     // Concrete route membership belongs to axum; registered aggregate families
     // receive a total read/write policy while unknown families fail closed.
     assert_eq!(action_for(&get, "/v1/config/unknown"), None);

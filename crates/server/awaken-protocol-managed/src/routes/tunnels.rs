@@ -79,6 +79,34 @@ pub fn tunnels_router(application: Arc<dyn ManagedTunnelApplication>) -> Router 
             "/v1/tunnels/{tunnel_id}/certificates/{certificate_id}/archive",
             post(archive_certificate),
         )
+        // Deprecated Admin API aliases. They drive the same aggregate so the
+        // migration window never dual-writes or forks token/certificate state.
+        .route("/v1/organizations/tunnels", post(create).get(list))
+        .route("/v1/organizations/tunnels/{tunnel_id}", get(retrieve))
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/archive",
+            post(archive),
+        )
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/reveal_token",
+            post(reveal_token),
+        )
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/rotate_token",
+            post(rotate_token),
+        )
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/certificates",
+            post(create_certificate).get(list_certificates),
+        )
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id}",
+            get(retrieve_certificate),
+        )
+        .route(
+            "/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id}/archive",
+            post(archive_certificate),
+        )
         .with_state(application)
 }
 
@@ -415,6 +443,20 @@ mod tests {
             .unwrap();
         assert_eq!(valid.status(), StatusCode::OK, "R2");
 
+        let legacy = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/organizations/tunnels/tun_1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legacy.status(), StatusCode::OK, "migration alias");
+        let legacy_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(legacy.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(legacy_json["id"], "tun_1");
+
         let oversized = serde_json::json!({"ca_certificate_pem":"x".repeat(8193)}).to_string();
         let invalid = app
             .oneshot(
@@ -427,7 +469,7 @@ mod tests {
             .unwrap();
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "R3");
         let scopes = application.scopes.lock().unwrap();
-        assert_eq!(scopes.len(), 2, "R3/E4");
+        assert_eq!(scopes.len(), 3, "R3/E4 + migration alias");
         assert_eq!(scopes[0].workspace_id, "workspace-a", "R1/E1");
         assert_eq!(
             scopes[0].operation_id.as_deref(),

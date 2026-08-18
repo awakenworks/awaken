@@ -6,6 +6,9 @@ pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
 pub const USER_PROFILES_BETA: &str = "user-profiles-2026-03-24";
 /// Research-preview MCP Tunnel API beta.
 pub const TUNNELS_BETA: &str = "mcp-tunnels-2026-06-22";
+/// Deprecated organization-scoped Tunnel beta retained during the official
+/// migration window. It is accepted only on `/v1/organizations/tunnels`.
+pub const LEGACY_TUNNELS_BETA: &str = "mcp-tunnels-2026-05-19";
 
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 255;
 

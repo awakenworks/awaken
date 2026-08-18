@@ -139,7 +139,10 @@ mod bootstrap;
 mod credentials;
 mod local_browser;
 mod profiles;
-use credentials::{authorization_bearer_token, bearer_token, is_tunnel_route};
+use credentials::{
+    authorization_bearer_token, bearer_token, is_legacy_tunnel_route, is_tunnel_route,
+    query_workspace_id,
+};
 mod remote;
 
 use bootstrap::bootstrap_admin_token;
@@ -1167,6 +1170,16 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
             write: TUNNEL_MANAGE,
         },
     ),
+    // Deprecated organization-shaped Tunnel wire. The credential remains
+    // workspace-bound in Awaken, providing a deterministic migration mapping
+    // without selecting an arbitrary Workspace from an Organization.
+    RoutePolicyDescriptor::control(
+        "/v1/organizations/tunnels",
+        RouteFamilyPolicy::Scoped {
+            read: TUNNEL_MANAGE,
+            write: TUNNEL_MANAGE,
+        },
+    ),
     RoutePolicyDescriptor::control(
         "/v1/agents",
         RouteFamilyPolicy::Scoped {
@@ -1278,9 +1291,16 @@ pub async fn management_guard(
         return unauthorized("Tunnel API requires a WIF bearer token");
     }
 
-    let authenticated = bearer_token(req.headers())
-        .map(|presented| authz.authenticate(&presented))
-        .unwrap_or_else(|| authz.authenticate_browser(req.headers()));
+    let legacy_tunnel_route = is_legacy_tunnel_route(req.uri().path());
+    let authenticated = if legacy_tunnel_route {
+        bearer_token(req.headers())
+            .map(|presented| authz.authenticate(&presented))
+            .unwrap_or(Err(AuthReject::Invalid))
+    } else {
+        bearer_token(req.headers())
+            .map(|presented| authz.authenticate(&presented))
+            .unwrap_or_else(|| authz.authenticate_browser(req.headers()))
+    };
     let (principal, workspace) = match authenticated {
         Ok(identity) => identity,
         Err(AuthReject::Expired) => return unauthorized("API token is expired"),
@@ -1411,6 +1431,7 @@ pub async fn cloud_management_guard(
     };
 
     let tunnel_route = is_tunnel_route(req.uri().path());
+    let legacy_tunnel_route = is_legacy_tunnel_route(req.uri().path());
     let presented = if tunnel_route {
         authorization_bearer_token(req.headers())
     } else {
@@ -1426,6 +1447,9 @@ pub async fn cloud_management_guard(
         return forbidden(
             "Tunnel API requires a WIF service token with workspace:manage_tunnels scope",
         );
+    }
+    if legacy_tunnel_route && authenticated.access_token_claims.is_some() {
+        return forbidden("legacy Tunnel API requires an Admin API key");
     }
     let principal = authenticated.principal;
     let workspace = req
@@ -1470,18 +1494,6 @@ pub async fn cloud_management_guard(
         }
         AuthorizationDecision::Deny => forbidden(&denial_detail),
     }
-}
-
-/// `workspace_id` from a query string, decoding only the characters the
-/// management plane's ids use (they are plain `[A-Za-z0-9:_-]`, never
-/// percent-encoded by our SDKs; an encoded exotic id simply fails the fence,
-/// which is the closed direction).
-fn query_workspace_id(query: Option<&str>) -> Option<String> {
-    query?
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == "workspace_id")
-        .map(|(_, value)| value.replace('+', " "))
 }
 
 /// Classify the bounded route family and derive its action by method. The axum

@@ -349,13 +349,13 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
     async fn ok() -> StatusCode {
         StatusCode::OK
     }
-    let app =
-        Router::new()
-            .route("/v1/tunnels", get(ok))
-            .layer(axum::middleware::from_fn_with_state(
-                authz,
-                cloud_management_guard,
-            ));
+    let app = Router::new()
+        .route("/v1/tunnels", get(ok))
+        .route("/v1/organizations/tunnels", get(ok))
+        .layer(axum::middleware::from_fn_with_state(
+            authz,
+            cloud_management_guard,
+        ));
     let request = |authorization: Option<&str>, api_key: Option<&str>| {
         let mut builder = Request::builder().uri("/v1/tunnels");
         if let Some(authorization) = authorization {
@@ -414,6 +414,13 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
                 .status(),
             StatusCode::UNAUTHORIZED,
             "a malformed Authorization header cannot fall back to x-api-key"
+        );
+        let mut legacy = request(Some(&format!("Bearer {service_scoped}")), None);
+        *legacy.uri_mut() = "/v1/organizations/tunnels".parse().unwrap();
+        assert_eq!(
+            app.clone().oneshot(legacy).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "WIF credentials cannot silently select legacy Admin API semantics"
         );
     });
 }
