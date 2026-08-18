@@ -407,10 +407,13 @@ All non-excluded behavior in this former backlog now has executable coverage.
     `requires_action`/idle child targets only that child Run, omission targets the
     primary plus every non-terminal child, and unknown/terminal selectors fail
     before receipt persistence.
-13. **Files negatives** — filename validation and download authorization are covered
-    by `managed_resources_api_e2e.mjs`; `downloadable:false` upload metadata and
-    `document`/`image` `file_id` blocks are absent from awaken's file-upload contract,
-    so those Anthropic-cloud-only cases cannot be asserted locally.
+13. **Files and content-block negatives** — filename validation, non-downloadable
+    uploaded-input authorization, and downloadable harvested outputs are covered by
+    `managed_resources_api_e2e.mjs`, `managed_full_chain_e2e.mjs`, and
+    `files_http.rs`. Authorized `document`/`image` `file_id` blocks, empty IDs,
+    cross-Workspace references, MIME mismatch, and missing blobs are covered by
+    `managed_content_blocks_e2e.ts`, `managed_content_blocks_real_e2e.ts`, and the
+    protocol content/resource tests.
 14. ~~**`session.status_rescheduled` / `rescheduling`**~~ — closed in
     `managed_error_recovery_e2e.mjs` with a deterministic transient-503 scenario.
 

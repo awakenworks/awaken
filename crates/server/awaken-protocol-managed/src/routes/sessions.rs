@@ -711,6 +711,19 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
+    if is_family("/v1/organizations/tunnels") && !has_beta(&req, crate::LEGACY_TUNNELS_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                    beta = crate::LEGACY_TUNNELS_BETA,
+                ),
+            )),
+        )
+            .into_response();
+    }
     let is_managed = [
         "/v1/sessions",
         "/v1/agents",
@@ -1380,7 +1393,15 @@ async fn stream_events(
 
 #[cfg(test)]
 mod managed_json_tests {
-    use super::{error_response, managed_json_message, replay_is_terminal_after};
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt as _;
+
+    use super::{
+        enforce_managed_beta, error_response, managed_json_message, replay_is_terminal_after,
+    };
     use crate::state::{RunError, StateError};
 
     #[test]
@@ -1405,6 +1426,51 @@ mod managed_json_tests {
         )));
         assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE, "R1");
         assert_eq!(body.0.error.kind, "api_error", "R2");
+    }
+
+    #[tokio::test]
+    async fn current_and_legacy_tunnel_betas_are_route_scoped() {
+        let app = Router::new()
+            .route("/v1/tunnels", get(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                "/v1/organizations/tunnels",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn(enforce_managed_beta));
+        let status = |path: &'static str, beta: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::get(path)
+                        .header("anthropic-beta", beta)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(
+            status("/v1/tunnels", crate::TUNNELS_BETA).await,
+            StatusCode::NO_CONTENT,
+            "current/current"
+        );
+        assert_eq!(
+            status("/v1/tunnels", crate::LEGACY_TUNNELS_BETA).await,
+            StatusCode::BAD_REQUEST,
+            "legacy beta cannot select the current route"
+        );
+        assert_eq!(
+            status("/v1/organizations/tunnels", crate::LEGACY_TUNNELS_BETA,).await,
+            StatusCode::NO_CONTENT,
+            "legacy/legacy"
+        );
+        assert_eq!(
+            status("/v1/organizations/tunnels", crate::TUNNELS_BETA).await,
+            StatusCode::BAD_REQUEST,
+            "current beta cannot silently change legacy auth semantics"
+        );
     }
 
     #[test]

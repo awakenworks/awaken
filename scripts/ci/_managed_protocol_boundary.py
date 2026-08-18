@@ -99,6 +99,18 @@ ANTHROPIC_MANAGED_ROUTES = frozenset(
         ("POST", "/v1/tunnels/{}/certificates"),
         ("GET", "/v1/tunnels/{}/certificates/{}"),
         ("POST", "/v1/tunnels/{}/certificates/{}/archive"),
+        # Official deprecated Admin API retained during the MCP Tunnel
+        # organization-to-workspace migration window.
+        ("GET", "/v1/organizations/tunnels"),
+        ("POST", "/v1/organizations/tunnels"),
+        ("GET", "/v1/organizations/tunnels/{}"),
+        ("POST", "/v1/organizations/tunnels/{}/archive"),
+        ("POST", "/v1/organizations/tunnels/{}/reveal_token"),
+        ("POST", "/v1/organizations/tunnels/{}/rotate_token"),
+        ("GET", "/v1/organizations/tunnels/{}/certificates"),
+        ("POST", "/v1/organizations/tunnels/{}/certificates"),
+        ("GET", "/v1/organizations/tunnels/{}/certificates/{}"),
+        ("POST", "/v1/organizations/tunnels/{}/certificates/{}/archive"),
     }
 )
 
