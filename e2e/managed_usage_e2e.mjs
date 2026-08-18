@@ -35,7 +35,7 @@ async function main() {
   // ---- arm 1: deterministic exact usage over the real provider wire ----
   await withRealServer('echo', 38240, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
     // A fresh session, no turn yet → no usage.
     const fresh = await usageOf(client, session.id);
@@ -66,7 +66,7 @@ async function main() {
   if (process.env.E2E_LIVE === '1' && (process.env.ANTHROPIC_API_KEY || process.env.KIMI_API_KEY)) {
     await withServer('real', 38241, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-      const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await turn(client, session.id, 'Reply with exactly the single word: pong');
       const u = await usageOf(client, session.id);
       // Some OpenAI-compatible gateways accept the request but omit usage

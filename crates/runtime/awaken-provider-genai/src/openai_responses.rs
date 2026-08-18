@@ -122,13 +122,12 @@ enum ResponseFunctionOutput {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseInputContent {
-    InputText {
-        text: String,
-    },
-    InputImage {
-        image_url: String,
-    },
-    InputFile {
+    #[serde(rename = "input_text")]
+    Text { text: String },
+    #[serde(rename = "input_image")]
+    Image { image_url: String },
+    #[serde(rename = "input_file")]
+    File {
         #[serde(skip_serializing_if = "Option::is_none")]
         filename: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,7 +170,7 @@ fn request_body(request: &ChatRequest) -> Result<ResponsesRequest, Error> {
                     title,
                     content,
                     ..
-                } => media.push(ResponseInputContent::InputText {
+                } => media.push(ResponseInputContent::Text {
                     text: render_search_result(source, title, content),
                 }),
                 ContentBlock::Redacted | ContentBlock::Thinking { .. } => {}
@@ -204,7 +203,7 @@ fn request_body(request: &ChatRequest) -> Result<ResponsesRequest, Error> {
             } else {
                 let mut content = Vec::new();
                 if !text.is_empty() {
-                    content.push(ResponseInputContent::InputText { text });
+                    content.push(ResponseInputContent::Text { text });
                 }
                 content.extend(media);
                 ResponseMessageContent::Blocks(content)
@@ -246,7 +245,7 @@ fn image_content(source: &ImageSource) -> Result<ResponseInputContent, Error> {
             return Err(unmaterialized_file(file_id));
         }
     };
-    Ok(ResponseInputContent::InputImage { image_url })
+    Ok(ResponseInputContent::Image { image_url })
 }
 
 fn document_content(
@@ -255,14 +254,14 @@ fn document_content(
 ) -> Result<ResponseInputContent, Error> {
     let default_filename = || title.unwrap_or("document").to_owned();
     match source {
-        DocumentSource::Base64 { media_type, data } => Ok(ResponseInputContent::InputFile {
+        DocumentSource::Base64 { media_type, data } => Ok(ResponseInputContent::File {
             filename: Some(default_filename()),
             file_data: Some(format!("data:{media_type};base64,{data}")),
             file_url: None,
         }),
         DocumentSource::Text { media_type, data } => {
             use base64::Engine as _;
-            Ok(ResponseInputContent::InputFile {
+            Ok(ResponseInputContent::File {
                 filename: Some(title.unwrap_or("document.txt").to_owned()),
                 file_data: Some(format!(
                     "data:{media_type};base64,{}",
@@ -271,7 +270,7 @@ fn document_content(
                 file_url: None,
             })
         }
-        DocumentSource::Url { url } => Ok(ResponseInputContent::InputFile {
+        DocumentSource::Url { url } => Ok(ResponseInputContent::File {
             filename: None,
             file_data: None,
             file_url: Some(url.clone()),
@@ -283,14 +282,14 @@ fn document_content(
 fn tool_output(blocks: &[ContentBlock], is_error: bool) -> Result<ResponseFunctionOutput, Error> {
     let mut output = Vec::new();
     if is_error {
-        output.push(ResponseInputContent::InputText {
+        output.push(ResponseInputContent::Text {
             text: "Tool execution failed.".into(),
         });
     }
     for block in blocks {
         match block {
             ContentBlock::Text { text } => {
-                output.push(ResponseInputContent::InputText { text: text.clone() })
+                output.push(ResponseInputContent::Text { text: text.clone() })
             }
             ContentBlock::Image { source } => output.push(image_content(source)?),
             ContentBlock::Document { source, title, .. } => {
@@ -301,7 +300,7 @@ fn tool_output(blocks: &[ContentBlock], is_error: bool) -> Result<ResponseFuncti
                 title,
                 content,
                 ..
-            } => output.push(ResponseInputContent::InputText {
+            } => output.push(ResponseInputContent::Text {
                 text: render_search_result(source, title, content),
             }),
             ContentBlock::Redacted | ContentBlock::Thinking { .. } => {}
@@ -313,7 +312,7 @@ fn tool_output(blocks: &[ContentBlock], is_error: bool) -> Result<ResponseFuncti
         }
     }
     if output.len() == 1
-        && let ResponseInputContent::InputText { text } = output.remove(0)
+        && let ResponseInputContent::Text { text } = output.remove(0)
     {
         Ok(ResponseFunctionOutput::Text(text))
     } else {

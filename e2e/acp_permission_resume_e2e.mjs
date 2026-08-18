@@ -66,13 +66,19 @@ async function main() {
     const allowed = await startAwaiting(client);
     const allowEvents = await decide(client, allowed.session.id, allowed.tool.id, 'allow');
     assert.ok(transcriptContains(allowEvents, 'ACP-PERMISSION-ALLOWED'));
-    assert.equal(allowEvents.at(-1)?.stop_reason?.type, 'end_turn');
+    assert.equal(
+      allowEvents.findLast((event) => event.type === 'session.status_idle')?.stop_reason?.type,
+      'end_turn',
+    );
     pass('ACP ask commits a durable ticket and an allow resumes the exact tool call');
 
     const denied = await startAwaiting(client);
     const denyEvents = await decide(client, denied.session.id, denied.tool.id, 'deny', 'policy denied');
     assert.ok(transcriptContains(denyEvents, 'ACP-PERMISSION-DENIED'));
-    assert.equal(denyEvents.at(-1)?.stop_reason?.type, 'end_turn');
+    assert.equal(
+      denyEvents.findLast((event) => event.type === 'session.status_idle')?.stop_reason?.type,
+      'end_turn',
+    );
     pass('ACP deny selects the agent reject option and the Run still reaches a terminal boundary');
 
     console.log('E2E PASS: ACP permission wait + allow/deny resume over the Managed TS API.');

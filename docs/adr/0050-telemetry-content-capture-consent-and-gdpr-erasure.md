@@ -244,7 +244,10 @@ No new endpoint tree. Each concern lands on the aggregate that owns it:
   sessions bind to agent + environment + `vault_ids` only. A session-level
   `user_profile_id` (as a default attribution for its runs) is therefore an
   **Awaken extension, not a Managed Agents contract**, and must be labelled as
-  such; the compatible path is to thread attribution per message.
+  such. Managed Session event JSON remains exact and rejects that field; Awaken
+  carries request-grain attribution in `anthropic-user-profile-id`, the same
+  transport header to which the official Messages SDK projects
+  `user_profile_id`, and maps it to neutral `DataSubjectId` at the adapter edge.
 - **Request** — a typed `content_capture` field on `POST /v1/sessions` and the
   existing `POST /v1/sessions/:id` patch. It is a **field, not a `metadata` key**
   (metadata stays for opaque business tags).

@@ -36,7 +36,7 @@ async function turn(client, sessionId, text) {
 async function main() {
   await withScenarioServer('compaction', 'compaction', 38198, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
     // Drive enough turns to cross the threshold (2) so the older slice folds.
     await turn(client, s.id, 'turn one');

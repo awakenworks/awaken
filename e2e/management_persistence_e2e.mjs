@@ -220,6 +220,7 @@ async function main() {
     // inline mcp_servers), with the PERSISTED credential as the bearer.
     const before = fixture.calls.filter((c) => c.method === 'tools/call').length;
     const session = await client2.beta.sessions.create({
+      environment_id: 'env_local',
       agent: {
         id: 'calc-agent',
         type: 'agent_with_overrides',

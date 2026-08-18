@@ -122,6 +122,26 @@ async function uploadFile(base: string, marker: string) {
   return JSON.parse(text);
 }
 
+async function uploadSkill(base: string, name: string, content: string) {
+  const form = new FormData();
+  form.append('display_title', name);
+  form.append(
+    'files[]',
+    new Blob([
+      `---\nname: ${name}\ndescription: distributed Worker skill proof\nenvironment: filesystem\n---\n${content}`,
+    ], { type: 'text/markdown' }),
+    'SKILL.md',
+  );
+  const response = await fetch(`${base}/v1/skills`, {
+    method: 'POST',
+    headers: { 'anthropic-beta': betaFor('/v1/skills') },
+    body: form,
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, `POST /v1/skills: ${text}`);
+  return JSON.parse(text);
+}
+
 async function events(base: string, sessionId: string) {
   return api(base, 'GET', `/v1/sessions/${sessionId}/events`);
 }
@@ -218,10 +238,7 @@ async function bootstrap(base: string) {
     path: '/fact.md', content: 'ADR71-MEMORY-MATERIALIZED',
   });
 
-  const skill = await expectStatus(base, 'POST', '/v1/skills', 200, {
-    id: 'adr71-skill',
-    content: '---\nname: adr71-skill\ndescription: distributed Worker skill proof\nenvironment: filesystem\n---\nADR71-SKILL-MATERIALIZED',
-  });
+  const skill = await uploadSkill(base, 'adr71-skill', 'ADR71-SKILL-MATERIALIZED');
 
   const agentId = 'adr71-agent';
   await expectStatus(base, 'PUT', `/v1/config/agents/${agentId}`, 200, {

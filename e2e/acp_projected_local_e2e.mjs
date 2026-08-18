@@ -112,6 +112,35 @@ lines.on('line', (line) => {
 
 }
 
+function installCodexAdapterFixture() {
+  const prefix = path.join(STORAGE, 'acp-wrappers', 'codex');
+  const executable = path.join(prefix, 'node_modules', '.bin', 'codex-acp');
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({
+    dependencies: { '@agentclientprotocol/codex-acp': '1.1.9' },
+  }));
+  fs.writeFileSync(executable, `#!${process.execPath}
+const readline = require('node:readline');
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1,
+      agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true },
+        mcpCapabilities: { http: true } } } }));
+  } else if (request.method === 'session/new') {
+    console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+      sessionId: 'projected-codex-session', modes: { currentModeId: 'code',
+        availableModes: [{ id: 'code', name: 'Code' }] }, configOptions: [],
+    } }));
+  } else if (request.method === 'session/prompt') {
+    process.exit(1);
+  }
+});
+`);
+  fs.chmodSync(executable, 0o755);
+}
+
 function start(binary, cli) {
   const environment = { ...process.env };
   delete environment.GEMINI_API_KEY;
@@ -331,6 +360,11 @@ async function main() {
     assert.ok(!reply.includes(os.homedir()), 'the CLI never receives the operator home');
 
     await stop(server);
+    // Pre-provision the exact pinned adapter revision so this deterministic
+    // scenario never depends on npm/network or the operator's Codex adapter.
+    // Host discovery still uses the installed Codex CLI identity, while the
+    // fixture owns only the ACP protocol boundary exercised below.
+    installCodexAdapterFixture();
     server = start(binary, 'codex');
     await ready(server);
     await waitForVerifiedAcpCapability(`http://127.0.0.1:${PORT}`, 'codex');

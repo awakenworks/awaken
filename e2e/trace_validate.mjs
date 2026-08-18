@@ -113,7 +113,10 @@ export function assertGenAiChain(spans) {
   const { byId } = index(spans);
   const op = (s) => s.attributes?.['gen_ai.operation.name'];
   const chat = spans.find((s) => op(s) === 'chat');
-  assert.ok(chat, 'no gen_ai.operation.name="chat" span; the turn produced no inference span');
+  assert.ok(
+    chat,
+    `no gen_ai.operation.name="chat" span; captured operations=${JSON.stringify(spans.map((s) => ({ name: s.name, operation: op(s) ?? null, model: s.attributes?.['gen_ai.request.model'] ?? null })))}`,
+  );
   assert.equal(chat.attributes['gen_ai.request.model'] ?? '', chat.attributes['gen_ai.request.model'] ?? '');
 
   const chain = ancestors(chat, byId);

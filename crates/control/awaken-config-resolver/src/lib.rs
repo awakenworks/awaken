@@ -98,7 +98,7 @@ pub enum ResolveError {
     PoolMissing(String),
     #[error(
         "credential `{source_id}` cannot authenticate provider `{provider_id}` \
-         (fail closed): a key scoped to one provider may not run another's model"
+         (fail closed): its authorization scope does not permit this provider endpoint"
     )]
     IncompatibleCredential {
         source_id: String,
@@ -570,10 +570,10 @@ pub async fn resolve_profile_candidates(
 /// never a silent unauthenticated run.
 /// The validity join (ADR-0118 `can_consume`): may this credential authenticate
 /// this provider? A source scoped to a provider (`provider_id = Some("anthropic")`)
-/// may only consume that provider's offerings; an unscoped material source
-/// (`provider_id = None`, explicitly unscoped persisted Vault/OAuth source) may
-/// consume any. A backend-owned WorkerLocal identity without a provider scope is
-/// never provider material: it authenticates its own driver instead. This is what
+/// may only consume that provider's offerings. Provider-less material is generic
+/// storage, not an authorization wildcard, and therefore cannot authenticate a
+/// provider offering. A backend-owned WorkerLocal identity without a provider
+/// scope is likewise not provider material: it authenticates its own driver. This is what
 /// stops an otherwise-materializable key or local CLI login being paired with a
 /// model it cannot authenticate — the invalid `(model × credential)` combination
 /// the ADR calls out.

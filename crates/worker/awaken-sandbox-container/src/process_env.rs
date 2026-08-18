@@ -27,29 +27,6 @@ fn workspace_scoped_path(value: &str) -> bool {
         })
 }
 
-#[cfg(test)]
-mod configuration_home_tests {
-    use super::*;
-
-    #[test]
-    fn checkpoint_sensitive_configuration_homes_have_one_open_projection() {
-        /* Cause/effect table CH1: C1=ACP bridge config, C2=backend-native
-         * config, C3=runtime XDG config. R1 C1+C2+C3 => one stable open-owned
-         * exclusion set; omitting any row can persist a provider credential
-         * cache in a product checkpoint (FMECA S5/O2/D5=50).
-         */
-        assert_eq!(
-            runtime_configuration_homes(),
-            [
-                "/workspace/.acp-config",
-                "/workspace/.codex",
-                "/workspace/.config"
-            ],
-            "CH1"
-        );
-    }
-}
-
 /// Keep the caller's last explicit workspace-scoped path, otherwise install
 /// the runtime default. All duplicates are collapsed so backend argv ordering
 /// cannot silently change the selected process home.
@@ -127,5 +104,28 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             self.lifecycle.secret_broker.as_ref(),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod configuration_home_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_sensitive_configuration_homes_have_one_open_projection() {
+        /* Cause/effect table CH1: C1=ACP bridge config, C2=backend-native
+         * config, C3=runtime XDG config. R1 C1+C2+C3 => one stable open-owned
+         * exclusion set; omitting any row can persist a provider credential
+         * cache in a product checkpoint (FMECA S5/O2/D5=50).
+         */
+        assert_eq!(
+            runtime_configuration_homes(),
+            [
+                "/workspace/.acp-config",
+                "/workspace/.codex",
+                "/workspace/.config"
+            ],
+            "CH1"
+        );
     }
 }

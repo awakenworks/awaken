@@ -13,7 +13,11 @@ use crate::RuntimeError;
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const POD_READY_POLL: Duration = Duration::from_millis(250);
-const POD_DELETE_TIMEOUT: Duration = Duration::from_secs(30);
+// Retained Session Pods intentionally keep Kubernetes' default 30-second
+// termination grace. The observation fence must extend beyond that grace plus
+// apiserver/kubelet propagation; using the same value creates a guaranteed
+// boundary race even when deletion is healthy.
+const POD_DELETE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Stamp the exact desired Kubernetes object before its first API write. A retry
 /// may reuse an existing object only when this immutable realization fingerprint
@@ -372,6 +376,14 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn deletion_observation_outlives_kubernetes_default_grace() {
+        assert!(
+            POD_DELETE_TIMEOUT > Duration::from_secs(30),
+            "the API observation fence must not expire at the same instant as Kubernetes' default grace"
+        );
     }
 
     #[test]

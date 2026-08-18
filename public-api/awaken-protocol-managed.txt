@@ -610,6 +610,9 @@ pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::agent
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage
+pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
+pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage::usage: awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::session::OutboundKind::SpanModelRequestEnd
 pub awaken_protocol_managed::types::session::OutboundKind::SpanModelRequestEnd::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::session::OutboundKind::SpanModelRequestEnd::model_request_start_id: alloc::string::String
@@ -871,8 +874,11 @@ pub awaken_protocol_managed::types::session::SessionUpdateParams::metadata: core
 pub awaken_protocol_managed::types::session::SessionUpdateParams::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::session::SessionUpdateParams::vault_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub struct awaken_protocol_managed::types::session::SpanModelUsage
+pub awaken_protocol_managed::types::session::SpanModelUsage::cache_creation_input_tokens: u64
+pub awaken_protocol_managed::types::session::SpanModelUsage::cache_read_input_tokens: u64
+pub awaken_protocol_managed::types::session::SpanModelUsage::input_tokens: u64
+pub awaken_protocol_managed::types::session::SpanModelUsage::output_tokens: u64
 pub awaken_protocol_managed::types::session::SpanModelUsage::speed: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::session::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
 pub struct awaken_protocol_managed::types::session::Usage
 pub awaken_protocol_managed::types::session::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -1239,6 +1245,9 @@ pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::agent: core::o
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::OutboundKind::SessionUsage
+pub awaken_protocol_managed::types::OutboundKind::SessionUsage::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
+pub awaken_protocol_managed::types::OutboundKind::SessionUsage::usage: awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::OutboundKind::SpanModelRequestEnd
 pub awaken_protocol_managed::types::OutboundKind::SpanModelRequestEnd::is_error: core::option::Option<bool>
 pub awaken_protocol_managed::types::OutboundKind::SpanModelRequestEnd::model_request_start_id: alloc::string::String
@@ -1515,8 +1524,11 @@ pub awaken_protocol_managed::types::SessionUpdateParams::metadata: core::option:
 pub awaken_protocol_managed::types::SessionUpdateParams::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::SessionUpdateParams::vault_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub struct awaken_protocol_managed::types::SpanModelUsage
+pub awaken_protocol_managed::types::SpanModelUsage::cache_creation_input_tokens: u64
+pub awaken_protocol_managed::types::SpanModelUsage::cache_read_input_tokens: u64
+pub awaken_protocol_managed::types::SpanModelUsage::input_tokens: u64
+pub awaken_protocol_managed::types::SpanModelUsage::output_tokens: u64
 pub awaken_protocol_managed::types::SpanModelUsage::speed: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
 pub struct awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -1636,7 +1648,7 @@ pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<
 pub fn awaken_protocol_managed::ManagedState::session_application(&self) -> alloc::sync::Arc<awaken_session_application::SessionApplication>
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::list_events(&self, &str, core::option::Option<&str>, core::option::Option<usize>, bool) -> core::result::Result<awaken_protocol_managed::types::ListEventsResponse, awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::send_events(&self, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::send_events(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::stream_subscribe(&self, &str) -> core::result::Result<(alloc::vec::Vec<awaken_protocol_managed::types::Event>, tokio::sync::broadcast::Receiver<awaken_protocol_managed::types::StreamFrame>), awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_session_realizations(&self) -> usize
@@ -1686,6 +1698,7 @@ pub fn awaken_protocol_managed::VaultState::credential_access_for_source<'life0,
 pub fn awaken_protocol_managed::VaultState::has_vault<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::VaultState::mcp_access_for_source<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialSourceId, &'life2 str, &'life3 awaken_credential_contract::PlaintextHolder, &'life4 awaken_credential_contract::CredentialMaterialBinding) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialAccess, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 [alloc::string::String], &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_credential_contract::CredentialSourceId>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub const awaken_protocol_managed::ANTHROPIC_API_VERSION: &str
 pub const awaken_protocol_managed::DREAMING_BETA: &str
 pub const awaken_protocol_managed::MANAGED_BETA: &str
 pub const awaken_protocol_managed::MEMORY_BETA: &str

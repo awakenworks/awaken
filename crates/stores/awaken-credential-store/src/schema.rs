@@ -96,11 +96,6 @@ fn credential_bundle_through(count: usize) -> Result<MigrationBundle, MigrationE
 }
 
 #[cfg(test)]
-pub(crate) fn credential_bundle_before_managed_vaults() -> Result<MigrationBundle, MigrationError> {
-    credential_bundle_through(4)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

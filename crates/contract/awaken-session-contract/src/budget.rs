@@ -121,30 +121,18 @@ fn checked_model_cost(
     usage: ManagedModelUsageCursor,
     rates: ManagedTokenListRates,
 ) -> Option<u128> {
-    let input = match checked_cost_term(usage.input_tokens, rates.input_micros_per_million, 1) {
-        Some(value) => value,
-        None => return None,
-    };
-    let output = match checked_cost_term(usage.output_tokens, rates.output_micros_per_million, 1) {
-        Some(value) => value,
-        None => return None,
-    };
-    let cache_read = match checked_cost_term(
+    let input = checked_cost_term(usage.input_tokens, rates.input_micros_per_million, 1)?;
+    let output = checked_cost_term(usage.output_tokens, rates.output_micros_per_million, 1)?;
+    let cache_read = checked_cost_term(
         usage.cache_read_tokens,
         rates.cache_read_micros_per_million,
         1,
-    ) {
-        Some(value) => value,
-        None => return None,
-    };
-    let cache_creation = match checked_cost_term(
+    )?;
+    let cache_creation = checked_cost_term(
         usage.cache_creation_tokens,
         rates.cache_creation_micros_per_million,
         1,
-    ) {
-        Some(value) => value,
-        None => return None,
-    };
+    )?;
     checked_sum4([input, output, cache_read, cache_creation])
 }
 

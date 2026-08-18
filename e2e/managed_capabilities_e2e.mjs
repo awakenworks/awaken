@@ -61,18 +61,18 @@ async function main() {
       });
       assert.deepEqual(cfg.web_fetch, {
         name: 'web_fetch',
-        enabled: false,
-        permission_policy: { type: 'always_allow' },
+        enabled: true,
+        permission_policy: { type: 'always_ask' },
       });
-      // Cause/effect graph: the official eight-member toolset includes
-      // web_search, while the host has no configured search provider in this
-      // scenario. The one canonical plugin/provider path therefore remains
-      // represented as the same toolset member, but disabled; no parallel
-      // custom search tool is introduced.
+      // Cause/effect graph: direct URL fetch is a sandbox-owned built-in and is
+      // confirmation-gated; web_search requires a configured provider. The
+      // official toolset therefore exposes fetch as enabled/ask and search as a
+      // disabled member, without introducing a parallel custom search tool.
       //
       // Decision table:
       // | Rule | official member | provider configured | effect             |
-      // | C1   | web_search      | no                  | disabled override  |
+      // | C1   | web_fetch       | built in            | enabled/ask       |
+      // | C2   | web_search      | no                  | disabled override |
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',
         enabled: false,
@@ -102,8 +102,11 @@ async function main() {
     await withServer('delegate', 38103, async (client) => {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       assert.equal(s.agent.multiagent.type, 'coordinator');
-      assert.ok(s.agent.multiagent.agents.includes('researcher'), `roster: ${JSON.stringify(s.agent.multiagent.agents)}`);
-      console.log('  ok: delegate -> {multiagent:{type:coordinator, agents:[researcher]}}');
+      assert.ok(
+        s.agent.multiagent.agents.some((agent) => agent.id === 'researcher'),
+        `roster: ${JSON.stringify(s.agent.multiagent.agents)}`,
+      );
+      console.log('  ok: delegate -> coordinator roster contains the resolved researcher Agent');
     });
 
     console.log('E2E PASS: Managed Agents capability advertisement matches the official wire via TS SDK.');

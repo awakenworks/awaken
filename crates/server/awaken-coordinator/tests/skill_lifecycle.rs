@@ -80,7 +80,7 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
     json_call(
         app,
         "GET",
-        &format!("/v1/sessions/{session}/events"),
+        &format!("/v1/sessions/{session}/events?limit=500"),
         serde_json::Value::Null,
     )
     .await

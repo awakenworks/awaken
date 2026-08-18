@@ -25,7 +25,10 @@ function start(directory) {
   return spawnProduction(directory, PORT, {
     workspace: WORKSPACE,
     controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-    fields: { sandbox_tier: 'namespace' },
+    // Catalog corruption/recovery is provider-neutral. The fixture selects the
+    // portable Workdir provider; namespace isolation has its own required-host
+    // suite and must not make this state-machine matrix host-dependent.
+    fields: { sandbox_tier: 'local' },
   });
 }
 
@@ -197,9 +200,8 @@ async function main() {
     const repositoryId = `managed:${session.body.id}:repository:0`;
 
     // Demand/placement cause graph: a Session create freezes Resource intent
-    // but a registered Worker owns physical realization. The Namespace Worker
-    // satisfies the read-only placement requirement; only an actual Run claim
-    // may establish the Active baseline used by the corruption experiment.
+    // but a registered Worker owns physical realization. Only an actual Run
+    // claim may establish the Active baseline used by the corruption experiment.
     //
     // | Rule | Worker eligible | Run demand | Catalog valid | Effect |
     // |---|---|---|---|---|
@@ -254,6 +256,7 @@ async function main() {
     assert.equal((await json('DELETE', `memory_stores/${memory.body.id}`)).status, 500);
     const deniedMemoryBinding = await json('POST', 'sessions', {
       agent: 'assistant',
+      environment_id: 'env_local',
       resources: [{
         type: 'memory_store',
         memory_store_id: memory.body.id,

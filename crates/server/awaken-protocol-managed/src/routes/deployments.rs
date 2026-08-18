@@ -102,7 +102,7 @@ fn selector(input: &crate::types::AgentRef) -> Result<AgentSelector, WireError> 
     }
     Ok(AgentSelector {
         id: input.id().to_string(),
-        version: input.version().map(u64::from),
+        version: input.version(),
     })
 }
 

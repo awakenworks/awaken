@@ -547,6 +547,9 @@ pub struct awaken_runtime_contract::llm::ChatResponse
 pub awaken_runtime_contract::llm::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
 pub awaken_runtime_contract::llm::ChatResponse::stop_reason: core::option::Option<awaken_runtime_contract::llm::StopReason>
 pub awaken_runtime_contract::llm::ChatResponse::usage: core::option::Option<awaken_runtime_contract::llm::TokenUsage>
+pub struct awaken_runtime_contract::llm::ModelRequestObservation
+pub awaken_runtime_contract::llm::ModelRequestObservation::is_error: bool
+pub awaken_runtime_contract::llm::ModelRequestObservation::usage: awaken_runtime_contract::llm::TokenUsage
 pub struct awaken_runtime_contract::llm::ThreadUsage
 pub awaken_runtime_contract::llm::ThreadUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_runtime_contract::llm::TokenUsage>
 impl awaken_runtime_contract::llm::ThreadUsage
@@ -580,6 +583,8 @@ pub fn awaken_runtime_contract::llm::DeltaSink::on_tool_call_delta<'life0, 'life
 pub trait awaken_runtime_contract::llm::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::llm::ModelContentMaterializer: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::llm::ModelContentMaterializer::materialize<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatRequest>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
 pub mod awaken_runtime_contract::metrics
 pub struct awaken_runtime_contract::metrics::InferenceMetric<'a>
@@ -1151,11 +1156,14 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::o
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_requests: core::option::Option<alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::vec::Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::rescheduled_runs: core::option::Option<alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::collections::btree::set::BTreeSet<alloc::string::String>>>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
@@ -1178,10 +1186,13 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credent
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_requests(self, alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::vec::Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_rescheduled_runs(self, alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::collections::btree::set::BTreeSet<alloc::string::String>>>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
@@ -1934,11 +1945,14 @@ pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<all
 pub awaken_runtime_contract::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub awaken_runtime_contract::RuntimeRunContext::model_requests: core::option::Option<alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::vec::Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>>
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::RuntimeRunContext::rescheduled_runs: core::option::Option<alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::collections::btree::set::BTreeSet<alloc::string::String>>>>
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
@@ -1961,10 +1975,13 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credent
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_requests(self, alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::vec::Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_rescheduled_runs(self, alloc::sync::Arc<std::sync::poison::mutex::Mutex<alloc::collections::btree::set::BTreeSet<alloc::string::String>>>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
@@ -2071,6 +2088,8 @@ pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_co
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::ModelContentMaterializer: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::ModelContentMaterializer::materialize<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatRequest>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::PhaseHook::on_phase<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext, &'life2 [awaken_agent_contract::agent::message::Message], &'life3 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::HookReaction> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_contract::PhaseHook::point(&self) -> awaken_runtime_contract::PhaseHookPoint

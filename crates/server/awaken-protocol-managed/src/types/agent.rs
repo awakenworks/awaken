@@ -300,7 +300,7 @@ impl AgentReference {
     /// reference — `version` defaults to 1. The reference identifies the base agent
     /// and version; any per-session overrides are applied separately.
     pub fn from_input(input: &super::session::AgentRef) -> Self {
-        Self::new(input.id(), input.version().unwrap_or(1) as u64)
+        Self::new(input.id(), input.version().unwrap_or(1))
     }
 }
 

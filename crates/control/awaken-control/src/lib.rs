@@ -187,27 +187,6 @@ fn principal_display_name(
     }
 }
 
-#[cfg(test)]
-mod presentation_tests {
-    use super::{organization_display_name, workspace_display_name};
-
-    #[test]
-    fn installation_coordinates_never_become_product_chrome_copy() {
-        assert_eq!(
-            workspace_display_name("workspace_local_126cc_18cbbe83d0355538"),
-            "Local Workspace"
-        );
-        assert_eq!(
-            organization_display_name("org_default"),
-            "Default Organization"
-        );
-        assert_eq!(
-            workspace_display_name("awaken:personal:acct_0123456789"),
-            "Personal Workspace"
-        );
-    }
-}
-
 async fn durable_management_audit(
     axum::extract::State(plane): axum::extract::State<ManagementAuditPlane>,
     request: Request<Body>,
@@ -633,4 +612,25 @@ pub fn protect_runtime_protocol_routers(
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
 ) -> Router {
     protect_authorized_router(service_router, iam, remote_iam).merge(application_router)
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::{organization_display_name, workspace_display_name};
+
+    #[test]
+    fn installation_coordinates_never_become_product_chrome_copy() {
+        assert_eq!(
+            workspace_display_name("workspace_local_126cc_18cbbe83d0355538"),
+            "Local Workspace"
+        );
+        assert_eq!(
+            organization_display_name("org_default"),
+            "Default Organization"
+        );
+        assert_eq!(
+            workspace_display_name("awaken:personal:acct_0123456789"),
+            "Personal Workspace"
+        );
+    }
 }
