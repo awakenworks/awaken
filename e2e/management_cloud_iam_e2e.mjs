@@ -247,8 +247,8 @@ async function startIamFixture() {
   };
 }
 
-async function req(base, method, uri, token, { apiKey = false, body } = {}) {
-  const headers = {};
+async function req(base, method, uri, token, { apiKey = false, body, headers: extraHeaders = {} } = {}) {
+  const headers = { ...extraHeaders };
   if (token) headers[apiKey ? 'x-api-key' : 'authorization'] = apiKey ? token : `Bearer ${token}`;
   if (body !== undefined) headers['content-type'] = 'application/json';
   const response = await fetch(`${base}${uri}`, {
@@ -355,13 +355,18 @@ async function main() {
     // selection is trusted only after the edge rewrite and reaches the PDP as the
     // target; the inner resource service sees only the stamped WorkspaceScope.
     const selectedWorkspace = 'workspace-cloud-selected';
-    result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/skills`, explicitToken);
+    result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/skills`, explicitToken, {
+      headers: { 'anthropic-beta': 'skills-2025-10-02' },
+    });
     assert.equal(result.status, 200, JSON.stringify(result.body));
     call = iam.calls.at(-1);
     assert.deepEqual(call.body.principal, { kind: 'account', account_id: 'account-explicit' });
     assert.equal(call.body.action, 'awaken.workspace::skill.read');
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
-    result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/memory_stores`, explicitToken, { apiKey: true });
+    result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/memory_stores`, explicitToken, {
+      apiKey: true,
+      headers: { 'anthropic-beta': 'agent-memory-2026-07-22' },
+    });
     assert.equal(result.status, 200, JSON.stringify(result.body));
     pass('explicit Bearer/x-api-key and workspace path use the same cloud PEP');
 

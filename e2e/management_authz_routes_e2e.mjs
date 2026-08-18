@@ -28,7 +28,15 @@ async function req(base, method, uri, token, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
+  let parsed = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+  return { status: res.status, body: parsed };
 }
 
 async function apiKeyReq(base, method, uri, token, body) {

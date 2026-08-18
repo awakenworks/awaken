@@ -501,6 +501,18 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     .await;
     assert_eq!(status, StatusCode::OK, "O4 stop");
     assert_eq!(stopped["state"], "stopped", "O4 stop");
+    let (status, _) = call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the official EnvironmentWorker treats 409 as already stopped"
+    );
 }
 
 #[tokio::test]
@@ -951,10 +963,22 @@ async fn environment_crud_and_work_lifecycle() {
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}"),
-        Some(json!({ "metadata": { "run": "1" } })),
+        Some(json!({ "metadata": { "run": "1", "remove_me": "yes" } })),
     )
     .await;
     assert_eq!(upd["metadata"]["run"], "1");
+    let (_, deleted_metadata) = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}"),
+        Some(json!({ "metadata": { "run": "2", "remove_me": null } })),
+    )
+    .await;
+    assert_eq!(deleted_metadata["metadata"]["run"], "2");
+    assert!(
+        deleted_metadata["metadata"].get("remove_me").is_none(),
+        "a null metadata patch deletes the key"
+    );
 
     // Env retrieve / update / list / archive.
     let (_, upenv) = call(

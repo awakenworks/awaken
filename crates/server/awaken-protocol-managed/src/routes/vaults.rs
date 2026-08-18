@@ -860,6 +860,7 @@ impl RepositoryCredentialIngress for VaultState {
         workspace_id: &str,
         token: RedactedString,
     ) -> Result<CredentialSourceId, String> {
+        let material = repository_http_basic_material(token).map_err(|error| error.to_string())?;
         let entry = awaken_credential_vault::repo::enter_credential_idempotent(
             source_id,
             DomainCredentialCreateParams {
@@ -867,7 +868,7 @@ impl RepositoryCredentialIngress for VaultState {
                 kind: CredentialKind::Vault,
                 provider_id: Some("github_repository".into()),
                 env_key: None,
-                secret: Some(token),
+                secret: Some(material),
                 oauth_command: None,
             },
             None,
@@ -897,10 +898,11 @@ impl RepositoryCredentialIngress for VaultState {
         {
             return Err("repository credential binding is unavailable in this Workspace".into());
         }
+        let material = repository_http_basic_material(token).map_err(|error| error.to_string())?;
         rotate_credential_materials(
             source_id,
             CredentialMaterialPatch {
-                primary: Some(token),
+                primary: Some(material),
                 auxiliary: BTreeMap::new(),
             },
             self.secrets.as_ref(),
@@ -910,6 +912,18 @@ impl RepositoryCredentialIngress for VaultState {
         .map_err(|error| error.to_string())?;
         Ok(())
     }
+}
+
+fn repository_http_basic_material(
+    token: RedactedString,
+) -> Result<RedactedString, awaken_credential_vault::CredentialError> {
+    awaken_credential_vault::encode_structured_material(StructuredCredentialMaterial {
+        type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.to_string(),
+        fields: BTreeMap::from([
+            ("username".into(), RedactedString::new("x-access-token")),
+            ("password".into(), token),
+        ]),
+    })
 }
 
 // ---- Router -----------------------------------------------------------------

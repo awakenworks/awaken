@@ -583,12 +583,12 @@ pub trait WorkQueue: Send + Sync {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
-    /// Merge a metadata patch (each present key upserts).
+    /// Merge a metadata patch (a string upserts and None deletes the key).
     async fn update_metadata(
         &self,
         env_id: &str,
         wid: &str,
-        patch: BTreeMap<String, String>,
+        patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
     async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError>;

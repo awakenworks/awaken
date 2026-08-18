@@ -469,8 +469,21 @@ fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCat
 }
 
 #[cfg(feature = "test-support")]
-fn ephemeral_dream_process_store() -> Arc<dyn awaken_session_contract::DreamProcessStore> {
-    Arc::new(awaken_dream_application::InMemoryDreamProcessStore::default())
+fn scenario_dream_process_store(
+    host: &SharedHost,
+) -> Arc<dyn awaken_session_contract::DreamProcessStore> {
+    match host.storage_dir() {
+        Some(root) => {
+            std::fs::create_dir_all(root).expect("create durable Dream repository directory");
+            Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(
+                    &root.join("sessions.db").to_string_lossy(),
+                )
+                .expect("open durable Dream process repository"),
+            )
+        }
+        None => Arc::new(awaken_dream_application::InMemoryDreamProcessStore::default()),
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -570,6 +583,7 @@ pub fn mount_with_managed_and_application_access_and_models(
     model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
 ) -> Router {
     let remote_worker_required = !host.runs_local_dispatch_pool();
+    let dream_process_store = scenario_dream_process_store(host.as_ref());
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
     let session_application = managed_state.session_application();
@@ -588,7 +602,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             resource_catalog,
             application_access: Some(application_access),
             model_inventory: Some(model_inventory),
-            dream_process_store: ephemeral_dream_process_store(),
+            dream_process_store,
         },
         ManagedRoutingExtensions {
             resource_management_router: resources,
@@ -766,6 +780,11 @@ fn mount_with_managed_over(
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let remote_worker_required = !host.runs_local_dispatch_pool();
+    // A scenario that opts into the same durable storage root as production
+    // must not silently retain an in-memory Dream authority. Sessions and
+    // Dreams share the concrete sessions.db aggregate in product startup; keep
+    // crash/recovery fixtures on that same ownership boundary.
+    let dream_process_store = scenario_dream_process_store(host.as_ref());
     let session_application = managed_state.session_application();
     let supervised_sessions = session_application.clone();
     let (resources, memory_stores) =
@@ -785,7 +804,7 @@ fn mount_with_managed_over(
                 resource_catalog,
                 application_access,
                 model_inventory: None,
-                dream_process_store: ephemeral_dream_process_store(),
+                dream_process_store,
             },
             ManagedRoutingExtensions {
                 resource_management_router: resources,

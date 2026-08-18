@@ -583,6 +583,14 @@ pub(super) async fn prepare_runtime_routers(
             },
         );
     session_application.set_credential_source(credential_source);
+    if let Some(vault_state) = local_vault_state.as_ref() {
+        // AllInOne owns the Vault authority locally, so repository credentials
+        // supplied through the Managed Sessions API must enter through that
+        // same authority.  Merely installing it as a read source makes the
+        // protocol advertise authorization_token while rejecting every legal
+        // create/update request at the product router.
+        session_application.set_repository_credential_ingress(vault_state.clone());
+    }
     session_application.set_resource_catalog(resource_catalog.clone());
     session_application.set_resource_purge_scheduler(resource_application.purge_scheduler());
     session_application.set_resource_reference_authority(

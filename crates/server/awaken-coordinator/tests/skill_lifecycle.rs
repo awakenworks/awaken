@@ -225,8 +225,13 @@ async fn offered_skill_is_discovered_activated_and_used() {
 
     // used: the loop continued and the model replied; ended cleanly.
     assert!(texts.contains(&"USED_SKILL".to_string()));
-    let idle = list["data"].as_array().unwrap().last().unwrap();
-    assert_eq!(idle["type"], "session.status_idle");
+    let idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["type"] == "session.status_idle")
+        .expect("session.status_idle event");
     assert_eq!(idle["stop_reason"]["type"], "end_turn");
 }
 

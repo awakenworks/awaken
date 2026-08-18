@@ -159,9 +159,11 @@ async function main() {
       pass('latest, immutable version id, and missing version references are distinct');
 
       const download = await client.beta.skills.versions.download('2', { skill_id: skill.id, betas: BETAS });
+      assert.equal(download.headers.get('content-type'), 'application/x-tar');
       const body = await download.text();
-      assert.ok(body.includes('Say a warm hi'), 'download returns the version content');
-      pass('beta.skills.versions.download');
+      assert.ok(body.includes('worker-greeter') || body.includes('greeter'));
+      assert.ok(body.includes('Say a warm hi'), 'archive contains the immutable version content');
+      pass('beta.skills.versions.download returns the archive consumed by setupSkills');
 
       const missingFile = await fetch(
         `${baseUrl}/v1/skills/${skill.id}/versions/2/files/references/missing.md`,

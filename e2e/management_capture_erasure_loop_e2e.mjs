@@ -1,20 +1,20 @@
-// Full ADR-0050 loop end-to-end: a real agent turn with content capture = full
-// writes the prompt/completion into a subject-tagged store; GDPR erasure then
-// removes exactly that subject's captured content. Drives a real Managed turn
-// (echo model over the real runtime) with request-grain `user_profile_id`, then
-// hits the Awaken erasure endpoint.
+// Managed Agents / ADR-0050 compatibility boundary: Session events use the
+// official closed envelope and therefore cannot carry the removed
+// `user_profile_id` extension. Prove the rejected request has no runtime or
+// capture side effect, then prove the official event remains usable and an
+// erasure retry returns a stable zero-effect receipt.
 //
 // Cause graph / decision table:
 //   C1 typed deployment ceiling=full; C2 telemetry consent granted;
-//   C3 Managed request carries user_profile_id; C4 erasure is requested;
+//   C3 Managed request carries removed user_profile_id; C4 erasure is requested;
 //   C5 erasure is retried.
 //
 // | Rule | C1 | C2 | C3 | C4 | C5 | Result |
 // |---|---|---|---|---|---|---|
-// | E1 | Y | Y | Y | N | N | prompt/completion stored under the exact subject |
-// | E2 | Y | Y | Y | Y | N | subject rows removed; durable receipt count > 0 |
-// | E3 | Y | Y | Y | Y | Y | same durable receipt; no second deletion effect |
-// | E4 | Y | Y | N | - | - | no subject-owned content (adapter unit-test partition) |
+// | E1 | Y | Y | Y | N | N | 400; no event and no subject-owned content |
+// | E2 | Y | Y | N | N | N | official event is accepted without attribution |
+// | E3 | Y | Y | Y | Y | N | zero-effect durable erasure receipt |
+// | E4 | Y | Y | Y | Y | Y | same durable receipt; no second deletion effect |
 //
 // Run: (from e2e/)  node management_capture_erasure_loop_e2e.mjs
 
@@ -59,13 +59,15 @@ async function main() {
       ).json();
       assert.equal(decision.effective, 'full', `capture decision ${JSON.stringify(decision)}`);
 
-      // The typed ceiling, consent, and request-grain attribution all agree, so
-      // the engine writes prompt + completion into the subject-tagged store.
+      // `user_profile_id` was removed from the official Session event envelope.
+      // Keeping this as a negative test prevents an attractive but incompatible
+      // extension from being reintroduced.
       const session = await client.beta.sessions.create({
         agent: 'assistant',
+        environment_id: 'env_local',
         betas: BETAS,
       });
-      const sent = await fetch(`${base}/v1/sessions/${session.id}/events?beta=true`, {
+      const rejected = await fetch(`${base}/v1/sessions/${session.id}/events?beta=true`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -79,28 +81,38 @@ async function main() {
           }],
         }),
       });
-      assert.equal(sent.status, 200, `send status ${sent.status}: ${await sent.text()}`);
+      assert.equal(rejected.status, 400, `removed extension status ${rejected.status}`);
+
+      const before = [];
+      for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+        before.push(event);
+      }
+      assert.equal(before.length, 0, 'rejected envelope must not append an event');
+
+      await client.beta.sessions.events.send(session.id, {
+        betas: BETAS,
+        events: [{
+          type: 'user.message',
+          content: [{ type: 'text', text: 'official unattributed content' }],
+        }],
+      });
       const events = [];
       for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
         events.push(event);
       }
       assert.ok(
-        JSON.stringify(events).includes('please capture this content'),
+        JSON.stringify(events).includes('official unattributed content'),
         `turn did not complete: ${JSON.stringify(events)}`,
       );
-      pass('ran a real turn with content capture=full (subject dsub_full)');
+      pass('removed user_profile_id is atomic 400; official Session event still completes');
 
       const captured = sqliteRows(
         path.join(directory, 'captured_content.db'),
         'SELECT subject, purpose, content FROM coordinator_data_capture_captured WHERE subject = ?',
         'dsub_full',
       );
-      assert.ok(captured.length > 0, 'E1: the real turn must persist subject-owned content');
-      assert.ok(
-        captured.some((row) => row.content.includes('please capture this content')),
-        `E1: prompt was not captured: ${JSON.stringify(captured)}`,
-      );
-      pass(`run→capture→store: ${captured.length} subject-owned records persisted`);
+      assert.equal(captured.length, 0, 'official unattributed event must not create subject-owned content');
+      pass('rejected and official-unattributed events create no subject-owned capture');
 
       // Erasure removes exactly this subject's captured content.
       const res = await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, {
@@ -109,11 +121,8 @@ async function main() {
       });
       assert.equal(res.status, 200, `erasure status ${res.status}`);
       const body = await res.json();
-      assert.ok(
-        body.records_removed > 0,
-        `expected captured content to be erased, got ${body.records_removed}`,
-      );
-      pass(`run→capture→store→erase: ${body.records_removed} captured records erased`);
+      assert.equal(body.records_removed, 0, 'no attributed content means a zero-effect erasure');
+      pass('erasure returns a durable zero-effect receipt');
 
       // A retry returns the same durable receipt. `records_removed` is cumulative
       // accountability evidence, not the delta of this HTTP attempt.

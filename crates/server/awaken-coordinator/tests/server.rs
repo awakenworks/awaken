@@ -56,6 +56,17 @@ fn event_types(list: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+fn last_event_of_type<'a>(
+    events: &'a [serde_json::Value],
+    event_type: &str,
+) -> &'a serde_json::Value {
+    events
+        .iter()
+        .rev()
+        .find(|event| event["type"] == event_type)
+        .unwrap_or_else(|| panic!("missing {event_type} event"))
+}
+
 async fn create_session(app: &Router) -> String {
     let s = json_call(
         app,
@@ -116,8 +127,11 @@ async fn echo_turn_end_to_end() {
         vec![
             "user.message",
             "session.status_running",
+            "span.model_request_start",
+            "span.model_request_end",
             "agent.message",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     let msg = list["data"]
@@ -206,18 +220,21 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
         vec![
             "user.message",
             "session.status_running",
+            "span.model_request_start",
+            "span.model_request_end",
             "agent.tool_use",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
-    let idle = list["data"].as_array().unwrap().last().unwrap();
+    let idle = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
     assert_eq!(idle["stop_reason"]["event_ids"][0], "w");
 
     // Confirm -> write runs (rooted), read runs (allowed), reply.
     let list = confirm(&app, &id, "w").await;
     assert!(event_types(&list).contains(&"agent.message".to_string()));
-    let last = list["data"].as_array().unwrap().last().unwrap();
+    let last = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(last["stop_reason"]["type"], "end_turn");
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
 }
@@ -362,7 +379,7 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
             .iter()
             .any(|event| event["type"] == "span.outcome_evaluation_end")
     );
-    let idle = awaiting_events.last().unwrap();
+    let idle = last_event_of_type(awaiting_events, "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
     assert_eq!(idle["stop_reason"]["event_ids"][0], "outcome-write-1");
 
@@ -379,7 +396,7 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
             .any(|event| event["type"] == "span.outcome_evaluation_end")
     );
     assert_eq!(
-        awaiting_again_events.last().unwrap()["stop_reason"]["type"],
+        last_event_of_type(awaiting_again_events, "session.status_idle")["stop_reason"]["type"],
         "requires_action"
     );
 
@@ -517,8 +534,11 @@ async fn custom_tool_use_through_real_kernel() {
         vec![
             "user.message",
             "session.status_running",
+            "span.model_request_start",
+            "span.model_request_end",
             "agent.custom_tool_use",
-            "session.status_idle"
+            "session.status_idle",
+            "session.usage"
         ]
     );
     let custom = list["data"]
@@ -529,7 +549,7 @@ async fn custom_tool_use_through_real_kernel() {
         .unwrap();
     assert_eq!(custom["name"], "submit_answer");
     let tool_use_id = custom["id"].as_str().unwrap().to_string();
-    let idle = list["data"].as_array().unwrap().last().unwrap();
+    let idle = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
 
     // The client returns the result -> the model incorporates it and replies.
@@ -559,7 +579,8 @@ async fn custom_tool_use_through_real_kernel() {
         "the client's result reached the model: {msgs:?}"
     );
     assert_eq!(
-        list["data"].as_array().unwrap().last().unwrap()["stop_reason"]["type"],
+        last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle")["stop_reason"]
+            ["type"],
         "end_turn"
     );
 }
@@ -619,9 +640,13 @@ async fn system_message_reaches_next_turn() {
         serde_json::Value::Null,
     )
     .await;
-    // Cause/effect rule: accepted system.message -> one processed inbound event,
-    // with no running/message/idle projection until a later user turn.
-    assert_eq!(event_types(&before), vec!["system.message"]);
+    // Cause/effect rule: accepted system.message -> one processed inbound event
+    // plus the aggregate usage projection, with no running/message/idle event
+    // until a later user turn.
+    assert_eq!(
+        event_types(&before),
+        vec!["system.message", "session.usage"]
+    );
     assert!(before["data"][0]["processed_at"].is_string());
 
     // The next user turn sees the buffered directive.
@@ -770,7 +795,8 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
         "sub-agent output reached the main agent: {msgs:?}"
     );
     assert_eq!(
-        list["data"].as_array().unwrap().last().unwrap()["stop_reason"]["type"],
+        last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle")["stop_reason"]
+            ["type"],
         "end_turn"
     );
 }
@@ -871,9 +897,34 @@ impl LlmExecutor for LoopModel {
 async fn max_steps_maps_to_retries_exhausted() {
     let app = build_router(Arc::new(LoopModel), "loop");
     let id = create_session(&app).await;
-    let list = send_message(&app, &id, "loop forever").await;
-    let idle = list["data"].as_array().unwrap().last().unwrap();
-    assert_eq!(idle["stop_reason"]["type"], "retries_exhausted");
+    let mut list = send_message(&app, &id, "loop forever").await;
+    for _ in 0..100 {
+        if list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["stop_reason"]["type"] == "retries_exhausted")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        list = json_call(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{id}/events?limit=100"),
+            serde_json::Value::Null,
+        )
+        .await;
+    }
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["stop_reason"]["type"] == "retries_exhausted"),
+        "terminal projection must preserve retries_exhausted: {}",
+        list["data"]
+    );
 }
 
 #[tokio::test]

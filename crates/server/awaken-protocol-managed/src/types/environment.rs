@@ -231,12 +231,12 @@ impl EnvironmentScope {
 }
 
 /// `BetaSelfHostedWorkUpdateRequest` — the `POST .../work/:wid` body: a metadata
-/// merge (each present key upserts).
+/// merge (a string upserts and null deletes the key).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkUpdateParams {
     #[serde(default)]
-    pub metadata: Option<BTreeMap<String, String>>,
+    pub metadata: Option<BTreeMap<String, Option<String>>>,
 }
 
 /// `BetaEnvironment` — where a self-hosted worker runs sessions.

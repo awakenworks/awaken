@@ -99,4 +99,49 @@ async fn admin_and_vault_surfaces_are_served_together() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+
+    // The product composition, rather than only the protocol fixture, wires the
+    // local Vault as the write ingress for Managed repository credentials.  A
+    // cloud Environment keeps this assertion at the management boundary: no
+    // local Git checkout is needed to prove sealing, pinning, and rotation.
+    let (s, environment) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({ "name": "repository ingress", "config": { "type": "cloud" } })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{environment}");
+    let (s, repository_session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "assistant",
+            "environment_id": environment["id"],
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/managed-compat.git",
+                "authorization_token": "initial-repository-token" // awaken-allow: secret
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{repository_session}");
+    assert!(
+        !repository_session
+            .to_string()
+            .contains("initial-repository-token")
+    );
+    let session_id = repository_session["id"].as_str().unwrap();
+    let resource_id = repository_session["resources"][0]["id"].as_str().unwrap();
+    let (s, rotated) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        Some(json!({ "authorization_token": "rotated-repository-token" })), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{rotated}");
+    assert!(!rotated.to_string().contains("rotated-repository-token"));
 }
