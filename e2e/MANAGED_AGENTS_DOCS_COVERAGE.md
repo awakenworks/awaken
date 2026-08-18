@@ -17,7 +17,11 @@ Officially formed requests remain the conformance oracle, while a missing
 are ignored when the endpoint's required beta is also present. Unknown-only or
 missing required betas still fail before mutation, and `User-Agent` never selects a
 different schema. `managed_sdk_version_matrix_e2e.mjs` exercises SDK 0.105.0 and
-0.117.1 plus these raw-header negative and forward-compatibility partitions.
+0.117.1, checks identical generated method trees for all 13 shared Beta resource
+families, and runs Session/Memory behavioral differentials plus raw-header negative
+and forward-compatibility partitions. Dreams and Tunnels are explicit 0.117-only
+capabilities because SDK 0.105 does not expose those resources; focused behavior
+E2Es run them with the current SDK instead of manufacturing an old-client result.
 `npm run test:sdk-latest-canary` queries the registry and runs the same
 public-declaration fingerprint gate against a temporary latest tarball whenever
 latest differs from the exact pin. The release-only
@@ -116,11 +120,13 @@ Effects:
 |---|---|---|---|---|
 | A1 | ordinary Managed endpoint | `managed-agents-2026-04-01` | valid request | continue to domain validation |
 | A2 | ordinary Managed endpoint | missing Managed beta | any | reject before mutation |
-| A3 | memory-store endpoint | `agent-memory-2026-07-22` only | valid request | continue to memory validation |
+| A3 | memory-store endpoint | exactly one of `agent-memory-2026-07-22` or legacy `managed-agents-2026-04-01` | valid request | continue through the same current Memory semantics |
 | A4 | memory-store endpoint | Managed + memory beta | any | 400, no mutation |
 | A5 | non-memory Managed endpoint | memory beta only | any | reject before mutation |
 | A6 | any endpoint | correct beta | malformed/oversized body | 400/413, no mutation |
 | A7 | Skills endpoint | `skills-2025-10-02` | missing or Managed beta only | continue / reject before mutation |
+| A8 | Dream endpoint | `dreaming-2026-04-21` alone or with additive betas | valid request | continue; generated SDK defaults work without caller-supplied betas |
+| A9 | Dream endpoint | missing Dream beta (including Managed-only) | any | 400, no mutation |
 
 ### Decision table B — Agent update
 
@@ -335,8 +341,8 @@ non-regression and second-turn relaunch coverage.
 | Inbound events persist under their receipt id and converge `processed_at` according to the documented immediate/queued classes | events-and-streaming / reference | existing adapter tests + `managed_system_message_e2e.mjs` | decision H9; no receipt-only shadow path |
 | `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
 | Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
-| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; Memory follows the exclusive A3/A4 rule below |
-| Memory Store endpoints require only `agent-memory-2026-07-22`; missing, Managed-only, or both headers reject before domain work | memory / beta-headers / reference | existing `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource |
+| Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; Memory follows the one-of-two compatibility rule A3/A4 below |
+| Memory Store endpoints prefer `agent-memory-2026-07-22`; the Managed-only spelling emitted by supported SDK 0.105 remains a compatible selector. Missing, unknown-only, or both official headers reject before domain work. | memory / beta-headers / reference | `managed_sdk_version_matrix_e2e.mjs`, `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource; old/new selectors share current list/CAS/cursor semantics |
 | Memory listing/capacity/attachment boundaries (segment prefix, depth 0/1, basic/full, 2,000 heads, 8 stores, 4,096 characters) | memory | `managed_memory_repository_durable_e2e.mjs` + repository/protocol tests | ML1-ML7/MC1-MC4/M1-M4; inclusive boundary, invalid partition, restart, API/mount shared owner |
 | Self-hosted work long poll (`block_ms` omitted/null/1..999/outside) | self-hosted-sandboxes | protocol `tests/environments.rs` + official worker E2E | P1-P5; timing boundary + validation + no second queue |
 | Manual vs scheduled DeploymentRun webhook emission | webhooks / scheduled-deployments | protocol Deployment repository test | G18/W1-W2; differential trigger partition + restart durability + outbox absence/presence |

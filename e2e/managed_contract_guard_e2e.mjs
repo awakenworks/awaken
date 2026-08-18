@@ -67,14 +67,16 @@ async function main() {
       assert.equal(afterHeaderRejects.length, 0, 'A2 rejected create has no mutation');
       pass('Managed beta header decision rules A1/A2/A5 reject before mutation');
 
-      // Causes: Memory endpoint with missing, Managed-only, Memory-only, or both
-      // endpoint betas. Constraint: Memory beta replaces (is not combined with)
-      // the Managed beta. Effects: A3 reaches the handler; A4 and missing/wrong
-      // partitions reject before resource lookup or mutation.
+      // Causes: old SDK Managed-only, current SDK Memory-only, missing, unknown,
+      // or both endpoint betas. Constraint: one recognized selector is required
+      // and the two official selectors are never combined. Effects: either SDK
+      // reaches the one current handler; ambiguous/absent selectors reject
+      // before resource lookup or mutation.
       for (const [rule, beta, expected] of [
-        ['A3 memory-only', MEMORY_BETA, 200],
+        ['A3 current memory-only', MEMORY_BETA, 200],
+        ['A3 legacy managed-only', BETAS[0], 200],
         ['A4 both', `${MEMORY_BETA},${BETAS[0]}`, 400],
-        ['A4 managed-only', BETAS[0], 400],
+        ['A4 unknown-only', 'future-memory-beta', 400],
         ['A4 missing', null, 400],
       ]) {
         const response = await fetch(`${baseUrl}/v1/memory_stores`, {
@@ -88,7 +90,28 @@ async function main() {
           assert.equal((await response.json()).error.type, 'invalid_request_error', rule);
         }
       }
-      pass('Memory beta header decision rules A3/A4 are exclusive and fail closed');
+      for (const [rule, beta] of [
+        ['A4 both cannot create', `${MEMORY_BETA},${BETAS[0]}`],
+        ['A4 unknown cannot create', 'future-memory-beta'],
+        ['A4 missing cannot create', null],
+      ]) {
+        const response = await fetch(`${baseUrl}/v1/memory_stores`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': 'e2e-dummy',
+            ...(beta ? { 'anthropic-beta': beta } : {}),
+          },
+          body: JSON.stringify({ name: `must-not-exist-${rule}` }),
+        });
+        assert.equal(response.status, 400, rule);
+      }
+      const stores = await fetch(`${baseUrl}/v1/memory_stores`, {
+        headers: { 'x-api-key': 'e2e-dummy', 'anthropic-beta': MEMORY_BETA },
+      });
+      assert.equal(stores.status, 200);
+      assert.deepEqual((await stores.json()).data, [], 'header rejects perform no Memory mutation');
+      pass('Memory beta rules accept both SDK generations and reject ambiguity before mutation');
 
       // --- retrieve unknown session -> 404 + not_found_error envelope ---
       await assert.rejects(

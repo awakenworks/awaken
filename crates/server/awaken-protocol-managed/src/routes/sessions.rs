@@ -596,7 +596,9 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 
 /// The endpoint-specific beta required by the standalone Skills resource API.
 pub const SKILLS_BETA: &str = "skills-2025-10-02";
-/// The endpoint-specific beta that replaces the Managed beta on Memory APIs.
+/// The endpoint-specific beta used by current SDKs on Memory APIs. The
+/// preceding Managed beta remains a wire-compatible legacy selector for SDKs
+/// released before the Memory beta was added.
 pub const MEMORY_BETA: &str = "agent-memory-2026-07-22";
 pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
@@ -612,8 +614,9 @@ fn has_beta(req: &Request, expected: &str) -> bool {
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
 /// on every ordinary Managed Agents endpoint. Applied by each executable
 /// process startup, NOT baked into [`router`], so router-level tests remain focused
-/// on domain behavior. Memory and Skills are gated here with their exclusive
-/// endpoint-specific betas; User Profiles and Files remain with their family gates.
+/// on domain behavior. Memory accepts its current endpoint beta or the legacy
+/// Managed selector. Dreams and Skills use their generated SDK endpoint betas;
+/// User Profiles and Files retain their family gates.
 pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
@@ -642,15 +645,16 @@ pub async fn enforce_managed_beta(
     if is_family("/v1/memory_stores") {
         let has_memory = has_beta(&req, MEMORY_BETA);
         let has_managed = has_beta(&req, crate::MANAGED_BETA);
-        if !has_memory || has_managed {
-            let message = if has_memory && has_managed {
+        if has_memory == has_managed {
+            let message = if has_memory {
                 format!(
                     "the {MEMORY_BETA} beta replaces {managed} on memory store endpoints; do not send both",
                     managed = crate::MANAGED_BETA,
                 )
             } else {
                 format!(
-                    "the {MEMORY_BETA} beta is required: send the `anthropic-beta: {MEMORY_BETA}` header"
+                    "a Memory beta is required: send `anthropic-beta: {MEMORY_BETA}`; legacy clients may send `{managed}` alone",
+                    managed = crate::MANAGED_BETA,
                 )
             };
             return (
@@ -731,7 +735,6 @@ pub async fn enforce_managed_beta(
         "/v1/deployments",
         "/v1/deployment_runs",
         "/v1/vaults",
-        "/v1/dreams",
     ]
     .into_iter()
     .any(is_family);
@@ -1470,6 +1473,53 @@ mod managed_json_tests {
             status("/v1/organizations/tunnels", crate::TUNNELS_BETA).await,
             StatusCode::BAD_REQUEST,
             "current beta cannot silently change legacy auth semantics"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_and_legacy_memory_betas_select_one_canonical_contract() {
+        // SDK 0.105 sends the Managed beta and SDK 0.117 sends the Memory beta.
+        // Either one alone selects the same handler; neither or both is
+        // ambiguous and fails before the handler can observe the request.
+        let app = Router::new()
+            .route(
+                "/v1/memory_stores",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn(enforce_managed_beta));
+        let status = |beta: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::get("/v1/memory_stores");
+                if let Some(beta) = beta {
+                    request = request.header("anthropic-beta", beta);
+                }
+                app.oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(
+            status(Some(crate::MANAGED_BETA)).await,
+            StatusCode::NO_CONTENT,
+            "SDK 0.105 legacy selector"
+        );
+        assert_eq!(
+            status(Some(super::MEMORY_BETA)).await,
+            StatusCode::NO_CONTENT,
+            "SDK 0.117 current selector"
+        );
+        assert_eq!(status(None).await, StatusCode::BAD_REQUEST, "missing");
+        assert_eq!(
+            status(Some("future-memory-beta")).await,
+            StatusCode::BAD_REQUEST,
+            "unknown only"
+        );
+        assert_eq!(
+            status(Some("managed-agents-2026-04-01,agent-memory-2026-07-22")).await,
+            StatusCode::BAD_REQUEST,
+            "the official headers remain mutually exclusive"
         );
     }
 
