@@ -28,7 +28,8 @@ use crate::dispatch::{
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::postgres_helpers::{
-    append_pending_transaction, idempotency_conflict, retry_exhausted_candidate,
+    append_pending_transaction, current_worker_claim, idempotency_conflict,
+    retry_exhausted_candidate,
 };
 use crate::postgres_identity::{exact_run_replay, load_completion_events, lock_run_identity};
 use crate::{
@@ -164,20 +165,8 @@ impl DispatchQueue for PostgresDispatchStore {
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
-        let p = NS;
-        sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
-             WHERE run_id = $1 AND status = 'running' \
-             AND lease_owner = $2 AND lease_until IS NOT NULL \
-             AND lease_until >= $3)"
-        ))
-        .bind(&run_id.0)
-        .bind(identity.lease_owner())
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(reject)
+    ) -> Result<Option<RunClaim>, DispatchError> {
+        current_worker_claim(&self.pool, NS, identity, run_id, now_ms).await
     }
 
     async fn enqueue_with(

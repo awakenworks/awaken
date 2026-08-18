@@ -280,7 +280,7 @@ impl DispatchQueue for AnyDispatchStore {
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<Option<RunClaim>, DispatchError> {
         delegate!(self, worker_owns_run(identity, run_id, now_ms))
     }
 
