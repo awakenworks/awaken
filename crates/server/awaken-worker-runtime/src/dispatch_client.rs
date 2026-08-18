@@ -331,7 +331,7 @@ impl DispatchQueue for HttpDispatchQueue {
         _identity: &WorkerIdentity,
         _run_id: &RunId,
         _now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<Option<RunClaim>, DispatchError> {
         Self::server_local("worker_owns_run")
     }
 

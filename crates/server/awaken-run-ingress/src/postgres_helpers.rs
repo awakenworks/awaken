@@ -4,9 +4,39 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 use sqlx::types::Json;
-use sqlx::{Executor, Postgres, Row};
+use sqlx::{Executor, PgPool, Postgres, Row};
 
-use crate::{DispatchError, PendingInput};
+use crate::{DispatchError, PendingInput, RunClaim, WorkerIdentity, durable_u64};
+
+pub(super) async fn current_worker_claim(
+    pool: &PgPool,
+    prefix: &str,
+    identity: &WorkerIdentity,
+    run_id: &RunId,
+    now_ms: u64,
+) -> Result<Option<RunClaim>, DispatchError> {
+    let owner = identity.lease_owner();
+    let epoch = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT lease_epoch FROM {prefix}_dispatch WHERE run_id = $1 AND status = 'running' \
+         AND lease_owner = $2 AND lease_until IS NOT NULL \
+         AND lease_until >= $3 AND cancel_requested = 0"
+    ))
+    .bind(&run_id.0)
+    .bind(&owner)
+    .bind(crate::clock::db_millis(now_ms))
+    .fetch_optional(pool)
+    .await
+    .map_err(reject)?;
+    epoch
+        .map(|epoch| {
+            Ok(RunClaim {
+                run_id: run_id.clone(),
+                owner,
+                epoch: durable_u64("dispatch lease epoch", epoch)?,
+            })
+        })
+        .transpose()
+}
 
 pub(super) async fn retry_exhausted_candidate(
     tx: &mut sqlx::Transaction<'_, Postgres>,

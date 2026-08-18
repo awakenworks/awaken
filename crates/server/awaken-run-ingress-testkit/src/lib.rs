@@ -1458,6 +1458,10 @@ async fn current_claim_guard_is_exact(
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
+    // Cause/effect rules C1-C5: exact incarnation + live lease returns the
+    // authoritative RunClaim (C1); stale incarnation, expired lease, requested
+    // cancellation, or settled row returns None (C2-C5). The query never accepts
+    // a caller epoch and therefore cannot bless a stale claim.
     if !capabilities.local_commit_guard {
         return;
     }
@@ -1513,19 +1517,22 @@ async fn current_claim_guard_is_exact(
             .expect("expired current-claim query"),
         "an expired claim is not current before it is reclaimed"
     );
-    assert!(
+    assert_eq!(
         store
             .worker_owns_run(&identity, &run, claimed.lease.expires_ms)
             .await
-            .expect("registered Worker ownership query"),
-        "the exact Worker incarnation owns the live run"
+            .expect("registered Worker ownership query")
+            .as_ref(),
+        Some(&current),
+        "the exact Worker incarnation receives the live claim"
     );
     let stale_identity = WorkerIdentity::new(identity.worker_id.clone(), "replacement", 2);
     assert!(
-        !store
+        store
             .worker_owns_run(&stale_identity, &run, 20_000)
             .await
-            .expect("stale Worker ownership query"),
+            .expect("stale Worker ownership query")
+            .is_none(),
         "another incarnation never owns the run"
     );
     let guard = store
@@ -1542,11 +1549,45 @@ async fn current_claim_guard_is_exact(
         SettleOutcome::Applied
     );
     assert!(
-        !store
+        store
             .worker_owns_run(&identity, &run, 20_000)
             .await
-            .expect("settled Worker ownership query"),
+            .expect("settled Worker ownership query")
+            .is_none(),
         "settlement removes Worker ownership"
+    );
+
+    let cancel_run = run_id(ns, "guard-cancel");
+    store
+        .enqueue(dispatch(ns, "guard-cancel", "guard-cancel-thread"))
+        .await
+        .expect("enqueue cancellation guard run");
+    store
+        .claim_run(
+            &cancel_run,
+            &identity.lease_owner(),
+            LEASE_MS,
+            20_000,
+            &Default::default(),
+        )
+        .await
+        .expect("claim cancellation guard run")
+        .expect("cancellation guard run is runnable");
+    assert!(
+        store
+            .cancel(&cancel_run)
+            .await
+            .expect("cancel guarded run")
+            .is_some(),
+        "the live run accepts a durable cancellation intent"
+    );
+    assert!(
+        store
+            .worker_owns_run(&identity, &cancel_run, 20_000)
+            .await
+            .expect("cancelled Worker ownership query")
+            .is_none(),
+        "cancellation removes capability-issuance authority"
     );
 }
 

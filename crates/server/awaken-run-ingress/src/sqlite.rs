@@ -183,21 +183,32 @@ impl DispatchQueue for SqliteDispatchStore {
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<Option<RunClaim>, DispatchError> {
         let run = run_id.0.clone();
         let owner = identity.lease_owner();
         self.with_conn(move |conn, p| {
-            conn.query_row(
-                &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
+            let epoch = conn
+                .query_row(
+                    &format!(
+                        "SELECT lease_epoch FROM {p}_dispatch \
                      WHERE run_id = ?1 AND status = 'running' \
                      AND lease_owner = ?2 AND lease_until IS NOT NULL \
-                     AND lease_until >= ?3)"
-                ),
-                params![run, owner, crate::clock::db_millis(now_ms)],
-                |row| row.get(0),
-            )
-            .map_err(reject)
+                     AND lease_until >= ?3 AND cancel_requested = 0"
+                    ),
+                    params![&run, &owner, crate::clock::db_millis(now_ms)],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            epoch
+                .map(|epoch| {
+                    Ok(RunClaim {
+                        run_id: RunId(run),
+                        owner,
+                        epoch: durable_u64("dispatch lease epoch", epoch)?,
+                    })
+                })
+                .transpose()
         })
         .await
     }
