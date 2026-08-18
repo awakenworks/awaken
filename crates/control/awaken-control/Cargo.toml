@@ -67,6 +67,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+base64 = "0.22"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"

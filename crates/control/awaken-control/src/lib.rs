@@ -46,13 +46,14 @@ pub use crate::application_mcp_credentials::application_mcp_credentials_router;
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
 pub use crate::authz::{
     ADMIN_TOKEN_FILE, AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_POLICY_NAMESPACE,
-    AWAKEN_WORKSPACE_PUBLISHER_ROLE, AWAKEN_WORKSPACE_USER_ROLE, BOOTSTRAP_PRINCIPAL,
-    BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID, HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
-    HOSTED_RUNTIME_POLICY_NAMESPACE, HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
-    HOSTED_RUNTIME_WORKSPACE_USER_ROLE, HostedRuntimePathMatch, HostedRuntimeRouteProfile,
-    ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
-    embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
-    hosted_runtime_route_profile, workspace_authorization_profile,
+    AWAKEN_WORKSPACE_PUBLISHER_ROLE, AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE,
+    AWAKEN_WORKSPACE_USER_ROLE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
+    HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
+    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
+    HostedRuntimePathMatch, HostedRuntimeRouteProfile, ManagementAuthz, ManagementIdentityMode,
+    RemoteManagementAuthz, TokenSpec, embedded_iam, embedded_iam_for_tenant,
+    embedded_iam_for_workspace, hosted_runtime_authorization_profile, hosted_runtime_route_profile,
+    workspace_authorization_profile,
 };
 pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
@@ -357,6 +358,7 @@ pub struct ControlRouterInput {
     /// compositions expose no local Tunnel behavior.
     pub managed_tunnel_application:
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     /// Optional admission port installed inside IAM and audit.
     pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
@@ -398,6 +400,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         data_subject_org,
         environment_router,
         managed_tunnel_application,
+        inference_geo_policy,
         managed_request_limiter,
         iam,
         local_browser_auth,
@@ -469,6 +472,10 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
     let agent_state = AgentRegistryState::from_repository(agent_repository);
+    let agent_state = match inference_geo_policy {
+        Some(policy) => agent_state.with_inference_geo_policy(policy),
+        None => agent_state,
+    };
     let agent_state = match agent_archive_cascade {
         Some(cascade) => agent_state.with_archive_cascade(cascade),
         None => agent_state,

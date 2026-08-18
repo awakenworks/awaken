@@ -34,6 +34,7 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
             "awaken.workspace::model_supply.*",
             "awaken.workspace::file.*",
             "awaken.workspace::skill.*",
+            "awaken.workspace::tunnel.manage",
         ]
     );
     assert!(
@@ -122,6 +123,30 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
             "awaken.workspace::model_supply.read",
         ],
         "the Workspace member is read-only across every hosted product family"
+    );
+    let tunnel_manager_grants = first
+        .document
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id == AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE
+            )
+        })
+        .map(|grant| grant.action_pattern.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tunnel_manager_grants,
+        ["awaken.workspace::tunnel.manage"],
+        "WIF Tunnel authority must not inherit broader Workspace actions"
+    );
+    assert!(
+        member_grants
+            .iter()
+            .all(|grant| !grant.contains("tunnel.manage")),
+        "ordinary read-only members do not carry workspace:manage_tunnels"
     );
 }
 

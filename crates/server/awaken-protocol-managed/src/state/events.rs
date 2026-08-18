@@ -1087,7 +1087,7 @@ impl ManagedState {
         // An archived session is terminal and read-only: refuse every inbound write
         // (message, resume, interrupt, outcome) with a 409, before touching the
         // runtime — the contract makes an archived session read-only.
-        let (agent_id, is_built_in_dream_agent) = {
+        let (agent_id, is_built_in_dream_agent, inference_geo) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
             if record.session.archived_at.is_some() {
@@ -1101,6 +1101,7 @@ impl ManagedState {
                         .metadata
                         .get("awaken.session.origin")
                         .is_some_and(|origin| origin == "dream"),
+                record.session.agent.model.inference_geo,
             )
         };
         let owner_scope = self
@@ -1110,6 +1111,24 @@ impl ManagedState {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot admit a new event"
             ))));
+        }
+        let starts_turn = req.events.iter().any(|event| {
+            matches!(
+                event,
+                InboundEvent::UserMessage { .. }
+                    | InboundEvent::UserToolConfirmation { .. }
+                    | InboundEvent::UserCustomToolResult { .. }
+                    | InboundEvent::UserToolResult { .. }
+                    | InboundEvent::UserDefineOutcome { .. }
+            )
+        });
+        if starts_turn {
+            self.authorize_inference_geo(
+                &owner_scope,
+                inference_geo,
+                crate::InferenceGeoCheckpoint::Turn,
+            )
+            .await?;
         }
         // Batch admission precedes the first receipt/event append. One invalid
         // member therefore cannot leave a partial public history.

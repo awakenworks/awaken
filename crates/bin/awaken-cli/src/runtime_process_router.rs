@@ -268,6 +268,7 @@ pub(super) async fn prepare_runtime_routers(
                         .sandbox_policy_store(),
                 )),
                 process.managed_services.tunnel_application.clone(),
+                process.managed_services.inference_geo_policy.clone(),
                 Some(managed_rate_limiter.clone()),
                 process.managed_services.credential_envelope_issuer.clone(),
                 coordinator_content_eraser,
@@ -603,7 +604,11 @@ pub(super) async fn prepare_runtime_routers(
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
-    let managed_state = Arc::new(ManagedState::from_application(session_application.clone()));
+    let mut managed_state = ManagedState::from_application(session_application.clone());
+    if let Some(policy) = process.managed_services.inference_geo_policy.clone() {
+        managed_state = managed_state.with_inference_geo_policy(policy);
+    }
+    let managed_state = Arc::new(managed_state);
     if let Some(vault_state) = local_vault_state {
         vault_state.set_rollout_target(managed_state.clone());
     }

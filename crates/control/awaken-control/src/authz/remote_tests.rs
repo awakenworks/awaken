@@ -252,3 +252,168 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         );
     });
 }
+
+#[test]
+fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
+    // Cause/effect decision table for the public Tunnel boundary:
+    //
+    // | transport credential | subject | scope | result |
+    // | x-api-key             | any     | any   | 401    |
+    // | Bearer                | account | exact | 403    |
+    // | Bearer                | service | none  | 403    |
+    // | Bearer                | service | exact | 200    |
+    // | malformed Authorization + valid x-api-key        | 401 |
+    //
+    // IAM still evaluates Workspace membership after the workload credential
+    // checks; the fake PDP allows it so this test isolates the PEP boundary.
+    let listener = StdListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let state = CloudIamState {
+                jwks: AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED)).jwks(),
+                authorization_bearers: Arc::new(Mutex::new(Vec::new())),
+            };
+            let app = Router::new()
+                .route("/.well-known/jwks.json", get(jwks))
+                .route("/v1/authorize", post(authorize))
+                .with_state(state);
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            ready_tx.send(()).ok();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let base_url = format!("http://{address}");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (account_scoped, service_unscoped, service_scoped) = runtime.block_on(async {
+        let now = now_unix();
+        let authority = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED));
+        let mint = |sub: &str,
+                    subject_kind: awaken_iam_host::AccessTokenSubjectKind,
+                    scope: Vec<String>,
+                    jti: &str| {
+            let authority = authority.clone();
+            let claims = AccessTokenClaims {
+                iss: ISSUER.into(),
+                sub: sub.into(),
+                subject_kind,
+                aud: AUDIENCE.into(),
+                exp: now + 3600,
+                iat: now,
+                jti: jti.into(),
+                scope,
+            };
+            async move { authority.mint(&claims).await.unwrap() }
+        };
+        (
+            mint(
+                "account-alice",
+                awaken_iam_host::AccessTokenSubjectKind::Account,
+                vec!["workspace:manage_tunnels".into()],
+                "account-scoped",
+            )
+            .await,
+            mint(
+                "system:serviceaccount:connectors:tunnel-client",
+                awaken_iam_host::AccessTokenSubjectKind::Service,
+                Vec::new(),
+                "service-unscoped",
+            )
+            .await,
+            mint(
+                "system:serviceaccount:connectors:tunnel-client",
+                awaken_iam_host::AccessTokenSubjectKind::Service,
+                vec!["workspace:manage_tunnels".into()],
+                "service-scoped",
+            )
+            .await,
+        )
+    });
+    let projected_dir = tempfile::tempdir().unwrap();
+    let projected_token = projected_dir.path().join("management-token");
+    std::fs::write(&projected_token, "service-test\n").unwrap();
+    let authz = RemoteManagementAuthz::connect_with_projected_service_token(
+        base_url,
+        AUDIENCE.into(),
+        ISSUER.into(),
+        projected_token,
+    )
+    .unwrap();
+    async fn ok() -> StatusCode {
+        StatusCode::OK
+    }
+    let app =
+        Router::new()
+            .route("/v1/tunnels", get(ok))
+            .layer(axum::middleware::from_fn_with_state(
+                authz,
+                cloud_management_guard,
+            ));
+    let request = |authorization: Option<&str>, api_key: Option<&str>| {
+        let mut builder = Request::builder().uri("/v1/tunnels");
+        if let Some(authorization) = authorization {
+            builder = builder.header("authorization", authorization);
+        }
+        if let Some(api_key) = api_key {
+            builder = builder.header("x-api-key", api_key);
+        }
+        let mut request = builder.body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+        request
+    };
+    runtime.block_on(async {
+        assert_eq!(
+            app.clone()
+                .oneshot(request(None, Some(&service_scoped)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "x-api-key is never accepted by /v1/tunnels"
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&format!("Bearer {account_scoped}")), None,))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN,
+            "human/account access tokens are not WIF workload credentials"
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&format!("Bearer {service_unscoped}")), None,))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN,
+            "the official Tunnel scope is mandatory"
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&format!("Bearer {service_scoped}")), None,))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some("Basic invalid"), Some(&service_scoped)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "a malformed Authorization header cannot fall back to x-api-key"
+        );
+    });
+}
