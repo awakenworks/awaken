@@ -124,6 +124,34 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
         ],
         "the Workspace member is read-only across every hosted product family"
     );
+    let builder_grants = first
+        .document
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id == AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
+            )
+        })
+        .map(|grant| grant.action_pattern.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        builder_grants,
+        [
+            "awaken.workspace::workspace.*",
+            "awaken.workspace::model_supply.read",
+            "awaken.workspace::file.*",
+            "awaken.workspace::skill.*",
+        ],
+        "Builder writes product content but cannot administer credentials or model supply"
+    );
+    assert!(
+        builder_grants
+            .iter()
+            .all(|grant| !grant.contains("apikey") && !grant.ends_with("model_supply.*"))
+    );
     let tunnel_manager_grants = first
         .document
         .grants

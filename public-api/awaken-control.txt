@@ -1,4 +1,7 @@
 pub mod awaken_control
+pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
+pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
+pub use awaken_control::AWAKEN_WORKSPACE_USER_ROLE
 pub use awaken_control::AccountId
 pub use awaken_control::LocalBrowserAuth
 pub use awaken_control::LocalRuntimeCapability
@@ -41,6 +44,9 @@ pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'l
 pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_control::authz
+pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
+pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
+pub use awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE
 pub enum awaken_control::authz::HostedRuntimePathMatch
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: alloc::string::String
@@ -59,6 +65,8 @@ pub struct awaken_control::authz::ManagementAuthz
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::begin_local_browser(&self, awaken_iam_contract::AccountId) -> core::result::Result<(awaken_iam_host::local_browser::LocalBrowserAuth, awaken_iam_host::local_browser::LocalSetupHandoff), awaken_iam_host::local_browser::LocalBrowserAuthError>
 impl awaken_control::authz::ManagementAuthz
+pub fn awaken_control::authz::ManagementAuthz::check_entitlement(&self, awaken_iam_contract::PrincipalRef, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>) -> awaken_iam_contract::EntitlementDecision
+impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_control::authz::TokenSpec) -> core::result::Result<alloc::string::String, alloc::string::String>
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
 pub struct awaken_control::authz::RemoteManagementAuthz
@@ -74,11 +82,9 @@ pub awaken_control::authz::TokenSpec::service_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::token_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::authz::ADMIN_TOKEN_FILE: &str
-pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
-pub const awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::authz::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::authz::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::authz::DEFAULT_ORG_ID: &str
@@ -89,6 +95,7 @@ pub const awaken_control::authz::HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str
 pub async fn awaken_control::authz::cloud_management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
+pub fn awaken_control::authz::embedded_iam_for_tenant_with_entitlements(&std::path::Path, &str, &str, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::authz::hosted_runtime_route_profile() -> awaken_control::authz::HostedRuntimeRouteProfile
@@ -219,6 +226,7 @@ pub awaken_control::ControlDependencies::executable_agent_registrar: alloc::sync
 pub awaken_control::ControlDependencies::execution_workspace: alloc::string::String
 pub awaken_control::ControlDependencies::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlDependencies::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
+pub awaken_control::ControlDependencies::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_control::ControlDependencies::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlDependencies::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlDependencies::managed_runtime_available: bool
@@ -250,6 +258,7 @@ pub awaken_control::ControlRouterInput::data_subject_org: alloc::string::String
 pub awaken_control::ControlRouterInput::environment_router: axum::routing::Router
 pub awaken_control::ControlRouterInput::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlRouterInput::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
+pub awaken_control::ControlRouterInput::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_control::ControlRouterInput::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlRouterInput::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlRouterInput::managed_runtime_available: bool
@@ -298,6 +307,8 @@ pub struct awaken_control::ManagementAuthz
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::begin_local_browser(&self, awaken_iam_contract::AccountId) -> core::result::Result<(awaken_iam_host::local_browser::LocalBrowserAuth, awaken_iam_host::local_browser::LocalSetupHandoff), awaken_iam_host::local_browser::LocalBrowserAuthError>
 impl awaken_control::authz::ManagementAuthz
+pub fn awaken_control::authz::ManagementAuthz::check_entitlement(&self, awaken_iam_contract::PrincipalRef, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>) -> awaken_iam_contract::EntitlementDecision
+impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_control::authz::TokenSpec) -> core::result::Result<alloc::string::String, alloc::string::String>
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
 pub struct awaken_control::RegistrationHealth
@@ -335,11 +346,9 @@ pub awaken_control::TokenSpec::service_id: alloc::string::String
 pub awaken_control::TokenSpec::token_id: alloc::string::String
 pub awaken_control::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::ADMIN_TOKEN_FILE: &str
-pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
-pub const awaken_control::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::DEFAULT_ORG_ID: &str
@@ -354,6 +363,7 @@ pub fn awaken_control::consent_router(alloc::sync::Arc<awaken_data_subject_appli
 pub fn awaken_control::control_router(awaken_control::ControlRouterInput) -> axum::routing::Router
 pub fn awaken_control::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
+pub fn awaken_control::embedded_iam_for_tenant_with_entitlements(&std::path::Path, &str, &str, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::erasure_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_control::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile

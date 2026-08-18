@@ -63,6 +63,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness credential_ingress_role_contains_only_workspace_apikey_authority \
     --harness agent_publisher_role_contains_only_workspace_model_read_and_skill_authority \
     --harness hosted_admin_role_contains_exactly_its_five_workspace_authorities \
+    --harness hosted_builder_role_has_writes_without_apikey_or_model_administration \
     --harness workspace_member_role_contains_exactly_read_only_workspace_authorities \
     --harness runtime_member_role_contains_exactly_run_read \
     --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact

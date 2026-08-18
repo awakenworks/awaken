@@ -167,6 +167,7 @@ impl WorkspaceProfileAuthority {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceProfileRole {
     HostedAdmin,
+    HostedBuilder,
     WorkspaceMember,
     /// Compatibility role used only when migrating the narrower legacy hosted
     /// administrator. Mapping it to `HostedAdmin` would add File/Skill power.
@@ -176,6 +177,12 @@ pub enum WorkspaceProfileRole {
 const HOSTED_ADMIN_AUTHORITIES: &[WorkspaceProfileAuthority] = &[
     WorkspaceProfileAuthority::WorkspaceAll,
     WorkspaceProfileAuthority::ApiKeyAll,
+    WorkspaceProfileAuthority::ModelSupplyRead,
+    WorkspaceProfileAuthority::FileAll,
+    WorkspaceProfileAuthority::SkillAll,
+];
+const HOSTED_BUILDER_AUTHORITIES: &[WorkspaceProfileAuthority] = &[
+    WorkspaceProfileAuthority::WorkspaceAll,
     WorkspaceProfileAuthority::ModelSupplyRead,
     WorkspaceProfileAuthority::FileAll,
     WorkspaceProfileAuthority::SkillAll,
@@ -199,10 +206,17 @@ pub const fn workspace_profile_role_authorities(
 ) -> &'static [WorkspaceProfileAuthority] {
     match role {
         WorkspaceProfileRole::HostedAdmin => HOSTED_ADMIN_AUTHORITIES,
+        WorkspaceProfileRole::HostedBuilder => HOSTED_BUILDER_AUTHORITIES,
         WorkspaceProfileRole::WorkspaceMember => WORKSPACE_MEMBER_AUTHORITIES,
         WorkspaceProfileRole::LegacyHostedAdmin => LEGACY_HOSTED_ADMIN_AUTHORITIES,
     }
 }
+
+/// Stable hosted human role identifiers consumed by platform composition.
+/// Concrete Workspace scope always belongs to the IAM binding, never the id.
+pub const AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str = "awaken.workspace:hosted_admin";
+pub const AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE: &str = "awaken.workspace:hosted_builder";
+pub const AWAKEN_WORKSPACE_USER_ROLE: &str = "awaken.workspace:workspace_user";
 
 /// Membership predicate for exhaustive exact-set proofs.
 #[must_use]
@@ -454,8 +468,11 @@ mod tests {
 
     #[test]
     fn action_and_grant_spellings_are_exact() {
-        // String constants are asserted concretely instead of symbolically:
-        // keeping string machinery outside CBMC makes the enum proofs fast.
+        // Cause/effect decision table for the human role contract:
+        // Viewer -> read-only authorities; Builder -> Workspace/File/Skill
+        // writes plus model read and no API keys; Administrator -> Builder plus
+        // API keys. Exact stable ids are the only values a host may compose.
+        // String constants stay outside CBMC so the finite enum proofs are fast.
         assert_eq!(AuthorizationAction::RunRead.as_str(), "run.read");
         assert_eq!(AuthorizationAction::RunCreate.as_str(), "run.create");
         assert_eq!(
@@ -493,6 +510,17 @@ mod tests {
                 "workspace.read",
                 "model_supply.read"
             ]
+        );
+        assert_eq!(
+            workspace_profile_role_authorities(WorkspaceProfileRole::HostedBuilder)
+                .iter()
+                .map(|authority| authority.action_pattern())
+                .collect::<Vec<_>>(),
+            ["workspace.*", "model_supply.read", "file.*", "skill.*"]
+        );
+        assert_eq!(
+            AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE,
+            "awaken.workspace:hosted_builder"
         );
         assert_eq!(
             hosted_runtime_role_authorities(HostedRuntimeRole::WorkspaceMember)
@@ -627,6 +655,21 @@ mod verification {
                 authority,
                 WorkspaceProfileAuthority::WorkspaceAll
                     | WorkspaceProfileAuthority::ApiKeyAll
+                    | WorkspaceProfileAuthority::ModelSupplyRead
+                    | WorkspaceProfileAuthority::FileAll
+                    | WorkspaceProfileAuthority::SkillAll
+            )
+        );
+    }
+
+    #[kani::proof]
+    fn hosted_builder_role_has_writes_without_apikey_or_model_administration() {
+        let authority = symbolic_workspace_profile_authority();
+        assert_eq!(
+            workspace_profile_role_contains(WorkspaceProfileRole::HostedBuilder, authority),
+            matches!(
+                authority,
+                WorkspaceProfileAuthority::WorkspaceAll
                     | WorkspaceProfileAuthority::ModelSupplyRead
                     | WorkspaceProfileAuthority::FileAll
                     | WorkspaceProfileAuthority::SkillAll
