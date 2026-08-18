@@ -439,6 +439,7 @@ fn managed_family(segments: &[&str]) -> Option<&'static str> {
         "files" => Some("files"),
         "models" => Some("models"),
         "tunnels" => Some("tunnels"),
+        "organizations" if segments.get(2) == Some(&"tunnels") => Some("tunnels"),
         _ => None,
     }
 }
@@ -463,6 +464,8 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "files"]
             | ["v1", "tunnels"]
             | ["v1", "tunnels", _, "certificates"]
+            | ["v1", "organizations", "tunnels"]
+            | ["v1", "organizations", "tunnels", _, "certificates"]
     )
 }
 
@@ -518,6 +521,23 @@ mod tests {
                     path.trim_start_matches("/v1/").split('/').next().unwrap()
                 )),
                 "C2 {path}"
+            );
+        }
+        for path in [
+            "/v1/organizations/tunnels",
+            "/v1/organizations/tunnels/tnl_1/certificates",
+        ] {
+            assert_eq!(
+                classify(&Method::POST, path),
+                Some((ManagedOperation::Create, "tunnels")),
+                "legacy Tunnel Create shares the canonical Tunnel bucket: {path}"
+            );
+        }
+        for method in [Method::GET, Method::HEAD] {
+            assert_eq!(
+                classify(&method, "/v1/organizations/tunnels/tnl_1"),
+                Some((ManagedOperation::Read, "tunnels")),
+                "legacy Tunnel reads share the canonical Tunnel bucket"
             );
         }
         for method in [Method::GET, Method::HEAD] {
