@@ -472,6 +472,14 @@ impl ManagedState {
                 None,
             ),
         };
+        self.authorize_inference_geo(
+            &owner_scope,
+            selected_model
+                .as_ref()
+                .and_then(|model| model.inference_geo),
+            crate::InferenceGeoCheckpoint::SessionCreate,
+        )
+        .await?;
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = requested_agent_version
             .or_else(|| config_view.as_ref().map(|profile| profile.source_revision))

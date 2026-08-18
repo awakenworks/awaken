@@ -1393,11 +1393,12 @@ fn bearer_token_prefers_authorization_then_falls_back_to_x_api_key() {
     h.insert("x-api-key", HeaderValue::from_static("sk-y"));
     assert_eq!(bearer_token(&h).as_deref(), Some("sk-y"));
 
-    // Non-Bearer Authorization + a real x-api-key → the x-api-key.
+    // An explicit malformed/non-Bearer Authorization header never falls back
+    // to a weaker x-api-key credential.
     let mut h = HeaderMap::new();
     h.insert("authorization", HeaderValue::from_static("Basic abc"));
     h.insert("x-api-key", HeaderValue::from_static("sk-z"));
-    assert_eq!(bearer_token(&h).as_deref(), Some("sk-z"));
+    assert_eq!(bearer_token(&h), None);
 
     // (c) whitespace / empty → None (blank credentials are filtered).
     assert_eq!(bearer_token(&HeaderMap::new()), None);

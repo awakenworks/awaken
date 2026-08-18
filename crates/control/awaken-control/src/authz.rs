@@ -136,8 +136,10 @@ use axum::routing::delete;
 use axum::{Json, Router};
 
 mod bootstrap;
+mod credentials;
 mod local_browser;
 mod profiles;
+use credentials::{authorization_bearer_token, bearer_token, is_tunnel_route};
 mod remote;
 
 use bootstrap::bootstrap_admin_token;
@@ -1269,6 +1271,12 @@ pub async fn management_guard(
     let Some(route) = action_for(req.method(), req.uri().path()) else {
         return forbidden("no management action is mapped for this route");
     };
+    // MCP Tunnels are a Cloud-only workload-identity surface. A self-managed
+    // API token or browser session must never become a compatibility backdoor
+    // for the public `/v1/tunnels` contract.
+    if is_tunnel_route(req.uri().path()) {
+        return unauthorized("Tunnel API requires a WIF bearer token");
+    }
 
     let authenticated = bearer_token(req.headers())
         .map(|presented| authz.authenticate(&presented))
@@ -1402,12 +1410,24 @@ pub async fn cloud_management_guard(
         }
     };
 
-    let principal = match authz.authenticate(bearer_token(req.headers())) {
-        Ok(principal) => principal,
+    let tunnel_route = is_tunnel_route(req.uri().path());
+    let presented = if tunnel_route {
+        authorization_bearer_token(req.headers())
+    } else {
+        bearer_token(req.headers())
+    };
+    let authenticated = match authz.authenticate(presented) {
+        Ok(authenticated) => authenticated,
         Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
         Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
         Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
     };
+    if tunnel_route && !authenticated.is_managed_tunnel_workload() {
+        return forbidden(
+            "Tunnel API requires a WIF service token with workspace:manage_tunnels scope",
+        );
+    }
+    let principal = authenticated.principal;
     let workspace = req
         .extensions()
         .get::<awaken_authz_enforce::RequestTenancy>()
@@ -1450,27 +1470,6 @@ pub async fn cloud_management_guard(
         }
         AuthorizationDecision::Deny => forbidden(&denial_detail),
     }
-}
-
-/// The presented credential: `Authorization: Bearer <token>` (the documented
-/// form) or `x-api-key: <token>` (what the Anthropic SDK sends for `apiKey`).
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get(axum::http::header::AUTHORIZATION)
-        && let Ok(value) = value.to_str()
-    {
-        let mut parts = value.splitn(2, ' ');
-        if let (Some(scheme), Some(token)) = (parts.next(), parts.next())
-            && scheme.eq_ignore_ascii_case("bearer")
-            && !token.trim().is_empty()
-        {
-            return Some(token.trim().to_string());
-        }
-    }
-    headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
 }
 
 /// `workspace_id` from a query string, decoding only the characters the

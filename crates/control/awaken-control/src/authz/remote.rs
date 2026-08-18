@@ -6,6 +6,7 @@ use awaken_iam_contract::{
     AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
 };
 use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote};
+use base64::Engine as _;
 
 use super::{ActionNamespace, now_rfc3339, now_unix, qualified_action};
 
@@ -41,6 +42,29 @@ pub struct RemoteManagementAuthz {
     gate: RwLock<RemoteGateState>,
     user_token_source: Option<Arc<RedactedStringSource>>,
     config: RemoteGateConfig,
+}
+
+/// Authenticated request identity together with the credential attributes a
+/// route-specific PEP needs. `IamGate` has already verified the JWT signature,
+/// issuer, audience and expiry before these claims are decoded; the decoded
+/// payload is therefore authorization context, never an independent trust
+/// decision.
+#[derive(Debug, Clone)]
+pub(super) struct RemoteAuthenticatedCredential {
+    pub(super) principal: PrincipalRef,
+    pub(super) access_token_claims: Option<awaken_iam_host::AccessTokenClaims>,
+}
+
+impl RemoteAuthenticatedCredential {
+    pub(super) fn is_managed_tunnel_workload(&self) -> bool {
+        self.access_token_claims.as_ref().is_some_and(|claims| {
+            claims.subject_kind == awaken_iam_host::AccessTokenSubjectKind::Service
+                && claims
+                    .scope
+                    .iter()
+                    .any(|scope| scope == "workspace:manage_tunnels")
+        })
+    }
 }
 
 impl RemoteManagementAuthz {
@@ -118,7 +142,7 @@ impl RemoteManagementAuthz {
     pub(super) fn authenticate(
         &self,
         presented: Option<String>,
-    ) -> Result<PrincipalRef, AuthReject> {
+    ) -> Result<RemoteAuthenticatedCredential, AuthReject> {
         let sourced;
         let token = match presented.as_deref() {
             Some(token) => token,
@@ -130,12 +154,22 @@ impl RemoteManagementAuthz {
                 sourced.expose_secret()
             }
         };
-        self.gate
+        let principal = self
+            .gate
             .read()
             .map_err(|_| AuthReject::Invalid)?
             .gate
             .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
-            .map(|(principal, _)| principal)
+            .map(|(principal, _)| principal)?;
+        let access_token_claims = if is_api_token(token) {
+            None
+        } else {
+            Some(decode_verified_access_token_claims(token)?)
+        };
+        Ok(RemoteAuthenticatedCredential {
+            principal,
+            access_token_claims,
+        })
     }
 
     pub(super) fn authorize_action(
@@ -200,6 +234,20 @@ impl RemoteManagementAuthz {
         state.user_carrier_token = Some(current);
         Ok(state.gate.clone())
     }
+}
+
+fn is_api_token(token: &str) -> bool {
+    token.starts_with("sk-awaken-") || token.starts_with("sk-ant-")
+}
+
+fn decode_verified_access_token_claims(
+    token: &str,
+) -> Result<awaken_iam_host::AccessTokenClaims, AuthReject> {
+    let payload = token.split('.').nth(1).ok_or(AuthReject::Invalid)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| AuthReject::Invalid)?;
+    serde_json::from_slice(&decoded).map_err(|_| AuthReject::Invalid)
 }
 
 fn resolve_user_token(source: &RedactedStringSource) -> Result<RedactedString, String> {

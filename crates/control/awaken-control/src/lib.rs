@@ -358,6 +358,7 @@ pub struct ControlRouterInput {
     /// compositions expose no local Tunnel behavior.
     pub managed_tunnel_application:
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     /// Optional admission port installed inside IAM and audit.
     pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
@@ -399,6 +400,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         data_subject_org,
         environment_router,
         managed_tunnel_application,
+        inference_geo_policy,
         managed_request_limiter,
         iam,
         local_browser_auth,
@@ -470,6 +472,10 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
     let agent_state = AgentRegistryState::from_repository(agent_repository);
+    let agent_state = match inference_geo_policy {
+        Some(policy) => agent_state.with_inference_geo_policy(policy),
+        None => agent_state,
+    };
     let agent_state = match agent_archive_cascade {
         Some(cascade) => agent_state.with_archive_cascade(cascade),
         None => agent_state,

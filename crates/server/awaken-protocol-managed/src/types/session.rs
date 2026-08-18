@@ -194,7 +194,7 @@ impl AgentRef {
             AgentRef::Object(object) => match object.as_ref() {
                 AgentRefObject::AgentWithOverrides {
                     model: Some(input), ..
-                } => ModelOverride::Set(input.clone().into_config().into_resolved()),
+                } => ModelOverride::Set(input.clone().into_config().into_session_override()),
                 _ => ModelOverride::Absent,
             },
             _ => ModelOverride::Absent,
@@ -560,6 +560,24 @@ impl ModelConfigParams {
             id: self.id,
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
+            inference_geo: self.inference_geo,
+        }
+    }
+
+    /// Resolve a per-Session model override.
+    ///
+    /// Managed Agents treats the override as a complete model replacement, but
+    /// deliberately does not apply an `effort` value carried by that override:
+    /// the selected model runs at its default effort.  Keep accepting the field
+    /// at the wire boundary for old and forward SDK compatibility while making
+    /// the execution projection match the service contract. Agent authoring
+    /// continues to use [`Self::into_resolved`], where effort is meaningful.
+    #[must_use]
+    pub fn into_session_override(self) -> ModelConfig {
+        ModelConfig {
+            id: self.id,
+            speed: self.speed,
+            effort: None,
             inference_geo: self.inference_geo,
         }
     }

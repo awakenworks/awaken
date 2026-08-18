@@ -12,6 +12,7 @@ pub struct ManagedServiceAdapters {
     pub request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     pub credential_envelope_issuer:
         Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
     /// Hosted delivery of the durable Managed Credential outbox. The open
@@ -50,6 +51,15 @@ impl ManagedServiceAdapters {
         application: Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>,
     ) -> Self {
         self.tunnel_application = Some(application);
+        self
+    }
+
+    #[must_use]
+    pub fn with_inference_geo_policy(
+        mut self,
+        policy: Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>,
+    ) -> Self {
+        self.inference_geo_policy = Some(policy);
         self
     }
 

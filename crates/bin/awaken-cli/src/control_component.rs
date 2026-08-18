@@ -37,6 +37,7 @@ pub(super) async fn control_component_for_process(
     environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
     environment_router: Router,
     managed_tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     credential_envelope_issuer: Option<
         Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>,
@@ -103,6 +104,7 @@ pub(super) async fn control_component_for_process(
         environment_application,
         environment_router,
         managed_tunnel_application,
+        inference_geo_policy,
         managed_request_limiter,
         credential_envelope_issuer,
         data_subjects: control.data_subjects.clone(),
@@ -249,6 +251,7 @@ pub(super) async fn prepare_control_routers(
             ),
         ),
         process.managed_services.tunnel_application.clone(),
+        process.managed_services.inference_geo_policy.clone(),
         Some(managed_rate_limiter),
         process.managed_services.credential_envelope_issuer.clone(),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
