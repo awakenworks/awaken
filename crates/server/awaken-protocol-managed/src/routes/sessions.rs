@@ -611,6 +611,26 @@ fn has_beta(req: &Request, expected: &str) -> bool {
         .any(|beta| beta.trim() == expected)
 }
 
+fn path_is_family(path: &str, family: &str) -> bool {
+    let direct = path == family || path.starts_with(&format!("{family}/"));
+    if direct {
+        return true;
+    }
+    let Some(scoped) = path.strip_prefix("/v1/workspaces/") else {
+        return false;
+    };
+    let Some((workspace, tail)) = scoped.split_once('/') else {
+        return false;
+    };
+    if workspace.is_empty() {
+        return false;
+    }
+    let Some(relative_family) = family.strip_prefix("/v1/") else {
+        return false;
+    };
+    tail == relative_family || tail.starts_with(&format!("{relative_family}/"))
+}
+
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
 /// on every ordinary Managed Agents endpoint. Applied by each executable
 /// process startup, NOT baked into [`router`], so router-level tests remain focused
@@ -641,7 +661,10 @@ pub async fn enforce_managed_beta(
             .into_response();
     }
     let path = req.uri().path();
-    let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
+    // Workspace-addressed routes are rewritten by an inner composition layer.
+    // Admission runs outside that layer, so classify both public spellings here
+    // or `/v1/workspaces/{id}/...` could bypass an endpoint beta gate.
+    let is_family = |family: &str| path_is_family(path, family);
     if is_family("/v1/memory_stores") {
         let has_memory = has_beta(&req, MEMORY_BETA);
         let has_managed = has_beta(&req, crate::MANAGED_BETA);
@@ -1521,6 +1544,67 @@ mod managed_json_tests {
             StatusCode::BAD_REQUEST,
             "the official headers remain mutually exclusive"
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_addressing_cannot_bypass_endpoint_beta_admission() {
+        // Same endpoint and header causes must have the same effect before and
+        // after the public Workspace path prefix. This is the complete flat ×
+        // scoped decision table for ordinary Managed and Memory selectors.
+        let app = Router::new()
+            .route("/v1/sessions", get(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                "/v1/workspaces/default/sessions",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/v1/memory_stores",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/v1/workspaces/default/memory_stores",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn(enforce_managed_beta));
+        let status = |path: &'static str, beta: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::get(path);
+                if let Some(beta) = beta {
+                    request = request.header("anthropic-beta", beta);
+                }
+                app.oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        for path in ["/v1/sessions", "/v1/workspaces/default/sessions"] {
+            assert_eq!(status(path, None).await, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                status(path, Some(crate::MANAGED_BETA)).await,
+                StatusCode::NO_CONTENT
+            );
+        }
+        for path in ["/v1/memory_stores", "/v1/workspaces/default/memory_stores"] {
+            assert_eq!(status(path, None).await, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                status(path, Some(super::MEMORY_BETA)).await,
+                StatusCode::NO_CONTENT
+            );
+            assert_eq!(
+                status(path, Some(crate::MANAGED_BETA)).await,
+                StatusCode::NO_CONTENT
+            );
+            assert_eq!(
+                status(
+                    path,
+                    Some("managed-agents-2026-04-01,agent-memory-2026-07-22")
+                )
+                .await,
+                StatusCode::BAD_REQUEST
+            );
+        }
     }
 
     #[test]

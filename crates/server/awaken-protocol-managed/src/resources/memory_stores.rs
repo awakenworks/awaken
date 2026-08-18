@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::sessions::ManagedJson;
-use crate::types::{ErrorResponse, PageCursor};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 
 fn timestamp(nanos: u128) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(
@@ -58,6 +58,22 @@ impl MemoryView {
     fn includes_content(self) -> bool {
         self == Self::Full
     }
+}
+
+fn parse_page_query(
+    query: &std::collections::HashMap<String, String>,
+) -> Result<PageQuery, &'static str> {
+    let limit = match query.get("limit") {
+        None => None,
+        Some(value) => match value.parse::<usize>() {
+            Ok(0) | Err(_) => return Err("limit must be positive"),
+            Ok(value) => Some(value.min(awaken_agent_contract::page::MAX_PAGE_LIMIT)),
+        },
+    };
+    Ok(PageQuery {
+        limit,
+        page: query.get("page").cloned(),
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -439,13 +455,22 @@ async fn get_store(
 async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    Query(query): Query<PageQuery>,
 ) -> axum::response::Response {
     let definitions = match state.stores.list(&workspace).await {
         Ok(definitions) => definitions,
         Err(error) => return application_error(error),
     };
-    let data: Vec<_> = definitions.iter().map(project_def).collect();
-    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
+    let page = paginate(definitions, &query, |definition| definition.id.as_str());
+    let data: Vec<_> = page.data.iter().map(project_def).collect();
+    (
+        StatusCode::OK,
+        Json(PageCursor {
+            data,
+            next_page: page.next_page,
+        }),
+    )
+        .into_response()
 }
 
 async fn update_store(
@@ -816,6 +841,10 @@ async fn list_versions(
         Ok(view) => view,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
+    let page_query = match parse_page_query(&query) {
+        Ok(query) => query,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
@@ -829,7 +858,11 @@ async fn list_versions(
         .iter()
         .map(|version| project_version(version, &id, view))
         .collect();
-    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
+    (
+        StatusCode::OK,
+        Json(paginate_by(data, &page_query, |version| version.id.clone())),
+    )
+        .into_response()
 }
 
 async fn get_version(

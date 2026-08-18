@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,26 @@ try {
     env: { ...process.env, ANTHROPIC_SDK_PACKAGE_ROOT: packageRoot },
     stdio: 'inherit',
   });
-  console.log(`SDK LATEST CANARY PASS: pinned=${pinned}, registry=${latest}; Managed declarations are reviewed-compatible.`);
+  let runtimePackageRoot = packageRoot;
+  if (plan.fetchLatest) {
+    const runtime = resolve(temporary, 'runtime');
+    mkdirSync(runtime);
+    execFileSync(
+      'npm',
+      [
+        'install', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', runtime,
+        `@anthropic-ai/sdk@${latest}`,
+      ],
+      { stdio: 'inherit' },
+    );
+    runtimePackageRoot = resolve(runtime, 'node_modules', '@anthropic-ai', 'sdk');
+  }
+  execFileSync(process.execPath, [resolve(HERE, 'sdk_latest_runtime_canary.mjs')], {
+    cwd: E2E,
+    env: { ...process.env, ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: runtimePackageRoot },
+    stdio: 'inherit',
+  });
+  console.log(`SDK LATEST CANARY PASS: pinned=${pinned}, registry=${latest}; Managed declarations and runtime behavior are reviewed-compatible.`);
 } finally {
   if (temporary) rmSync(temporary, { recursive: true, force: true });
 }
