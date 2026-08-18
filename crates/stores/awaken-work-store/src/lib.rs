@@ -24,6 +24,22 @@ fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string())
 }
 
+fn apply_metadata_patch(
+    metadata: &mut BTreeMap<String, String>,
+    patch: BTreeMap<String, Option<String>>,
+) {
+    for (key, value) in patch {
+        match value {
+            Some(value) => {
+                metadata.insert(key, value);
+            }
+            None => {
+                metadata.remove(&key);
+            }
+        }
+    }
+}
+
 fn lease_epoch(current: i64, advance: bool) -> Result<(i64, u64), WorkQueueError> {
     let current = u64::try_from(current).map_err(storage)?;
     let next = if advance {
@@ -646,7 +662,7 @@ impl WorkQueue for SqliteWorkQueue {
         &self,
         env_id: &str,
         wid: &str,
-        patch: BTreeMap<String, String>,
+        patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let mut guard = self.conn.lock().map_err(storage)?;
         let tx = guard
@@ -655,7 +671,7 @@ impl WorkQueue for SqliteWorkQueue {
         let Some(mut current) = Self::owned(&tx, env_id, wid)? else {
             return Ok(None);
         };
-        current.metadata.extend(patch);
+        apply_metadata_patch(&mut current.metadata, patch);
         let metadata_json = metadata_str(&current.metadata);
         tx.execute(
             "UPDATE work_queue_item SET metadata_json = ?1 WHERE work_id = ?2",
@@ -1337,12 +1353,12 @@ impl WorkQueue for PostgresWorkQueue {
         &self,
         env_id: &str,
         wid: &str,
-        patch: BTreeMap<String, String>,
+        patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let Some(mut current) = self.fetch_owned(env_id, wid).await? else {
             return Ok(None);
         };
-        current.metadata.extend(patch);
+        apply_metadata_patch(&mut current.metadata, patch);
         let metadata_json = metadata_str(&current.metadata);
         sqlx::query(
             "UPDATE work_queue_item SET metadata_json = $1 WHERE work_id = $2 AND environment_id = $3",
@@ -1701,13 +1717,19 @@ mod tests {
         q.claim("env_a", "w1", 0).await.expect("claim");
         let st = q.stats("env_a", 0).await.expect("stats");
         assert_eq!((st.depth, st.pending, st.workers_polling), (1, 1, 1));
-        let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
+        let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
         let up = q
             .update_metadata("env_a", &s, patch)
             .await
             .expect("update query")
             .expect("patch");
         assert_eq!(up.metadata.get("k").map(String::as_str), Some("v"));
+        let deleted = q
+            .update_metadata("env_a", &s, BTreeMap::from([("k".to_string(), None)]))
+            .await
+            .expect("delete query")
+            .expect("delete");
+        assert!(!deleted.metadata.contains_key("k"));
         q.remove_env("env_a").await.unwrap();
         assert!(
             q.list("env_a").await.expect("list").is_empty(),
@@ -1836,7 +1858,7 @@ mod tests {
         let st = q.stats("env_a", 0).await.expect("stats");
         assert!(st.pending >= 1 && st.workers_polling == 1);
         // metadata + stop + remove_env
-        let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
+        let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
         assert_eq!(
             q.update_metadata("env_a", &w1, patch)
                 .await

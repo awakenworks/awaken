@@ -600,14 +600,14 @@ async fn cancellation_is_immediate_idempotent_and_retains_prepared_output() {
 }
 
 #[tokio::test]
-async fn dream_routes_require_managed_and_dreaming_betas() {
-    // Header causes/effects: neither/one beta -> 400; both capabilities -> route.
-    // This is the four-rule truth table for the overview's Managed beta plus the
-    // Dreams research-preview beta; query `beta=true` never substitutes for headers.
+async fn dream_routes_accept_the_sdk_default_dreaming_beta() {
+    // Header causes/effects: absent or Managed-only -> 400; the Dream beta alone
+    // (the generated SDK default) or combined with Managed -> route. Query
+    // `beta=true` never substitutes for headers.
     let (state, _, _) = state(Outcome::Complete);
     let app = dreams_router(state).layer(axum::middleware::from_fn(enforce_managed_beta));
     for path in ["/v1/dreams?beta=true"] {
-        for header in [None, Some(MANAGED_BETA), Some(DREAMING_BETA)] {
+        for header in [None, Some(MANAGED_BETA)] {
             let mut builder = Request::builder().method("GET").uri(path);
             if let Some(header) = header {
                 builder = builder.header("anthropic-beta", header);
@@ -620,51 +620,55 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
     }
-    for path in ["/v1/dreams?beta=true"] {
+    for header in [
+        DREAMING_BETA.to_string(),
+        format!("{MANAGED_BETA},{DREAMING_BETA}"),
+        format!("future-dream-beta,{DREAMING_BETA}"),
+    ] {
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(path)
-                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
+                    .uri("/v1/dreams?beta=true")
+                    .header("anthropic-beta", header)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-
-        let unsupported_version = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(path)
-                    .header("anthropic-version", "2099-01-01")
-                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(unsupported_version.status(), StatusCode::BAD_REQUEST);
-
-        let supported_version = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(path)
-                    .header("anthropic-version", ANTHROPIC_API_VERSION)
-                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(supported_version.status(), StatusCode::OK);
     }
+
+    let unsupported_version = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/dreams?beta=true")
+                .header("anthropic-version", "2099-01-01")
+                .header("anthropic-beta", DREAMING_BETA)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsupported_version.status(), StatusCode::BAD_REQUEST);
+
+    let supported_version = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/dreams?beta=true")
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                .header("anthropic-beta", DREAMING_BETA)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(supported_version.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@
 //
 // | Rule | Inputs/state | Lifecycle operation | Observable effect |
 // |------|--------------|---------------------|-------------------|
-// | P0 | official SDK + Managed/Dream betas | create | accepted typed Dream |
+// | P0 | official SDK default Dream beta | create | accepted typed Dream |
 // | P1 | source store + one completed Session | execute | completed with output/session refs |
 // | P2 | committed transcript text | export/cleanup | transient JSONL is purged after use |
 // | P3 | prepared result | complete | source unchanged; output has a distinct id and cloned content |
@@ -71,7 +71,7 @@ async function waitForSessionIdle(client: Anthropic, sessionID: string) {
 
 async function waitForDream(client: Anthropic, dreamID: string): Promise<BetaDream> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const dream = await client.beta.dreams.retrieve(dreamID, { betas: MANAGED_BETAS });
+    const dream = await client.beta.dreams.retrieve(dreamID);
     if (['completed', 'failed', 'canceled'].includes(dream.status)) return dream;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -116,7 +116,7 @@ async function main() {
       view: 'full',
     });
 
-    const beforeInvalid = await drain(client.beta.dreams.list({ betas: MANAGED_BETAS }));
+    const beforeInvalid = await drain(client.beta.dreams.list());
     for (const model of [
       'executor=a2a:https://third-party.example/agent',
       'qwen/qwen3;api=open_ai_chat;executor=acp:opencode',
@@ -127,10 +127,9 @@ async function main() {
           { type: 'sessions', session_ids: [sourceSession.id] },
         ],
         model,
-        betas: MANAGED_BETAS,
       })), 400, `P0b unsupported/malformed model reference fails admission: ${model}`);
     }
-    const afterInvalid = await drain(client.beta.dreams.list({ betas: MANAGED_BETAS }));
+    const afterInvalid = await drain(client.beta.dreams.list());
     assert.equal(afterInvalid.length, beforeInvalid.length, 'P0b invalid references persist no Dream');
     pass('P0b malformed qualifiers and outbound A2A Dream references fail before persistence');
 
@@ -141,11 +140,10 @@ async function main() {
       ],
       model: 'claude-sonnet-5',
       instructions: 'Retain verified project conventions.',
-      betas: MANAGED_BETAS,
     });
     assert.equal(created.type, 'dream', 'P0 official SDK decodes the Dream resource');
     assert.equal(created.status, 'pending', 'P0 create is asynchronous');
-    pass('P0 official SDK creates an asynchronous Dream with both beta capabilities');
+    pass('P0 official SDK default Dream beta creates an asynchronous Dream');
 
     const terminal = await waitForDream(client, created.id);
     assert.equal(terminal.status, 'completed', `P1 terminal Dream: ${JSON.stringify(terminal)}`);
@@ -179,25 +177,19 @@ async function main() {
     assert.equal(transcript, undefined, 'P2 transient JSONL is purged after terminal cleanup');
     pass('P2 transcript Files follow the bounded Dream input lifecycle');
 
-    const completed = await drain(client.beta.dreams.list({
-      statuses: ['completed'],
-      betas: MANAGED_BETAS,
-    }));
+    const completed = await drain(client.beta.dreams.list({ statuses: ['completed'] }));
     assert.ok(completed.some((dream) => dream.id === created.id), 'P5 status filter includes Dream');
     assert.equal(
-      await status(() => client.beta.dreams.cancel(created.id, { betas: MANAGED_BETAS })),
+      await status(() => client.beta.dreams.cancel(created.id)),
       400,
       'P5 completed Dream cannot be canceled',
     );
-    const archived = await client.beta.dreams.archive(created.id, { betas: MANAGED_BETAS });
+    const archived = await client.beta.dreams.archive(created.id);
     assert.equal(archived.status, 'completed');
     assert.ok(archived.archived_at, 'P5 archive stamps terminal Dream without changing status');
-    const visible = await drain(client.beta.dreams.list({ betas: MANAGED_BETAS }));
+    const visible = await drain(client.beta.dreams.list());
     assert.ok(!visible.some((dream) => dream.id === created.id), 'P5 default list hides archived');
-    const withArchived = await drain(client.beta.dreams.list({
-      include_archived: true,
-      betas: MANAGED_BETAS,
-    }));
+    const withArchived = await drain(client.beta.dreams.list({ include_archived: true }));
     assert.ok(withArchived.some((dream) => dream.id === created.id), 'P5 include_archived restores it');
     pass('P5 official SDK list, terminal guard and archive semantics agree');
 

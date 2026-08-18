@@ -127,7 +127,14 @@ fn tool_results(list: &serde_json::Value) -> Vec<String> {
 }
 
 fn last_idle(list: &serde_json::Value) -> serde_json::Value {
-    list["data"].as_array().unwrap().last().unwrap().clone()
+    list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["type"] == "session.status_idle")
+        .expect("session.status_idle event")
+        .clone()
 }
 
 // ── the model under test ─────────────────────────────────────────────────────

@@ -8,12 +8,12 @@
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic0105 from '@anthropic-ai/sdk-0-105';
+import Anthropic0117 from '@anthropic-ai/sdk-0-117';
 import { pass } from './harness.mjs';
 
 const keyBytes = Buffer.from('managed-webhook-test-key!');
 const key = `whsec_${keyBytes.toString('base64')}`;
-const client = new Anthropic({ apiKey: 'inert', webhookKey: key });
 const timestamp = String(Math.floor(Date.now() / 1000));
 const id = 'event_official_sdk';
 const event = {
@@ -39,18 +39,24 @@ const headers = {
   'webhook-signature': `v1,${signature}`,
 };
 
-const parsed = client.beta.webhooks.unwrap(body, { headers });
-assert.deepEqual(parsed, event);
-pass('official webhooks.unwrap accepts awaken Standard Webhooks bytes');
+for (const [version, Anthropic] of [
+  ['0.105.0', Anthropic0105],
+  ['0.117.1', Anthropic0117],
+]) {
+  const client = new Anthropic({ apiKey: 'inert', webhookKey: key });
+  const parsed = client.beta.webhooks.unwrap(body, { headers });
+  assert.deepEqual(parsed, event);
+  pass(`official SDK ${version} webhooks.unwrap accepts awaken Standard Webhooks bytes`);
 
-assert.throws(
-  () => client.beta.webhooks.unwrap(body.replace('thread_1', 'tampered'), { headers }),
-  /signature/i,
-  'a payload mutation must fail official verification',
-);
-assert.throws(
-  () => new Anthropic({ apiKey: 'inert' }).beta.webhooks.unwrap(body, { headers }),
-  /Webhook key must not be null/,
-  'verification must fail closed when no key is configured',
-);
-pass('official webhooks.unwrap rejects tampering and missing key');
+  assert.throws(
+    () => client.beta.webhooks.unwrap(body.replace('thread_1', 'tampered'), { headers }),
+    /signature/i,
+    'a payload mutation must fail official verification',
+  );
+  assert.throws(
+    () => new Anthropic({ apiKey: 'inert' }).beta.webhooks.unwrap(body, { headers }),
+    /Webhook key must not be null/,
+    'verification must fail closed when no key is configured',
+  );
+}
+pass('old/current official SDK webhooks.unwrap reject tampering and missing key');
