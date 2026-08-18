@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-08-19
+
+- Separated Awaken's Viewer/Builder/Administrator product access levels from
+  hosting subscription capacity. Added one least-privilege hosted Builder
+  Workspace role and reused the existing full Run lifecycle role instead of
+  duplicating an equal Runtime role.
+- Kept organization billing and machine integration roles outside the human
+  product role catalog; the product profile remains the only action matrix.
+
 ## 2026-08-18
 
 - Replaced automatic store-only retry dead-lettering with one drainer-owned,

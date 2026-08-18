@@ -652,3 +652,71 @@ removes the final read-side compatibility authority.
 This adds no profile, PDP, token repository, or migration database. It closes
 the bounded migration in the existing embedded-IAM composition root and keeps
 immutable legacy profile revisions as audit evidence only.
+
+## Amendment (2026-08-19): Builder is a product access level, not a subscription
+
+Awaken owns the permissions of a human inside one Awaken Workspace. A hosting
+platform may sell a number of Builder seats, but that commercial capacity is
+not a role and grants no permission by itself. Conversely, assigning a product
+role does not create or modify a subscription. The hosting composition must
+check its purchased capacity before it writes the existing IAM binding.
+
+Awaken exposes exactly three human access levels. Each is an intent composed
+from the existing Workspace and Runtime authorization profiles; the profiles
+remain separate because they protect different relying-party boundaries.
+
+| Access level | Workspace role | Runtime role | Product authority |
+|---|---|---|---|
+| Viewer | `awaken.workspace:workspace_user` | `awaken.runtime:workspace_user` | read Workspace configuration, model catalog, Files, Skills, Runs, and logs |
+| Builder | `awaken.workspace:hosted_builder` | `awaken.runtime:workspace_admin` | Viewer plus create/edit/publish Agent configuration, Files and Skills, and create/resume/cancel Runs; no API-key, model-supply, membership, billing, or organization administration |
+| Administrator | `awaken.workspace:hosted_admin` | `awaken.runtime:workspace_admin` | Builder plus Workspace API-key and hosted product administration; organization billing remains outside Awaken |
+
+Builder and Administrator deliberately share the existing Runtime role because
+both need the complete finite `run.*` lifecycle and Runtime currently contains
+no administrator-only action. Creating a second equal Runtime role would
+duplicate authority. Their least-privilege distinction is the Workspace role:
+only `hosted_admin` receives `apikey.*`. Platform model supply stays read-only
+for both; BYOK custody is administered through the hosted Workspace credential
+surface, not by granting the self-hosted `model_supply.*` role.
+
+The product profile is the sole permission source. Cloud may reference these
+stable role identifiers while composing a user-visible access level, but it
+must not copy the action matrix. Service roles (`publisher`,
+`credential_ingress`, `agent_executor`, and `tunnel_manager`) remain separate
+machine intents and are never human access levels or billable human seats.
+
+Static structure:
+
+```text
+hosting subscription -- Builder capacity --\
+                                       seat admission -> IAM role binding
+Awaken access level -- product role bundle /
+                                  |
+                                  +-> awaken.workspace profile
+                                  `-> awaken.runtime profile
+```
+
+Dynamic behavior:
+
+```text
+administrator selects Builder for one account and exact Workspace
+  -> hosting checks one unique-human Builder capacity
+  -> IAM atomically replaces the managed Awaken role family
+  -> Workspace PEP admits authoring without credential administration
+  -> Runtime PEP admits the existing Run lifecycle
+
+buying capacity -> changes only the commercial ceiling
+revoking Builder/Admin -> removes the role bundle and releases capacity
+```
+
+The product contract is tested as an exact-set decision table: Viewer has only
+read authorities; Builder has Workspace/File/Skill write plus model read and no
+API-key authority; Administrator adds API-key authority; every access level is
+scope-local through the existing IAM binding and cannot cross a Workspace.
+
+Implementation scope is explicit: the existing IAM binding store, Workspace
+and Runtime profiles, Runtime administrator role, and PEPs are reused unchanged;
+the existing Workspace profile compiler and Cloud role composition are
+extended; the sole new product mechanism is the finite `hosted_builder` role.
+No Builder subscription, Runtime-equivalent role, action evaluator, or
+permission table outside the product profile is added.

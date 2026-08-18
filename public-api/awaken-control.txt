@@ -1,4 +1,7 @@
 pub mod awaken_control
+pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
+pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
+pub use awaken_control::AWAKEN_WORKSPACE_USER_ROLE
 pub use awaken_control::AccountId
 pub use awaken_control::LocalBrowserAuth
 pub use awaken_control::LocalRuntimeCapability
@@ -41,6 +44,9 @@ pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'l
 pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_control::authz
+pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
+pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
+pub use awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE
 pub enum awaken_control::authz::HostedRuntimePathMatch
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: alloc::string::String
@@ -74,11 +80,9 @@ pub awaken_control::authz::TokenSpec::service_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::token_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::authz::ADMIN_TOKEN_FILE: &str
-pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
-pub const awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::authz::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::authz::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::authz::DEFAULT_ORG_ID: &str
@@ -219,6 +223,7 @@ pub awaken_control::ControlDependencies::executable_agent_registrar: alloc::sync
 pub awaken_control::ControlDependencies::execution_workspace: alloc::string::String
 pub awaken_control::ControlDependencies::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlDependencies::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
+pub awaken_control::ControlDependencies::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_control::ControlDependencies::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlDependencies::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlDependencies::managed_runtime_available: bool
@@ -250,6 +255,7 @@ pub awaken_control::ControlRouterInput::data_subject_org: alloc::string::String
 pub awaken_control::ControlRouterInput::environment_router: axum::routing::Router
 pub awaken_control::ControlRouterInput::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlRouterInput::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
+pub awaken_control::ControlRouterInput::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_control::ControlRouterInput::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlRouterInput::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlRouterInput::managed_runtime_available: bool
@@ -335,11 +341,9 @@ pub awaken_control::TokenSpec::service_id: alloc::string::String
 pub awaken_control::TokenSpec::token_id: alloc::string::String
 pub awaken_control::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::ADMIN_TOKEN_FILE: &str
-pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
-pub const awaken_control::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::DEFAULT_ORG_ID: &str

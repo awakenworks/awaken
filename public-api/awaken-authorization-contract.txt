@@ -60,6 +60,7 @@ impl awaken_authorization_contract::WorkspaceProfileAuthority
 pub const fn awaken_authorization_contract::WorkspaceProfileAuthority::action_pattern(self) -> &'static str
 pub enum awaken_authorization_contract::WorkspaceProfileRole
 pub awaken_authorization_contract::WorkspaceProfileRole::HostedAdmin
+pub awaken_authorization_contract::WorkspaceProfileRole::HostedBuilder
 pub awaken_authorization_contract::WorkspaceProfileRole::LegacyHostedAdmin
 pub awaken_authorization_contract::WorkspaceProfileRole::WorkspaceMember
 pub enum awaken_authorization_contract::WorkspaceRoleAuthority
@@ -71,6 +72,9 @@ impl awaken_authorization_contract::WorkspaceRoleAuthority
 pub const fn awaken_authorization_contract::WorkspaceRoleAuthority::management_action_pattern(self) -> core::option::Option<&'static str>
 pub const fn awaken_authorization_contract::WorkspaceRoleAuthority::resource_action_pattern(self) -> core::option::Option<&'static str>
 pub const awaken_authorization_contract::AGENT_PUBLISHER_AUTHORITIES: &[awaken_authorization_contract::WorkspaceRoleAuthority]
+pub const awaken_authorization_contract::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
+pub const awaken_authorization_contract::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE: &str
+pub const awaken_authorization_contract::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_authorization_contract::CREDENTIAL_INGRESS_AUTHORITIES: &[awaken_authorization_contract::WorkspaceRoleAuthority]
 pub fn awaken_authorization_contract::agent_publisher_role_contains(awaken_authorization_contract::WorkspaceRoleAuthority) -> bool
 pub const fn awaken_authorization_contract::application_route_policy(awaken_authorization_contract::RouteAccess) -> awaken_authorization_contract::RouteGuardSelection
