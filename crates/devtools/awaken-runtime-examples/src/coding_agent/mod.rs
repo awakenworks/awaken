@@ -25,7 +25,7 @@ use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
+use awaken_ext_builtin_tools::{HandToolContext, Toolset, builtin_tools, executable_hand_tools_in};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
@@ -114,11 +114,23 @@ pub struct CodingSession {
 }
 
 impl CodingSession {
-    pub fn new(mut runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
+    pub fn new(runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
+        Self::new_with_hand_context(runtime, config, HandToolContext::default())
+    }
+
+    /// Build a coding Session whose Hand is confined to one trusted workdir.
+    /// Production obtains this scope from its realized Environment; examples and
+    /// tests pass it explicitly so an absolute path outside the process cwd does
+    /// not accidentally widen filesystem authority.
+    pub fn new_with_hand_context(
+        mut runtime: Runtime,
+        config: ExecutableAgentSnapshot,
+        hand_context: HandToolContext,
+    ) -> Self {
         // This publish=false, opt-in example deliberately supplies a
         // single-process Hand. Production Sessions obtain the same ToolExecutor
         // port only from their realized SessionEnvironment (ADR-0073).
-        let tools = executable_hand_tools();
+        let tools = executable_hand_tools_in(hand_context);
         let tool_executor = Arc::new(RawToolRegistry::new(tools.iter().cloned()));
         for tool in tools {
             runtime = runtime.with_tool(tool);

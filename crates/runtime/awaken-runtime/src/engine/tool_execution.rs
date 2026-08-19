@@ -272,7 +272,11 @@ pub(super) async fn resume_into_messages(
                 let reason = note.unwrap_or_else(|| "denied".to_string());
                 let output = ToolOutput::error(&call_id, format!("blocked: {reason}"));
                 let output = spill_tool_output(context, run_id, output).await?;
-                let messages = vec![tool_result_message_from(&call_id, &output.content)];
+                let messages = vec![tool_result_message_from(
+                    &call_id,
+                    &output.content,
+                    output.is_error,
+                )];
                 Ok((messages, Vec::new(), Some(output)))
             }
         }
@@ -342,7 +346,11 @@ pub(super) async fn fold_resume_tool_output(
     store: &Store,
 ) -> (Vec<Message>, Vec<StateCommand>) {
     let mut state = output.state.clone();
-    let mut messages = vec![tool_result_message_from(call_id, &output.content)];
+    let mut messages = vec![tool_result_message_from(
+        call_id,
+        &output.content,
+        output.is_error,
+    )];
     if let Some(call) = call {
         let mut work = store.clone();
         for command in &output.state {

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::awaiting::AwaitReason;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
+use awaken_ext_builtin_tools::HandToolContext;
 use awaken_runtime_examples::coding_agent::{
     Approval, CodingSession, ScriptedCoder, build_runtime, coding_config,
 };
@@ -31,7 +33,11 @@ async fn agent_reads_then_edits_a_file_after_approval() {
     // Scripted model: read the file, then edit TODO -> DONE, then report.
     let llm = Arc::new(ScriptedCoder::new(path.clone(), "TODO", "DONE"));
     let runtime = build_runtime(llm);
-    let session = CodingSession::new(runtime, coding_config("scripted-model"));
+    let session = CodingSession::new_with_hand_context(
+        runtime,
+        coding_config("scripted-model"),
+        HandToolContext::new(&dir),
+    );
 
     // Count approval prompts: `read` is allowed (no prompt); `edit` is asked.
     let asked = Arc::new(AtomicUsize::new(0));
@@ -52,6 +58,21 @@ async fn agent_reads_then_edits_a_file_after_approval() {
     // The file was actually mutated.
     let after = std::fs::read_to_string(&file).unwrap();
     assert_eq!(after, "status: DONE\n", "the edit was applied");
+    assert!(
+        new_messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error: false,
+                        ..
+                    } if tool_use_id == "edit-1"
+                )
+            })
+        }),
+        "a successful resumed edit stays model-visible as success"
+    );
 
     // The committed transcript holds the user turn, the tool results, and the
     // assistant's closing message.
@@ -85,11 +106,15 @@ async fn a_denied_edit_does_not_mutate_the_file() {
 
     let llm = Arc::new(ScriptedCoder::new(path.clone(), "TODO", "DONE"));
     let runtime = build_runtime(llm);
-    let session = CodingSession::new(runtime, coding_config("scripted-model"));
+    let session = CodingSession::new_with_hand_context(
+        runtime,
+        coding_config("scripted-model"),
+        HandToolContext::new(&dir),
+    );
 
     let asked = Arc::new(AtomicUsize::new(0));
     let asked_for = asked.clone();
-    session
+    let new_messages = session
         .turn("Mark the status done.", move |_ticket| {
             asked_for.fetch_add(1, Ordering::SeqCst);
             Approval::Deny
@@ -103,6 +128,21 @@ async fn a_denied_edit_does_not_mutate_the_file() {
     assert_eq!(
         after, "status: TODO\n",
         "a denied edit leaves the file alone"
+    );
+    assert!(
+        new_messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error: true,
+                        ..
+                    } if tool_use_id == "edit-1"
+                )
+            })
+        }),
+        "a denied resumed edit stays model-visible as an error"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
