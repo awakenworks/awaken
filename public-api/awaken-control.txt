@@ -65,6 +65,8 @@ pub struct awaken_control::authz::ManagementAuthz
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::begin_local_browser(&self, awaken_iam_contract::AccountId) -> core::result::Result<(awaken_iam_host::local_browser::LocalBrowserAuth, awaken_iam_host::local_browser::LocalSetupHandoff), awaken_iam_host::local_browser::LocalBrowserAuthError>
 impl awaken_control::authz::ManagementAuthz
+pub fn awaken_control::authz::ManagementAuthz::check_entitlement(&self, awaken_iam_contract::PrincipalRef, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>) -> awaken_iam_contract::EntitlementDecision
+impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_control::authz::TokenSpec) -> core::result::Result<alloc::string::String, alloc::string::String>
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
 pub struct awaken_control::authz::RemoteManagementAuthz
@@ -93,6 +95,7 @@ pub const awaken_control::authz::HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str
 pub async fn awaken_control::authz::cloud_management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
+pub fn awaken_control::authz::embedded_iam_for_tenant_with_entitlements(&std::path::Path, &str, &str, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::authz::hosted_runtime_route_profile() -> awaken_control::authz::HostedRuntimeRouteProfile
@@ -304,6 +307,8 @@ pub struct awaken_control::ManagementAuthz
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::begin_local_browser(&self, awaken_iam_contract::AccountId) -> core::result::Result<(awaken_iam_host::local_browser::LocalBrowserAuth, awaken_iam_host::local_browser::LocalSetupHandoff), awaken_iam_host::local_browser::LocalBrowserAuthError>
 impl awaken_control::authz::ManagementAuthz
+pub fn awaken_control::authz::ManagementAuthz::check_entitlement(&self, awaken_iam_contract::PrincipalRef, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>) -> awaken_iam_contract::EntitlementDecision
+impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_control::authz::TokenSpec) -> core::result::Result<alloc::string::String, alloc::string::String>
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
 pub struct awaken_control::RegistrationHealth
@@ -358,6 +363,7 @@ pub fn awaken_control::consent_router(alloc::sync::Arc<awaken_data_subject_appli
 pub fn awaken_control::control_router(awaken_control::ControlRouterInput) -> axum::routing::Router
 pub fn awaken_control::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
+pub fn awaken_control::embedded_iam_for_tenant_with_entitlements(&std::path::Path, &str, &str, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::erasure_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_control::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
