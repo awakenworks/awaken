@@ -118,18 +118,25 @@ pub fn self_hosted_inference_holder(
     activation: &RunActivation,
 ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
     let mut boundary = None;
+    let mut common_holders = None;
     for candidate in activation
         .snapshot
         .resolved_spec
         .attempt_candidates(activation.model_ref_override.as_deref())
     {
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
-            credential: Some(_),
+            credential: Some(credential),
             ..
         } = &candidate.provisioning
         else {
             continue;
         };
+        match &mut common_holders {
+            None => common_holders = Some(credential.policy.allowed_plaintext_holders.clone()),
+            Some(common) => {
+                common.retain(|holder| credential.policy.allowed_plaintext_holders.contains(holder))
+            }
+        }
         let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
             &candidate.binding.backend_ref,
         ) {
@@ -147,6 +154,12 @@ pub fn self_hosted_inference_holder(
             ));
         }
         boundary = Some(candidate_boundary);
+    }
+    if common_holders
+        .as_ref()
+        .is_some_and(|holders| holders.len() == 1)
+    {
+        return Ok(common_holders.and_then(|holders| holders.into_iter().next()));
     }
     Ok(boundary.map(|boundary| match boundary {
         awaken_runtime_contract::PlaintextBoundary::Workload => {
