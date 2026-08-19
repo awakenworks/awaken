@@ -249,6 +249,37 @@ driving a `SubscriptionSource` port whose config-plane adapter lives in
   mirroring how the vault front door — not `admin-config-api` — seals MCP/model
   secrets.
 
+## Amendment (2026-08-19): entitlement is an injected extension, not product licensing
+
+The embedded `LocalIamState` accepts an `EntitlementProvider` alongside its
+existing authorization policy. `ManagementAuthz` remains the product PEP shell
+and exposes `check_entitlement`; it does not name or parse a License, load a
+JWKS, track expiry, or persist rollback state. The open/default composition
+injects IAM's `unlicensed` provider, so explicit paid checks fail closed.
+Awaken Cloud's closed hosted/private-deployment composition injects either its
+online subscription projection or IAM's verified offline-license provider.
+
+Static structure stays one-way:
+
+```text
+Awaken Cloud commercial provider
+              |
+              v
+awaken-control extension -> LocalIamState/AuthzApi
+        product PEP             one PDP
+```
+
+Dynamic behavior is conjunctive: the management guard first authenticates and
+authorizes the principal; a commercial handler then asks the same gate for its
+feature. The injected provider owns subscription/license causes and returns the
+decision. A missing injection denies paid features while ordinary open
+functionality remains outside the entitlement plane.
+
+License tamper resistance, signed artifacts, protected state, short claims, and
+support/update controls are therefore owned and documented by IAM/Cloud, not
+reimplemented here. This product boundary owns only the non-bypassable PEP call
+site and the injection contract.
+
 ## References
 
 - [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md) — the

@@ -69,8 +69,9 @@
 //! walks the store's bindings to their principals and reloads each principal's
 //! tokens (the `ApiTokenRepo` port deliberately has no list-all).
 //!
-//! **What P1 defers**: custom roles, group rosters, entitlements, and approval
-//! discharge.
+//! **What remains deferred**: custom roles, group rosters, and approval
+//! discharge. Commercial entitlements are installed into this same IAM state;
+//! paid handlers query the gate and never verify a license themselves.
 //!
 //! **iam-host (ADR-0048) — `IamGate` is the PDP; the guard is the Managed PEP.**
 //! authn and authz run through iam-host's [`IamGate`] (rev `9aa91e1`), the single
@@ -100,7 +101,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_authorization_contract::{
     RouteAccess, RouteGuardSelection, WorkspaceBindingRole, application_route_policy,
@@ -114,8 +114,8 @@ use awaken_iam_contract::{
 #[cfg(test)]
 use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
 use awaken_iam_core::{
-    ApiTokenDirectory, ApiTokenMinter, EntropySource, IamError, IssuedApiToken, OsEntropy,
-    RoleBinding, RoleId,
+    ApiTokenDirectory, ApiTokenMinter, EntitlementEngine, EntitlementProvider, EntropySource,
+    IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
 };
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 #[cfg(test)]
@@ -136,7 +136,9 @@ use axum::routing::delete;
 use axum::{Json, Router};
 
 mod bootstrap;
+mod clock;
 mod credentials;
+mod entitlement;
 mod local_browser;
 mod profiles;
 use credentials::{
@@ -146,6 +148,9 @@ use credentials::{
 mod remote;
 
 use bootstrap::bootstrap_admin_token;
+#[cfg(test)]
+use clock::civil_from_days;
+use clock::{now_rfc3339, now_unix};
 #[cfg(test)]
 use profiles::{AUTHORIZATION_PROFILE_EPOCH, AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE};
 pub use profiles::{
@@ -687,6 +692,22 @@ pub fn embedded_iam_for_tenant(
     org_id: &str,
     workspace_id: &str,
 ) -> Arc<ManagementAuthz> {
+    embedded_iam_for_tenant_with_entitlements(
+        dir,
+        org_id,
+        workspace_id,
+        Box::new(EntitlementEngine::unlicensed()),
+    )
+}
+
+/// Commercial composition seam. The open product owns PEP call sites only;
+/// Awaken Cloud injects the online or verified-offline provider here.
+pub fn embedded_iam_for_tenant_with_entitlements(
+    dir: &Path,
+    org_id: &str,
+    workspace_id: &str,
+    entitlements: Box<dyn EntitlementProvider>,
+) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create typed data_dir for embedded IAM");
     let db_path = dir.join("iam.sqlite");
     let backend = SqliteBackend::open_path(&db_path).expect("open iam.sqlite under typed data_dir");
@@ -731,7 +752,7 @@ pub fn embedded_iam_for_tenant(
     )
     .expect("ensure the bootstrap principal's org admin binding");
     let mut directory = ApiTokenDirectory::new();
-    let mut engine = AuthzApi::new();
+    let mut engine = AuthzApi::with_entitlements(entitlements);
 
     let profile_store = sqlite_migrated_store(
         SqliteBackend::open_path(&db_path).expect("reopen iam.sqlite for profile PAP"),
@@ -1935,48 +1956,6 @@ async fn revoke_token_route(
             &headers,
         ),
     }
-}
-
-// ---- Time ---------------------------------------------------------------------
-
-/// Now as a canonical RFC 3339 UTC string (the contract's `Timestamp` shape,
-/// whose lexical order is chronological order). Hand-rolled civil-from-days so
-/// the assembly does not grow a date-time dependency for one format call.
-fn now_rfc3339() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before 1970")
-        .as_secs();
-    let (year, month, day) = civil_from_days((secs / 86_400) as i64);
-    let rem = secs % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem / 60) % 60,
-        rem % 60
-    )
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Days since 1970-01-01 → (year, month, day). Howard Hinnant's public-domain
-/// `civil_from_days` algorithm, exact for the whole proleptic Gregorian range.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(test)]
