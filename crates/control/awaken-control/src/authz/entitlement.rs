@@ -1,8 +1,7 @@
 //! Product enforcement adapter for the entitlement provider injected into IAM.
 //!
-//! Awaken owns only the feature check. Commercial subscription resolution,
-//! license parsing/verification, expiry, and rollback state are supplied by the
-//! closed composition layer through `embedded_iam_for_tenant_with_entitlements`.
+//! Awaken owns only the feature check. Policy resolution is supplied through
+//! `embedded_iam_for_tenant_with_entitlements` by an external composition.
 
 use awaken_iam_contract::{EntitlementDecision, EntitlementRequest, PrincipalRef};
 use awaken_iam_host::{IamClient, IamGate};
