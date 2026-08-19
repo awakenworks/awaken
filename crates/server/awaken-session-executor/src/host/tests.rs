@@ -7293,12 +7293,14 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
 #[test]
 fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
-    // C4=mixed boundaries. The same decision feeds direct and dispatch paths.
-    // | Rule | C1 | C2 | C3 | C4 | result          |
-    // | R1   | F  | -  | -  | F  | no holder       |
-    // | R2   | T  | T  | F  | F  | Worker holder   |
-    // | R3   | T  | F  | T  | F  | Workload holder |
-    // | R4   | T  | T  | T  | T  | reject          |
+    // C4=mixed boundaries; C5=publication freezes one common holder. The same
+    // decision feeds direct and dispatch paths.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | result                    |
+    // | R1   | F  | -  | -  | F  | F  | no holder                 |
+    // | R2   | T  | T  | F  | F  | F  | Worker holder             |
+    // | R3   | T  | F  | T  | F  | F  | Workload holder           |
+    // | R4   | T  | T  | T  | T  | F  | reject                    |
+    // | R5   | T  | -  | -  | -  | T  | exact publication holder  |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate = |model: &str, backend: &str| {
         awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
@@ -7375,6 +7377,27 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
         ))
         .is_err(),
         "R4"
+    );
+    let platform_holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Platform,
+        "awaken.cloud.egress-gateway",
+    );
+    let mut platform_candidate = candidate("platform", "hosted");
+    let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+        credential: Some(credential),
+        ..
+    } = &mut platform_candidate.provisioning
+    else {
+        unreachable!("candidate fixture has a credential")
+    };
+    credential.policy = awaken_runtime_contract::CredentialExecutionPolicy::exact(
+        platform_holder.clone(),
+        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+    );
+    assert_eq!(
+        super::self_hosted_inference_holder(&activation(platform_candidate, Vec::new())).unwrap(),
+        Some(platform_holder),
+        "R5"
     );
 }
 

@@ -261,14 +261,19 @@ pub(crate) fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Messa
 }
 
 /// A tool-role message carrying a structured `ToolResult` block addressed to the
-/// originating call, so the model sees a real tool result rather than loose text.
-pub(crate) fn tool_result_message_from(call_id: &str, content: &[ContentBlock]) -> Message {
+/// originating call, preserving success/error semantics for resumed results.
+pub(crate) fn tool_result_message_from(
+    call_id: &str,
+    content: &[ContentBlock],
+    is_error: bool,
+) -> Message {
     Message {
         id: MessageId::tool_result(call_id),
         role: Role::Tool,
-        content: vec![ContentBlock::tool_result(
+        content: vec![ContentBlock::tool_result_with_error(
             call_id.to_string(),
             content.to_vec(),
+            is_error,
         )],
     }
 }
