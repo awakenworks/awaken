@@ -22,6 +22,7 @@ pub(crate) fn identity_wiring(
     org_id: &str,
     iam_workspaces: &[String],
     cloud_iam: &config::CloudIamConfig,
+    entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
 ) -> Result<IdentityWiring, String> {
     match identity_mode {
         ManagementIdentityMode::SelfManaged => {
@@ -29,7 +30,12 @@ pub(crate) fn identity_wiring(
                 "self-managed IAM requires a persistent data directory".to_owned()
             })?;
             let workspace = SharedHost::provision_local_workspace_at(dir);
-            let iam = awaken_control::embedded_iam_for_tenant(dir, org_id, &workspace);
+            let iam = match entitlement_provider {
+                Some(provider) => awaken_control::embedded_iam_for_tenant_with_entitlements(
+                    dir, org_id, &workspace, provider,
+                ),
+                None => awaken_control::embedded_iam_for_tenant(dir, org_id, &workspace),
+            };
             for workspace_id in iam_workspaces {
                 iam.register_workspace(workspace_id);
             }
