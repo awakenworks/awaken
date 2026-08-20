@@ -1260,6 +1260,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         if let Some(hand) = &self.resident_hand {
+            process_env::bind_resident_process_environment(&mut plan.env, &spec.outputs_path);
             plan.env
                 .push(("AWAKEN_HAND_LEDGER_DIR".into(), hand.ledger_dir.clone()));
             plan.env.push((
