@@ -44,19 +44,25 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .session_slots
             .read(session_id, |slot| slot.published_snapshot.clone())
             .flatten();
-        if let (Some(claimed), Some(projected)) = (
-            self.published_snapshot,
-            projection.agent_publication.as_ref(),
-        ) && claimed != projected
+        if let Some(claimed) = self.published_snapshot
+            && !matches!(
+                awaken_session_contract::frozen_agent_publication_decision(
+                    &projection.baseline,
+                    Some(claimed),
+                ),
+                awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
+                    | awaken_session_contract::FrozenAgentPublicationDecision::Exact
+            )
         {
             return Err(awaken_session_contract::RunError::classified(
                 "session_runtime_publication_conflict",
-                "claimed Run and frozen Session project different Agent publications",
+                "claimed Run does not match the frozen Session Agent publication",
             ));
         }
-        let delivered_publication = self
-            .published_snapshot
-            .or(projection.agent_publication.as_ref());
+        let delivered_publication = projection
+            .agent_publication
+            .as_ref()
+            .or(self.published_snapshot);
         let published_snapshot = match delivered_publication {
             Some(snapshot) => Some(snapshot),
             None if retained_publication.is_some() => retained_publication.as_ref(),
@@ -829,10 +835,11 @@ mod tests {
 
     /// Dynamic-publication cause/effect graph: C1 the Coordinator projects the
     /// exact publication before any Run can be claimed; C2 a compatibility
-    /// renewal omits it; C3 a later claimed Run supplies a different snapshot.
-    /// E1 first realization succeeds and retains the immutable snapshot; E2
-    /// renewal reuses it; E3 reject replacement and preserve E1.
-    /// Decision rules: P1 C1=>E1, P2 E1+C2=>E2, P3 E1+C3=>E3.
+    /// renewal omits it; C3 a claimed Run carries a Session-effective overlay
+    /// with the same frozen coordinates; C4 claimed coordinates differ. E1
+    /// retain the immutable publication; E2 reuse it; E3 accept the overlay
+    /// without replacing E1; E4 reject the foreign Run and preserve E1.
+    /// Decision rules: P1 C1=>E1, P2 E1+C2=>E2, P3 E1+C3=>E3, P4 C4=>E4.
     #[tokio::test]
     async fn session_projection_delivers_publication_before_first_run_claim() {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
@@ -882,19 +889,29 @@ mod tests {
             .flatten();
         assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
 
-        let mut replacement = snapshot.clone();
-        replacement.resolved_spec.model_binding.backend_ref = "acp:replacement".into();
-        let error = WorkerProjectionSynchronizer {
+        let mut effective = snapshot.clone();
+        effective.resolved_spec.tool_descriptors.push(
+            crate::config::session_client_tool_descriptor(
+                &awaken_agent_contract::ClientToolDescriptor {
+                    name: "resource_request".into(),
+                    description: "Request a frozen WorkUnit resource".into(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                },
+            ),
+        );
+        effective
+            .recompute_fingerprint()
+            .expect("Session overlay remains a valid snapshot");
+        WorkerProjectionSynchronizer {
             host: host.as_ref(),
             claim: None,
-            published_snapshot: Some(&replacement),
+            published_snapshot: Some(&effective),
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
         }
         .synchronize_session_projection(thread, &projection, &lease, false)
         .await
-        .expect_err("P3 immutable publication replacement is rejected");
-        assert_eq!(error.code, "session_runtime_publication_conflict", "P3");
+        .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
             host.session_slots
                 .read(thread, |slot| slot.published_snapshot.clone())
@@ -903,6 +920,20 @@ mod tests {
             Some(&snapshot),
             "P3"
         );
+
+        let mut foreign = effective;
+        foreign.metadata.source.revision += 1;
+        let error = WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: Some(&foreign),
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection(thread, &projection, &lease, false)
+        .await
+        .expect_err("P4 foreign claimed coordinates are rejected");
+        assert_eq!(error.code, "session_runtime_publication_conflict", "P4");
 
         let mut missing = projection.clone();
         missing.agent_publication = None;
