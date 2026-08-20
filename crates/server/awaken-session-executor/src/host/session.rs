@@ -127,22 +127,31 @@ impl SharedHost {
             )));
         }
         let selected_agent = agent.or(projected_agent.as_deref()).unwrap_or("assistant");
+        let baseline = self
+            .session_slots
+            .read(thread, |slot| slot.baseline.clone())
+            .flatten();
+        let frozen_revision = baseline
+            .as_ref()
+            .and_then(|baseline| baseline.agent_revision);
         let installed = published_snapshot.or_else(|| {
             self.agent_publications.as_ref().and_then(|source| {
-                source.current(
-                    &workspace,
-                    &awaken_runtime_contract::snapshot::AgentId(selected_agent.to_string()),
-                )
+                let agent_id =
+                    awaken_runtime_contract::snapshot::AgentId(selected_agent.to_string());
+                match frozen_revision {
+                    Some(revision) => source.at_revision(&workspace, &agent_id, revision),
+                    None => source.current(&workspace, &agent_id),
+                }
             })
         });
-        let model_override = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.baseline
-                    .as_ref()
-                    .and_then(|baseline| baseline.model_override.clone())
-            })
-            .flatten();
+        if installed.is_none() && frozen_revision.is_some() {
+            return Err(HostError::internal(
+                "frozen Session Agent publication is unavailable",
+            ));
+        }
+        let model_override = baseline
+            .as_ref()
+            .and_then(|baseline| baseline.model_override.clone());
         let installed = installed
             .map(|snapshot| {
                 project_frozen_session_model_override(snapshot, model_override.as_ref(), &workspace)

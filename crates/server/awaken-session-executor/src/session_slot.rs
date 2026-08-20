@@ -49,6 +49,9 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
     /// that must materialize before the first turn (for example sandbox stdio
     /// MCP) use it to resolve the same immutable publication.
     pub agent_id: String,
+    /// Exact immutable Agent revision frozen by Session admission. `None` is
+    /// retained only for legacy/direct Sessions that still resolve current.
+    pub agent_revision: Option<u64>,
     /// Exact secret-free model replacement resolved and frozen by Control.
     /// Runtime may project this value into an immutable Agent publication, but
     /// must never resolve a new route from the public model id.

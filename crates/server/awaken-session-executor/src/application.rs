@@ -382,6 +382,7 @@ mod acp_context_tests {
             slot.baseline = Some(crate::session_slot::FrozenBaselineRuntimeProjection {
                 fingerprint: awaken_session_contract::SessionBaselineFingerprint("baseline".into()),
                 agent_id: "agent".into(),
+                agent_revision: None,
                 model_override: None,
                 mounts: Vec::new(),
                 env: Vec::new(),
@@ -981,6 +982,7 @@ fn decode_baseline_projection(
     Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
         fingerprint: baseline.fingerprint.clone(),
         agent_id: baseline.agent_id.clone(),
+        agent_revision: baseline.agent_revision,
         model_override: baseline.model_override.clone(),
         mounts,
         env,
