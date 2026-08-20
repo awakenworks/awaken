@@ -638,6 +638,10 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
 
 #[tokio::test]
 async fn projection_rehydrates_from_postgres_after_reconnect() {
+    // Test design — restart state-machine contract:
+    // Empty --atomic commit(M,Run,Wait)/ack--> Durable(1) --drop/reconnect-->
+    // Projection(1,M,Run,Wait). The complete aggregate must cross restart; a
+    // sequence-only or partial-table projection is forbidden.
     let Some(pool) = schema_pool("t_hydrate").await else {
         return;
     };
@@ -678,6 +682,58 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
         CommittedThreadView::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_hydration_observes_one_complete_postgres_snapshot() {
+    // Test design — repeated concurrency history test for snapshot isolation:
+    // race one atomic commit against hydration. The only legal observations are
+    // the complete prefix before the commit or the complete prefix after it.
+    // A mixed result (old sequence with new message/run, or new sequence with a
+    // missing fact) represents no serial database state and fails immediately.
+    let Some(pool) = schema_pool("t_hydrate_snapshot").await else {
+        return;
+    };
+    let writer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("writer");
+
+    for ordinal in 0..64_u64 {
+        let before = writer.commit_count();
+        let thread = ThreadId(format!("snapshot-thread-{ordinal}"));
+        let run = RunId(format!("snapshot-run-{ordinal}"));
+        let commit = ThreadCommit {
+            thread_id: thread.clone(),
+            run: running(&run.0),
+            messages: vec![message(&format!("snapshot-message-{ordinal}"), "snapshot")],
+            state: vec![],
+            events: vec![],
+        };
+        let (committed, hydrated) = tokio::join!(
+            writer.commit(commit),
+            PostgresCommitCoordinator::with_existing_pool(pool.clone()),
+        );
+        committed.expect("writer commit");
+        let hydrated = hydrated.expect("hydrate concurrent snapshot");
+        let observed = hydrated.commit_count();
+        let has_message = !CommittedThreadView::committed_messages(&hydrated, &thread).is_empty();
+        let has_run = CommittedThreadView::run(&hydrated, &run).is_some();
+
+        match observed {
+            value if value == before => {
+                assert!(!has_message, "old snapshot cannot include the new message");
+                assert!(!has_run, "old snapshot cannot include the new run");
+            }
+            value if value == before + 1 => {
+                assert!(has_message, "new snapshot includes every committed message");
+                assert!(has_run, "new snapshot includes the committed run");
+            }
+            other => panic!(
+                "hydrate observed non-serial sequence {other}, expected {before} or {}",
+                before + 1
+            ),
+        }
+    }
 }
 
 #[tokio::test]

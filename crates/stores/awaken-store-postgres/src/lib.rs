@@ -150,6 +150,11 @@ struct Projection {
 /// Built in, not configured.
 const NS: &str = "runtime";
 
+/// The synchronous execution projection retains complete transcript/state/event
+/// facts. Refuse startup before allocating an unbounded fact history; large
+/// authorities must use compaction/snapshot export rather than risking OOM.
+const MAX_HYDRATED_FACT_ROWS: u64 = 1_000_000;
+
 /// A Postgres-backed [`Coordinator`] plus the read ports it serves.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
@@ -1035,12 +1040,43 @@ fn recovery_reject(err: sqlx::Error) -> RecoveryError {
 
 /// Rebuild the read projection from the committed log in Postgres.
 async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
+    // Hydration is one logical read. Without a shared snapshot, a commit can land
+    // between the sequence/messages/run queries and produce a projection that
+    // never existed in durable truth (for example sequence N with rows from N+1).
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let projection = hydrate_snapshot(&mut tx).await?;
+    tx.commit().await?;
+    Ok(projection)
+}
+
+async fn hydrate_snapshot(tx: &mut Transaction<'_, Postgres>) -> Result<Projection, sqlx::Error> {
+    let counts = sqlx::query(&format!(
+        "SELECT \
+            (SELECT COUNT(*) FROM {NS}_message) AS messages, \
+            (SELECT COUNT(*) FROM {NS}_state_command) AS states, \
+            (SELECT COUNT(*) FROM {NS}_commit) AS commits, \
+            (SELECT COUNT(*) FROM {NS}_event) AS events, \
+            (SELECT COUNT(*) FROM {NS}_waiting) AS waiting"
+    ))
+    .fetch_one(&mut **tx)
+    .await?;
+    enforce_hydration_bound([
+        counts.try_get("messages")?,
+        counts.try_get("states")?,
+        counts.try_get("commits")?,
+        counts.try_get("events")?,
+        counts.try_get("waiting")?,
+    ])?;
+
     let mut projection = Projection::default();
 
     let sequence: i64 = sqlx::query_scalar(&format!(
         "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
     ))
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await?;
     projection.sequence = StoredU64::try_from(sequence)
         .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
@@ -1049,7 +1085,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     let message_rows = sqlx::query(&format!(
         "SELECT thread_id, data FROM {NS}_message ORDER BY id"
     ))
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     for row in message_rows {
         let thread_id: String = row.try_get("thread_id")?;
@@ -1062,7 +1098,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     let state_rows = sqlx::query(&format!(
         "SELECT thread_id, data FROM {NS}_state_command ORDER BY id"
     ))
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     for row in state_rows {
         let thread_id: String = row.try_get("thread_id")?;
@@ -1074,7 +1110,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     let commit_rows = sqlx::query(&format!(
         "SELECT run_id, thread_id, phase FROM {NS}_commit ORDER BY sequence"
     ))
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     for row in commit_rows {
         let run_id: String = row.try_get("run_id")?;
@@ -1095,7 +1131,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     let event_rows = sqlx::query(&format!(
         "SELECT sequence, run_id, kind, payload FROM {NS}_event ORDER BY sequence"
     ))
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     for row in event_rows {
         let sequence: i64 = row.try_get("sequence")?;
@@ -1114,7 +1150,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     }
 
     let resume_ticket_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
-        .fetch_all(pool)
+        .fetch_all(&mut **tx)
         .await?;
     for row in resume_ticket_rows {
         let run_id: String = row.try_get("run_id")?;
@@ -1123,6 +1159,23 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     }
 
     Ok(projection)
+}
+
+fn enforce_hydration_bound(counts: [i64; 5]) -> Result<(), sqlx::Error> {
+    let total = counts.into_iter().try_fold(0_u64, |total, count| {
+        let count = u64::try_from(count)
+            .map_err(|_| sqlx::Error::Protocol("negative hydration row count".into()))?;
+        total
+            .checked_add(count)
+            .ok_or_else(|| sqlx::Error::Protocol("hydration row count overflow".into()))
+    })?;
+    if total > MAX_HYDRATED_FACT_ROWS {
+        return Err(sqlx::Error::Protocol(format!(
+            "runtime projection has {total} facts, exceeding the safe startup limit of \
+             {MAX_HYDRATED_FACT_ROWS}; compact/export a snapshot before restart"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1139,5 +1192,16 @@ mod migration_tests {
         let bundle = commit_pg_bundle().expect("deterministic Postgres bundle");
         assert_eq!(bundle.migrations().len(), 1);
         assert_eq!(bundle.migrations()[0].version(), 1);
+    }
+
+    #[test]
+    fn hydration_bound_accepts_the_limit_and_rejects_the_next_fact() {
+        // Test design — boundary-value resource-safety contract: a projection
+        // containing exactly MAX facts may start; MAX+1 must fail before any
+        // fetch_all allocation. Negative/overflowed backend counts also fail
+        // closed instead of wrapping into a small allocation estimate.
+        assert!(enforce_hydration_bound([1_000_000, 0, 0, 0, 0]).is_ok());
+        assert!(enforce_hydration_bound([1_000_000, 1, 0, 0, 0]).is_err());
+        assert!(enforce_hydration_bound([-1, 0, 0, 0, 0]).is_err());
     }
 }

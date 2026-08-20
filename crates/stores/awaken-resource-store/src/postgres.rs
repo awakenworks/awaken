@@ -721,4 +721,65 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn live_postgres_rehydrates_references_for_every_resource_kind() {
+        // Test design — partition coverage over the complete ResourceKind enum:
+        // for File, MemoryStore, Repository and Skill, Missing --add--> Referenced
+        // --process restart--> Referenced. Identity queries must not alias kinds,
+        // and each persisted row must round-trip with its exact target/reference.
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return;
+        };
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let kinds = [
+            ResourceKind::File,
+            ResourceKind::MemoryStore,
+            ResourceKind::Repository,
+            ResourceKind::Skill,
+        ];
+        let rows = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, kind)| ResourceReferenceRecord {
+                target: ResourceTarget::new(
+                    format!("workspace-{ordinal}"),
+                    kind,
+                    format!("all-kinds-{suffix}"),
+                ),
+                reference: ResourceReference {
+                    kind: ResourceReferenceKind::LogicalLifecycle,
+                    reference_id: format!("lifecycle-{ordinal}-{suffix}"),
+                },
+            })
+            .collect::<Vec<_>>();
+
+        {
+            let store = PostgresResourceStore::connect(&url).await.unwrap();
+            for row in &rows {
+                assert!(store.add_reference(row.clone()).await.unwrap());
+            }
+        }
+        let reopened = PostgresResourceStore::connect_existing(&url).await.unwrap();
+        for row in rows {
+            assert_eq!(
+                reopened.references(&row.target).await.unwrap(),
+                vec![row.reference.clone()]
+            );
+            assert_eq!(
+                reopened
+                    .references_for_resource(row.target.kind, &row.target.resource_id)
+                    .await
+                    .unwrap(),
+                vec![row]
+            );
+        }
+    }
 }

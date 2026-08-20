@@ -109,13 +109,14 @@ async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
     let store = PostgresStreamCheckpointStore::with_pool(pool.clone())
         .await
         .expect("checkpoint store");
-    assert_eq!(store.get("run-checkpoint").await, None);
+    assert_eq!(store.get("run-checkpoint").await.unwrap(), None);
 
     store
         .put(stream_checkpoint("run-checkpoint", "partial-a"))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        store.get("run-checkpoint").await,
+        store.get("run-checkpoint").await.unwrap(),
         Some(stream_checkpoint("run-checkpoint", "partial-a"))
     );
 
@@ -124,14 +125,15 @@ async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
         .expect("restarted checkpoint store");
     restarted
         .put(stream_checkpoint("run-checkpoint", "partial-b"))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        restarted.get("run-checkpoint").await,
+        restarted.get("run-checkpoint").await.unwrap(),
         Some(stream_checkpoint("run-checkpoint", "partial-b"))
     );
-    restarted.delete("run-checkpoint").await;
-    restarted.delete("run-checkpoint").await;
-    assert_eq!(restarted.get("run-checkpoint").await, None);
+    restarted.delete("run-checkpoint").await.unwrap();
+    restarted.delete("run-checkpoint").await.unwrap();
+    assert_eq!(restarted.get("run-checkpoint").await.unwrap(), None);
 }
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
@@ -726,15 +728,26 @@ async fn list_dispatches_on_postgres() {
 /// uses the default NeverReplay policy, so the external tool runs only once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
+    // Test design — two-coordinator active-active history: B opens before A's
+    // Running commit, so B's process-start projection is intentionally empty.
+    // Each Worker must install an authoritative claim snapshot before reading;
+    // B therefore observes Running and applies NeverReplay, while A refreshes
+    // terminal truth after losing its fenced commit. No decision may depend on
+    // either coordinator's stale process-start projection.
     const LEASE: u64 = 1_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
         return;
     };
-    let commit = Arc::new(
+    let commit_a = Arc::new(
         PostgresCommitCoordinator::with_pool(pool.clone())
             .await
-            .expect("commit"),
+            .expect("commit A"),
+    );
+    let commit_b = Arc::new(
+        PostgresCommitCoordinator::with_existing_pool(pool.clone())
+            .await
+            .expect("commit B"),
     );
     let store = Arc::new(
         PostgresDispatchStore::with_pool(pool.clone())
@@ -753,7 +766,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     // Owner A drives in the background; it blocks inside the tool after committing the
     // run's first `Running` fact (mid-step, no awaiting ticket).
     let worker_a = Arc::new(
-        DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "owner-a")
+        DispatchWorker::new(runtime.clone(), store.clone(), commit_a.clone(), "owner-a")
             .with_lease_ms(LEASE),
     );
     let a_handle = {
@@ -770,7 +783,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     .await;
     assert!(frozen.is_ok(), "A reached and blocked in the tool");
 
-    let record = CommittedThreadView::run(&*commit, &run).expect("A committed a record");
+    let record = CommittedThreadView::run(&*commit_a, &run).expect("A committed a record");
     assert_eq!(
         record.state,
         RunState::Running,
@@ -779,8 +792,8 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
 
     // Owner B's lease-expired reclaim recovers the committed Executing phase and
     // completes the run without entering the non-recoverable tool again.
-    let worker_b =
-        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
+    let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
+        .with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
     assert_eq!(
         processed,
@@ -810,15 +823,16 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     // THE guarantee: exactly-once committed LOG. The committed transcript carries
     // exactly ONE final "all done" assistant message and the run's record is a single
     // terminal fact — the stale owner's duplicate terminal commit was fenced.
-    let all_done = CommittedThreadView::committed_messages(&*commit, &ThreadId(THREAD.to_string()))
-        .into_iter()
-        .filter(|m| m.text_content().contains("all done"))
-        .count();
+    let all_done =
+        CommittedThreadView::committed_messages(&*commit_b, &ThreadId(THREAD.to_string()))
+            .into_iter()
+            .filter(|m| m.text_content().contains("all done"))
+            .count();
     assert_eq!(
         all_done, 1,
         "exactly one final assistant message — no duplicate terminal turn"
     );
-    let record = CommittedThreadView::run(&*commit, &run).expect("terminal record");
+    let record = CommittedThreadView::run(&*commit_b, &run).expect("terminal record");
     assert_eq!(
         record.state,
         RunState::Ended(EndCause::NaturalEnd),

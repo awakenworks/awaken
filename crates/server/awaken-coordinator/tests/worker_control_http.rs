@@ -332,7 +332,13 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
             .is_err(),
         "a draining incarnation cannot receive new work"
     );
-    assert!(checkpoints.get(&claim.run_id.0).await.is_some());
+    assert!(
+        checkpoints
+            .get(&claim.run_id.0)
+            .await
+            .expect("checkpoint read")
+            .is_some()
+    );
 }
 
 #[tokio::test]

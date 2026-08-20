@@ -15,6 +15,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -23,7 +24,9 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::stream::checkpoint::{
+    StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
+};
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator, Error, OperationCoordinator,
 };
@@ -37,6 +40,7 @@ use awaken_agent_contract::thread::read::recovery::{
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 const LOG_FILE: &str = "commits.ndjson";
+static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -62,17 +66,32 @@ impl FsCommitCoordinator {
         let path: PathBuf = dir.join(LOG_FILE);
 
         let inner = MemoryCommitCoordinator::new();
+        let mut durable_len = 0_u64;
         if let Ok(file) = File::open(&path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(_) => break, // torn tail: stop at the last durable line
-                };
-                if line.trim().is_empty() {
+            let mut reader = BufReader::new(file);
+            let mut record = Vec::new();
+            loop {
+                record.clear();
+                let read = reader.read_until(b'\n', &mut record)?;
+                if read == 0 {
+                    break;
+                }
+
+                // A successful append always writes the newline before fsync and
+                // acknowledgement. Any final bytes without that delimiter belong
+                // to an interrupted, unacknowledged append, even when they happen
+                // to form valid JSON. They must be removed before the next append.
+                if !record.ends_with(b"\n") {
+                    break;
+                }
+
+                let payload = record.strip_suffix(b"\n").unwrap_or(&record);
+                let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
+                if payload.iter().all(u8::is_ascii_whitespace) {
+                    durable_len += read as u64;
                     continue;
                 }
-                match serde_json::from_str::<CommitLogEntry>(&line) {
+                match serde_json::from_slice::<CommitLogEntry>(payload) {
                     Ok(CommitLogEntry::Commit(commit)) => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
@@ -87,12 +106,36 @@ impl FsCommitCoordinator {
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
-                    Err(_) => break, // torn/partial final record: discard and stop
+                    Err(err) => {
+                        // A newline-terminated bad record cannot be produced by a
+                        // torn final append: the append protocol writes the complete
+                        // JSON before its newline. Silently skipping it would turn
+                        // durable middle corruption into an apparently valid prefix.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "invalid newline-terminated commit log record at byte {durable_len}: {err}"
+                            ),
+                        ));
+                    }
                 }
+                durable_len += read as u64;
             }
         }
 
-        let log = OpenOptions::new().create(true).append(true).open(&path)?;
+        let log = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)?;
+        if log.metadata()?.len() != durable_len {
+            log.set_len(durable_len)?;
+            log.sync_all()?;
+            sync_directory(dir)?;
+        } else if durable_len == 0 {
+            // Persist creation of an empty log before it can acknowledge data.
+            sync_directory(dir)?;
+        }
         Ok(Self {
             log: Mutex::new(log),
             inner,
@@ -239,6 +282,7 @@ impl FsStreamCheckpointStore {
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
+        sync_directory(&dir)?;
         Ok(Self { dir })
     }
 
@@ -261,35 +305,51 @@ impl FsStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for FsStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
-        let bytes = std::fs::read(self.path_for(run_id)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+        let bytes = match std::fs::read(self.path_for(run_id)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(StreamCheckpointError::Storage(error.to_string())),
+        };
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
     }
 
-    async fn put(&self, checkpoint: StreamCheckpoint) {
+    async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
         let path = self.path_for(&checkpoint.run_id);
-        let Ok(json) = serde_json::to_vec(&checkpoint) else {
-            return;
-        };
+        let json = serde_json::to_vec(&checkpoint)
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?;
         // Atomic replace: write a sibling temp, fsync it, then rename over the
         // target so a reader never observes a partial write.
-        let tmp = path.with_extension("json.tmp");
+        // Each writer owns a distinct sibling temp. A fixed `.tmp` name lets two
+        // same-run puts rename/remove one another's in-progress file.
+        let sequence = CHECKPOINT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence));
         let write = (|| -> std::io::Result<()> {
-            let mut file = File::create(&tmp)?;
+            let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             file.write_all(&json)?;
             file.sync_all()?;
-            std::fs::rename(&tmp, &path)
+            std::fs::rename(&tmp, &path)?;
+            sync_directory(&self.dir)
         })();
-        if write.is_err() {
+        if let Err(error) = write {
             let _ = std::fs::remove_file(&tmp);
+            return Err(StreamCheckpointError::Storage(error.to_string()));
         }
+        Ok(())
     }
 
-    async fn delete(&self, run_id: &str) {
+    async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
         match std::fs::remove_file(self.path_for(run_id)) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {}
+            Ok(()) => sync_directory(&self.dir)
+                .map_err(|error| StreamCheckpointError::Storage(error.to_string())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(StreamCheckpointError::Storage(error.to_string())),
         }
     }
+}
+
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    File::open(dir)?.sync_all()
 }
