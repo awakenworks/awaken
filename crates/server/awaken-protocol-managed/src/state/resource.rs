@@ -113,6 +113,8 @@ impl ManagedState {
                                 authorization_token: authorization_token
                                     .clone()
                                     .map(|token| token.into_redacted()),
+                                credential: None,
+                                mount_path: resource.mount_path.clone(),
                                 initial_branch: initial_branch.clone(),
                                 initial_commit: initial_commit.clone(),
                             },

@@ -78,7 +78,7 @@ pub use routes::environments::{
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{VaultState, vault_router};
 pub use routes::{
-    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, enforce_managed_beta,
+    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, create_profiled_session, enforce_managed_beta,
     replace_resource_manifest, router, tunnels_router,
 };
 pub use routes::{DREAMING_BETA, dreams_router};
