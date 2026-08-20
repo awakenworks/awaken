@@ -38,7 +38,10 @@ use crate::control::vault_acl::{
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_contract::{CredentialEnvelopeIssuance, CredentialEnvelopeIssuer};
+use awaken_credential_contract::{
+    CredentialCustodyPublication, CredentialEnvelopeIssuance, CredentialEnvelopeIssuer,
+    CredentialMaterialCustodian,
+};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialMutationError, ManagedCredentialNetworking,
@@ -161,6 +164,7 @@ pub struct VaultState {
     /// validation `unknown` (never a false `valid`).
     probe: Option<Arc<dyn McpProbe>>,
     envelope_issuer: Option<Arc<dyn CredentialEnvelopeIssuer>>,
+    material_custodian: Option<Arc<dyn CredentialMaterialCustodian>>,
     rollout_target:
         RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
 }
@@ -176,6 +180,7 @@ impl VaultState {
             repository,
             probe: None,
             envelope_issuer: None,
+            material_custodian: None,
             rollout_target: RwLock::new(None),
         }
     }
@@ -384,6 +389,15 @@ impl VaultState {
         self
     }
 
+    #[must_use]
+    pub fn with_material_custodian(
+        mut self,
+        custodian: Arc<dyn CredentialMaterialCustodian>,
+    ) -> Self {
+        self.material_custodian = Some(custodian);
+        self
+    }
+
     /// Whether `id` names an active vault that may be attached to a new Session.
     /// Archived vaults remain retrievable for audit but are not executable.
     pub async fn has_vault(
@@ -561,6 +575,23 @@ impl VaultState {
             usage,
             policy,
         );
+        if let Some(custodian) = self
+            .material_custodian
+            .as_ref()
+            .filter(|custodian| custodian.handles(selected_holder, &access.usage))
+        {
+            let material =
+                awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+            custodian
+                .publish(CredentialCustodyPublication {
+                    access: access.clone(),
+                    selected_holder: selected_holder.clone(),
+                    binding: binding.clone(),
+                    material,
+                })
+                .await
+                .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
+        }
         if selected_holder.boundary != awaken_credential_contract::PlaintextBoundary::Platform
             && let Some(issuer) = &self.envelope_issuer
         {

@@ -27,11 +27,44 @@ impl ManagedCredentialAdoptionProgress {
     }
 }
 
+/// Combine independent adoption targets without acknowledging a partial
+/// rollout. The operation is associative, commutative, and idempotent over the
+/// closed two-state progress vocabulary.
+#[must_use]
+pub const fn conjunctive_managed_credential_adoption_progress(
+    left: ManagedCredentialAdoptionProgress,
+    right: ManagedCredentialAdoptionProgress,
+) -> ManagedCredentialAdoptionProgress {
+    if left.is_converged() && right.is_converged() {
+        ManagedCredentialAdoptionProgress::Converged
+    } else {
+        ManagedCredentialAdoptionProgress::Pending
+    }
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn managed_rollout_ack_requires_converged_progress() {
+    use ManagedCredentialAdoptionProgress::{Converged, Pending};
+
     assert!(!ManagedCredentialAdoptionProgress::Pending.is_converged());
     assert!(ManagedCredentialAdoptionProgress::Converged.is_converged());
+    assert_eq!(
+        conjunctive_managed_credential_adoption_progress(Converged, Converged),
+        Converged
+    );
+    assert_eq!(
+        conjunctive_managed_credential_adoption_progress(Converged, Pending),
+        Pending
+    );
+    assert_eq!(
+        conjunctive_managed_credential_adoption_progress(Pending, Converged),
+        Pending
+    );
+    assert_eq!(
+        conjunctive_managed_credential_adoption_progress(Pending, Pending),
+        Pending
+    );
 }
 
 /// Typed failures owned by the rollout target port. Pending convergence is a

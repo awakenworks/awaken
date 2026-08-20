@@ -228,15 +228,20 @@ async fn prepare_control_process_with_model_supply(
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
     additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
-    managed_services: ManagedServiceAdapters,
+    mut managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    managed_platform::install_background_services(
+        &service_lifecycle,
+        &managed_services.background_services,
+    );
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
+        managed_services.entitlement_provider.take(),
     )?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
@@ -303,6 +308,7 @@ async fn prepare_control_process_with_model_supply(
             worker_placement_policy: None,
             cloud_native_credential_realization: None,
             repository_transport_authorizer: None,
+            inference_materializer: None,
             worker_directory: None,
             runtime_authority: None,
             worker_observations: Some(worker_observations),

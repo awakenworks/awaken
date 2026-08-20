@@ -72,6 +72,33 @@ pub async fn run_service_binary(role: ServiceRole) -> ExitCode {
 /// Run the exact Control, Coordinator, or AllInOne startup selected by the
 /// caller. Role-specific binaries and `awaken <role>` both terminate here.
 pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), String> {
+    run_service_with_adapters(args, role, None).await
+}
+
+/// Run the canonical AllInOne service with product-supplied infrastructure
+/// adapters while retaining Awaken's listener, Worker-supervision, drain, and
+/// shutdown lifecycle.
+pub async fn run_all_in_one_with_services(
+    args: ServiceArgs,
+    managed_services: crate::ManagedServiceAdapters,
+    coordinator_services: crate::CoordinatorServiceAdapters,
+) -> Result<(), String> {
+    run_service_with_adapters(
+        args,
+        ServiceRole::AllInOne,
+        Some((managed_services, coordinator_services)),
+    )
+    .await
+}
+
+async fn run_service_with_adapters(
+    args: ServiceArgs,
+    role: ServiceRole,
+    all_in_one_services: Option<(
+        crate::ManagedServiceAdapters,
+        crate::CoordinatorServiceAdapters,
+    )>,
+) -> Result<(), String> {
     awaken_credential_materializer::reject_ambient_api_key_environment()
         .map_err(|error| error.to_string())?;
     let deployment_role = role.deployment_role();
@@ -117,7 +144,14 @@ pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), Str
     }
 
     awaken_observability::init(&deployment.observability);
-    let result = serve_resolved(deployment, seal_key, role, local_worker).await;
+    let result = serve_resolved(
+        deployment,
+        seal_key,
+        role,
+        local_worker,
+        all_in_one_services,
+    )
+    .await;
     awaken_observability::shutdown();
     result
 }
@@ -218,15 +252,30 @@ async fn serve_resolved(
     seal_key: Option<[u8; 32]>,
     role: ServiceRole,
     prepared_worker: Option<crate::PreparedLocalWorker>,
+    all_in_one_services: Option<(
+        crate::ManagedServiceAdapters,
+        crate::CoordinatorServiceAdapters,
+    )>,
 ) -> Result<(), String> {
     let process = match role {
-        ServiceRole::AllInOne => {
-            crate::prepare_all_in_one_process(
-                &deployment,
-                seal_key.as_ref().expect("AllInOne owns Control seal key"),
-            )
-            .await?
-        }
+        ServiceRole::AllInOne => match all_in_one_services {
+            Some((managed, coordinator)) => {
+                crate::prepare_all_in_one_process_with_services(
+                    &deployment,
+                    seal_key.as_ref().expect("AllInOne owns Control seal key"),
+                    managed,
+                    coordinator,
+                )
+                .await?
+            }
+            None => {
+                crate::prepare_all_in_one_process(
+                    &deployment,
+                    seal_key.as_ref().expect("AllInOne owns Control seal key"),
+                )
+                .await?
+            }
+        },
         ServiceRole::Control => {
             crate::prepare_control_process(
                 &deployment,

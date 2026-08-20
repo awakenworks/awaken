@@ -158,7 +158,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_observations.clone(),
         )
     });
-    let model_wiring = match (&model_services, &credential_materializer) {
+    let mut model_wiring = match (&model_services, &credential_materializer) {
         (Some(process), Some(credentials)) => runtime_model_wiring(
             process.runtime.clone(),
             credentials,
@@ -172,6 +172,9 @@ pub(super) async fn prepare_runtime_routers(
         },
         _ => unreachable!("Control model adapters and Control stores are configured together"),
     };
+    if let Some(materializer) = process.inference_materializer {
+        model_wiring.materializer = Some(materializer);
+    }
     let web_search_publication_resolver =
         process.web_search_publication_resolver.unwrap_or_else(|| {
             Arc::new(
@@ -271,6 +274,10 @@ pub(super) async fn prepare_runtime_routers(
                 process.managed_services.inference_geo_policy.clone(),
                 Some(managed_rate_limiter.clone()),
                 process.managed_services.credential_envelope_issuer.clone(),
+                process
+                    .managed_services
+                    .credential_material_custodian
+                    .clone(),
                 coordinator_content_eraser,
                 content_capture_ceiling,
                 iam.clone(),
@@ -618,7 +625,15 @@ pub(super) async fn prepare_runtime_routers(
     }
     let managed_state = Arc::new(managed_state);
     if let Some(vault_state) = local_vault_state {
-        vault_state.set_rollout_target(managed_state.clone());
+        let local_target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget> =
+            managed_state.clone();
+        let rollout_target = match process.managed_services.credential_rollout_target.clone() {
+            Some(external) => {
+                managed_platform::conjunctive_credential_rollout_target(local_target, external)
+            }
+            None => local_target,
+        };
+        vault_state.set_rollout_target(rollout_target);
     }
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
