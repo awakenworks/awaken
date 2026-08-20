@@ -43,6 +43,28 @@ pub struct ErasureReceipt {
     pub records_removed: usize,
 }
 
+/// One product-owned record returned by an organization privacy export.
+///
+/// The envelope keeps cross-process routing neutral while the product remains
+/// the sole owner of the payload schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizationPrivacyRecord {
+    pub subject: DataSubjectId,
+    pub payload: serde_json::Value,
+}
+
+/// A product-level privacy export over one exact organization, optionally
+/// narrowed to a known data subject.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrganizationPrivacyExport {
+    pub records: Vec<OrganizationPrivacyRecord>,
+}
+
+/// A product-owned privacy export failed or the requested scope was invalid.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("privacy export failed: {0}")]
+pub struct PrivacyExportError(pub String);
+
 /// A right-to-erasure (GDPR Art. 17) failure. A content-store DELETE or the
 /// accountability write did not complete, so the erasure did **not** happen — the
 /// caller must learn this instead of receiving a clean success receipt. Erasure is
@@ -76,6 +98,25 @@ pub trait DataSubjectResolver: DataSubjectConsentSource {
     /// this surfaces an [`ErasureError`] — a partial/failed erasure must never be
     /// reported as a clean success receipt.
     async fn erase(&self, subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError>;
+}
+
+/// Product-level organization privacy process manager.
+///
+/// This is distinct from [`DataSubjectResolver`]: it resolves the organization
+/// membership set and delegates each subject effect to that one canonical
+/// resolver instead of introducing another content-store fan-out.
+#[async_trait]
+pub trait OrganizationPrivacyResolver: Send + Sync {
+    async fn erase_organization(
+        &self,
+        organization_id: &str,
+    ) -> Result<ErasureReceipt, ErasureError>;
+
+    async fn export_organization(
+        &self,
+        organization_id: &str,
+        subject: Option<&DataSubjectId>,
+    ) -> Result<OrganizationPrivacyExport, PrivacyExportError>;
 }
 
 /// Where the runtime writes captured prompt/completion/tool content when the
@@ -136,6 +177,24 @@ impl DataSubjectConsentSource for NullResolver {
 impl DataSubjectResolver for NullResolver {
     async fn erase(&self, _subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError> {
         Ok(ErasureReceipt::default())
+    }
+}
+
+#[async_trait]
+impl OrganizationPrivacyResolver for NullResolver {
+    async fn erase_organization(
+        &self,
+        _organization_id: &str,
+    ) -> Result<ErasureReceipt, ErasureError> {
+        Ok(ErasureReceipt::default())
+    }
+
+    async fn export_organization(
+        &self,
+        _organization_id: &str,
+        _subject: Option<&DataSubjectId>,
+    ) -> Result<OrganizationPrivacyExport, PrivacyExportError> {
+        Ok(OrganizationPrivacyExport::default())
     }
 }
 

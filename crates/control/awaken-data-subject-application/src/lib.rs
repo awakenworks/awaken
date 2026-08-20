@@ -925,6 +925,101 @@ impl DataSubjectApplication {
     }
 }
 
+/// Organization-level privacy process manager over the one subject repository
+/// and the one subject erasure resolver.
+pub struct RepoOrganizationPrivacyResolver {
+    repo: Arc<dyn DataSubjectRepo>,
+    subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+}
+
+impl RepoOrganizationPrivacyResolver {
+    #[must_use]
+    pub fn new(
+        repo: Arc<dyn DataSubjectRepo>,
+        subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    ) -> Self {
+        Self { repo, subjects }
+    }
+
+    async fn selected_subjects(
+        &self,
+        organization_id: &str,
+        subject: Option<&DataSubjectId>,
+    ) -> Result<Vec<DataSubject>, awaken_runtime_contract::PrivacyExportError> {
+        match subject {
+            Some(subject) => match self.repo.get(subject).await {
+                Ok(record) if record.org == organization_id => Ok(vec![record]),
+                Ok(_) | Err(DataSubjectError::NotFound(_)) => {
+                    Err(awaken_runtime_contract::PrivacyExportError(
+                        "data subject is not owned by the requested organization".into(),
+                    ))
+                }
+                Err(error) => Err(awaken_runtime_contract::PrivacyExportError(
+                    error.to_string(),
+                )),
+            },
+            None => self
+                .repo
+                .list(organization_id)
+                .await
+                .map_err(|error| awaken_runtime_contract::PrivacyExportError(error.to_string())),
+        }
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPrivacyResolver {
+    async fn erase_organization(
+        &self,
+        organization_id: &str,
+    ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+        let mut subjects = self.repo.list(organization_id).await.map_err(|error| {
+            awaken_runtime_contract::ErasureError(format!(
+                "organization subject inventory failed: {error}"
+            ))
+        })?;
+        subjects.sort_by(|left, right| left.id.0.cmp(&right.id.0));
+        let mut records_removed = 0usize;
+        for subject in subjects {
+            records_removed = records_removed
+                .checked_add(self.subjects.erase(&subject.id).await?.records_removed)
+                .ok_or_else(|| {
+                    awaken_runtime_contract::ErasureError(
+                        "organization erasure receipt overflow".into(),
+                    )
+                })?;
+        }
+        Ok(ErasureReceipt { records_removed })
+    }
+
+    async fn export_organization(
+        &self,
+        organization_id: &str,
+        subject: Option<&DataSubjectId>,
+    ) -> Result<
+        awaken_runtime_contract::OrganizationPrivacyExport,
+        awaken_runtime_contract::PrivacyExportError,
+    > {
+        let mut subjects = self.selected_subjects(organization_id, subject).await?;
+        subjects.sort_by(|left, right| left.id.0.cmp(&right.id.0));
+        let records = subjects
+            .into_iter()
+            .map(|subject| {
+                let id = subject.id.clone();
+                serde_json::to_value(subject)
+                    .map(
+                        |payload| awaken_runtime_contract::OrganizationPrivacyRecord {
+                            subject: id,
+                            payload,
+                        },
+                    )
+                    .map_err(|error| awaken_runtime_contract::PrivacyExportError(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(awaken_runtime_contract::OrganizationPrivacyExport { records })
+    }
+}
+
 /// Bridges the neutral [`DataSubjectResolver`](awaken_runtime_contract::DataSubjectResolver)
 /// port to a [`DataSubjectRepo`] (ADR-0050 D10a). An unknown subject resolves to
 /// `Structured` (no content without a known, consenting subject). Holds an

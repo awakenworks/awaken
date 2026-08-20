@@ -1048,3 +1048,104 @@ async fn revision_exhaustion_fails_instead_of_saturating() {
         ))
     ));
 }
+
+#[tokio::test]
+async fn organization_privacy_reuses_subject_inventory_and_resolver() {
+    #[derive(Default)]
+    struct RecordingResolver(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl DataSubjectConsentSource for RecordingResolver {
+        async fn consent_ceiling(
+            &self,
+            _subject: &DataSubjectId,
+            _purpose: Purpose,
+        ) -> ContentCapture {
+            ContentCapture::Structured
+        }
+    }
+
+    #[async_trait]
+    impl DataSubjectResolver for RecordingResolver {
+        async fn erase(
+            &self,
+            subject: &DataSubjectId,
+        ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+            self.0.lock().unwrap().push(subject.0.clone());
+            Ok(ErasureReceipt { records_removed: 1 })
+        }
+    }
+
+    // Cause/effect decision table:
+    // C1 organization has two subjects and one foreign subject -> E1 export
+    // and erase include only the owned pair in stable id order; C2 exact owned
+    // subject selector -> E2 one record; C3 foreign selector -> E3 fail closed;
+    // C4 retry -> E4 delegates to the same idempotent subject resolver and
+    // returns the same aggregate receipt, with no parallel erasure path.
+    let repo = Arc::new(InMemoryDataSubjectRepo::new());
+    for (id, org) in [
+        ("subject-b", "org-a"),
+        ("subject-a", "org-a"),
+        ("foreign", "org-b"),
+    ] {
+        repo.create(DataSubject::new(DataSubjectId(id.into()), org, 1))
+            .await
+            .unwrap();
+    }
+    let subjects = Arc::new(RecordingResolver::default());
+    let privacy = RepoOrganizationPrivacyResolver::new(repo, subjects.clone());
+
+    let exported = awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+        &privacy, "org-a", None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        exported
+            .records
+            .iter()
+            .map(|record| record.subject.0.as_str())
+            .collect::<Vec<_>>(),
+        ["subject-a", "subject-b"],
+        "E1"
+    );
+    assert_eq!(
+        awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+            &privacy,
+            "org-a",
+            Some(&DataSubjectId("subject-a".into())),
+        )
+        .await
+        .unwrap()
+        .records
+        .len(),
+        1,
+        "E2"
+    );
+    assert!(
+        awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+            &privacy,
+            "org-a",
+            Some(&DataSubjectId("foreign".into())),
+        )
+        .await
+        .is_err(),
+        "E3"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            awaken_runtime_contract::OrganizationPrivacyResolver::erase_organization(
+                &privacy, "org-a",
+            )
+            .await
+            .unwrap()
+            .records_removed,
+            2,
+            "E4"
+        );
+    }
+    assert_eq!(
+        *subjects.0.lock().unwrap(),
+        ["subject-a", "subject-b", "subject-a", "subject-b"]
+    );
+}
