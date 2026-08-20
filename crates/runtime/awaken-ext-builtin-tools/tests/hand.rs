@@ -507,12 +507,16 @@ async fn bash_timeout_discards_the_session_and_next_call_is_clean() {
 
 #[tokio::test]
 async fn bash_strips_ansi_and_keeps_only_the_last_100_kib() {
+    // Cause/effect rules: ANSI control sequences and NUL bytes emitted by a
+    // command are not model-visible text and must be removed, while an output
+    // over the existing byte limit still reports truncation. This keeps the
+    // resulting ToolOutput valid for every durable JSON store.
     let bash = tool("bash");
     let output = bash
         .invoke(call(
             "bash",
             serde_json::json!({
-                "command": "printf '\\033[31mred\\033[0m\\n'; head -c 110000 /dev/zero | tr '\\0' x"
+                "command": "printf '\\033[31mred\\033[0m\\n'; head -c 110000 /dev/zero"
             }),
         ))
         .await
@@ -520,6 +524,7 @@ async fn bash_strips_ansi_and_keeps_only_the_last_100_kib() {
         .text();
     assert!(output.starts_with("[output truncated]\n"));
     assert!(!output.contains("\\u{1b}["));
+    assert!(!output.contains('\0'));
     assert!(output.len() <= 100 * 1024 + "[output truncated]\n".len());
 }
 
