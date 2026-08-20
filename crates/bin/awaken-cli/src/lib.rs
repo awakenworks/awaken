@@ -717,21 +717,6 @@ pub async fn prepare_all_in_one_process(
     .await
 }
 
-pub async fn prepare_all_in_one_process_with_managed_services(
-    deployment: &config::ResolvedDeployment,
-    key: &[u8; 32],
-    managed_services: ManagedServiceAdapters,
-) -> Result<PreparedProcess, String> {
-    prepare_runtime_process(
-        deployment,
-        Some(key),
-        config::Role::AllInOne,
-        PublicationModelSupply::PublishedProviders,
-        managed_services,
-    )
-    .await
-}
-
 /// Prepare the canonical AllInOne process with product-supplied managed and
 /// Coordinator infrastructure adapters.
 ///
@@ -768,20 +753,6 @@ pub async fn prepare_coordinator_process(
         config::Role::Coordinator,
         PublicationModelSupply::PublishedProviders,
         ManagedServiceAdapters::default(),
-    )
-    .await
-}
-
-pub async fn prepare_coordinator_process_with_managed_services(
-    deployment: &config::ResolvedDeployment,
-    managed_services: ManagedServiceAdapters,
-) -> Result<PreparedProcess, String> {
-    prepare_runtime_process(
-        deployment,
-        None,
-        config::Role::Coordinator,
-        PublicationModelSupply::PublishedProviders,
-        managed_services,
     )
     .await
 }

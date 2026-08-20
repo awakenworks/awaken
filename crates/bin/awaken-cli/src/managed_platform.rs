@@ -24,10 +24,8 @@ pub struct ManagedServiceAdapters {
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     pub background_services: Vec<Arc<dyn ManagedBackgroundService>>,
-    pub credential_envelope_issuer:
-        Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
-    pub credential_material_custodian:
-        Option<Arc<dyn awaken_credential_contract::CredentialMaterialCustodian>>,
+    pub credential_material_delivery:
+        Option<awaken_credential_contract::CredentialMaterialDelivery>,
     /// Hosted delivery of the durable Managed Credential outbox. The open
     /// Control remains the publication authority; a hosted composition may
     /// replace only the target-side rollout mechanism.
@@ -91,24 +89,14 @@ impl ManagedServiceAdapters {
         self
     }
 
-    /// Install the hosted cryptographic transport at the existing Vault
-    /// compilation boundary. The adapter cannot select a credential, holder,
-    /// usage or target; it seals only the exact request supplied by Control.
+    /// Install the one product-selected plaintext delivery mechanism at the
+    /// existing Vault compilation boundary.
     #[must_use]
-    pub fn with_credential_envelope_issuer(
+    pub fn with_credential_material_delivery(
         mut self,
-        issuer: Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>,
+        delivery: awaken_credential_contract::CredentialMaterialDelivery,
     ) -> Self {
-        self.credential_envelope_issuer = Some(issuer);
-        self
-    }
-
-    #[must_use]
-    pub fn with_credential_material_custodian(
-        mut self,
-        custodian: Arc<dyn awaken_credential_contract::CredentialMaterialCustodian>,
-    ) -> Self {
-        self.credential_material_custodian = Some(custodian);
+        self.credential_material_delivery = Some(delivery);
         self
     }
 
