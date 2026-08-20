@@ -272,6 +272,35 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
 
+    fn minio_backend(
+        secret_key: &str,
+    ) -> Result<Option<Arc<dyn ObjectStore>>, Box<dyn std::error::Error>> {
+        let Ok(endpoint) = std::env::var("AWAKEN_TEST_S3_ENDPOINT") else {
+            return Ok(None);
+        };
+        let access_key = std::env::var("AWAKEN_TEST_S3_ACCESS_KEY")?;
+        Ok(Some(Arc::new(
+            object_store::aws::AmazonS3Builder::new()
+                .with_endpoint(endpoint)
+                .with_region("us-east-1")
+                .with_bucket_name("awaken-blobs")
+                .with_access_key_id(access_key)
+                .with_secret_access_key(secret_key)
+                .with_allow_http(true)
+                .build()?,
+        )))
+    }
+
+    fn current_minio_backend() -> Result<Option<Arc<dyn ObjectStore>>, Box<dyn std::error::Error>> {
+        let Ok(secret_key) = std::env::var("AWAKEN_TEST_S3_SECRET_KEY") else {
+            if std::env::var_os("AWAKEN_TEST_S3_ENDPOINT").is_some() {
+                return Err("object-store endpoint requires an explicit test secret".into());
+            }
+            return Ok(None);
+        };
+        minio_backend(&secret_key)
+    }
+
     async fn object_store_conformance(
         backend: Arc<dyn ObjectStore>,
         prefix: &str,
@@ -378,22 +407,64 @@ mod tests {
     /// the content id, which is computed in the core and so matches every other backend.
     #[tokio::test]
     async fn minio_conforms() -> Result<(), Box<dyn std::error::Error>> {
-        let Ok(endpoint) = std::env::var("AWAKEN_TEST_S3_ENDPOINT") else {
+        let Some(s3) = current_minio_backend()? else {
             println!("[skip] no object store reachable (AWAKEN_TEST_S3_ENDPOINT)");
             return Ok(());
         };
-        use object_store::aws::AmazonS3Builder;
-        let s3: Arc<dyn ObjectStore> = Arc::new(
-            AmazonS3Builder::new()
-                .with_endpoint(endpoint)
-                .with_region("us-east-1")
-                .with_bucket_name("awaken-blobs")
-                .with_access_key_id("minioadmin")
-                .with_secret_access_key("minioadmin")
-                .with_allow_http(true) // path-style plain-HTTP MinIO
-                .build()?,
+        let forbidden = s3
+            .put(
+                &ObjPath::from("outside/forbidden"),
+                PutPayload::from_static(b"must be denied"),
+            )
+            .await;
+        assert!(
+            forbidden.is_err(),
+            "least-privilege identity must not write outside its prefixes"
         );
-        let prefix = format!("blobs/{}", std::process::id());
+        let prefix = format!("contract/{}", std::process::id());
         object_store_conformance(s3, &prefix).await
+    }
+
+    #[tokio::test]
+    async fn minio_rotation_seed() -> Result<(), Box<dyn std::error::Error>> {
+        let Ok(rotation_id) = std::env::var("AWAKEN_TEST_S3_ROTATION_ID") else {
+            return Ok(());
+        };
+        let backend = current_minio_backend()?
+            .ok_or("credential-rotation seed requires the live object-store endpoint")?;
+        let store = ObjectFileStore::new(backend, format!("rotation/{rotation_id}"));
+        let id = store.put(b"credential-rotation-durable-object").await?;
+        assert_eq!(id, content_id(b"credential-rotation-durable-object"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn minio_rotated_credentials_revoke_old_secret_and_preserve_objects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Metamorphic design: only the credential changes. The old client must
+        // lose access, while the replacement client observes the same immutable
+        // object id and bytes under the unchanged bucket/prefix coordinate.
+        let Ok(rotation_id) = std::env::var("AWAKEN_TEST_S3_ROTATION_ID") else {
+            return Ok(());
+        };
+        let old_secret = std::env::var("AWAKEN_TEST_S3_OLD_SECRET_KEY")?;
+        let old_backend = minio_backend(&old_secret)?
+            .ok_or("credential-rotation verification requires the live endpoint")?;
+        let prefix = format!("rotation/{rotation_id}");
+        let id = content_id(b"credential-rotation-durable-object");
+        let old_store = ObjectFileStore::new(old_backend, &prefix);
+        assert!(
+            old_store.get(&id).await.is_err(),
+            "revoked object-store secret must fail closed"
+        );
+
+        let new_backend = current_minio_backend()?
+            .ok_or("credential-rotation verification requires replacement credentials")?;
+        let new_store = ObjectFileStore::new(new_backend, prefix);
+        assert_eq!(
+            new_store.get(&id).await?.as_deref(),
+            Some(b"credential-rotation-durable-object".as_slice())
+        );
+        Ok(())
     }
 }

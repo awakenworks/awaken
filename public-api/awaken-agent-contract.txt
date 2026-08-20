@@ -625,6 +625,9 @@ pub const awaken_agent_contract::skill::ANTHROPIC_SKILL_IDS: [&str; 4]
 pub fn awaken_agent_contract::skill::validate_agent_skills(&[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_agent_contract::stream
 pub mod awaken_agent_contract::stream::checkpoint
+pub enum awaken_agent_contract::stream::checkpoint::StreamCheckpointError
+pub awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Fenced(alloc::string::String)
+pub awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Storage(alloc::string::String)
 pub struct awaken_agent_contract::stream::checkpoint::PartialToolCall
 pub awaken_agent_contract::stream::checkpoint::PartialToolCall::call_id: alloc::string::String
 pub awaken_agent_contract::stream::checkpoint::PartialToolCall::raw_arguments: alloc::string::String
@@ -636,9 +639,9 @@ pub awaken_agent_contract::stream::checkpoint::StreamCheckpoint::partial_tools: 
 pub awaken_agent_contract::stream::checkpoint::StreamCheckpoint::run_id: alloc::string::String
 pub awaken_agent_contract::stream::checkpoint::StreamCheckpoint::thread_id: alloc::string::String
 pub trait awaken_agent_contract::stream::checkpoint::StreamCheckpointStore: core::marker::Send + core::marker::Sync
-pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::put<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>, awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::put<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::stream::event
 pub struct awaken_agent_contract::stream::event::Event
 pub awaken_agent_contract::stream::event::Event::kind: awaken_agent_contract::event::agent::AgentEvent

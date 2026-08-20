@@ -87,12 +87,20 @@ self_test() {
     echo "Durable backend gate omits the production object-store adapter" >&2
     return 1
   }
+  grep -Fq "minio_rotated_credentials_revoke_old_secret_and_preserve_objects" "$0" || {
+    echo "Durable backend gate omits object-store credential rotation" >&2
+    return 1
+  }
+  test -f scripts/ci/fixtures/minio-file-store-policy.json || {
+    echo "Durable backend gate omits the least-privilege object-store policy" >&2
+    return 1
+  }
   grep -Fq "cargo test -p awaken-resource-persistence" "$0" || {
     echo "Postgres gate omits the composed Resources restart matrix" >&2
     return 1
   }
   grep -Fq "cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
-    echo "Durable backend gate omits SQLite crash and storage-full atomicity" >&2
+    echo "Durable backend gate omits SQLite crash and injected fault atomicity" >&2
     return 1
   }
 }
@@ -162,10 +170,13 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
-echo "-> AWAKEN_TEST_DATABASE_URL=$AWAKEN_TEST_DATABASE_URL"
+echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
 MINIO_IMAGE="minio/minio:RELEASE.2024-12-18T13-15-44Z"
 MC_IMAGE="minio/mc:RELEASE.2024-11-21T17-21-54Z"
+export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaway fixture identity)
+FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
+export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 # awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
 if ! docker run -d --name "$OBJECT_NAME" \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
@@ -195,7 +206,27 @@ if [ "$object_ready" -ne 1 ]; then
   exit 1
 fi
 export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
+export AWAKEN_TEST_S3_ACCESS_KEY="$FILE_STORE_ACCESS_KEY" # awaken-allow: secret
+export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 echo "-> AWAKEN_TEST_S3_ENDPOINT=$AWAKEN_TEST_S3_ENDPOINT"
+
+# Authorization decision table: the fixture identity may access only the two
+# prefixes exercised by conformance and rotation tests. The live Rust contract
+# includes a forbidden write outside those prefixes.
+# awaken-allow: secret (throwaway identity passed into its disposable container)
+if ! docker run --rm --network "container:$OBJECT_NAME" \
+  --volume "$PWD/scripts/ci/fixtures/minio-file-store-policy.json:/policy.json:ro" \
+  --env FILE_STORE_ACCESS_KEY \
+  --env FILE_STORE_SECRET_KEY \
+  --entrypoint /bin/sh "$MC_IMAGE" -c \
+  'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null &&
+   mc admin user add local "$FILE_STORE_ACCESS_KEY" "$FILE_STORE_SECRET_KEY" >/dev/null &&
+   mc admin policy create local awaken-file-store /policy.json >/dev/null &&
+   mc admin policy attach local awaken-file-store --user "$FILE_STORE_ACCESS_KEY" >/dev/null'
+then
+  echo "✗ failed to create least-privilege object-store fixture identity" >&2
+  exit 1
+fi
 
 # The Postgres-backed suites. `--test <name>` targets the integration tests that gate
 # on a DB; each still self-skips a case if its schema pool cannot connect, but with the
@@ -228,6 +259,33 @@ cargo test -p awaken-data-subject-store --features postgres,test-support --test 
 cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || status=1
 cargo test -p awaken-env-store --features test-support --tests || status=1
 cargo test -p awaken-file-store --features postgres,sqlite,object-store || status=1
+
+# Credential-lifecycle state machine: seed -> revoke old credential -> issue
+# replacement -> read the same durable object. Both transitions are mandatory.
+export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
+cargo test -p awaken-file-store --features object-store \
+  object::tests::minio_rotation_seed -- --exact \
+  || status=1
+FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow: secret (throwaway fixture)
+export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow: secret
+# awaken-allow: secret (replacement passed into the same disposable container)
+if ! docker run --rm --network "container:$OBJECT_NAME" \
+  --env FILE_STORE_ACCESS_KEY \
+  --env FILE_STORE_SECRET_KEY \
+  --entrypoint /bin/sh "$MC_IMAGE" -c \
+  'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null &&
+   mc admin user remove local "$FILE_STORE_ACCESS_KEY" >/dev/null &&
+   mc admin user add local "$FILE_STORE_ACCESS_KEY" "$FILE_STORE_SECRET_KEY" >/dev/null &&
+   mc admin policy attach local awaken-file-store --user "$FILE_STORE_ACCESS_KEY" >/dev/null'
+then
+  echo "✗ failed to rotate object-store fixture credential" >&2
+  status=1
+fi
+export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
+export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
+cargo test -p awaken-file-store --features object-store \
+  object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects -- --exact \
+  || status=1
 cargo test -p awaken-memory-store --features postgres --test conformance || status=1
 cargo test -p awaken-skill-store --features postgres --test conformance || status=1
 cargo test -p awaken-resource-store --all-features || status=1

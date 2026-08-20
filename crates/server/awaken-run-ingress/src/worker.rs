@@ -1329,9 +1329,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         else {
             return Ok(None);
         };
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
-            .await?;
         self.settle_claimed_terminal(claimed).await
     }
 
@@ -1371,6 +1368,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let run_id = claimed.lease.run_id.clone();
         let epoch = claimed.lease.epoch;
+        // Decision table invariant: every terminal-recovery caller must check
+        // the authoritative snapshot bound to this exact claim, never a stale
+        // process projection. Keeping the refresh here makes claim + verify +
+        // fenced settlement one indivisible protocol for every entry point.
+        let claim = RunClaim::from(&claimed.lease);
+        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+            .await?;
         let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
             let _ = self
                 .settle(&run_id, epoch, DispatchOutcome::Awaiting, &[])

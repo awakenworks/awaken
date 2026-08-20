@@ -161,6 +161,19 @@ impl SqliteCommitCoordinator {
             .map_err(|error| StoreError::Open(error.to_string()))
     }
 
+    /// Force deterministic SQLITE_READONLY failures without relying on host
+    /// filesystem ownership (test runners commonly execute as root).
+    #[cfg(feature = "test-support")]
+    pub fn make_read_only_for_test(&self) -> Result<(), StoreError> {
+        let connection = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Open("sqlite connection poisoned".into()))?;
+        connection
+            .pragma_update(None, "query_only", true)
+            .map_err(|error| StoreError::Open(error.to_string()))
+    }
+
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
