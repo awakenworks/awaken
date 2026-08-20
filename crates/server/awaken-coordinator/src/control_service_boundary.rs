@@ -30,6 +30,9 @@ const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
 const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
+pub const DATA_SUBJECT_ERASE_PATH: &str = "/internal/v1/control/data-subjects/erase";
+pub const ORGANIZATION_ERASE_PATH: &str = "/internal/v1/control/privacy/organizations/erase";
+pub const ORGANIZATION_EXPORT_PATH: &str = "/internal/v1/control/privacy/organizations/export";
 pub const CONTROL_SERVICE_ACCESS_PERMISSION: &str = "control:access";
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -39,7 +42,8 @@ struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
@@ -93,18 +97,36 @@ struct ConsentCeilingCommand {
     purpose: awaken_runtime_contract::Purpose,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DataSubjectEraseCommand {
+    subject: awaken_runtime_contract::DataSubjectId,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OrganizationEraseCommand {
+    organization_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OrganizationExportCommand {
+    organization_id: String,
+    subject: Option<awaken_runtime_contract::DataSubjectId>,
+}
+
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
     Ok(router_with_authenticator(
         audit,
         credentials,
         webhooks,
-        consent,
+        data_subjects,
+        organization_privacy,
         awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
     ))
 }
@@ -116,14 +138,16 @@ pub fn router_with_authenticator(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
     let state = ControlServiceState {
         audit,
         credentials,
         webhooks,
-        consent,
+        data_subjects,
+        organization_privacy,
         authenticator,
     };
     Router::new()
@@ -136,6 +160,9 @@ pub fn router_with_authenticator(
         .route(CREDENTIAL_ACCESS_PATH, post(credential_access))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
         .route(CONSENT_CEILING_PATH, post(consent_ceiling))
+        .route(DATA_SUBJECT_ERASE_PATH, post(erase_data_subject))
+        .route(ORGANIZATION_ERASE_PATH, post(erase_organization))
+        .route(ORGANIZATION_EXPORT_PATH, post(export_organization))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_authorization,
@@ -279,9 +306,48 @@ async fn consent_ceiling(
     Json(command): Json<ConsentCeilingCommand>,
 ) -> axum::response::Response {
     response(Ok(state
-        .consent
+        .data_subjects
         .consent_ceiling(&command.subject, command.purpose)
         .await))
+}
+
+async fn erase_data_subject(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<DataSubjectEraseCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .data_subjects
+            .erase(&command.subject)
+            .await
+            .map_err(|error| error.to_string()),
+    )
+}
+
+async fn erase_organization(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<OrganizationEraseCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .organization_privacy
+            .erase_organization(&command.organization_id)
+            .await
+            .map_err(|error| error.to_string()),
+    )
+}
+
+async fn export_organization(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<OrganizationExportCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .organization_privacy
+            .export_organization(&command.organization_id, command.subject.as_ref())
+            .await
+            .map_err(|error| error.to_string()),
+    )
 }
 
 #[derive(Clone)]
@@ -538,6 +604,61 @@ impl awaken_runtime_contract::DataSubjectConsentSource for HttpControlServiceCli
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_runtime_contract::DataSubjectResolver for HttpControlServiceClient {
+    async fn erase(
+        &self,
+        subject: &awaken_runtime_contract::DataSubjectId,
+    ) -> Result<awaken_runtime_contract::ErasureReceipt, awaken_runtime_contract::ErasureError>
+    {
+        self.post(
+            DATA_SUBJECT_ERASE_PATH,
+            &DataSubjectEraseCommand {
+                subject: subject.clone(),
+            },
+        )
+        .await
+        .map_err(awaken_runtime_contract::ErasureError)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::OrganizationPrivacyResolver for HttpControlServiceClient {
+    async fn erase_organization(
+        &self,
+        organization_id: &str,
+    ) -> Result<awaken_runtime_contract::ErasureReceipt, awaken_runtime_contract::ErasureError>
+    {
+        self.post(
+            ORGANIZATION_ERASE_PATH,
+            &OrganizationEraseCommand {
+                organization_id: organization_id.to_owned(),
+            },
+        )
+        .await
+        .map_err(awaken_runtime_contract::ErasureError)
+    }
+
+    async fn export_organization(
+        &self,
+        organization_id: &str,
+        subject: Option<&awaken_runtime_contract::DataSubjectId>,
+    ) -> Result<
+        awaken_runtime_contract::OrganizationPrivacyExport,
+        awaken_runtime_contract::PrivacyExportError,
+    > {
+        self.post(
+            ORGANIZATION_EXPORT_PATH,
+            &OrganizationExportCommand {
+                organization_id: organization_id.to_owned(),
+                subject: subject.cloned(),
+            },
+        )
+        .await
+        .map_err(awaken_runtime_contract::PrivacyExportError)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,10 +715,12 @@ mod tests {
         // R3 valid bearer + unknown vault -> false without exposing secret material;
         // R4 invalid bearer -> reject before any authoritative mutation; R5
         // authenticated consent read preserves Control's result; R6 rejected or
-        // unavailable consent reads fail closed to Structured; R7 rotating the
-        // injected source makes both router and client accept only the successor
-        // token without reconstruction. These rules cover every boundary
-        // authority and the authentication gate.
+        // unavailable consent reads fail closed to Structured; R7 authenticated
+        // subject erase reaches the same resolver and returns its stable receipt;
+        // R8 rotating the injected source makes router and client accept only
+        // the successor token without reconstruction; R9 organization erase and
+        // export use the same authenticated private boundary. These rules cover
+        // every boundary authority and the authentication gate.
         let audit = ManagementAuditPlane::new(Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory()
                 .expect("open audit test store"),
@@ -614,6 +737,7 @@ mod tests {
             audit,
             credentials,
             delivery.clone(),
+            Arc::new(awaken_runtime_contract::NullResolver),
             Arc::new(awaken_runtime_contract::NullResolver),
             Arc::new(awaken_service_auth_contract::TokenSourceAuthenticator::new(
                 token_source.clone(),
@@ -692,6 +816,35 @@ mod tests {
             awaken_runtime_contract::ContentCapture::Full,
             "R5"
         );
+        assert_eq!(
+            awaken_runtime_contract::DataSubjectResolver::erase(
+                &client,
+                &awaken_runtime_contract::DataSubjectId("dsub-a".into()),
+            )
+            .await
+            .unwrap(),
+            awaken_runtime_contract::ErasureReceipt::default(),
+            "R7"
+        );
+        assert_eq!(
+            awaken_runtime_contract::OrganizationPrivacyResolver::erase_organization(
+                &client, "org-a",
+            )
+            .await
+            .unwrap(),
+            awaken_runtime_contract::ErasureReceipt::default(),
+            "R9 erase"
+        );
+        assert!(
+            awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+                &client, "org-a", None,
+            )
+            .await
+            .unwrap()
+            .records
+            .is_empty(),
+            "R9 export"
+        );
 
         *token_source.0.write().expect("token source write") = Arc::from("next-token");
         assert!(
@@ -699,7 +852,7 @@ mod tests {
                 .has_vault("workspace-a", "still-missing")
                 .await
                 .unwrap(),
-            "R7"
+            "R8"
         );
 
         let rejected =
@@ -719,6 +872,34 @@ mod tests {
             .await,
             awaken_runtime_contract::ContentCapture::Structured,
             "R6"
+        );
+        assert!(
+            awaken_runtime_contract::DataSubjectResolver::erase(
+                &rejected,
+                &awaken_runtime_contract::DataSubjectId("dsub-rejected".into()),
+            )
+            .await
+            .is_err(),
+            "R4"
+        );
+        assert!(
+            awaken_runtime_contract::OrganizationPrivacyResolver::erase_organization(
+                &rejected,
+                "org-rejected",
+            )
+            .await
+            .is_err(),
+            "R4 organization erase"
+        );
+        assert!(
+            awaken_runtime_contract::OrganizationPrivacyResolver::export_organization(
+                &rejected,
+                "org-rejected",
+                None,
+            )
+            .await
+            .is_err(),
+            "R4 organization export"
         );
         assert!(
             client
