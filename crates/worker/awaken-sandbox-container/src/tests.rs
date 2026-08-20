@@ -1187,12 +1187,14 @@ async fn resident_hand_is_the_only_pid1_path_and_receives_no_platform_credential
      * Resident placement cause/effect graph and decision table.
      * Causes: C1 resident config absent/present; C2 executable blank; C3 port
      * zero; C4 Session spec contains a Process secret; C5 resource limits are
-     * positive/zero. Effects: E1 legacy
+     * positive/zero; C6 the resident Hand executes Bash without an attached
+     * process boundary. Effects: E1 legacy
      * keepalive PID1; E2 exactly one `hand --listen` PID1; E3 durable ledger
      * path only in base env; E4 reject invalid config before runtime; E5 never
-     * serialize Process/platform credentials into Pod base env.
+     * serialize Process/platform credentials into Pod base env; E6 the existing
+     * runtime-owned project, output, HOME, and XDG paths reach resident tools.
      * Rules: RP1 !C1=>E1; RP2 C1+!C2+!C3=>E2+E3+E5;
-     * RP3 C2||C3||zero(C5)=>E4. FMECA: duplicate Hand placement would permit concurrent
+     * RP3 C2||C3||zero(C5)=>E4; RP4 C1+C6=>E6. FMECA: duplicate Hand placement would permit concurrent
      * side effects (severity 5); selecting one command in ContainerProvider is
      * the mitigation. Credential disclosure through environment serialization
      * is severity 5; the existing Process-secret materialization boundary and
@@ -1236,6 +1238,22 @@ async fn resident_hand_is_the_only_pid1_path_and_receives_no_platform_credential
         env.iter()
             .any(|(name, value)| name == "AWAKEN_HAND_MAX_CONNECTIONS" && value == "16")
     );
+    for (name, value) in [
+        ("AWAKEN_PROJECT_DIR", "/workspace"),
+        ("AWAKEN_OUTPUTS_DIR", "/mnt/session/outputs"),
+        ("HOME", "/workspace"),
+        ("XDG_CONFIG_HOME", "/workspace/.config"),
+        ("XDG_CACHE_HOME", "/workspace/.cache"),
+    ] {
+        assert_eq!(
+            env.iter()
+                .filter(|(candidate, _)| candidate == name)
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            [value],
+            "RP4/E6"
+        );
+    }
     assert!(env.iter().all(|(name, value)| {
         name != "API_KEY"
             && !name.contains("TOKEN")

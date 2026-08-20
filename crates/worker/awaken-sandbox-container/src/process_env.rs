@@ -27,27 +27,63 @@ fn workspace_scoped_path(value: &str) -> bool {
         })
 }
 
+fn selected_workspace_path<'a>(
+    values: impl DoubleEndedIterator<Item = &'a str>,
+    default: &str,
+) -> String {
+    values
+        .rev()
+        .find(|value| workspace_scoped_path(value))
+        .unwrap_or(default)
+        .to_string()
+}
+
 /// Keep the caller's last explicit workspace-scoped path, otherwise install
 /// the runtime default. All duplicates are collapsed so backend argv ordering
 /// cannot silently change the selected process home.
 fn bind_workspace_path(command: &mut pc::Command, name: &str, default: &str) {
-    let selected = command.env.iter().rev().find_map(|var| {
-        if var.name != name {
-            return None;
-        }
-        let pc::EnvValue::Inline { value } = &var.value else {
-            return None;
-        };
-        workspace_scoped_path(value).then(|| value.clone())
-    });
+    let selected = selected_workspace_path(
+        command.env.iter().filter_map(|var| {
+            if var.name != name {
+                return None;
+            }
+            let pc::EnvValue::Inline { value } = &var.value else {
+                return None;
+            };
+            Some(value.as_str())
+        }),
+        default,
+    );
     command.env.retain(|var| var.name != name);
     command.env.push(pc::EnvVar {
         name: name.into(),
-        value: pc::EnvValue::Inline {
-            value: selected.unwrap_or_else(|| default.into()),
-        },
+        value: pc::EnvValue::Inline { value: selected },
         visibility: pc::EnvVisibility::Process,
     });
+}
+
+pub(super) fn bind_resident_process_environment(
+    env: &mut Vec<(String, String)>,
+    outputs_path: &str,
+) {
+    env.retain(|(name, _)| !matches!(name.as_str(), "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"));
+    env.extend([
+        ("AWAKEN_PROJECT_DIR".into(), "/workspace".into()),
+        ("AWAKEN_OUTPUTS_DIR".into(), outputs_path.into()),
+    ]);
+    for (name, default) in [
+        ("HOME", "/workspace"),
+        ("XDG_CONFIG_HOME", DEFAULT_XDG_CONFIG_HOME),
+        ("XDG_CACHE_HOME", DEFAULT_XDG_CACHE_HOME),
+    ] {
+        let selected = selected_workspace_path(
+            env.iter()
+                .filter_map(|(candidate, value)| (candidate == name).then_some(value.as_str())),
+            default,
+        );
+        env.retain(|(candidate, _)| candidate != name);
+        env.push((name.into(), selected));
+    }
 }
 
 /// Portable PID-1 command for a Session-owned container environment. Attempt
