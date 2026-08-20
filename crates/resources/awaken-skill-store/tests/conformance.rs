@@ -1,5 +1,6 @@
 //! Backend-generic conformance for the versioned, binary-safe Skill repository.
 
+#[cfg(feature = "test-support")]
 use std::sync::Arc;
 
 #[cfg(feature = "test-support")]
@@ -57,11 +58,12 @@ fn executable_metadata_is_bound_into_new_bundle_hashes() {
         content: b"#!/bin/sh\n".to_vec(),
         executable: false,
     };
+    let ordinary_hash = bundle_sha256(std::slice::from_ref(&ordinary));
     let executable = SkillBundleFile {
         executable: true,
-        ..ordinary.clone()
+        ..ordinary
     };
-    assert_ne!(bundle_sha256(&[ordinary]), bundle_sha256(&[executable]));
+    assert_ne!(ordinary_hash, bundle_sha256(&[executable]));
 }
 
 async fn aggregate_lifecycle(store: &dyn SkillStore) {
@@ -198,6 +200,7 @@ async fn filesystem_conforms_and_survives_reopen() {
     );
 }
 
+#[cfg(feature = "test-support")]
 async fn concurrent_append_is_serialized<S>(store: Arc<S>)
 where
     S: SkillStore + 'static,
@@ -234,9 +237,99 @@ async fn in_memory_serializes_concurrent_append() {
 }
 
 #[tokio::test]
-async fn filesystem_serializes_concurrent_append() {
+async fn filesystem_process_append_helper() {
+    let Ok(root) = std::env::var("AWAKEN_SKILL_PROCESS_ROOT") else {
+        return;
+    };
+    let marker = std::env::var("AWAKEN_SKILL_PROCESS_MARKER").unwrap();
+    let ready = std::env::var("AWAKEN_SKILL_PROCESS_READY").unwrap();
+    let result = std::env::var("AWAKEN_SKILL_PROCESS_RESULT").unwrap();
+    let go = std::path::Path::new(&root).join("go");
+    std::fs::write(ready, b"ready").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !go.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "parent never released helper"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let store = FsSkillStore::open(root).unwrap();
+    let outcome = store
+        .append_version("ws", "skill", version("skill", 2, marker.as_bytes()))
+        .await;
+    let outcome = if outcome.is_ok() { "ok" } else { "conflict" };
+    std::fs::write(result, outcome).expect("write helper outcome");
+}
+
+#[tokio::test]
+async fn filesystem_processes_do_not_lose_a_concurrent_version() {
+    // Test design — cross-process read/modify/write history, which subsumes the
+    // weaker same-handle and two-handle cases: two OS processes are released at
+    // the same durable V1 and race to append V2. The filesystem lock serializes
+    // the complete read/validate/rename transition, so exactly one succeeds and
+    // the other observes a conflict. Reopen must expose one complete V2 and no
+    // torn aggregate or lost acknowledged update.
     let directory = tempfile::tempdir().unwrap();
-    concurrent_append_is_serialized(Arc::new(FsSkillStore::open(directory.path()).unwrap())).await;
+    FsSkillStore::open(directory.path())
+        .unwrap()
+        .create(definition("ws", "skill"), version("skill", 1, b"one"))
+        .await
+        .unwrap();
+
+    let executable = std::env::current_exe().unwrap();
+    let spawn = |name: &str| {
+        let ready = directory.path().join(format!("ready-{name}"));
+        let result = directory.path().join(format!("result-{name}"));
+        let child = std::process::Command::new(&executable)
+            .arg("--exact")
+            .arg("filesystem_process_append_helper")
+            .arg("--nocapture")
+            .env("AWAKEN_SKILL_PROCESS_ROOT", directory.path())
+            .env("AWAKEN_SKILL_PROCESS_MARKER", name)
+            .env("AWAKEN_SKILL_PROCESS_READY", &ready)
+            .env("AWAKEN_SKILL_PROCESS_RESULT", &result)
+            .spawn()
+            .unwrap();
+        (child, ready, result)
+    };
+    let (mut left, left_ready, left_result) = spawn("left");
+    let (mut right, right_ready, right_result) = spawn("right");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !(left_ready.exists() && right_ready.exists()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "helpers did not become ready"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    std::fs::write(directory.path().join("go"), b"go").unwrap();
+    assert!(left.wait().unwrap().success());
+    assert!(right.wait().unwrap().success());
+    let outcomes = [
+        std::fs::read_to_string(left_result).unwrap(),
+        std::fs::read_to_string(right_result).unwrap(),
+    ];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|value| value.as_str() == "ok")
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|value| value.as_str() == "conflict")
+            .count(),
+        1
+    );
+
+    let reopened = FsSkillStore::open(directory.path()).unwrap();
+    assert_eq!(
+        reopened.list_versions("ws", "skill").await.unwrap().len(),
+        2
+    );
 }
 
 #[cfg(all(feature = "sqlite", feature = "test-support"))]

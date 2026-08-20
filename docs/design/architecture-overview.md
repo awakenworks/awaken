@@ -138,6 +138,15 @@ policy is not public, so downstream products cannot copy or selectively replace
 its SQL/read semantics. This is a composition inlet to the existing authority,
 not a second backend selector or persistence owner.
 
+Every claimed Worker drive, including an in-process SQLite/filesystem/PostgreSQL
+Worker, installs one `RunRecoverySnapshot` before consulting committed execution
+state. Subsequent claim-fenced commits advance that snapshot. A local Worker
+therefore never treats the PostgreSQL coordinator's process-start projection as
+cross-replica truth; terminal-race reconciliation refreshes the same snapshot
+from the authoritative recovery source before deciding whether to settle or
+re-raise. The database-independent Worker obtains the identical snapshot through
+its authenticated dispatch transport.
+
 `awaken-protocol-managed` is a driving anti-corruption layer. It translates the
 Managed HTTP contract into the existing Session application and Runtime Host
 interfaces; it is neither a Coordinator Runtime nor a persistence owner. Its

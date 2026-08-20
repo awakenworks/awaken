@@ -18,6 +18,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -53,6 +54,7 @@ pub struct DispatchWorker<S> {
     reader: Arc<dyn CommittedThreadView>,
     claimed_commit: Arc<dyn ClaimedRunCommit>,
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
+    recovery_source: Option<Arc<dyn RunRecoverySource>>,
     owner: String,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
@@ -217,9 +219,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         )
     }
 
-    async fn install_claimed_recovery_projection(&self, claim: &RunClaim) -> Result<(), Error> {
+    async fn install_claimed_recovery_projection(
+        &self,
+        claim: &RunClaim,
+        thread_id: &ThreadId,
+    ) -> Result<(), Error> {
         if let Some(projection) = &self.recovery_projection {
-            let snapshot = self.store.load_recovery_snapshot(claim).await?;
+            let snapshot = match &self.recovery_source {
+                Some(source) => source
+                    .recovery_snapshot(thread_id, &claim.run_id)
+                    .await
+                    .map_err(|error| {
+                        crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                    })?,
+                None => self.store.load_recovery_snapshot(claim).await?,
+            };
             projection
                 .install(&claim.run_id, snapshot)
                 .map_err(|error| {
@@ -227,6 +241,26 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 })?;
         }
         Ok(())
+    }
+
+    async fn refresh_local_recovery_projection(
+        &self,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
+        let (Some(projection), Some(source)) = (&self.recovery_projection, &self.recovery_source)
+        else {
+            return Ok(());
+        };
+        let snapshot = source
+            .recovery_snapshot(thread_id, run_id)
+            .await
+            .map_err(|error| {
+                crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+            })?;
+        projection.install(run_id, snapshot).map_err(|error| {
+            crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+        })
     }
 
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
@@ -240,11 +274,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         owner: impl Into<String>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
+        // `commit` must back two independently erased ports; this clone only
+        // increments the Arc count and does not clone coordinator state.
         let base_commit: Arc<dyn CommitCoordinator> = commit.clone();
-        let reader: Arc<dyn CommittedThreadView> = commit;
-        Self::from_parts(runtime, store, base_commit, reader, owner)
+        let recovery_source: Arc<dyn RunRecoverySource> = commit;
+        let projection = Arc::new(crate::RecoveryProjection::new());
+        // Keep the concrete Arc for refresh installs while exposing the same
+        // projection through the read port.
+        let reader: Arc<dyn CommittedThreadView> = projection.clone();
+        let mut worker = Self::from_parts(runtime, store, base_commit, reader, owner);
+        worker.recovery_projection = Some(projection);
+        worker.recovery_source = Some(recovery_source);
+        worker
     }
 
     /// Build a worker when the write and read sides are already erased behind
@@ -268,6 +311,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             reader,
             claimed_commit: Arc::new(GuardedRunCommit::new(commit, dispatch)),
             recovery_projection: None,
+            recovery_source: None,
             owner: owner.into(),
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
@@ -412,6 +456,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
+    }
+
+    pub(crate) fn committed_reader(&self) -> Arc<dyn CommittedThreadView> {
+        Arc::clone(&self.reader)
     }
 
     pub fn store(&self) -> &Arc<S> {
@@ -650,7 +698,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let lease_epoch = claimed.lease.epoch;
         let claim = RunClaim::from(&claimed.lease);
         let _lease_renewal = self.renew_claim_while_driving(&claim);
-        self.install_claimed_recovery_projection(&claim).await?;
+        self.install_claimed_recovery_projection(&claim, &thread_id)
+            .await?;
         let mut all_pending: Vec<String> = claimed
             .pending
             .iter()
@@ -1101,6 +1150,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         consumed: &[String],
         err: impl Into<Error>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        self.refresh_local_recovery_projection(thread_id, run_id)
+            .await?;
         match self.reader.run_state(run_id) {
             Some(state @ RunState::Ended(_)) => {
                 // This path lost a terminal-commit race. Redelivery is expected:
@@ -1135,7 +1186,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             message: message.into(),
         });
         let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim).await?;
+        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+            .await?;
         self.end_claimed_before_execution(claimed, cause).await
     }
 
@@ -1149,7 +1201,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: &Claimed,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim).await?;
+        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+            .await?;
         self.end_claimed_before_execution(
             claimed,
             awaken_agent_contract::agent::run::EndCause::Indeterminate,
@@ -1251,6 +1304,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         run_id: &RunId,
         now_ms: u64,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        // A local active-active worker's process projection may predate the peer
+        // that committed the terminal fact. Refresh the exact thread snapshot
+        // before making the claim/no-claim authority decision.
+        if self.recovery_source.is_some()
+            && let Some(row) = self
+                .store
+                .list_dispatches()
+                .await?
+                .into_iter()
+                .find(|row| &row.run_id == run_id)
+        {
+            self.refresh_local_recovery_projection(&row.thread_id, run_id)
+                .await?;
+        }
         if !matches!(self.reader.run_state(run_id), Some(RunState::Ended(_))) {
             return Ok(None);
         }
@@ -1261,6 +1328,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         else {
             return Ok(None);
         };
+        let claim = RunClaim::from(&claimed.lease);
+        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+            .await?;
         self.settle_claimed_terminal(claimed).await
     }
 

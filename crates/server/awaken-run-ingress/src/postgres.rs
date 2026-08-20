@@ -12,7 +12,6 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime_contract::resume::ResumeResult;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -40,6 +39,8 @@ use crate::{
 };
 use awaken_run_ingress_contract::RunDispatch;
 
+pub use crate::postgres_checkpoint::PostgresStreamCheckpointStore;
+
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].
 #[derive(Debug, thiserror::Error)]
@@ -54,24 +55,14 @@ pub enum StoreError {
 /// component, so all its tables (dispatch and commit) share this prefix; the
 /// scoped migration ledger isolates it from any other component in the same
 /// database. It is built in, not configured.
-const NS: &str = "runtime";
+pub(super) const NS: &str = "runtime";
 
 /// A Postgres-backed dispatch store.
 pub struct PostgresDispatchStore {
     pool: PgPool,
 }
 
-/// Best-effort PostgreSQL storage for an interrupted inference stream.
-///
-/// The dispatch authority holds the claim epoch lock while this adapter is
-/// called. Keeping the mutable checkpoint in the same scoped runtime schema
-/// makes it survive coordinator and worker replacement without adding another
-/// database contract.
-pub struct PostgresStreamCheckpointStore {
-    pool: PgPool,
-}
-
-async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
+pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(|err| StoreError::Migrate(err.to_string()))?
@@ -81,7 +72,7 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         .map_err(|err| StoreError::Migrate(err.to_string()))
 }
 
-async fn verify_schema(pool: &PgPool) -> Result<(), StoreError> {
+pub(super) async fn verify_schema(pool: &PgPool) -> Result<(), StoreError> {
     let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(|err| StoreError::Migrate(err.to_string()))?
@@ -142,9 +133,7 @@ impl PostgresDispatchStore {
     /// interrupted-stream state therefore share one migrated runtime schema and
     /// cannot drift onto a process-local fallback.
     pub(crate) fn checkpoint_store(&self) -> PostgresStreamCheckpointStore {
-        PostgresStreamCheckpointStore {
-            pool: self.pool.clone(),
-        }
+        PostgresStreamCheckpointStore::from_pool(self.pool.clone())
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
@@ -165,77 +154,6 @@ impl PostgresDispatchStore {
                     .map_err(reject)
             })
             .collect()
-    }
-}
-
-impl PostgresStreamCheckpointStore {
-    /// Connect and apply the shared runtime-dispatch migration bundle.
-    pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(max_connections)
-            .connect(url)
-            .await
-            .map_err(|err| StoreError::Connect(err.to_string()))?;
-        Self::with_pool(pool).await
-    }
-
-    /// Connect to the already-migrated shared runtime-dispatch schema.
-    pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(max_connections)
-            .connect(url)
-            .await
-            .map_err(|err| StoreError::Connect(err.to_string()))?;
-        Self::with_existing_pool(pool).await
-    }
-
-    /// Build from an existing pool after applying the shared runtime schema.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
-        migrate(&pool).await?;
-        Ok(Self { pool })
-    }
-
-    /// Build from an existing pool after verifying the externally-owned ledger.
-    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
-        verify_schema(&pool).await?;
-        Ok(Self { pool })
-    }
-}
-
-#[async_trait]
-impl StreamCheckpointStore for PostgresStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
-        let row = sqlx::query(&format!(
-            "SELECT checkpoint FROM {NS}_stream_checkpoint WHERE run_id = $1"
-        ))
-        .bind(run_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()??;
-        row.try_get::<Json<StreamCheckpoint>, _>("checkpoint")
-            .ok()
-            .map(|value| value.0)
-    }
-
-    async fn put(&self, checkpoint: StreamCheckpoint) {
-        let run_id = checkpoint.run_id.clone();
-        let _ = sqlx::query(&format!(
-            "INSERT INTO {NS}_stream_checkpoint (run_id, checkpoint) VALUES ($1, $2) \
-             ON CONFLICT (run_id) DO UPDATE SET checkpoint = EXCLUDED.checkpoint"
-        ))
-        .bind(run_id)
-        .bind(Json(checkpoint))
-        .execute(&self.pool)
-        .await;
-    }
-
-    async fn delete(&self, run_id: &str) {
-        let _ = sqlx::query(&format!(
-            "DELETE FROM {NS}_stream_checkpoint WHERE run_id = $1"
-        ))
-        .bind(run_id)
-        .execute(&self.pool)
-        .await;
     }
 }
 

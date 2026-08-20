@@ -179,7 +179,13 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
     assert_eq!(assistant_text(&commit), "Hello world");
     // The run concluded in-process, so the checkpoint it flushed at the boundary
     // was cleared — nothing lingers to resume.
-    assert!(checkpoints.get(RUN_ID).await.is_none());
+    assert!(
+        checkpoints
+            .get(RUN_ID)
+            .await
+            .expect("checkpoint read")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -195,7 +201,8 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
             partial_text: "Resumed ".to_string(),
             partial_tools: Vec::new(),
         })
-        .await;
+        .await
+        .expect("checkpoint put");
 
     let (state, commit) = drive(
         Arc::new(AlwaysLlm { text: "and done" }),
@@ -207,5 +214,11 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
     // The committed response carries the recovered prefix stitched onto the fresh text.
     assert_eq!(assistant_text(&commit), "Resumed and done");
     // The consumed checkpoint is cleared once the step concludes.
-    assert!(checkpoints.get(RUN_ID).await.is_none());
+    assert!(
+        checkpoints
+            .get(RUN_ID)
+            .await
+            .expect("checkpoint read")
+            .is_none()
+    );
 }

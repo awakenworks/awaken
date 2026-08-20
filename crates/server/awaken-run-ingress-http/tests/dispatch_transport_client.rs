@@ -336,7 +336,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let remote_checkpoint =
         FencedStreamCheckpointStore::new(None, queue.clone(), original_claim.clone());
     assert_eq!(
-        remote_checkpoint.get("run-A").await,
+        remote_checkpoint.get("run-A").await.unwrap(),
         Some(checkpoint("current")),
         "R1 inner=None delegates through authenticated HTTP"
     );
@@ -388,8 +388,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "R2"
     );
     let replacement_claim = RunClaim::from(&reclaimed.lease);
-    remote_checkpoint.put(checkpoint("stale-via-fence")).await;
-    remote_checkpoint.delete("run-A").await;
+    assert!(matches!(
+        remote_checkpoint.put(checkpoint("stale-via-fence")).await,
+        Err(awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Fenced(_))
+    ));
+    assert!(matches!(
+        remote_checkpoint.delete("run-A").await,
+        Err(awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Fenced(_))
+    ));
     assert_eq!(
         recovery_queue
             .load_stream_checkpoint(&replacement_claim)
@@ -409,7 +415,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let replacement_checkpoint =
         FencedStreamCheckpointStore::new(None, recovery_queue.clone(), replacement_claim.clone());
     assert_eq!(
-        replacement_checkpoint.get("run-A").await,
+        replacement_checkpoint.get("run-A").await.unwrap(),
         Some(checkpoint("replacement")),
         "R3 inner=None reads through replacement authority"
     );

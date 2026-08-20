@@ -43,11 +43,12 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         dispatch.clone(),
         RunClaim::from(&first.lease),
     );
-    first_store.put(checkpoint("first")).await;
+    first_store.put(checkpoint("first")).await.unwrap();
     assert_eq!(
         inner
             .get("run-fenced-checkpoint")
             .await
+            .unwrap()
             .unwrap()
             .partial_text,
         "first"
@@ -63,26 +64,28 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         dispatch,
         RunClaim::from(&second.lease),
     );
-    first_store.put(checkpoint("stale")).await;
-    first_store.delete("run-fenced-checkpoint").await;
+    assert!(first_store.put(checkpoint("stale")).await.is_err());
+    assert!(first_store.delete("run-fenced-checkpoint").await.is_err());
     assert_eq!(
         inner
             .get("run-fenced-checkpoint")
             .await
             .unwrap()
+            .unwrap()
             .partial_text,
         "first",
         "stale checkpoint mutations are ignored"
     );
-    second_store.put(checkpoint("replacement")).await;
+    second_store.put(checkpoint("replacement")).await.unwrap();
     assert_eq!(
         second_store
             .get("run-fenced-checkpoint")
             .await
             .unwrap()
+            .unwrap()
             .partial_text,
         "replacement"
     );
-    second_store.delete("run-fenced-checkpoint").await;
-    assert!(inner.get("run-fenced-checkpoint").await.is_none());
+    second_store.delete("run-fenced-checkpoint").await.unwrap();
+    assert!(inner.get("run-fenced-checkpoint").await.unwrap().is_none());
 }

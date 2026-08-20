@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_runtime::{RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::Error as ControlError;
@@ -59,7 +60,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// the runtime's writes and the worker's reads (G6 same-source wiring).
     pub fn new<C>(runtime: Arc<Runtime>, store: Arc<S>, commit: Arc<C>) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         Self::with_owner(runtime, store, commit, "durable-run-ingress", None)
     }
@@ -79,7 +80,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         >,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         Self::with_owner_and_resolver(runtime, store, commit, owner, stream_checkpoint, None)
     }
@@ -100,9 +101,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         inference_materializer: Option<crate::worker_context::InferenceMaterializerFn>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
-        let reader: Arc<dyn CommittedThreadView> = commit.clone();
         let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
         let mut worker =
             DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
@@ -112,6 +112,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         if let Some(inference_materializer) = inference_materializer {
             worker = worker.with_inference_materializer(inference_materializer);
         }
+        let reader = worker.committed_reader();
         Self {
             worker: Arc::new(worker),
             reader,

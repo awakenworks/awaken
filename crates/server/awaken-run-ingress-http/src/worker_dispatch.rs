@@ -980,7 +980,8 @@ async fn get_checkpoint(
         };
         let checkpoint = checkpoint_store(&service)?
             .get(&request.claim.run_id.0)
-            .await;
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "checkpoint": checkpoint }))
     }
     .await;
@@ -1010,7 +1011,10 @@ async fn put_checkpoint(
         else {
             return Ok(json!({ "applied": false }));
         };
-        checkpoint_store(&service)?.put(checkpoint).await;
+        checkpoint_store(&service)?
+            .put(checkpoint)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "applied": true }))
     }
     .await;
@@ -1034,7 +1038,8 @@ async fn delete_checkpoint(
         };
         checkpoint_store(&service)?
             .delete(&request.claim.run_id.0)
-            .await;
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "applied": true }))
     }
     .await;

@@ -161,7 +161,8 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
             partial_text: "Resumed ".to_string(),
             partial_tools: Vec::new(),
         })
-        .await;
+        .await
+        .expect("checkpoint put");
 
     let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "unit-worker")
         .with_stream_checkpoint(checkpoints.clone() as Arc<dyn StreamCheckpointStore>);
@@ -190,7 +191,13 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         .expect("assistant message committed");
     assert_eq!(assistant.text_content(), "Resumed done");
     // The consumed checkpoint is cleared once the step concludes.
-    assert!(checkpoints.get("run-ckpt").await.is_none());
+    assert!(
+        checkpoints
+            .get("run-ckpt")
+            .await
+            .expect("checkpoint read")
+            .is_none()
+    );
 }
 
 #[tokio::test]

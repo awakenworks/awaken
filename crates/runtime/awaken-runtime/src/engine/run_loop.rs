@@ -348,7 +348,13 @@ pub(super) async fn drive(
             model: resolved.spec.model_binding.model_ref.clone(),
         });
     let mut resume_checkpoint = match &checkpoint_ctx {
-        Some(ctx) => ctx.store.get(&ctx.run_id).await,
+        Some(ctx) => match ctx.store.get(&ctx.run_id).await {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                tracing::warn!(run_id = %ctx.run_id, %error, "failed to load stream checkpoint");
+                None
+            }
+        },
         None => None,
     };
 
