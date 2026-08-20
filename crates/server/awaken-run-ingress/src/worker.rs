@@ -362,6 +362,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
         self.recovery_projection = Some(projection);
+        self.recovery_source = None;
         self
     }
 
@@ -1463,10 +1464,16 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::settle_outcome;
+    use std::sync::Arc;
+
+    use super::{DispatchWorker, settle_outcome};
     use awaken_agent_contract::agent::run::{EndCause, RunState};
+    use awaken_runtime::Runtime;
+    use awaken_store_inmem::MemoryCommitCoordinator;
 
     use crate::Error;
+    use crate::MemoryDispatchStore;
+    use crate::RecoveryProjection;
     use crate::dispatch::DispatchOutcome;
 
     // Behavior 1: an illegal `Running` executor result fails loudly — the worker
@@ -1494,5 +1501,24 @@ mod tests {
             settle_outcome(&RunState::Awaiting).unwrap(),
             DispatchOutcome::Awaiting
         ));
+    }
+
+    #[test]
+    fn remote_projection_uses_the_dispatch_recovery_transport() {
+        // Cause/effect decision rule: a local worker has a colocated recovery
+        // source, while installing a remote projection denotes a database-less
+        // worker. The latter must drop the local source so a claimed drive loads
+        // its snapshot through the existing claim-fenced dispatch transport.
+        let worker = DispatchWorker::new(
+            Arc::new(Runtime::new()),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryCommitCoordinator::new()),
+            "worker",
+        );
+        assert!(worker.recovery_source.is_some());
+
+        let worker = worker.with_recovery_projection(Arc::new(RecoveryProjection::new()));
+
+        assert!(worker.recovery_source.is_none());
     }
 }
