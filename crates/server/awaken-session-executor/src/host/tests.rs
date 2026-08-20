@@ -8541,6 +8541,80 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
 }
 
 #[tokio::test]
+async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
+    // Cause/effect graph: C1 the publication catalog retains exact revision 2;
+    // C2 revision 3 is current; C3 the Session baseline is frozen at revision 2.
+    // The Run activation must use revision 2. Resolving current would create a
+    // second publication authority and make the Worker reject the Session.
+    //
+    // | Rule | frozen revision | current revision | effect |
+    // |---|---:|---:|---|
+    // | R1 | 2 | 3 | resolve exact revision 2 |
+    // | R2 | absent | 3 | retain legacy current lookup |
+    fn publication(revision: u64, instructions: &str) -> ExecutableAgentSnapshot {
+        let mut snapshot = crate::config::server_config(
+            "agent-a",
+            "stub",
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+            &Default::default(),
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
+        snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+        snapshot.metadata.source.revision = revision;
+        snapshot.resolved_spec.instructions = instructions.into();
+        snapshot.recompute_fingerprint().unwrap();
+        snapshot
+    }
+
+    let frozen = publication(2, "frozen");
+    let current = publication(3, "current");
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([
+        frozen.clone(),
+        current.clone(),
+    ])
+    .expect("valid revisioned publications");
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+    host.register_thread_workspace("frozen-revision", host.local_workspace());
+    host.register_thread_agent_projection("frozen-revision", "agent-a");
+    host.install_frozen_session_baseline(
+        "frozen-revision",
+        &awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: on_tool_use_environment(),
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: "agent-a".into(),
+                agent_revision: Some(2),
+                model: "stub".into(),
+                model_override: None,
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
+        ),
+    )
+    .expect("frozen baseline");
+
+    let (_, _, selected) = host
+        .resolve_session_publication("frozen-revision", None, None)
+        .expect("R1 exact frozen publication");
+    assert_eq!(selected, Some(frozen), "R1");
+
+    let (_, _, selected) = host
+        .resolve_session_publication("legacy-current", Some("agent-a"), None)
+        .expect("R2 legacy current publication");
+    assert_eq!(selected, Some(current), "R2");
+}
+
+#[tokio::test]
 async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     // Cause/effect graph: C1 a durable-thread operation may open a context before
     // the frozen projection is installed; C2 that context is inactive or active;
