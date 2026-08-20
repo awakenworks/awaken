@@ -566,6 +566,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             },
         ],
+        repositories: Vec::new(),
         network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
         title: None,
         metadata: Default::default(),
