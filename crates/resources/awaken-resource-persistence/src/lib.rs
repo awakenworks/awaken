@@ -161,6 +161,151 @@ pub fn ephemeral() -> Result<ResourcesApplication, ResourcePersistenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_resource_contract::{
+        CreateMemoryStoreCommand, ResourceState, SkillBundleFile, SkillDefinition, SkillVersion,
+    };
+    use awaken_skill_store::bundle_sha256;
+
+    struct PersistedFixture {
+        workspace_id: String,
+        memory_store_id: String,
+        file_id: String,
+        blob_id: String,
+        skill_id: String,
+    }
+
+    async fn seed_all_resource_authorities(
+        application: &ResourcesApplication,
+        suffix: &str,
+    ) -> Result<PersistedFixture, Box<dyn std::error::Error>> {
+        let workspace_id = format!("workspace-{suffix}");
+        let memory_store_id = format!("memory-{suffix}");
+        application
+            .memory_stores()
+            .create(CreateMemoryStoreCommand {
+                workspace_id: workspace_id.clone(),
+                id: Some(memory_store_id.as_str().into()),
+                name: "durable memory".into(),
+                description: "restart fixture".into(),
+                metadata: Default::default(),
+                initial_state: ResourceState::Active,
+                retention_policy: Default::default(),
+            })
+            .await?;
+        application
+            .authorities()
+            .memory_repository()
+            .create(
+                &memory_store_id,
+                "/notes/evidence.txt",
+                "durable memory bytes",
+            )
+            .await?;
+
+        let file = application
+            .files()
+            .create_uploaded_file(
+                &workspace_id,
+                "evidence.txt".into(),
+                "text/plain".into(),
+                b"durable file bytes",
+            )
+            .await?;
+        let file_id = file.id;
+        let blob_id = file.blob_id;
+
+        let skill_id = format!("skill-{suffix}");
+        let files = vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\ndescription: restart fixture\n---\nDurable skill".to_vec(),
+            executable: false,
+        }];
+        application
+            .authorities()
+            .skill_store()
+            .create(
+                SkillDefinition {
+                    id: skill_id.as_str().into(),
+                    workspace_id: workspace_id.clone(),
+                    display_title: Some("durable skill".into()),
+                    latest_version: 1,
+                    last_version: 1,
+                    timestamps: Default::default(),
+                },
+                SkillVersion {
+                    id: format!("skill-version-{suffix}").into(),
+                    skill_id: skill_id.as_str().into(),
+                    version: 1,
+                    name: "restart-fixture".into(),
+                    description: "restart fixture".into(),
+                    directory: "/skills/restart-fixture".into(),
+                    bundle_sha256: bundle_sha256(&files),
+                    files,
+                    created_unix_nanos: 1,
+                },
+            )
+            .await?;
+
+        Ok(PersistedFixture {
+            workspace_id,
+            memory_store_id,
+            file_id,
+            blob_id,
+            skill_id,
+        })
+    }
+
+    async fn assert_all_resource_authorities(
+        application: &ResourcesApplication,
+        fixture: &PersistedFixture,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let authorities = application.authorities();
+        assert!(
+            application
+                .memory_stores()
+                .get(&fixture.workspace_id, &fixture.memory_store_id)
+                .await?
+                .is_some()
+        );
+        let memory = authorities
+            .memory_repository()
+            .get_by_path(&fixture.memory_store_id, "/notes/evidence.txt")
+            .await?
+            .ok_or_else(|| std::io::Error::other("Memory content missing after restart"))?;
+        assert_eq!(memory.content.as_deref(), Some("durable memory bytes"));
+
+        let file = application
+            .files()
+            .get(&fixture.workspace_id, &fixture.file_id)
+            .await?
+            .ok_or_else(|| std::io::Error::other("File metadata missing after restart"))?;
+        assert_eq!(file.blob_id, fixture.blob_id);
+        assert_eq!(
+            authorities
+                .file_store()
+                .get(&fixture.blob_id)
+                .await?
+                .ok_or_else(|| std::io::Error::other("File bytes missing after restart"))?,
+            b"durable file bytes"
+        );
+
+        let skill = authorities
+            .skill_store()
+            .definition(&fixture.workspace_id, &fixture.skill_id)
+            .await?
+            .ok_or_else(|| std::io::Error::other("Skill definition missing after restart"))?;
+        assert_eq!(skill.latest_version, 1);
+        let version = authorities
+            .skill_store()
+            .version(&fixture.workspace_id, &fixture.skill_id, 1)
+            .await?
+            .ok_or_else(|| std::io::Error::other("Skill version missing after restart"))?;
+        assert_eq!(
+            version.skill_md(),
+            Some(b"---\ndescription: restart fixture\n---\nDurable skill".as_slice())
+        );
+        Ok(())
+    }
 
     #[test]
     fn embedded_selection_returns_one_complete_application() {
@@ -190,6 +335,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embedded_resource_authorities_survive_application_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // State-transition decision table shared with the PostgreSQL test:
+        // C1=one application persists Catalog identity, Memory content, File
+        // metadata+bytes, and a versioned Skill; C2=all handles are dropped;
+        // C3=the same backend is reopened. R1(C1+C2+C3)->every authority returns
+        // the exact durable value; R2 prevents an in-memory/file-system fallback
+        // from making only part of the Resources aggregate appear recovered.
+        let directory = tempfile::tempdir()?;
+        let fixture = {
+            let application = open_embedded(directory.path())?;
+            seed_all_resource_authorities(&application, "embedded-restart").await?
+        };
+        let reopened = open_embedded(directory.path())?;
+        assert_all_resource_authorities(&reopened, &fixture).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn postgres_resource_authorities_survive_verify_mode_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Same decision table as embedded. The second open uses Verify, adding
+        // the managed-deployment rule that an application restart performs no
+        // opportunistic DDL and still recovers every resource authority.
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return Ok(());
+        };
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let fixture = {
+            let application = open_postgres(&url, SchemaMode::Migrate).await?;
+            seed_all_resource_authorities(&application, &format!("postgres-{suffix}")).await?
+        };
+        let reopened = open_postgres(&url, SchemaMode::Verify).await?;
+        assert_all_resource_authorities(&reopened, &fixture).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn postgres_metadata_and_injected_blob_store_form_one_application() {
         // Cause/effect graph: C1=PostgreSQL authorities open, C2=one injected
         // FileStore opens, C3=application construction is atomic. Decision

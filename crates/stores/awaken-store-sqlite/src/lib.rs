@@ -144,6 +144,23 @@ impl SqliteCommitCoordinator {
         Self::from_connection(conn)
     }
 
+    /// Constrain this connection to its current page count for deterministic
+    /// SQLITE_FULL atomicity tests. Production composition never exposes or
+    /// invokes this test-only fault injection seam.
+    #[cfg(feature = "test-support")]
+    pub fn exhaust_growth_capacity_for_test(&self) -> Result<(), StoreError> {
+        let connection = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Open("sqlite connection poisoned".into()))?;
+        let pages: i64 = connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(|error| StoreError::Open(error.to_string()))?;
+        connection
+            .pragma_update(None, "max_page_count", pages)
+            .map_err(|error| StoreError::Open(error.to_string()))
+    }
+
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)

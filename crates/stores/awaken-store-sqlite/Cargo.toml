@@ -24,6 +24,7 @@ tokio.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 awaken-store-conformance.workspace = true
+tempfile = "3"
 
 [features]
 # Private SQLite commit authority for unit and integration fixtures.
@@ -39,6 +40,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "sqlite_commit"
+required-features = ["test-support"]
+
+[[test]]
+name = "failure_atomicity"
 required-features = ["test-support"]
 
 [lints]

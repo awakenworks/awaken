@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the Postgres-backed test suites against an EPHEMERAL Postgres.
+# Run durable backend suites against ephemeral PostgreSQL and S3-compatible
+# object storage substrates.
 #
 # Half of awaken's distributed-correctness tests (durable dispatch, fencing,
 # cross-node failover, store conformance) only exercise real behaviour on the
@@ -82,6 +83,18 @@ self_test() {
       return 1
     }
   done
+  grep -Fq "cargo test -p awaken-file-store --features postgres,sqlite,object-store" "$0" || {
+    echo "Durable backend gate omits the production object-store adapter" >&2
+    return 1
+  }
+  grep -Fq "cargo test -p awaken-resource-persistence" "$0" || {
+    echo "Postgres gate omits the composed Resources restart matrix" >&2
+    return 1
+  }
+  grep -Fq "cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
+    echo "Durable backend gate omits SQLite crash and storage-full atomicity" >&2
+    return 1
+  }
 }
 
 case "${1:-}" in
@@ -101,11 +114,15 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 NAME="awaken-ci-pg-$$"
+OBJECT_NAME="awaken-ci-object-$$"
 REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"
 PASSWORD="ci" # awaken-allow: secret (throwaway ephemeral container, torn down on exit)
 DB="awaken"
+POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awaken-allow: secret
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+cleanup() {
+  docker rm -f "$NAME" "$OBJECT_NAME" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 if [ -n "$REQUESTED_PORT" ]; then
@@ -120,7 +137,7 @@ else
   echo "-> starting ephemeral Postgres ($NAME) on a Docker-assigned free port"
 fi
 if ! docker run -d --name "$NAME" \
-  -e POSTGRES_PASSWORD="$PASSWORD" -e POSTGRES_DB="$DB" `# awaken-allow: secret` \
+  -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
   -p "$PUBLISH" postgres:16-alpine >/dev/null; then
   echo "✗ Docker could not create the ephemeral Postgres container" >&2
   exit 1
@@ -146,6 +163,39 @@ fi
 
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
 echo "-> AWAKEN_TEST_DATABASE_URL=$AWAKEN_TEST_DATABASE_URL"
+
+MINIO_IMAGE="minio/minio:RELEASE.2024-12-18T13-15-44Z"
+MC_IMAGE="minio/mc:RELEASE.2024-11-21T17-21-54Z"
+# awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
+if ! docker run -d --name "$OBJECT_NAME" \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  -p 127.0.0.1::9000 "$MINIO_IMAGE" server /data --address :9000 >/dev/null; then
+  echo "✗ Docker could not create the ephemeral object store" >&2
+  exit 1
+fi
+if ! OBJECT_PORT="$(published_port "$(docker port "$OBJECT_NAME" 9000/tcp)")"; then
+  echo "✗ Docker did not publish a valid object-store TCP port" >&2
+  exit 1
+fi
+
+object_ready=0
+for _ in $(seq 1 60); do
+  if docker run --rm --network "container:$OBJECT_NAME" --entrypoint /bin/sh \
+    "$MC_IMAGE" -c \
+    'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null && mc ready local >/dev/null && mc mb --ignore-existing local/awaken-blobs >/dev/null'
+  then
+    object_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$object_ready" -ne 1 ]; then
+  echo "✗ ephemeral object store never became ready"
+  docker logs "$OBJECT_NAME" | tail -20
+  exit 1
+fi
+export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
+echo "-> AWAKEN_TEST_S3_ENDPOINT=$AWAKEN_TEST_S3_ENDPOINT"
 
 # The Postgres-backed suites. `--test <name>` targets the integration tests that gate
 # on a DB; each still self-skips a case if its schema pool cannot connect, but with the
@@ -177,11 +227,13 @@ cargo test -p awaken-credential-store --features postgres,test-support,sealed-ae
 cargo test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance || status=1
 cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || status=1
 cargo test -p awaken-env-store --features test-support --tests || status=1
-cargo test -p awaken-file-store --features postgres,sqlite || status=1
+cargo test -p awaken-file-store --features postgres,sqlite,object-store || status=1
 cargo test -p awaken-memory-store --features postgres --test conformance || status=1
 cargo test -p awaken-skill-store --features postgres --test conformance || status=1
 cargo test -p awaken-resource-store --all-features || status=1
+cargo test -p awaken-resource-persistence || status=1
 cargo test -p awaken-store-schema --test apply || status=1
+cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || status=1
 cargo test -p awaken-sandbox-policy-store --features test-support || status=1
 cargo test -p awaken-executable-agent-catalog || status=1
 cargo test -p awaken-executable-environment-catalog || status=1
@@ -190,4 +242,4 @@ cargo test -p awaken-work-store || status=1
 if [ "$status" -ne 0 ]; then
   echo "✗ Postgres-backed tests failed (see above)"; exit 1
 fi
-echo "✓ Postgres-backed tests passed against the ephemeral database"
+echo "✓ durable backend tests passed against ephemeral PostgreSQL and object storage"

@@ -14,6 +14,70 @@ use rusqlite::Connection;
 
 const NS: &str = "runtime";
 
+fn failure_atomicity_bundle(
+    second_statement: &str,
+) -> Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError> {
+    use awaken_scoped_migration::{Migration, MigrationBundle};
+
+    MigrationBundle::new(
+        "failure-atomicity",
+        vec![
+            Migration::new(
+                1,
+                "create durable value",
+                "CREATE TABLE {prefix}_value (id INTEGER)",
+            )?,
+            Migration::new(2, "complete durable value", second_statement)?,
+        ],
+    )
+}
+
+async fn isolated_postgres_pool(
+    url: &str,
+    label: &str,
+) -> Result<(sqlx::PgPool, sqlx::PgPool, String), Box<dyn std::error::Error>> {
+    use sqlx::Executor;
+
+    let admin = sqlx::PgPool::connect(url).await?;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let schema = format!("t_{label}_{suffix}");
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await?;
+    let selected_schema = schema.clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(move |connection, _| {
+            let selected_schema = selected_schema.clone();
+            Box::pin(async move {
+                connection
+                    .execute(format!("SET search_path = {selected_schema}").as_str())
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(url)
+        .await?;
+    Ok((admin, pool, schema))
+}
+
+async fn drop_postgres_pool(
+    admin: sqlx::PgPool,
+    pool: sqlx::PgPool,
+    schema: &str,
+) -> Result<(), sqlx::Error> {
+    use sqlx::Executor;
+
+    pool.close().await;
+    admin
+        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await?;
+    admin.close().await;
+    Ok(())
+}
+
 /// The eight committed-thread tables, prefixed with the runtime namespace.
 const TABLES: [&str; 8] = [
     "runtime_commit",
@@ -167,6 +231,38 @@ fn every_sqlite_historical_prefix_migrates_to_full() {
     }
 }
 
+#[test]
+fn sqlite_failed_migration_rolls_back_schema_and_ledger() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Failure-atomicity decision table: C1=a bundle contains an earlier valid
+    // DDL statement; C2=a later statement fails; C3=startup retries with a
+    // corrected declaration. R1(C1+C2)->neither user schema nor ledger commits;
+    // R2(C3)->the complete bundle applies from version one. This validates the
+    // product runner's BEGIN IMMEDIATE guard and rollback as one boundary.
+    let connection = Connection::open_in_memory()?;
+    let runner = SqliteMigrationRunner::with_prefix("failure_atomicity")?;
+    let broken = failure_atomicity_bundle("THIS IS NOT SQL")?;
+    assert!(runner.run_bundle(&connection, &broken).is_err());
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('failure_atomicity_value', 'failure_atomicity_schema_migrations', 'failure_atomicity_schema_migrations_meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(table_count, 0, "R1: failed migration leaked durable state");
+
+    let corrected = failure_atomicity_bundle("ALTER TABLE {prefix}_value ADD COLUMN value TEXT")?;
+    let applied = runner.run_bundle(&connection, &corrected)?;
+    assert_eq!(
+        applied
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        [1, 2],
+        "R2: retry must apply the complete corrected declaration"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn every_postgres_historical_prefix_migrates_to_full() {
     use sqlx::Executor;
@@ -242,6 +338,78 @@ async fn every_postgres_historical_prefix_migrates_to_full() {
         pool.close().await;
     }
     admin.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_postgres_startup_has_one_migration_applier()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Concurrency decision table: C1=two application replicas start against an
+    // empty namespace; C2=both declare the identical full bundle. R1(C1+C2)->
+    // one replica applies every version, the other waits then applies none;
+    // R2=the ledger contains each version exactly once. This is the live product
+    // proof for the transaction-scoped PostgreSQL advisory lock.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "concurrent_migration").await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
+    let bundle = commit_bundle()?;
+    let (left, right) = tokio::join!(runner.run_bundle(&bundle), runner.run_bundle(&bundle));
+    let mut applied_counts = [left?.len(), right?.len()];
+    applied_counts.sort_unstable();
+    assert_eq!(applied_counts, [0, bundle.migrations().len()], "R1");
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id = $1")
+            .bind(COMMIT_BUNDLE_ID)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(ledger_rows as usize, bundle.migrations().len(), "R2");
+
+    drop(runner);
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_failed_migration_rolls_back_schema_and_ledger_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    // This is the PostgreSQL row of the same portable failure-atomicity table as
+    // SQLite. PostgreSQL may retain its empty migration-ledger bootstrap, but
+    // the backend-neutral contract is identical: no user DDL and no applied
+    // version survives, and a corrected retry starts at version one.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "failed_migration").await?;
+    let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+        pool.clone(),
+        "failure_atomicity",
+    )?;
+    assert!(
+        runner
+            .run_bundle(&failure_atomicity_bundle("THIS IS NOT SQL")?)
+            .await
+            .is_err()
+    );
+    let user_table: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('failure_atomicity_value')::text")
+            .fetch_one(&pool)
+            .await?;
+    assert!(user_table.is_none(), "failed user DDL must roll back");
+    let ledger_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM failure_atomicity_schema_migrations WHERE bundle_id = $1",
+    )
+    .bind("failure-atomicity")
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(ledger_rows, 0, "failed migration must not claim a version");
+
+    let corrected = failure_atomicity_bundle("ALTER TABLE {prefix}_value ADD COLUMN value TEXT")?;
+    assert_eq!(runner.run_bundle(&corrected).await?.len(), 2);
+    drop(runner);
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
 }
 
 // The bundle applies against a real Postgres (skip-on-unreachable), rendering the

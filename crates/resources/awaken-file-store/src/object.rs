@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjPath};
+use object_store::{
+    ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, path::Path as ObjPath,
+};
 
 use crate::{FileStore, FileStoreError, content_id, safe_id};
 
@@ -189,12 +191,31 @@ impl ObjectFileStore {
 impl FileStore for ObjectFileStore {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
-        // Content-addressed key ⇒ an identical overwrite is a harmless no-op.
-        self.store
-            .put(&self.key(&id), PutPayload::from(bytes.to_vec()))
+        let key = self.key(&id);
+        let options = PutOptions {
+            mode: PutMode::Create,
+            ..PutOptions::default()
+        };
+        match self
+            .store
+            .put_opts(&key, PutPayload::from(bytes.to_vec()), options)
             .await
-            .map_err(e)?;
-        Ok(id)
+        {
+            Ok(_) => Ok(id),
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                let existing = self.get(&id).await?.ok_or_else(|| {
+                    e("content-addressed object disappeared during idempotent put")
+                })?;
+                if existing == bytes {
+                    Ok(id)
+                } else {
+                    Err(e(
+                        "content-addressed object does not match its immutable id",
+                    ))
+                }
+            }
+            Err(error) => Err(e(error)),
+        }
     }
 
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
@@ -202,19 +223,25 @@ impl FileStore for ObjectFileStore {
             return Ok(None);
         }
         match self.store.get(&self.key(id)).await {
-            Ok(result) => Ok(Some(result.bytes().await.map_err(e)?.to_vec())),
+            Ok(result) => {
+                let bytes = result.bytes().await.map_err(e)?.to_vec();
+                if content_id(&bytes) != id {
+                    return Err(e("content-addressed object failed integrity verification"));
+                }
+                Ok(Some(bytes))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(err) => Err(e(err)),
         }
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {
-        let prefix = ObjPath::from(self.prefix.clone());
+        let prefix = ObjPath::from(self.prefix.as_str());
         let mut stream = self.store.list(Some(&prefix));
         let mut ids = Vec::new();
         while let Some(meta) = stream.next().await {
             let meta = meta.map_err(e)?;
-            if let Some(name) = meta.location.filename() {
+            if let Some(name) = meta.location.filename().filter(|name| safe_id(name)) {
                 ids.push(name.to_string());
             }
         }
@@ -245,25 +272,51 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
 
+    async fn object_store_conformance(
+        backend: Arc<dyn ObjectStore>,
+        prefix: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Cause/effect graph: C1=create immutable content-addressed object;
+        // C2=exact replay; C3=foreign/in-flight key under the allocation;
+        // C4=external corruption at the committed key; C5=delete/replay.
+        // Effects: E1=stable id and bytes; E2=no overwrite; E3=foreign key is
+        // never projected as a File; E4=get and put fail closed; E5=one visible
+        // delete followed by an idempotent absence. The same graph executes on
+        // the in-memory adapter and mandatory MinIO substrate.
+        let store = ObjectFileStore::new(Arc::clone(&backend), prefix);
+        let bytes = b"hello object store";
+        let id = store.put(bytes).await?;
+        assert_eq!(id, store.put(bytes).await?, "idempotent");
+        assert_eq!(store.get(&id).await?.as_deref(), Some(bytes.as_slice()));
+        assert!(store.get("blobs/missing").await?.is_none());
+
+        let partial = ObjPath::from(format!("{prefix}/.partial-upload"));
+        backend
+            .put(&partial, PutPayload::from_static(b"partial"))
+            .await?;
+        let listed = store.list().await?;
+        assert_eq!(listed.as_slice(), std::slice::from_ref(&id));
+
+        backend
+            .put(
+                &ObjPath::from(format!("{prefix}/{id}")),
+                PutPayload::from_static(b"corrupt"),
+            )
+            .await?;
+        assert!(store.get(&id).await.is_err());
+        assert!(store.put(bytes).await.is_err());
+
+        backend.delete(&partial).await?;
+        assert!(store.delete(&id).await?);
+        assert!(!store.delete(&id).await?);
+        assert!(store.get("../outside").await?.is_none());
+        assert!(!store.delete("../outside").await?);
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn round_trips_over_the_in_memory_object_store() {
-        let store = ObjectFileStore::new(Arc::new(InMemory::new()), "blobs");
-        let id = store.put(b"hello object store").await.unwrap();
-        assert_eq!(
-            id,
-            store.put(b"hello object store").await.unwrap(),
-            "idempotent"
-        );
-        assert_eq!(
-            store.get(&id).await.unwrap().as_deref(),
-            Some(&b"hello object store"[..])
-        );
-        assert!(store.get("blobs/missing").await.unwrap().is_none());
-        assert!(store.list().await.unwrap().contains(&id));
-        assert!(store.delete(&id).await.unwrap());
-        assert!(!store.delete(&id).await.unwrap());
-        assert!(store.get("../outside").await.unwrap().is_none());
-        assert!(!store.delete("../outside").await.unwrap());
+    async fn in_memory_object_store_conforms() -> Result<(), Box<dyn std::error::Error>> {
+        object_store_conformance(Arc::new(InMemory::new()), "blobs").await
     }
 
     #[test]
@@ -324,40 +377,23 @@ mod tests {
     /// proving the same `FileStore` contract holds over the network backend — including
     /// the content id, which is computed in the core and so matches every other backend.
     #[tokio::test]
-    async fn minio_round_trip() {
+    async fn minio_conforms() -> Result<(), Box<dyn std::error::Error>> {
         let Ok(endpoint) = std::env::var("AWAKEN_TEST_S3_ENDPOINT") else {
             println!("[skip] no object store reachable (AWAKEN_TEST_S3_ENDPOINT)");
-            return;
+            return Ok(());
         };
         use object_store::aws::AmazonS3Builder;
-        let s3 = AmazonS3Builder::new()
-            .with_endpoint(endpoint)
-            .with_region("us-east-1")
-            .with_bucket_name("awaken-blobs")
-            .with_access_key_id("minioadmin")
-            .with_secret_access_key("minioadmin")
-            .with_allow_http(true) // path-style plain-HTTP MinIO
-            .build()
-            .expect("build MinIO client");
-        let store = ObjectFileStore::new(Arc::new(s3), "blobs");
-
-        let id = store.put(b"hello minio").await.unwrap();
-        assert_eq!(id, store.put(b"hello minio").await.unwrap(), "idempotent");
-        assert_eq!(
-            store.get(&id).await.unwrap().as_deref(),
-            Some(&b"hello minio"[..])
+        let s3: Arc<dyn ObjectStore> = Arc::new(
+            AmazonS3Builder::new()
+                .with_endpoint(endpoint)
+                .with_region("us-east-1")
+                .with_bucket_name("awaken-blobs")
+                .with_access_key_id("minioadmin")
+                .with_secret_access_key("minioadmin")
+                .with_allow_http(true) // path-style plain-HTTP MinIO
+                .build()?,
         );
-        assert!(store.get("blobs/missing").await.unwrap().is_none());
-        assert!(store.list().await.unwrap().contains(&id));
-        assert!(store.delete(&id).await.unwrap());
-        assert!(!store.delete(&id).await.unwrap(), "delete is idempotent");
-        assert!(store.get(&id).await.unwrap().is_none());
-
-        // Same content id as the core (and thus every backend): copy-by-id migration.
-        assert_eq!(
-            store.put(b"portable").await.unwrap(),
-            content_id(b"portable")
-        );
-        store.delete(&content_id(b"portable")).await.unwrap();
+        let prefix = format!("blobs/{}", std::process::id());
+        object_store_conformance(s3, &prefix).await
     }
 }

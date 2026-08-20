@@ -4,7 +4,7 @@
 #   AWAKEN_TEST_DATABASE_URL=postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test \
 #   AWAKEN_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
 #     cargo test -p awaken-file-store -p awaken-memory-store -p awaken-skill-store \
-#       --features postgres,sqlite,s3
+#       --features postgres,sqlite,object-store
 #
 # The postgres port (32771) and creds match the in-code defaults, so the postgres
 # conformance runs even with no env set. The s3 tests skip unless AWAKEN_TEST_S3_ENDPOINT
@@ -25,7 +25,7 @@ services:
       retries: 20
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     command: server /data --address ":9000"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -40,7 +40,7 @@ services:
 
   # One-shot: create the bucket the s3 tests write into (object_store cannot make one).
   createbucket:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
     depends_on:
       minio:
         condition: service_healthy
