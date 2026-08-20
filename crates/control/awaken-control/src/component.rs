@@ -111,10 +111,8 @@ pub struct ControlDependencies {
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
-    pub credential_envelope_issuer:
-        Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
-    pub credential_material_custodian:
-        Option<Arc<dyn awaken_credential_contract::CredentialMaterialCustodian>>,
+    pub credential_material_delivery:
+        Option<awaken_credential_contract::CredentialMaterialDelivery>,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
     pub erasure_jobs: Arc<dyn ErasureJobRepo>,
     pub coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
@@ -184,8 +182,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         managed_tunnel_application,
         inference_geo_policy,
         managed_request_limiter,
-        credential_envelope_issuer,
-        credential_material_custodian,
+        credential_material_delivery,
         data_subjects,
         erasure_jobs,
         coordinator_content_eraser,
@@ -203,11 +200,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
     }
-    if let Some(issuer) = credential_envelope_issuer {
-        vault_state = vault_state.with_envelope_issuer(issuer);
-    }
-    if let Some(custodian) = credential_material_custodian {
-        vault_state = vault_state.with_material_custodian(custodian);
+    if let Some(delivery) = credential_material_delivery {
+        vault_state = vault_state.with_material_delivery(delivery);
     }
     let vault_state = Arc::new(vault_state);
 

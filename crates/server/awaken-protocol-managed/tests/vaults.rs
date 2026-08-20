@@ -1900,8 +1900,9 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     use awaken_credential_vault::repo::CredentialRepo;
     let source_workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let issuer = Arc::new(RecordingEnvelopeIssuer::default());
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
-        .with_envelope_issuer(issuer.clone());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+        awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(issuer.clone()),
+    );
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
     let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
@@ -2047,7 +2048,11 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         AdversarialEnvelopeResponse::Failure,
     ] {
         let adversarial = VaultState::new(h.secrets.clone(), h.credentials.clone())
-            .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
+            .with_material_delivery(
+                awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
+                    Arc::new(AdversarialEnvelopeIssuer(response)),
+                ),
+            );
         assert!(
             SessionCredentialSource::mcp_access_for_source(
                 &adversarial,
@@ -2086,8 +2091,9 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
     use awaken_credential_vault::repo::CredentialRepo;
     let workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let custodian = Arc::new(RecordingCustodian::default());
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
-        .with_material_custodian(custodian.clone());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+        awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(custodian.clone()),
+    );
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
     let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
@@ -2149,8 +2155,9 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         usage: awaken_credential_contract::CredentialUsage::ProviderAdapter,
         published: Mutex::new(0),
     });
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
-        .with_material_custodian(custodian.clone());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+        awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(custodian.clone()),
+    );
     let profile = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native();
     let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
         name: "authorization".into(),

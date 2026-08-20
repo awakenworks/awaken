@@ -273,10 +273,9 @@ pub(super) async fn prepare_runtime_routers(
                 process.managed_services.tunnel_application.clone(),
                 process.managed_services.inference_geo_policy.clone(),
                 Some(managed_rate_limiter.clone()),
-                process.managed_services.credential_envelope_issuer.clone(),
                 process
                     .managed_services
-                    .credential_material_custodian
+                    .credential_material_delivery
                     .clone(),
                 coordinator_content_eraser,
                 content_capture_ceiling,

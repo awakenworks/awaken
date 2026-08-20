@@ -38,10 +38,7 @@ use crate::control::vault_acl::{
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_contract::{
-    CredentialCustodyPublication, CredentialEnvelopeIssuance, CredentialEnvelopeIssuer,
-    CredentialMaterialCustodian,
-};
+use awaken_credential_contract::{CredentialCustodyPublication, CredentialEnvelopeIssuance};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialMutationError, ManagedCredentialNetworking,
@@ -163,8 +160,7 @@ pub struct VaultState {
     /// credentials, when the process startup wires one. `None` keeps every
     /// validation `unknown` (never a false `valid`).
     probe: Option<Arc<dyn McpProbe>>,
-    envelope_issuer: Option<Arc<dyn CredentialEnvelopeIssuer>>,
-    material_custodian: Option<Arc<dyn CredentialMaterialCustodian>>,
+    material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     rollout_target:
         RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
 }
@@ -179,8 +175,7 @@ impl VaultState {
             secrets,
             repository,
             probe: None,
-            envelope_issuer: None,
-            material_custodian: None,
+            material_delivery: None,
             rollout_target: RwLock::new(None),
         }
     }
@@ -380,21 +375,15 @@ impl VaultState {
         self
     }
 
-    /// Install the deployment-owned cryptographic transport adapter. Selection,
-    /// revision, holder, usage and target binding remain Vault/Session facts;
-    /// the adapter can only seal that exact request.
+    /// Install the one deployment-owned plaintext delivery mechanism.
+    /// Selection, revision, holder, usage and target binding remain
+    /// Vault/Session facts.
     #[must_use]
-    pub fn with_envelope_issuer(mut self, issuer: Arc<dyn CredentialEnvelopeIssuer>) -> Self {
-        self.envelope_issuer = Some(issuer);
-        self
-    }
-
-    #[must_use]
-    pub fn with_material_custodian(
+    pub fn with_material_delivery(
         mut self,
-        custodian: Arc<dyn CredentialMaterialCustodian>,
+        delivery: awaken_credential_contract::CredentialMaterialDelivery,
     ) -> Self {
-        self.material_custodian = Some(custodian);
+        self.material_delivery = Some(delivery);
         self
     }
 
@@ -575,43 +564,46 @@ impl VaultState {
             usage,
             policy,
         );
-        if let Some(custodian) = self
-            .material_custodian
-            .as_ref()
-            .filter(|custodian| custodian.handles(selected_holder, &access.usage))
-        {
-            let material =
-                awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
-            custodian
-                .publish(CredentialCustodyPublication {
-                    access: access.clone(),
-                    selected_holder: selected_holder.clone(),
-                    binding: binding.clone(),
-                    material,
-                })
-                .await
-                .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
-        }
-        if selected_holder.boundary != awaken_credential_contract::PlaintextBoundary::Platform
-            && let Some(issuer) = &self.envelope_issuer
-        {
-            let material =
-                awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
-            let envelope = issuer
-                .issue(CredentialEnvelopeIssuance {
-                    access: access.clone(),
-                    selected_holder: selected_holder.clone(),
-                    binding: binding.clone(),
-                    material,
-                })
-                .await
-                .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
-            envelope
-                .validate_issuance(&access, selected_holder, binding)
-                .map_err(|error| {
-                    awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
-                })?;
-            access = access.with_envelope(envelope);
+        match &self.material_delivery {
+            Some(awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(
+                custodian,
+            )) if custodian.handles(selected_holder, &access.usage) => {
+                let material =
+                    awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+                custodian
+                    .publish(CredentialCustodyPublication {
+                        access: access.clone(),
+                        selected_holder: selected_holder.clone(),
+                        binding: binding.clone(),
+                        material,
+                    })
+                    .await
+                    .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
+            }
+            Some(awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
+                issuer,
+            )) if selected_holder.boundary
+                != awaken_credential_contract::PlaintextBoundary::Platform =>
+            {
+                let material =
+                    awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+                let envelope = issuer
+                    .issue(CredentialEnvelopeIssuance {
+                        access: access.clone(),
+                        selected_holder: selected_holder.clone(),
+                        binding: binding.clone(),
+                        material,
+                    })
+                    .await
+                    .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
+                envelope
+                    .validate_issuance(&access, selected_holder, binding)
+                    .map_err(|error| {
+                        awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
+                    })?;
+                access = access.with_envelope(envelope);
+            }
+            _ => {}
         }
         Ok((source, access))
     }

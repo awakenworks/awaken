@@ -1,9 +1,24 @@
 //! Exact publication into an external credential custody boundary.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 
-use crate::{CredentialAccess, CredentialMaterialBinding, PlaintextHolder};
+use crate::{
+    CredentialAccess, CredentialEnvelopeIssuer, CredentialMaterialBinding, PlaintextHolder,
+};
+
+/// The one plaintext delivery mechanism selected by a product composition.
+///
+/// Envelope issuance and external custody are alternatives, not independent
+/// observers. Encoding that choice as an enum prevents one resolved secret
+/// from being released across two infrastructure boundaries.
+#[derive(Clone)]
+pub enum CredentialMaterialDelivery {
+    RecipientEnvelope(Arc<dyn CredentialEnvelopeIssuer>),
+    ExternalCustody(Arc<dyn CredentialMaterialCustodian>),
+}
 
 /// One exact, already-authorized publication into an external plaintext
 /// custody boundary. The caller remains the credential authority and supplies
