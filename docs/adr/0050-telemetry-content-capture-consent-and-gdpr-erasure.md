@@ -461,6 +461,10 @@ Build slices (**core** = both builds; **managed** = server-local only):
     while each adapter fences late writes and replays its durable receipt;
     trace/eval/memory adapters join their owning target when subject-keyed storage is implemented;
     optional Art. 15 access. *(managed)*
+    Hosted Cloud invokes this same application command through the existing
+    service-authenticated private Control boundary. This is a transport
+    projection only: it does not introduce a second resolver, erasure job,
+    checkpoint, or public Privacy namespace.
 11. Apply the same `CaptureDecision` gate + `data_subject_id` attribution when
     `awaken-eval` records real runs (purpose `eval_recording`, separate consent).
     *(blocked on the `awaken-eval` crate — goal-gap P0)*

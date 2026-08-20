@@ -30,6 +30,7 @@ const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
 const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
+pub const DATA_SUBJECT_ERASE_PATH: &str = "/internal/v1/control/data-subjects/erase";
 pub const CONTROL_SERVICE_ACCESS_PERMISSION: &str = "control:access";
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -39,7 +40,7 @@ struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
@@ -93,18 +94,23 @@ struct ConsentCeilingCommand {
     purpose: awaken_runtime_contract::Purpose,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DataSubjectEraseCommand {
+    subject: awaken_runtime_contract::DataSubjectId,
+}
+
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
     Ok(router_with_authenticator(
         audit,
         credentials,
         webhooks,
-        consent,
+        data_subjects,
         awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
     ))
 }
@@ -116,14 +122,14 @@ pub fn router_with_authenticator(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
     let state = ControlServiceState {
         audit,
         credentials,
         webhooks,
-        consent,
+        data_subjects,
         authenticator,
     };
     Router::new()
@@ -136,6 +142,7 @@ pub fn router_with_authenticator(
         .route(CREDENTIAL_ACCESS_PATH, post(credential_access))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
         .route(CONSENT_CEILING_PATH, post(consent_ceiling))
+        .route(DATA_SUBJECT_ERASE_PATH, post(erase_data_subject))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_authorization,
@@ -279,9 +286,22 @@ async fn consent_ceiling(
     Json(command): Json<ConsentCeilingCommand>,
 ) -> axum::response::Response {
     response(Ok(state
-        .consent
+        .data_subjects
         .consent_ceiling(&command.subject, command.purpose)
         .await))
+}
+
+async fn erase_data_subject(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<DataSubjectEraseCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .data_subjects
+            .erase(&command.subject)
+            .await
+            .map_err(|error| error.to_string()),
+    )
 }
 
 #[derive(Clone)]
@@ -538,6 +558,24 @@ impl awaken_runtime_contract::DataSubjectConsentSource for HttpControlServiceCli
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_runtime_contract::DataSubjectResolver for HttpControlServiceClient {
+    async fn erase(
+        &self,
+        subject: &awaken_runtime_contract::DataSubjectId,
+    ) -> Result<awaken_runtime_contract::ErasureReceipt, awaken_runtime_contract::ErasureError>
+    {
+        self.post(
+            DATA_SUBJECT_ERASE_PATH,
+            &DataSubjectEraseCommand {
+                subject: subject.clone(),
+            },
+        )
+        .await
+        .map_err(awaken_runtime_contract::ErasureError)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,7 +632,8 @@ mod tests {
         // R3 valid bearer + unknown vault -> false without exposing secret material;
         // R4 invalid bearer -> reject before any authoritative mutation; R5
         // authenticated consent read preserves Control's result; R6 rejected or
-        // unavailable consent reads fail closed to Structured; R7 rotating the
+        // unavailable consent reads fail closed to Structured; R7 authenticated
+        // erase reaches the same resolver and returns its stable receipt; R8 rotating the
         // injected source makes both router and client accept only the successor
         // token without reconstruction. These rules cover every boundary
         // authority and the authentication gate.
@@ -692,6 +731,16 @@ mod tests {
             awaken_runtime_contract::ContentCapture::Full,
             "R5"
         );
+        assert_eq!(
+            awaken_runtime_contract::DataSubjectResolver::erase(
+                &client,
+                &awaken_runtime_contract::DataSubjectId("dsub-a".into()),
+            )
+            .await
+            .unwrap(),
+            awaken_runtime_contract::ErasureReceipt::default(),
+            "R7"
+        );
 
         *token_source.0.write().expect("token source write") = Arc::from("next-token");
         assert!(
@@ -699,7 +748,7 @@ mod tests {
                 .has_vault("workspace-a", "still-missing")
                 .await
                 .unwrap(),
-            "R7"
+            "R8"
         );
 
         let rejected =
@@ -719,6 +768,15 @@ mod tests {
             .await,
             awaken_runtime_contract::ContentCapture::Structured,
             "R6"
+        );
+        assert!(
+            awaken_runtime_contract::DataSubjectResolver::erase(
+                &rejected,
+                &awaken_runtime_contract::DataSubjectId("dsub-rejected".into()),
+            )
+            .await
+            .is_err(),
+            "R4"
         );
         assert!(
             client

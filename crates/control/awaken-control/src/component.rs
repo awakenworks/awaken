@@ -137,6 +137,9 @@ pub struct ControlComponent {
     /// The same Control-owned consent source exposed locally to AllInOne. A
     /// split Coordinator consumes its authenticated HTTP projection instead.
     pub data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    /// The same Control-owned resolver projected through the authenticated
+    /// private boundary for hosted compliance orchestration.
+    pub data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
 }
 
 /// Build the one authoritative Control application component.
@@ -357,7 +360,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     ))
     .merge(crate::erasure_router(
         data_subject_application,
-        data_subject_resolver,
+        data_subject_resolver.clone(),
         data_subject_org,
     ));
 
@@ -369,6 +372,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         admin_tools,
         vault_state,
         data_subject_consent,
+        data_subject_resolver,
     }
 }
 

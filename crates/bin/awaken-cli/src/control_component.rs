@@ -297,7 +297,7 @@ pub(super) async fn prepare_control_routers(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
                 webhook_delivery,
-                component.data_subject_consent.clone(),
+                component.data_subject_resolver.clone(),
                 authenticator,
             )
         }
