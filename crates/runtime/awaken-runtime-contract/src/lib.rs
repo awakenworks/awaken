@@ -53,7 +53,8 @@ pub use credential::{
 };
 pub use data_subject::{
     CaptureError, CaptureSink, ContentEraser, DataSubjectConsentSource, DataSubjectId,
-    DataSubjectResolver, ErasureError, ErasureReceipt, NullResolver, Purpose,
+    DataSubjectResolver, ErasureError, ErasureReceipt, NullResolver, OrganizationPrivacyExport,
+    OrganizationPrivacyRecord, OrganizationPrivacyResolver, PrivacyExportError, Purpose,
 };
 pub use delegation::{
     ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,

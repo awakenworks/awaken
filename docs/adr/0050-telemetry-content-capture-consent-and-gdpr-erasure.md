@@ -462,9 +462,14 @@ Build slices (**core** = both builds; **managed** = server-local only):
     trace/eval/memory adapters join their owning target when subject-keyed storage is implemented;
     optional Art. 15 access. *(managed)*
     Hosted Cloud invokes this same application command through the existing
-    service-authenticated private Control boundary. This is a transport
+    service-authenticated private Control boundary. For organization lifecycle,
+    `RepoOrganizationPrivacyResolver` inventories the exact Org in the same
+    `DataSubjectRepo`, then delegates every erase to that resolver; export reads
+    the same aggregates and rejects a cross-Org subject selector. The private
+    organization erase/export routes reuse `HttpControlServiceClient` and its
+    rotating service credential. This is a process-manager and transport
     projection only: it does not introduce a second resolver, erasure job,
-    checkpoint, or public Privacy namespace.
+    checkpoint, public Privacy namespace, license check, or entitlement model.
 11. Apply the same `CaptureDecision` gate + `data_subject_id` attribution when
     `awaken-eval` records real runs (purpose `eval_recording`, separate consent).
     *(blocked on the `awaken-eval` crate — goal-gap P0)*

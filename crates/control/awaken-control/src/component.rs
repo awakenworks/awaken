@@ -20,7 +20,8 @@ use awaken_config_service::{
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_data_subject_application::{
-    DataSubjectApplication, DataSubjectRepo, ErasureJobRepo, ErasureTarget, RepoDataSubjectResolver,
+    DataSubjectApplication, DataSubjectRepo, ErasureJobRepo, ErasureTarget,
+    RepoDataSubjectResolver, RepoOrganizationPrivacyResolver,
 };
 use awaken_environment_contract::EnvironmentAuthor;
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
@@ -140,6 +141,9 @@ pub struct ControlComponent {
     /// The same Control-owned resolver projected through the authenticated
     /// private boundary for hosted compliance orchestration.
     pub data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
+    /// The one organization-level privacy process manager, projected through
+    /// the same private Control boundary as subject erasure.
+    pub organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
 }
 
 /// Build the one authoritative Control application component.
@@ -312,7 +316,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         DataSubjectApplication::new(data_subjects.clone(), enrollment_signing_key.to_vec())
             .expect("a derived 32-byte enrollment signing key is valid"),
     );
-    let resolver = RepoDataSubjectResolver::new(data_subjects, erasure_jobs)
+    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs)
         .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
     let resolver = match resource_content_eraser {
         Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
@@ -322,6 +326,11 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     let data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource> =
         resolver.clone();
     let data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = resolver;
+    let organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver> =
+        Arc::new(RepoOrganizationPrivacyResolver::new(
+            data_subjects,
+            data_subject_resolver.clone(),
+        ));
     let router = control_router(ControlRouterInput {
         catalog,
         credentials,
@@ -373,6 +382,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         vault_state,
         data_subject_consent,
         data_subject_resolver,
+        organization_privacy,
     }
 }
 
