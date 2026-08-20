@@ -338,6 +338,15 @@ conflict fails before insertion; a Session candidate with the same logical name
 as an Agent candidate replaces it independent of input order. The persisted
 frozen MCP set remains the only desired-state authority.
 
+Hosted product composition uses the explicitly namespaced Awaken extension
+`POST /v1/awaken/sessions` to deliver that same complete command. The extension
+owns only strong wire types and lowering; it calls the existing
+`create_profiled_session` composer and cannot create, update, or realize a
+Session independently. Embedded products call the composer in process. Thus
+placement changes transport only: mounts, environment variables, prompts, MCP
+credential references, and network policy are frozen by the same application
+owner before the root insert.
+
 ## Amendment (2026-08-15): Worker projection carries the exact Agent publication
 
 A registered Worker remains authority-store-free, so the initial Session

@@ -11,6 +11,7 @@ authority = "protocol-awaken"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-session-contract.workspace = true

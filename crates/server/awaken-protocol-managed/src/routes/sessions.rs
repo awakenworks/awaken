@@ -1301,6 +1301,123 @@ pub async fn replace_resource_manifest(
     Ok((response_headers, Json(manifest)))
 }
 
+const PROFILED_SESSION_REQUEST_FINGERPRINT: &str = "awaken.profiled_session_request_fingerprint";
+
+/// Lower Awaken's strongly typed extension request into the sole profiled
+/// Session composer. The handler owns no Session state or realization path.
+pub async fn create_profiled_session(
+    State(state): State<Arc<ManagedState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    Json(mut body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
+) -> Result<Json<awaken_protocol_awaken::ProfiledSessionCreated>, (StatusCode, Json<ErrorResponse>)>
+{
+    let owner_scope = workspace
+        .and_then(|scope| scope.0.non_empty().map(str::to_owned))
+        .ok_or_else(|| {
+            error_response(StateError::Run(RunError::bad_request(
+                "profiled Session creation requires a Workspace scope",
+            )))
+        })?;
+    if body.session_id.trim().is_empty()
+        || body.agent_id.trim().is_empty()
+        || body.source_revision == Some(0)
+        || body
+            .metadata
+            .contains_key(PROFILED_SESSION_REQUEST_FINGERPRINT)
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "profiled Session identity, revision, or reserved metadata is invalid",
+        ))));
+    }
+    let request_fingerprint = awaken_session_contract::stable_fingerprint(&body);
+    if let Some(existing) = state
+        .session_application()
+        .read_session_projection(&body.session_id, Some(&owner_scope))
+        .await
+        .map_err(|error| {
+            error_response(StateError::Run(RunError::unavailable(error.to_string())))
+        })?
+    {
+        if existing
+            .session
+            .metadata
+            .get(PROFILED_SESSION_REQUEST_FINGERPRINT)
+            != Some(&request_fingerprint)
+        {
+            return Err(error_response(StateError::Conflict));
+        }
+        return Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
+            id: existing.session.session_id,
+            metadata: existing.session.metadata,
+        }));
+    }
+    body.metadata.insert(
+        PROFILED_SESSION_REQUEST_FINGERPRINT.into(),
+        request_fingerprint,
+    );
+    let mounts = body
+        .mounts
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            error_response(StateError::Run(RunError::bad_request(error.to_string())))
+        })?;
+    let env = body
+        .env
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            error_response(StateError::Run(RunError::bad_request(error.to_string())))
+        })?;
+    let mcp_candidates = body
+        .mcp_attachments
+        .into_iter()
+        .map(
+            |candidate| awaken_session_application::McpAttachmentCandidate {
+                name: candidate.name,
+                target: awaken_session_application::McpAttachmentCandidateTarget::Normalized(
+                    candidate.target,
+                ),
+                prompts_as_skills: candidate.prompts_as_skills,
+                published_credential: candidate
+                    .published_credential
+                    .map(|credential| (credential.id, credential.revision)),
+                origin: candidate.origin,
+            },
+        )
+        .collect();
+    let session = state
+        .session_application()
+        .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
+            owner_scope,
+            session_id: body.session_id,
+            agent_id: body.agent_id,
+            source_revision: body.source_revision,
+            environment_id: body.environment_id,
+            model: None,
+            mounts,
+            env,
+            prompts: body.prompts,
+            mcp_candidates,
+            network_restriction: body.network_restriction,
+            title: body.title,
+            metadata: body.metadata,
+            tools: body.tools,
+        })
+        .await
+        .map_err(|error| error_response(StateError::Run(error)))?;
+    state
+        .ensure_session(&session.session_id)
+        .await
+        .map_err(error_response)?;
+    Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
+        id: session.session_id,
+        metadata: session.metadata,
+    }))
+}
+
 async fn create_resource(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,

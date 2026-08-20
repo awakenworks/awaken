@@ -1,5 +1,84 @@
 pub mod awaken_protocol_awaken
+pub struct awaken_protocol_awaken::ProfiledSessionCreate
+pub awaken_protocol_awaken::ProfiledSessionCreate::agent_id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionCreate::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
+pub awaken_protocol_awaken::ProfiledSessionCreate::environment_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::mcp_attachments: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionMcpAttachment>
+pub awaken_protocol_awaken::ProfiledSessionCreate::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
+pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
+pub awaken_protocol_awaken::ProfiledSessionCreate::prompts: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::session_id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionCreate::source_revision: core::option::Option<u64>
+pub awaken_protocol_awaken::ProfiledSessionCreate::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::tools: core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>
+impl core::clone::Clone for awaken_protocol_awaken::ProfiledSessionCreate
+pub fn awaken_protocol_awaken::ProfiledSessionCreate::clone(&self) -> awaken_protocol_awaken::ProfiledSessionCreate
+impl core::cmp::PartialEq for awaken_protocol_awaken::ProfiledSessionCreate
+pub fn awaken_protocol_awaken::ProfiledSessionCreate::eq(&self, &awaken_protocol_awaken::ProfiledSessionCreate) -> bool
+impl core::fmt::Debug for awaken_protocol_awaken::ProfiledSessionCreate
+pub fn awaken_protocol_awaken::ProfiledSessionCreate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_awaken::ProfiledSessionCreate
+impl serde_core::ser::Serialize for awaken_protocol_awaken::ProfiledSessionCreate
+pub fn awaken_protocol_awaken::ProfiledSessionCreate::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_awaken::ProfiledSessionCreate
+pub fn awaken_protocol_awaken::ProfiledSessionCreate::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::marker::Send for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::marker::Sync for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::marker::Unpin for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::marker::UnsafeUnpin for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_awaken::ProfiledSessionCreate
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_awaken::ProfiledSessionCreate
+pub struct awaken_protocol_awaken::ProfiledSessionCreated
+pub awaken_protocol_awaken::ProfiledSessionCreated::id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionCreated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl core::clone::Clone for awaken_protocol_awaken::ProfiledSessionCreated
+pub fn awaken_protocol_awaken::ProfiledSessionCreated::clone(&self) -> awaken_protocol_awaken::ProfiledSessionCreated
+impl core::cmp::Eq for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::cmp::PartialEq for awaken_protocol_awaken::ProfiledSessionCreated
+pub fn awaken_protocol_awaken::ProfiledSessionCreated::eq(&self, &awaken_protocol_awaken::ProfiledSessionCreated) -> bool
+impl core::fmt::Debug for awaken_protocol_awaken::ProfiledSessionCreated
+pub fn awaken_protocol_awaken::ProfiledSessionCreated::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_awaken::ProfiledSessionCreated
+impl serde_core::ser::Serialize for awaken_protocol_awaken::ProfiledSessionCreated
+pub fn awaken_protocol_awaken::ProfiledSessionCreated::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_awaken::ProfiledSessionCreated
+pub fn awaken_protocol_awaken::ProfiledSessionCreated::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::marker::Send for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::marker::Sync for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::marker::Unpin for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::marker::UnsafeUnpin for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_awaken::ProfiledSessionCreated
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_awaken::ProfiledSessionCreated
+pub struct awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::name: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::origin: awaken_session_contract::mcp_attachment::McpAttachmentOrigin
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::prompts_as_skills: bool
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::published_credential: core::option::Option<awaken_credential_contract::CredentialRef>
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::target: awaken_agent_contract::mcp_target::McpTarget
+impl core::clone::Clone for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub fn awaken_protocol_awaken::ProfiledSessionMcpAttachment::clone(&self) -> awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::cmp::Eq for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::cmp::PartialEq for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub fn awaken_protocol_awaken::ProfiledSessionMcpAttachment::eq(&self, &awaken_protocol_awaken::ProfiledSessionMcpAttachment) -> bool
+impl core::fmt::Debug for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub fn awaken_protocol_awaken::ProfiledSessionMcpAttachment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl serde_core::ser::Serialize for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub fn awaken_protocol_awaken::ProfiledSessionMcpAttachment::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub fn awaken_protocol_awaken::ProfiledSessionMcpAttachment::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::marker::Send for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::marker::Sync for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::marker::Unpin for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::marker::UnsafeUnpin for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_awaken::ProfiledSessionMcpAttachment
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
