@@ -15,7 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 mod http_effect;
 pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
 mod custody;
-pub use custody::{CredentialCustodyPublication, CredentialMaterialCustodian};
+pub use custody::{
+    CredentialCustodyPublication, CredentialMaterialCustodian, CredentialMaterialDelivery,
+};
 mod managed_rollout;
 pub use managed_rollout::{ManagedCredentialOperation, ManagedCredentialRollout};
 #[cfg(kani)]
