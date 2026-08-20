@@ -1128,7 +1128,9 @@ fn strip_ansi(input: &str) -> String {
                 }
             }
         } else {
-            output.push(bytes[index]);
+            if bytes[index] != 0 {
+                output.push(bytes[index]);
+            }
             index += 1;
         }
     }
