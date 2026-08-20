@@ -1,4 +1,5 @@
 use super::*;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
@@ -760,19 +761,27 @@ struct SpyCheckpointStore {
 }
 #[async_trait]
 impl StreamCheckpointStore for SpyCheckpointStore {
-    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
-        self.map.lock().unwrap().get(run_id).cloned()
+    async fn get(
+        &self,
+        run_id: &str,
+    ) -> std::result::Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+        Ok(self.map.lock().unwrap().get(run_id).cloned())
     }
-    async fn put(&self, checkpoint: StreamCheckpoint) {
+    async fn put(
+        &self,
+        checkpoint: StreamCheckpoint,
+    ) -> std::result::Result<(), StreamCheckpointError> {
         self.puts.lock().unwrap().push(checkpoint.clone());
         self.map
             .lock()
             .unwrap()
             .insert(checkpoint.run_id.clone(), checkpoint);
+        Ok(())
     }
-    async fn delete(&self, run_id: &str) {
+    async fn delete(&self, run_id: &str) -> std::result::Result<(), StreamCheckpointError> {
         self.deletes.lock().unwrap().push(run_id.to_string());
         self.map.lock().unwrap().remove(run_id);
+        Ok(())
     }
 }
 
@@ -1165,7 +1174,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         // It was cleared on return — it survives only a crash before that point.
         assert_eq!(*store.deletes.lock().unwrap(), vec!["run-x".to_string()]);
     }
-    assert!(store.get("run-x").await.is_none());
+    assert!(store.get("run-x").await.expect("checkpoint read").is_none());
 }
 
 #[tokio::test]

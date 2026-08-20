@@ -181,8 +181,10 @@ pub(super) async fn infer_with_retry_observed(
     // Any return means recovery concluded in-process, so the checkpoint (if any)
     // is spent. It survives only a crash *before* this line — mid-recovery —
     // which is exactly the cross-process window Phase 3 guards.
-    if let Some(ctx) = checkpoint {
-        ctx.store.delete(&ctx.run_id).await;
+    if let Some(ctx) = checkpoint
+        && let Err(error) = ctx.store.delete(&ctx.run_id).await
+    {
+        tracing::warn!(run_id = %ctx.run_id, %error, "failed to delete spent stream checkpoint");
     }
     match &result {
         Ok(response) => {
@@ -333,12 +335,15 @@ async fn infer_with_retry_inner(
 
                 if retryable {
                     // Boundary flush (Phase 3): persist the whole in-flight partial
-                    // so a crash during recovery resumes here. Best-effort — a
-                    // store fault must never turn a recoverable blip into a failure.
-                    if let Some(ctx) = checkpoint {
-                        ctx.store
+                    // so a crash during recovery resumes here. The runtime still
+                    // degrades deliberately, but the backend error is observable.
+                    if let Some(ctx) = checkpoint
+                        && let Err(error) = ctx
+                            .store
                             .put(ctx.checkpoint(combined_text.clone(), snapshot.tools.clone()))
-                            .await;
+                            .await
+                    {
+                        tracing::warn!(run_id = %ctx.run_id, %error, "failed to persist stream checkpoint");
                     }
                     // R2: tool calls finished before the drop → execute them now
                     // rather than re-inferring, even if the retry budget is spent.

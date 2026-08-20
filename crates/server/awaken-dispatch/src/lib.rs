@@ -32,6 +32,8 @@ mod pool;
 #[cfg(feature = "durable")]
 mod postgres;
 #[cfg(feature = "durable")]
+mod postgres_checkpoint;
+#[cfg(feature = "durable")]
 mod postgres_helpers;
 #[cfg(feature = "durable")]
 mod postgres_identity;

@@ -603,35 +603,38 @@ fn checkpoint(run: &str, text: &str) -> StreamCheckpoint {
 async fn checkpoint_store_get_put_overwrite_delete() {
     let store = MemoryStreamCheckpointStore::new();
     // Empty read → None (resume nothing).
-    assert!(store.get("r").await.is_none());
+    assert!(store.get("r").await.unwrap().is_none());
 
-    store.put(checkpoint("r", "first")).await;
+    store.put(checkpoint("r", "first")).await.unwrap();
     assert_eq!(
-        store.get("r").await.map(|c| c.partial_text),
+        store.get("r").await.unwrap().map(|c| c.partial_text),
         Some("first".to_string())
     );
 
     // put overwrites the prior partial for the same run_id (last write wins).
-    store.put(checkpoint("r", "second")).await;
+    store.put(checkpoint("r", "second")).await.unwrap();
     assert_eq!(
-        store.get("r").await.map(|c| c.partial_text),
+        store.get("r").await.unwrap().map(|c| c.partial_text),
         Some("second".to_string())
     );
 
     // A distinct run_id is kept independently.
-    store.put(checkpoint("r2", "other")).await;
+    store.put(checkpoint("r2", "other")).await.unwrap();
     assert_eq!(
-        store.get("r2").await.map(|c| c.partial_text),
+        store.get("r2").await.unwrap().map(|c| c.partial_text),
         Some("other".to_string())
     );
 
     // delete removes only the targeted key.
-    store.delete("r").await;
-    assert!(store.get("r").await.is_none());
-    assert!(store.get("r2").await.is_some(), "unrelated key untouched");
+    store.delete("r").await.unwrap();
+    assert!(store.get("r").await.unwrap().is_none());
+    assert!(
+        store.get("r2").await.unwrap().is_some(),
+        "unrelated key untouched"
+    );
 
     // delete is idempotent: deleting an absent key is a no-op, not an error.
-    store.delete("r").await;
-    store.delete("never-existed").await;
-    assert!(store.get("r").await.is_none());
+    store.delete("r").await.unwrap();
+    store.delete("never-existed").await.unwrap();
+    assert!(store.get("r").await.unwrap().is_none());
 }

@@ -729,7 +729,10 @@ async fn any_postgres_connect_and_claim() {
         partial_text: "partial".to_string(),
         partial_tools: Vec::new(),
     };
-    checkpoint.put(partial.clone()).await;
+    checkpoint
+        .put(partial.clone())
+        .await
+        .expect("checkpoint put");
 
     let restarted =
         AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema), 10)
@@ -741,6 +744,6 @@ async fn any_postgres_connect_and_claim() {
             .expect("restarted wrapper carries checkpoint store")
             .get("any-checkpoint")
             .await,
-        Some(partial)
+        Ok(Some(partial))
     );
 }

@@ -13,10 +13,10 @@
 //! deleted the moment recovery concludes, so it survives only the narrow window
 //! between an interruption and its resolution — exactly the crash it guards.
 //!
-//! Writes are best-effort: a failing checkpoint store must never disrupt the
-//! live stream. Implementations swallow their errors (a `put`/`delete` that
-//! fails is a lost optimization, not a run failure; a failed `get` yields
-//! `None`, i.e. "resume nothing").
+//! Storage failures are explicit. A runtime may deliberately degrade to
+//! best-effort recovery, but that policy belongs at the call site where it can
+//! be logged and measured; a backend must never turn failed persistence into an
+//! apparent successful acknowledgement.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -49,15 +49,23 @@ pub struct StreamCheckpoint {
     pub partial_tools: Vec<PartialToolCall>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StreamCheckpointError {
+    #[error("stream checkpoint storage unavailable: {0}")]
+    Storage(String),
+    #[error("stream checkpoint write was fenced: {0}")]
+    Fenced(String),
+}
+
 /// Where the runtime flushes and reads an interrupted step's partial. Keyed by
-/// `run_id`; `delete` is idempotent. Every method is best-effort — see the module
-/// docs: a store fault degrades to "no resume", never a run failure.
+/// `run_id`; `delete` is idempotent. Every method reports storage/fencing errors;
+/// callers choose whether a failed recovery optimization should fail the run.
 #[async_trait]
 pub trait StreamCheckpointStore: Send + Sync {
-    /// The checkpoint for `run_id`, or `None` if there is none (or on any error).
-    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint>;
+    /// The checkpoint for `run_id`, or `None` if there is none.
+    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError>;
     /// Persist (overwriting any prior) the in-flight partial for its `run_id`.
-    async fn put(&self, checkpoint: StreamCheckpoint);
+    async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError>;
     /// Remove the checkpoint for `run_id`; a no-op if absent.
-    async fn delete(&self, run_id: &str);
+    async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError>;
 }

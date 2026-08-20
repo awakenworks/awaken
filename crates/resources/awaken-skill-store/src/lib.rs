@@ -6,8 +6,12 @@
 //! receive an already-trusted Workspace id and enforce only intrinsic ownership.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -433,18 +437,24 @@ impl SkillStore for InMemorySkillStore {
 /// collisions between Workspaces or Skill ids.
 pub struct FsSkillStore {
     root: PathBuf,
-    gate: Mutex<()>,
 }
+
+static FS_SKILL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl FsSkillStore {
     /// Open (creating if absent) the catalog rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
-        let store = Self {
-            root,
-            gate: Mutex::new(()),
-        };
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join(".awaken-skill.lock"))?
+            .sync_all()?;
+        File::open(&root)?.sync_all()?;
+        let store = Self { root };
         Ok(store)
     }
 
@@ -485,6 +495,28 @@ impl FsSkillStore {
             .join(format!("{}.json", Self::encoded(skill_id)))
     }
 
+    fn shared_lock(&self) -> Result<File, SkillStoreError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.root.join(".awaken-skill.lock"))
+            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        file.lock_shared()
+            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        Ok(file)
+    }
+
+    fn exclusive_lock(&self) -> Result<File, SkillStoreError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.root.join(".awaken-skill.lock"))
+            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        file.lock()
+            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        Ok(file)
+    }
+
     fn read_aggregate(
         &self,
         workspace: &str,
@@ -500,15 +532,33 @@ impl FsSkillStore {
     fn write_aggregate(&self, aggregate: &SkillAggregate) -> Result<(), SkillStoreError> {
         let dir = self.ws_dir(aggregate.definition.workspace_id.as_str());
         std::fs::create_dir_all(&dir).map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        sync_skill_directory(&self.root)?;
         let path = self.aggregate_path(
             aggregate.definition.workspace_id.as_str(),
             aggregate.definition.id.as_str(),
         );
-        let temp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        let temp = path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            FS_SKILL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
         let bytes = serde_json::to_vec(aggregate)
             .map_err(|error| SkillStoreError::Storage(error.to_string()))?;
-        std::fs::write(&temp, bytes).map_err(|error| SkillStoreError::Io(error.to_string()))?;
-        std::fs::rename(&temp, &path).map_err(|error| SkillStoreError::Io(error.to_string()))
+        let publish = (|| -> std::io::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)?;
+            File::open(&dir)?.sync_all()
+        })();
+        if let Err(error) = publish {
+            let _ = std::fs::remove_file(&temp);
+            return Err(SkillStoreError::Io(error.to_string()));
+        }
+        Ok(())
     }
 
     fn visible_aggregates(
@@ -553,7 +603,7 @@ impl FsSkillStore {
 #[async_trait]
 impl SkillStore for FsSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.shared_lock()?;
         let mut workspaces = Vec::new();
         for entry in
             std::fs::read_dir(&self.root).map_err(|error| SkillStoreError::Io(error.to_string()))?
@@ -582,7 +632,7 @@ impl SkillStore for FsSkillStore {
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
         validate_create(&definition, &initial_version)?;
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.exclusive_lock()?;
         if self
             .read_aggregate(definition.workspace_id.as_str(), definition.id.as_str())?
             .is_some()
@@ -603,7 +653,7 @@ impl SkillStore for FsSkillStore {
         skill_id: &str,
         version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.exclusive_lock()?;
         let mut aggregate = self
             .read_aggregate(workspace_id, skill_id)?
             .ok_or_else(|| SkillStoreError::NotFound(skill_id.into()))?;
@@ -616,6 +666,7 @@ impl SkillStore for FsSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<Option<SkillDefinition>, SkillStoreError> {
+        let _guard = self.shared_lock()?;
         Ok(self
             .read_aggregate(workspace_id, skill_id)?
             .filter(|aggregate| !aggregate.deleted)
@@ -626,6 +677,7 @@ impl SkillStore for FsSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
+        let _guard = self.shared_lock()?;
         Ok(self
             .visible_aggregates(workspace_id)?
             .into_iter()
@@ -637,7 +689,7 @@ impl SkillStore for FsSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.shared_lock()?;
         self.visible_aggregates(workspace_id)?
             .into_iter()
             .map(|aggregate| {
@@ -658,6 +710,7 @@ impl SkillStore for FsSkillStore {
         skill_id: &str,
         version: u64,
     ) -> Result<Option<SkillVersion>, SkillStoreError> {
+        let _guard = self.shared_lock()?;
         Ok(self
             .read_aggregate(workspace_id, skill_id)?
             .and_then(|aggregate| aggregate.versions.get(&version).cloned()))
@@ -668,6 +721,7 @@ impl SkillStore for FsSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        let _guard = self.shared_lock()?;
         Ok(self
             .read_aggregate(workspace_id, skill_id)?
             .filter(|aggregate| !aggregate.deleted)
@@ -688,7 +742,7 @@ impl SkillStore for FsSkillStore {
         skill_id: &str,
         version: u64,
     ) -> Result<bool, SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.exclusive_lock()?;
         let Some(mut aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
             return Ok(false);
         };
@@ -704,7 +758,7 @@ impl SkillStore for FsSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.exclusive_lock()?;
         let Some(mut aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
             return Ok(false);
         };
@@ -721,7 +775,7 @@ impl SkillStore for FsSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<u64, SkillStoreError> {
-        let _guard = self.gate.lock().unwrap();
+        let _guard = self.exclusive_lock()?;
         let Some(aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
             return Ok(0);
         };
@@ -731,11 +785,20 @@ impl SkillStore for FsSkillStore {
             ));
         }
         match std::fs::remove_file(self.aggregate_path(workspace_id, skill_id)) {
-            Ok(()) => Ok(aggregate.versions.len() as u64),
+            Ok(()) => {
+                sync_skill_directory(&self.ws_dir(workspace_id))?;
+                Ok(aggregate.versions.len() as u64)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
             Err(error) => Err(SkillStoreError::Io(error.to_string())),
         }
     }
+}
+
+fn sync_skill_directory(path: &Path) -> Result<(), SkillStoreError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| SkillStoreError::Io(error.to_string()))
 }
 
 #[cfg(test)]

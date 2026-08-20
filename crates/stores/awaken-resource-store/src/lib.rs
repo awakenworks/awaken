@@ -1117,10 +1117,35 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_is_durable_and_conforms() {
+        // Test design — durable partition coverage: every ResourceKind is a
+        // separate storage identity partition. One row per partition must survive
+        // close/reopen without kind aliasing or loss.
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("resources.db");
         let store = SqliteResourceStore::open(&path).unwrap();
         repository_spec(&store).await;
+        let kinds = [
+            ResourceKind::File,
+            ResourceKind::MemoryStore,
+            ResourceKind::Repository,
+            ResourceKind::Skill,
+        ];
+        for (ordinal, kind) in kinds.into_iter().enumerate() {
+            store
+                .add_reference(ResourceReferenceRecord {
+                    target: ResourceTarget::new(
+                        "workspace-all-kinds",
+                        kind,
+                        format!("resource-{ordinal}"),
+                    ),
+                    reference: ResourceReference {
+                        kind: ResourceReferenceKind::LogicalLifecycle,
+                        reference_id: format!("lifecycle-{ordinal}"),
+                    },
+                })
+                .await
+                .unwrap();
+        }
         drop(store);
         let reopened = SqliteResourceStore::open(path).unwrap();
         assert!(reopened.get("purge-1").await.unwrap().is_some());
@@ -1132,5 +1157,17 @@ mod tests {
                 .len(),
             1
         );
+        for (ordinal, kind) in kinds.into_iter().enumerate() {
+            let rows = reopened
+                .references_for_resource(kind, &format!("resource-{ordinal}"))
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].target.kind, kind);
+            assert_eq!(
+                rows[0].reference.reference_id,
+                format!("lifecycle-{ordinal}")
+            );
+        }
     }
 }

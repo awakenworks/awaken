@@ -41,6 +41,9 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
 
 pub const FP: &str = "catalog-a";
@@ -503,6 +506,19 @@ impl CommittedThreadView for FailingCommit {
         thread_id: &ThreadId,
     ) -> Vec<awaken_agent_contract::agent::state::Command> {
         self.inner.committed_state(thread_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl RunRecoverySource for FailingCommit {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.inner
+            .recovery_snapshot(thread_id, claimed_run_id)
+            .await
     }
 }
 

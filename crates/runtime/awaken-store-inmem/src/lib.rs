@@ -16,7 +16,9 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::stream::checkpoint::{
+    StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
+};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 use awaken_agent_contract::thread::commit::RunFact;
@@ -543,19 +545,26 @@ impl MemoryStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for MemoryStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
-        self.checkpoints.lock().ok()?.get(run_id).cloned()
+    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+        self.checkpoints
+            .lock()
+            .map(|values| values.get(run_id).cloned())
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
     }
 
-    async fn put(&self, checkpoint: StreamCheckpoint) {
-        if let Ok(mut map) = self.checkpoints.lock() {
-            map.insert(checkpoint.run_id.clone(), checkpoint);
-        }
+    async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
+        self.checkpoints
+            .lock()
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?
+            .insert(checkpoint.run_id.clone(), checkpoint);
+        Ok(())
     }
 
-    async fn delete(&self, run_id: &str) {
-        if let Ok(mut map) = self.checkpoints.lock() {
-            map.remove(run_id);
-        }
+    async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
+        self.checkpoints
+            .lock()
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?
+            .remove(run_id);
+        Ok(())
     }
 }
