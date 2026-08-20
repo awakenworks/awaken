@@ -42,6 +42,9 @@ pub(super) async fn control_component_for_process(
     credential_envelope_issuer: Option<
         Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>,
     >,
+    credential_material_custodian: Option<
+        Arc<dyn awaken_credential_contract::CredentialMaterialCustodian>,
+    >,
     coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
@@ -107,6 +110,7 @@ pub(super) async fn control_component_for_process(
         inference_geo_policy,
         managed_request_limiter,
         credential_envelope_issuer,
+        credential_material_custodian,
         data_subjects: control.data_subjects.clone(),
         erasure_jobs: control.erasure_jobs.clone(),
         coordinator_content_eraser,
@@ -254,6 +258,10 @@ pub(super) async fn prepare_control_routers(
         process.managed_services.inference_geo_policy.clone(),
         Some(managed_rate_limiter),
         process.managed_services.credential_envelope_issuer.clone(),
+        process
+            .managed_services
+            .credential_material_custodian
+            .clone(),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,

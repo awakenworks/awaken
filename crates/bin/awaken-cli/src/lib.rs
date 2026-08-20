@@ -81,7 +81,9 @@ use deployment_process::{
     prepare_runtime_process, prepare_runtime_process_with_coordinator_services,
 };
 use identity::identity_wiring;
-pub use managed_platform::{CoordinatorServiceAdapters, ManagedServiceAdapters};
+pub use managed_platform::{
+    CoordinatorServiceAdapters, ManagedBackgroundService, ManagedServiceAdapters,
+};
 use process_startup::{ProcessStartup, local_model_supply};
 #[cfg(test)]
 use process_stores::role_hosts_resources;
@@ -94,8 +96,8 @@ use resources::ephemeral_resources_application;
 use resources::open_resources_application;
 use runtime_process_router::prepare_runtime_routers;
 pub use service::{
-    ServiceRole, migrate_service, run_service, run_service_binary, serve_prepared_control,
-    serve_prepared_coordinator,
+    ServiceRole, migrate_service, run_all_in_one_with_services, run_service, run_service_binary,
+    serve_prepared_control, serve_prepared_coordinator,
 };
 
 /// Run a service future on the canonical process runtime.
@@ -726,6 +728,30 @@ pub async fn prepare_all_in_one_process_with_managed_services(
         config::Role::AllInOne,
         PublicationModelSupply::PublishedProviders,
         managed_services,
+    )
+    .await
+}
+
+/// Prepare the canonical AllInOne process with product-supplied managed and
+/// Coordinator infrastructure adapters.
+///
+/// Commercial compositions use this seam to retain Awaken's complete
+/// Managed Agents and Environment surface while replacing only narrow
+/// infrastructure ports. Routers, stores, migrations, and lifecycle remain
+/// owned by Awaken.
+pub async fn prepare_all_in_one_process_with_services(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    managed_services: ManagedServiceAdapters,
+    coordinator_services: CoordinatorServiceAdapters,
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process_with_coordinator_services(
+        deployment,
+        Some(key),
+        config::Role::AllInOne,
+        PublicationModelSupply::PublishedProviders,
+        managed_services,
+        coordinator_services,
     )
     .await
 }

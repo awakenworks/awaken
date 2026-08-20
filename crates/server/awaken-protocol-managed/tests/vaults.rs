@@ -67,6 +67,59 @@ struct RecordingEnvelopeIssuer {
     issued: Mutex<Vec<(String, u64, String)>>,
 }
 
+#[derive(Default)]
+struct RecordingCustodian {
+    published: Mutex<Vec<(String, u64, String)>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::CredentialMaterialCustodian for RecordingCustodian {
+    fn handles(
+        &self,
+        _selected_holder: &awaken_credential_contract::PlaintextHolder,
+        _usage: &awaken_credential_contract::CredentialUsage,
+    ) -> bool {
+        true
+    }
+
+    async fn publish(
+        &self,
+        publication: awaken_credential_contract::CredentialCustodyPublication,
+    ) -> Result<(), String> {
+        self.published.lock().unwrap().push((
+            publication.access.credential.id,
+            publication.access.credential.revision,
+            publication.material.expose_secret().to_owned(),
+        ));
+        Ok(())
+    }
+}
+
+struct SelectiveCustodian {
+    holder: awaken_credential_contract::PlaintextHolder,
+    usage: awaken_credential_contract::CredentialUsage,
+    published: Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::CredentialMaterialCustodian for SelectiveCustodian {
+    fn handles(
+        &self,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        usage: &awaken_credential_contract::CredentialUsage,
+    ) -> bool {
+        selected_holder == &self.holder && usage == &self.usage
+    }
+
+    async fn publish(
+        &self,
+        _publication: awaken_credential_contract::CredentialCustodyPublication,
+    ) -> Result<(), String> {
+        *self.published.lock().unwrap() += 1;
+        Ok(())
+    }
+}
+
 enum AdversarialEnvelopeResponse {
     SubstitutedPayload,
     Failure,
@@ -2008,6 +2061,121 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             "substitution or issuer failure must reject without fallback"
         );
     }
+}
+
+#[tokio::test]
+async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
+    let h = harness();
+    let vault_id = create_vault(&h, "external custody").await;
+    let (_, credential) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "custody-secret" // awaken-allow: secret
+        })),
+    )
+    .await;
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
+    let custodian = Arc::new(RecordingCustodian::default());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
+        .with_material_custodian(custodian.clone());
+    let holder =
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
+    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        &workspace,
+        &"https://mcp.example.com/sse",
+        &usage,
+    );
+
+    // Cause/effect: only an active, Workspace-bound, holder-authorized exact
+    // revision opens once and reaches custody. The returned execution fact is
+    // still secret-free and carries no Worker envelope.
+    let access = SessionCredentialSource::mcp_access_for_source(
+        &state, &source_id, &workspace, &holder, &binding,
+    )
+    .await
+    .unwrap();
+    assert!(access.envelope.is_none());
+    assert_eq!(
+        custodian.published.lock().unwrap().as_slice(),
+        &[(
+            source_id.0,
+            access.credential.revision,
+            "custody-secret".into()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn external_custody_never_observes_an_unowned_plaintext_path() {
+    let h = harness();
+    let vault_id = create_vault(&h, "selective custody").await;
+    let (_, credential) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "selective-secret" // awaken-allow: secret
+        })),
+    )
+    .await;
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
+    let custodian = Arc::new(SelectiveCustodian {
+        holder: awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Platform,
+            "external-provider-custody",
+        ),
+        usage: awaken_credential_contract::CredentialUsage::ProviderAdapter,
+        published: Mutex::new(0),
+    });
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
+        .with_material_custodian(custodian.clone());
+    let profile = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native();
+    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        &workspace,
+        &"https://mcp.example.com/sse",
+        &usage,
+    );
+
+    // Partition testing: a Platform/Provider-only custodian and an MCP/Worker
+    // request are disjoint classes. The request must retain the ordinary MCP
+    // path without disclosing its material to the external custodian.
+    let access = SessionCredentialSource::mcp_access_for_source(
+        &state,
+        &source_id,
+        &workspace,
+        &profile.mcp_holder,
+        &binding,
+    )
+    .await
+    .unwrap();
+    assert!(access.envelope.is_none());
+    assert_eq!(*custodian.published.lock().unwrap(), 0);
 }
 
 #[tokio::test]

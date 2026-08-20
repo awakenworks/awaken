@@ -25,7 +25,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
     key: Option<&[u8; 32]>,
     role: config::Role,
     model_supply: PublicationModelSupply,
-    managed_services: ManagedServiceAdapters,
+    mut managed_services: ManagedServiceAdapters,
     coordinator_services: CoordinatorServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     debug_assert!(matches!(
@@ -33,12 +33,17 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         config::Role::AllInOne | config::Role::Coordinator
     ));
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    managed_platform::install_background_services(
+        &service_lifecycle,
+        &managed_services.background_services,
+    );
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
         &deployment.org_id,
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
+        managed_services.entitlement_provider.take(),
     )?;
     let postgres_schema = match deployment.mode {
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
@@ -157,6 +162,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             cloud_native_credential_realization: coordinator_services
                 .cloud_native_credential_realization,
             repository_transport_authorizer: coordinator_services.repository_transport_authorizer,
+            inference_materializer: coordinator_services.inference_materializer,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority.clone()),
             worker_observations: Some(worker_observations),
