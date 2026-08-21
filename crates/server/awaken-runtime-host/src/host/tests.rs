@@ -8358,21 +8358,21 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
 
 #[test]
 fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
-    // Causes: C1=credential-bearing candidate; C2=Native; C3=ACP; C4=closed
-    // Remote coordinate (exact A2A backend, empty local model reference);
-    // C5=mixed boundaries; C6=publication freezes one common holder.
-    // Effects: E1 no holder; E2 Worker holder; E3 Workload holder; E4 reject;
-    // E5 exact publication holder. The same decision feeds direct and dispatch paths.
-    // Constraints/invariants: Remote authentication uses the Worker boundary,
-    // and every candidate in one attempt set must admit one common holder.
-    // Decision table:
-    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | result |
-    // | R1 | F | - | - | - | F | F | E1 |
-    // | R2 | T | T | F | F | F | F | E2 |
-    // | R3 | T | F | T | F | F | F | E3 |
-    // | R4 | T | T | T | F | T | F | E4 |
-    // | R5 | T | - | - | - | - | T | E5 |
-    // | R6 | T | F | F | T | F | F | E2 |
+    // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
+    // C4=mixed boundaries; C5=publication freezes one common holder;
+    // C6=prepared Environment requests a different holder; C7=closed Remote
+    // coordinate (exact A2A backend with no local model reference). The same
+    // immutable publication decision feeds root, child, direct, and dispatch paths.
+    // Remote authentication uses the Worker boundary, while every candidate in
+    // one attempt set must admit one common holder.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | result                   |
+    // | R1   | F  | -  | -  | F  | F  | -  | F  | no holder                |
+    // | R2   | T  | T  | F  | F  | F  | F  | F  | Worker holder            |
+    // | R3   | T  | F  | T  | F  | F  | F  | F  | Workload holder          |
+    // | R4   | T  | T  | T  | T  | F  | -  | F  | reject                   |
+    // | R5   | T  | -  | -  | -  | T  | F  | F  | exact publication holder |
+    // | R6   | T  | -  | -  | -  | T  | T  | F  | exact publication holder |
+    // | R7   | T  | F  | F  | F  | F  | F  | T  | Worker holder            |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
@@ -8499,7 +8499,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             .unwrap()
             .boundary,
         awaken_runtime_contract::PlaintextBoundary::Worker,
-        "R6"
+        "R7"
     );
     assert!(
         host.inference_plaintext_holder(&activation(
@@ -8521,10 +8521,25 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             awaken_runtime_contract::ModelExposurePolicy::Forbidden,
         ),
     );
+    let platform_activation = activation(platform_candidate, Vec::new());
     assert_eq!(
-        super::self_hosted_inference_holder(&activation(platform_candidate, Vec::new())).unwrap(),
-        Some(platform_holder),
+        super::self_hosted_inference_holder(&platform_activation).unwrap(),
+        Some(platform_holder.clone()),
         "R5"
+    );
+    host.install_environment_projection(
+        &platform_activation.thread_id.0,
+        &session_environment(
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
+    )
+    .expect("install conflicting self-hosted Environment holder");
+    assert_eq!(
+        host.inference_plaintext_holder(&platform_activation)
+            .unwrap(),
+        Some(platform_holder),
+        "R6"
     );
 }
 

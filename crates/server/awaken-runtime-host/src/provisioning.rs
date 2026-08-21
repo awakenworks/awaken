@@ -70,7 +70,6 @@ pub(crate) fn project_environment(
         packages,
         sandbox: (!sandbox.is_empty()).then_some(sandbox),
         provisioning: environment.sandbox_provisioning,
-        credential_realization: environment.credential_realization.clone(),
     }
 }
 
