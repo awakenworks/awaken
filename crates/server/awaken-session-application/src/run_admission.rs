@@ -17,6 +17,7 @@ use awaken_session_contract::{
 use crate::{
     CreateSessionCommand, McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication,
     SessionCreationError, SessionMutationError, SessionPreparationError, SessionRealizationError,
+    SessionRepositoryResourceInput,
 };
 
 #[async_trait::async_trait]
@@ -50,6 +51,7 @@ pub struct CreateProfiledSessionCommand {
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
     pub mcp_candidates: Vec<McpAttachmentCandidate>,
+    pub repositories: Vec<SessionRepositoryResourceInput>,
     pub network_restriction: Option<SessionNetworkPolicy>,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
@@ -275,6 +277,7 @@ impl SessionApplication {
             env,
             prompts,
             mut mcp_candidates,
+            repositories,
             network_restriction,
             title,
             metadata,
@@ -417,14 +420,33 @@ impl SessionApplication {
         if let Some(restriction) = network_restriction {
             environment.network = environment.network.safe_intersection(&restriction);
         }
-        let mut resources = self.resolve_session_inputs(
-            &owner_scope,
-            profile
-                .as_ref()
-                .map(|profile| profile.resources.as_slice())
-                .unwrap_or_default(),
-            &[],
-        )?;
+        let agent_resources = profile
+            .as_ref()
+            .map(|profile| profile.resources.as_slice())
+            .unwrap_or_default();
+        let mut repository_attachments = Vec::with_capacity(repositories.len());
+        let mut expected_repository_credentials = BTreeMap::new();
+        for repository in repositories {
+            let mount_path = repository.mount_path.clone();
+            let expected_credential = repository.credential.clone();
+            let repository_id = self.configure_session_repository(repository).await?;
+            expected_repository_credentials.insert(repository_id.clone(), expected_credential);
+            repository_attachments.push(awaken_session_contract::SessionInputAttachment {
+                binding: awaken_resource_contract::InputBinding {
+                    binding_id: awaken_resource_contract::BindingId::new(format!(
+                        "profiled:{session_id}:repository:{}",
+                        repository_id.as_str()
+                    )),
+                    target: awaken_resource_contract::InputResourceId::Repository(repository_id),
+                    mount_path,
+                    access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                    instructions: None,
+                },
+                replaces: None,
+            });
+        }
+        let mut resources =
+            self.resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)?;
         if !skills.is_empty() {
             resources.skills = Some(self.resolve_session_skills(&owner_scope, &skills).await?);
         }
@@ -435,6 +457,24 @@ impl SessionApplication {
         )
         .await
         .map_err(preparation_error)?;
+        for input in &resources.inputs {
+            let awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id,
+                credential,
+                ..
+            } = &input.source
+            else {
+                continue;
+            };
+            let Some(expected) = expected_repository_credentials.get(repository_id) else {
+                continue;
+            };
+            if credential.as_deref().map(|pin| &pin.access.credential) != expected.as_ref() {
+                return Err(RunError::bad_request(format!(
+                    "repository `{repository_id}` credential revision changed before Session admission"
+                )));
+            }
+        }
         let intent = SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 environment,
@@ -495,6 +535,7 @@ impl SessionApplication {
             env: Vec::new(),
             prompts: Vec::new(),
             mcp_candidates: Vec::new(),
+            repositories: Vec::new(),
             network_restriction: None,
             title: None,
             metadata: Default::default(),

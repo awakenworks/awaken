@@ -347,6 +347,15 @@ placement changes transport only: mounts, environment variables, prompts, MCP
 credential references, and network policy are frozen by the same application
 owner before the root insert.
 
+Profiled Repository inputs use the same rule. The extension may carry a
+Repository URL, mount path, and exact secret-free `CredentialRef`, but it lowers
+them into the existing Resource Catalog and Session credential pin before the
+root insert. The existing `RepositoryRealizer` remains the only checkout and
+publication mechanism. A raw `MountSource::Secret` is not a distributed
+Repository credential: a database-less Worker consumes the recipient-bound
+`CredentialAccess` produced by the Session application, never a product-owned
+secret resolver or a second Git delivery path.
+
 ## Amendment (2026-08-15): Worker projection carries the exact Agent publication
 
 A registered Worker remains authority-store-free, so the initial Session

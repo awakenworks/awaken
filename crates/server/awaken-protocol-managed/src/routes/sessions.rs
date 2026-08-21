@@ -1388,6 +1388,25 @@ pub async fn create_profiled_session(
             },
         )
         .collect();
+    let repositories = body
+        .repositories
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, repository)| awaken_session_application::SessionRepositoryResourceInput {
+                id: format!("profiled:{}:repository:{index}", body.session_id),
+                workspace_id: owner_scope.clone(),
+                name: format!("Profiled Session repository {index}"),
+                description: "Product-authored profiled Session input".into(),
+                remote_url: repository.remote_url,
+                authorization_token: None,
+                credential: repository.credential,
+                mount_path: repository.mount_path,
+                initial_branch: repository.initial_branch,
+                initial_commit: repository.initial_commit,
+            },
+        )
+        .collect();
     let session = state
         .session_application()
         .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
@@ -1401,6 +1420,7 @@ pub async fn create_profiled_session(
             env,
             prompts: body.prompts,
             mcp_candidates,
+            repositories,
             network_restriction: body.network_restriction,
             title: body.title,
             metadata: body.metadata,

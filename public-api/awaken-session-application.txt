@@ -93,6 +93,7 @@ pub awaken_session_application::CreateProfiledSessionCommand::mounts: alloc::vec
 pub awaken_session_application::CreateProfiledSessionCommand::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
 pub awaken_session_application::CreateProfiledSessionCommand::owner_scope: alloc::string::String
 pub awaken_session_application::CreateProfiledSessionCommand::prompts: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_application::CreateProfiledSessionCommand::repositories: alloc::vec::Vec<awaken_session_application::SessionRepositoryResourceInput>
 pub awaken_session_application::CreateProfiledSessionCommand::session_id: alloc::string::String
 pub awaken_session_application::CreateProfiledSessionCommand::source_revision: core::option::Option<u64>
 pub awaken_session_application::CreateProfiledSessionCommand::title: core::option::Option<alloc::string::String>
@@ -290,10 +291,12 @@ pub awaken_session_application::SessionReconciliationFailure::message: alloc::st
 pub awaken_session_application::SessionReconciliationFailure::session_id: alloc::string::String
 pub struct awaken_session_application::SessionRepositoryResourceInput
 pub awaken_session_application::SessionRepositoryResourceInput::authorization_token: core::option::Option<awaken_agent_contract::secret::RedactedString>
+pub awaken_session_application::SessionRepositoryResourceInput::credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_session_application::SessionRepositoryResourceInput::description: alloc::string::String
 pub awaken_session_application::SessionRepositoryResourceInput::id: alloc::string::String
 pub awaken_session_application::SessionRepositoryResourceInput::initial_branch: core::option::Option<alloc::string::String>
 pub awaken_session_application::SessionRepositoryResourceInput::initial_commit: core::option::Option<alloc::string::String>
+pub awaken_session_application::SessionRepositoryResourceInput::mount_path: alloc::string::String
 pub awaken_session_application::SessionRepositoryResourceInput::name: alloc::string::String
 pub awaken_session_application::SessionRepositoryResourceInput::remote_url: alloc::string::String
 pub awaken_session_application::SessionRepositoryResourceInput::workspace_id: alloc::string::String

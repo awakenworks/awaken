@@ -25,6 +25,22 @@ pub struct ProfiledSessionMcpAttachment {
     pub origin: McpAttachmentOrigin,
 }
 
+/// One exact Repository selected by the product for this Session. The
+/// credential is a secret-free Vault reference; Session admission turns it into
+/// the existing recipient-bound execution pin before persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRepository {
+    pub remote_url: String,
+    pub mount_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_commit: Option<String>,
+}
+
 /// Complete, strongly typed Session input delivered to Awaken's sole profiled
 /// Session composer. Secret material is forbidden; mounts carry only references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,6 +60,8 @@ pub struct ProfiledSessionCreate {
     pub prompts: Vec<String>,
     #[serde(default)]
     pub mcp_attachments: Vec<ProfiledSessionMcpAttachment>,
+    #[serde(default)]
+    pub repositories: Vec<ProfiledSessionRepository>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_restriction: Option<SessionNetworkPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,7 +100,8 @@ mod tests {
     #[test]
     fn profiled_session_wire_preserves_typed_secret_references() {
         // Cause/effect decision table:
-        // R1 typed Secret mount + inline environment -> exact round trip;
+        // R1 typed Secret mount + Repository credential reference + inline
+        // environment -> exact round trip;
         // R2 unknown wire field -> reject before the application handler.
         // The protocol never accepts plaintext credential material.
         let request = ProfiledSessionCreate {
@@ -108,6 +127,16 @@ mod tests {
             }],
             prompts: Vec::new(),
             mcp_attachments: Vec::new(),
+            repositories: vec![ProfiledSessionRepository {
+                remote_url: "https://github.com/acme/repository".into(),
+                mount_path: "repository".into(),
+                credential: Some(CredentialRef {
+                    id: "credential-source-a".into(),
+                    revision: 7,
+                }),
+                initial_branch: Some("main".into()),
+                initial_commit: None,
+            }],
             network_restriction: Some(SessionNetworkPolicy::Unrestricted),
             title: None,
             metadata: BTreeMap::new(),
@@ -118,6 +147,10 @@ mod tests {
             serde_json::from_value::<ProfiledSessionCreate>(encoded.clone()).unwrap(),
             request,
             "R1"
+        );
+        assert_eq!(
+            encoded["repositories"][0]["credential"]["revision"], 7,
+            "R1 exact Repository credential pin"
         );
         let mut unknown = encoded;
         unknown["credential"] = serde_json::json!("plaintext");

@@ -8,6 +8,7 @@ pub awaken_protocol_awaken::ProfiledSessionCreate::metadata: alloc::collections:
 pub awaken_protocol_awaken::ProfiledSessionCreate::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
 pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
 pub awaken_protocol_awaken::ProfiledSessionCreate::prompts: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::repositories: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionRepository>
 pub awaken_protocol_awaken::ProfiledSessionCreate::session_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreate::source_revision: core::option::Option<u64>
 pub awaken_protocol_awaken::ProfiledSessionCreate::title: core::option::Option<alloc::string::String>
@@ -77,6 +78,12 @@ impl core::marker::Unpin for awaken_protocol_awaken::ProfiledSessionMcpAttachmen
 impl core::marker::UnsafeUnpin for awaken_protocol_awaken::ProfiledSessionMcpAttachment
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_awaken::ProfiledSessionMcpAttachment
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_awaken::ProfiledSessionMcpAttachment
+pub struct awaken_protocol_awaken::ProfiledSessionRepository
+pub awaken_protocol_awaken::ProfiledSessionRepository::credential: core::option::Option<awaken_credential_contract::CredentialRef>
+pub awaken_protocol_awaken::ProfiledSessionRepository::initial_branch: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionRepository::initial_commit: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionRepository::mount_path: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionRepository::remote_url: alloc::string::String
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router

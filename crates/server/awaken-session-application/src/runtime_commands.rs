@@ -24,6 +24,8 @@ pub struct SessionRepositoryResourceInput {
     pub description: String,
     pub remote_url: String,
     pub authorization_token: Option<RedactedString>,
+    pub credential: Option<awaken_credential_contract::CredentialRef>,
+    pub mount_path: String,
     pub initial_branch: Option<String>,
     pub initial_commit: Option<String>,
 }
@@ -250,6 +252,25 @@ impl SessionApplication {
                 )
             }
             None => None,
+        };
+        let credential_binding = match (credential_binding, input.credential) {
+            (Some(_), Some(_)) => {
+                return Err(RunError::bad_request(
+                    "repository cannot carry both an authorization token and credential reference",
+                ));
+            }
+            (Some(binding), None) => Some(binding),
+            (None, Some(credential))
+                if !credential.id.trim().is_empty() && credential.revision > 0 =>
+            {
+                Some(credential.id)
+            }
+            (None, Some(_)) => {
+                return Err(RunError::bad_request(
+                    "repository credential reference is invalid",
+                ));
+            }
+            (None, None) => None,
         };
         catalog
             .create_repository(
