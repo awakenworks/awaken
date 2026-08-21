@@ -1313,6 +1313,7 @@ fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
 #[tokio::test]
 async fn attempt_resume_without_committed_history_fails_closed() {
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("snapshot-1")
+        .model(ModelBinding::new("test", "model", "native"))
         .fingerprint("fingerprint-1")
         .build();
     let activation = RunActivation::new(

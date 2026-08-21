@@ -218,6 +218,7 @@ impl PublishedAgentSnapshotSource for StaticPublishedAgentSnapshots {
 mod tests {
     use super::*;
     use crate::agent_bindings::{AgentBindings, AgentDelegateBinding};
+    use crate::resolved::ModelBinding;
     use crate::snapshot::{
         AgentConfigRevisionRef, AgentId, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata, ExecutableAgentSnapshot,
@@ -230,6 +231,7 @@ mod tests {
         delegates: Vec<AgentDelegateBinding>,
     ) -> ExecutableAgentSnapshot {
         ExecutableAgentSnapshot::builder(id)
+            .model(ModelBinding::new("test", "model", "native"))
             .fingerprint(fingerprint)
             .metadata(AgentSnapshotMetadata {
                 source: AgentConfigRevisionRef {

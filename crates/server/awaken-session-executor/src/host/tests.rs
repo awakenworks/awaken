@@ -10,6 +10,10 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
+fn test_model_binding() -> awaken_runtime_contract::resolved::ModelBinding {
+    awaken_runtime_contract::resolved::ModelBinding::new("test", "model", "native")
+}
+
 fn completed_outcome(progress: HostOutcomeDrive) -> HostOutcomeReport {
     match progress {
         HostOutcomeDrive::Completed(report) => report,
@@ -3203,8 +3207,11 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     use awaken_runtime_contract::snapshot::AgentId;
     use awaken_session_contract::{SessionInit, SessionRuntime};
 
-    let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("child").build();
+    let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("child")
+        .model(test_model_binding())
+        .build();
     let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("parent")
+        .model(test_model_binding())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("child".into()),
@@ -3317,6 +3324,7 @@ async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face
 
     let selected = "release-signal";
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-skill")
+        .model(test_model_binding())
         .agent_bindings(AgentBindings {
             skills: vec![awaken_agent_contract::AgentSkillBinding::custom(selected)],
             ..Default::default()
@@ -7190,6 +7198,7 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
 #[tokio::test]
 async fn claimed_snapshot_is_the_worker_session_authority() {
     let published = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-agent")
+        .model(test_model_binding())
         .instructions("published instructions")
         .fingerprint("sha256:published")
         .plugin_config([(
@@ -7318,6 +7327,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     );
     host.register_thread_resource_manifest(thread, manifest.clone());
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+        .model(test_model_binding())
         .fingerprint("sha256:dispatch-resources")
         .build();
     let activation = awaken_runtime_contract::RunActivation::new(
@@ -7369,6 +7379,7 @@ fn durable_dispatch_freezes_the_delegation_publication_closure() {
     use awaken_runtime_contract::snapshot::AgentId;
 
     let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+        .model(test_model_binding())
         .fingerprint("researcher-current")
         .build();
     let publications =
@@ -7377,6 +7388,7 @@ fn durable_dispatch_freezes_the_delegation_publication_closure() {
     let host = SharedHost::new(Arc::new(OkModel), "host-default")
         .with_agent_publications(Arc::new(publications));
     let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
+        .model(test_model_binding())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
@@ -7421,6 +7433,7 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
         awaken_agent_contract::agent::thread::Id(thread.into()),
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+            .model(test_model_binding())
             .fingerprint("sha256:prepared-root-session")
             .build(),
         Vec::new(),

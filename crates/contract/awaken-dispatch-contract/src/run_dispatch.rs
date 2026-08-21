@@ -639,6 +639,9 @@ mod tests {
     #[test]
     fn delegation_publications_round_trip_and_legacy_rows_default_empty() {
         let child = ExecutableAgentSnapshot::builder("researcher")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .instructions("research")
             .fingerprint("researcher-v1")
             .build();
