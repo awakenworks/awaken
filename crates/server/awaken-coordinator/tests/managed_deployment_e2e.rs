@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use awaken_deployment_application::{
-    DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
+    DeploymentAgent, DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome,
+    DeploymentSessionLauncher,
 };
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_executable_agent_contract::{
@@ -80,21 +81,21 @@ async fn failed_initial_events_are_compensated_before_deployment_acknowledgement
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_config_source(catalog));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
-    let request: DeploymentLaunch = serde_json::from_value(json!({
-        "deployment_id": "depl_failed_initial",
-        "deployment_run_id": "drun_failed_initial",
-        "workspace_id": workspace_id,
-        "agent": {"id": "assistant", "type": "agent", "version": 1},
-        "environment_id": "env_local",
-        "metadata": {},
-        "initial_events": [{
+    let request = DeploymentLaunch {
+        deployment_id: "depl_failed_initial".into(),
+        deployment_run_id: "drun_failed_initial".into(),
+        workspace_id,
+        agent: DeploymentAgent::new("assistant", 1),
+        environment_id: "env_local".into(),
+        metadata: Default::default(),
+        initial_events: vec![json!({
             "type": "system.message",
             "content": [{"type": "text", "text": "must initialize the frozen publication"}]
-        }],
-        "resources": [],
-        "vault_ids": []
-    }))
-    .unwrap();
+        })],
+        resources: Vec::new(),
+        vault_ids: Vec::new(),
+        budget_max_list_cost_minor: None,
+    };
     let session_id = format!(
         "sesn_{}",
         awaken_session_contract::stable_fingerprint(&(
