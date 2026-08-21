@@ -39,10 +39,7 @@ use harness::{
 const LEASE: u64 = 1_000;
 
 fn allow() -> ResumeResult {
-    ResumeResult::Decision {
-        allow: true,
-        note: None,
-    }
+    ResumeResult::allow()
 }
 
 // --- 2. Duplicate submit idempotency ---------------------------------------

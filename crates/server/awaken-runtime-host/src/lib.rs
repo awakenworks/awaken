@@ -947,14 +947,7 @@ impl SessionRuntime for ManagedHost {
         self.validate_thread_resource_bindings(thread).await?;
         let result = self
             .host
-            .resume(
-                thread,
-                tool_use_id,
-                HostResume::ToolPermission {
-                    allow: decision.allow,
-                    note: decision.note,
-                },
-            )
+            .resume(thread, tool_use_id, HostResume::Permission(decision))
             .await;
         self.finish_step(thread, result).await
     }

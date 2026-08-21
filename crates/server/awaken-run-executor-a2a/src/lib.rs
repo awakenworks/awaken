@@ -31,7 +31,9 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
+use awaken_runtime_contract::resume::{
+    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
@@ -303,9 +305,12 @@ fn resume_text(result: &ResumeResult) -> String {
     match result {
         ResumeResult::ToolResult(output) => output.text(),
         ResumeResult::Input(text) => text.clone(),
-        ResumeResult::Decision { allow, note } => note
-            .clone()
-            .unwrap_or_else(|| if *allow { "allow" } else { "deny" }.to_string()),
+        ResumeResult::Permission(PermissionDecision::Allow { note }) => {
+            note.clone().unwrap_or_else(|| "allow".to_string())
+        }
+        ResumeResult::Permission(PermissionDecision::Deny { reason }) => {
+            reason.clone().unwrap_or_else(|| "deny".to_string())
+        }
     }
 }
 

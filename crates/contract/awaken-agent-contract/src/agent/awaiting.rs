@@ -44,6 +44,27 @@ impl AwaitReason {
     }
 }
 
+/// The two legal permission outcomes shared by protocol adapters, session
+/// application services, and the runtime. Both outcomes may carry explanatory
+/// text, but the enum makes their distinct meaning explicit and exhaustive.
+///
+/// ```compile_fail
+/// use awaken_agent_contract::agent::awaiting::PermissionDecision;
+///
+/// let _ = PermissionDecision { allow: true, note: None };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionDecision {
+    Allow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    Deny {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
 /// The committed correlation for one same-run pause. A resume is accepted only
 /// when its correlation, run/thread, executable snapshot, and catalog
 /// fingerprint all match, and the deadline (if any) has not passed.

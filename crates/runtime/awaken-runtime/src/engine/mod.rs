@@ -47,7 +47,9 @@ use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ResolvedRun, ToolKind, ToolPresentation,
 };
 use awaken_runtime_contract::resolver::{self, RunResolver};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
+use awaken_runtime_contract::resume::{
+    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
+};
 use awaken_runtime_contract::runtime_context::{
     RuntimeRunContext, TranscriptContextDestination, transcript_prefix_projects_to,
 };

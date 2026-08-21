@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_session_contract::{Pending, RunApplicationError, RunResume};
@@ -39,7 +40,7 @@ pub struct Processed {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApprovalDecision {
-    Decision { allow: bool, note: Option<String> },
+    Permission(PermissionDecision),
     Invalid(String),
 }
 
@@ -108,7 +109,11 @@ fn approval_decision(parts: &[Part]) -> Option<ApprovalDecision> {
             ));
         }
     };
-    Some(ApprovalDecision::Decision { allow, note })
+    Some(ApprovalDecision::Permission(if allow {
+        PermissionDecision::Allow { note }
+    } else {
+        PermissionDecision::Deny { reason: note }
+    }))
 }
 
 /// Convert decoded A2A input to the one neutral resume variant authorized by
@@ -131,10 +136,9 @@ pub(crate) fn resume_for_pending(
         })
     } else {
         match approval {
-            Some(ApprovalDecision::Decision { allow, note }) => Ok(RunResume::Confirm {
-                allow: *allow,
-                note: note.clone(),
-            }),
+            Some(ApprovalDecision::Permission(decision)) => {
+                Ok(RunResume::Permission(decision.clone()))
+            }
             Some(ApprovalDecision::Invalid(message)) => {
                 Err(RunApplicationError::bad_request(message.clone()))
             }
@@ -212,25 +216,23 @@ mod tests {
          * R5=C1+C2 => bad request. Effects are mutually exclusive and no text
          * value can become authorization.
          */
-        let allow = ApprovalDecision::Decision {
-            allow: true,
+        let allow = ApprovalDecision::Permission(PermissionDecision::Allow {
             note: Some("reviewed".into()),
-        };
+        });
         assert!(
             matches!(
                 resume_for_pending("ignored", Some(&allow), &pending(false)).unwrap(),
-                RunResume::Confirm { allow: true, note: Some(note) } if note == "reviewed"
+                RunResume::Permission(PermissionDecision::Allow { note: Some(note) }) if note == "reviewed"
             ),
             "R2"
         );
-        let deny = ApprovalDecision::Decision {
-            allow: false,
-            note: Some("unsafe".into()),
-        };
+        let deny = ApprovalDecision::Permission(PermissionDecision::Deny {
+            reason: Some("unsafe".into()),
+        });
         assert!(
             matches!(
                 resume_for_pending("ignored", Some(&deny), &pending(false)).unwrap(),
-                RunResume::Confirm { allow: false, note: Some(note) } if note == "unsafe"
+                RunResume::Permission(PermissionDecision::Deny { reason: Some(note) }) if note == "unsafe"
             ),
             "R3"
         );
@@ -417,7 +419,8 @@ mod tests {
     #[test]
     fn structured_tool_approval_decision_table_is_explicit_and_fail_closed() {
         /* A2A approval FMECA graph. C1 one DataPart has type=tool-approval;
-         * C2 allow is boolean; C3 note is absent/string; C4 duplicate decision.
+         * C2 allow is boolean; C3 note is absent/string;
+         * C4 duplicate decision.
          * Effects: E1 exact allow/deny decision; E2 invalid input, never implicit
          * authorization. Rules A1=C1+C2+C3=>E1; A2=!C2|!C3|C4=>E2;
          * A3=!C1=>no decision (the router then rejects text-only approvals).
@@ -433,10 +436,9 @@ mod tests {
         ]));
         assert_eq!(
             approval_decision(std::slice::from_ref(&valid)),
-            Some(ApprovalDecision::Decision {
-                allow: false,
-                note: Some("operator denied".into()),
-            }),
+            Some(ApprovalDecision::Permission(PermissionDecision::Deny {
+                reason: Some("operator denied".into()),
+            })),
             "A1"
         );
         assert!(

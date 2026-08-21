@@ -76,7 +76,7 @@ impl RunApplication for RunApplicationHost {
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
         let resume = match resume {
-            RunResume::Confirm { allow, note } => HostResume::ToolPermission { allow, note },
+            RunResume::Permission(decision) => HostResume::Permission(decision),
             RunResume::ClientResult { content, is_error } => {
                 HostResume::ClientResult { content, is_error }
             }

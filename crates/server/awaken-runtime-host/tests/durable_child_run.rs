@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
@@ -152,10 +153,7 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
         .resume(
             "parent-thread",
             &pending.tool_use_id,
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .expect("parent routes the permission decision to its child");

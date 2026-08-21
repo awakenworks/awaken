@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
@@ -273,10 +274,12 @@ fn to_resume(content: &str, error: Option<&str>, pending: &Pending) -> RunResume
             is_error: error.is_some(),
         }
     } else {
-        RunResume::Confirm {
-            allow: error.is_none(),
-            note: error.map(str::to_string),
-        }
+        RunResume::Permission(match error {
+            None => PermissionDecision::Allow { note: None },
+            Some(reason) => PermissionDecision::Deny {
+                reason: Some(reason.to_string()),
+            },
+        })
     }
 }
 
@@ -378,10 +381,7 @@ mod tests {
         let r = to_resume("anything", None, &pending(false));
         assert!(matches!(
             r,
-            RunResume::Confirm {
-                allow: true,
-                note: None
-            }
+            RunResume::Permission(PermissionDecision::Allow { note: None })
         ));
     }
 
@@ -391,7 +391,7 @@ mod tests {
         let r = to_resume("ignored content", Some("not permitted"), &pending(false));
         assert!(matches!(
             r,
-            RunResume::Confirm { allow: false, note: Some(n) } if n == "not permitted"
+            RunResume::Permission(PermissionDecision::Deny { reason: Some(n) }) if n == "not permitted"
         ));
     }
 }

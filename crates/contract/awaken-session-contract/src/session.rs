@@ -187,10 +187,7 @@ impl StepOutcome {
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
-pub struct ToolPermissionDecision {
-    pub allow: bool,
-    pub note: Option<String>,
-}
+pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
 
 /// The advertised capability surface echoed in a session's agent object. The adapter
 /// reads this once at session creation so the public agent object reports what the run

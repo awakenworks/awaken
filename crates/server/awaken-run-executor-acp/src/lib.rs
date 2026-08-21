@@ -53,7 +53,9 @@ use awaken_runtime_contract::execution::{
 use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::Backend;
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
+use awaken_runtime_contract::resume::{
+    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
@@ -480,7 +482,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
                 self.execute_with_permission_resume(activation, context, None)
                     .await
             }
-            ResumeResult::Decision { allow, note }
+            ResumeResult::Permission(permission)
                 if ticket.reason == AwaitReason::ToolPermission =>
             {
                 let call_id = ticket.call_id.clone().ok_or_else(|| {
@@ -489,8 +491,11 @@ impl RunAttemptExecutor for AcpRunExecutor {
                 let pending = ticket.pending_tool.as_ref().ok_or_else(|| {
                     Error::Execution("ACP permission ticket has no pending tool".to_string())
                 })?;
-                let decision = if allow { "approved" } else { "denied" };
-                let suffix = note
+                let (allow, decision, reason) = match permission {
+                    PermissionDecision::Allow { note } => (true, "approved", note),
+                    PermissionDecision::Deny { reason } => (false, "denied", reason),
+                };
+                let suffix = reason
                     .filter(|value| !value.trim().is_empty())
                     .map(|value| format!(" Reason: {value}"))
                     .unwrap_or_default();

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::AgentEvent;
@@ -25,10 +26,7 @@ pub type RunApplicationError = RunError;
 /// One neutral resume command for a pending Run.
 #[derive(Debug, Clone)]
 pub enum RunResume {
-    Confirm {
-        allow: bool,
-        note: Option<String>,
-    },
+    Permission(PermissionDecision),
     ClientResult {
         content: Vec<ContentBlock>,
         is_error: bool,

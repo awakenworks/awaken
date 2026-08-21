@@ -36,15 +36,21 @@ pub(super) async fn drive_resumed(
         .map_or(0, |step| step + 1);
     let mut transcript = model_transcript(context, committed);
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
-    let approved = matches!(&result, ResumeResult::Decision { allow: true, .. });
+    let approved = matches!(
+        &result,
+        ResumeResult::Permission(PermissionDecision::Allow { .. })
+    );
     let permission_decision = match &result {
-        ResumeResult::Decision { allow, .. }
+        ResumeResult::Permission(decision)
             if matches!(
                 ticket.reason,
                 AwaitReason::ToolPermission | AwaitReason::ScheduledAction
             ) =>
         {
-            Some(if *allow { "approved" } else { "denied" })
+            Some(match decision {
+                PermissionDecision::Allow { .. } => "approved",
+                PermissionDecision::Deny { .. } => "denied",
+            })
         }
         _ => None,
     };
@@ -64,12 +70,13 @@ pub(super) async fn drive_resumed(
     // Approval is a lifecycle decision, not a chat message. For a batch-aware
     // ticket, commit Awaiting(Approval) -> Executing before entering the tool.
     // A failed/fenced commit therefore cannot leak an unrecorded side effect.
-    if matches!(&result, ResumeResult::Decision { allow: true, .. })
-        && matches!(
-            ticket.reason,
-            AwaitReason::ToolPermission | AwaitReason::ScheduledAction
-        )
-        && let Some(call_id) = ticket.call_id.as_deref()
+    if matches!(
+        &result,
+        ResumeResult::Permission(PermissionDecision::Allow { .. })
+    ) && matches!(
+        ticket.reason,
+        AwaitReason::ToolPermission | AwaitReason::ScheduledAction
+    ) && let Some(call_id) = ticket.call_id.as_deref()
         && let Some(mut batch) = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)

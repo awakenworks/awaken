@@ -130,7 +130,7 @@ impl CommittedStepReceipt {
 pub enum HostResume {
     /// Built-in tool awaiting approval (Managed `user.tool_confirmation`; AI SDK
     /// `approval-responded` / `output-denied`).
-    ToolPermission { allow: bool, note: Option<String> },
+    Permission(PermissionDecision),
     /// Client-executed tool result (Managed `user.custom_tool_result`; AI SDK
     /// `output-available` / `output-error` on a client tool part).
     ClientResult {

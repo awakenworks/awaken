@@ -100,7 +100,11 @@ impl SharedHost {
             thread_id,
             correlation_id: ticket.correlation_id,
             available_at_ms: None,
-            result: ResumeResult::Decision { allow, note: None },
+            result: if allow {
+                ResumeResult::allow()
+            } else {
+                ResumeResult::deny(None)
+            },
         };
         pool.send(input)
             .await

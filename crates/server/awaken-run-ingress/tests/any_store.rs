@@ -610,15 +610,7 @@ async fn any_serializes_one_thread_across_workers() {
 #[tokio::test]
 async fn any_delegates_inbox_append_idempotency() {
     let store = any_in_memory();
-    let input = harness::pending(
-        "msg-1",
-        "run-1",
-        TICKET,
-        ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
-    );
+    let input = harness::pending("msg-1", "run-1", TICKET, ResumeResult::allow());
     assert!(store.append(input.clone()).await.unwrap(), "first append");
     assert!(
         !store.append(input).await.unwrap(),

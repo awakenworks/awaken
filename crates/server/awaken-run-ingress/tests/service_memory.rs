@@ -84,14 +84,7 @@ async fn service_resumes_an_awaiting_run_on_delivery() {
 
     // Delivering input wakes the daemon, which resumes the run to completion.
     service
-        .deliver(pending(
-            "msg-1",
-            "run-1",
-            ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
-        ))
+        .deliver(pending("msg-1", "run-1", ResumeResult::allow()))
         .await
         .expect("deliver");
     assert!(
@@ -193,10 +186,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
             thread_id: ThreadId(THREAD.to_string()),
             correlation_id: TICKET.to_string(),
             available_at_ms: Some(2_000),
-            result: ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
+            result: ResumeResult::allow(),
         })
         .await
         .expect("deliver");
@@ -237,14 +227,7 @@ async fn service_relays_a_cross_thread_send() {
 
     // Stage a cross-thread delivery; the daemon relays then resumes the run.
     service
-        .send(pending(
-            "x1",
-            "run-1",
-            ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
-        ))
+        .send(pending("x1", "run-1", ResumeResult::allow()))
         .await
         .expect("send");
     assert!(

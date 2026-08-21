@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::{
     ControlSessionCreationInputs, McpAttachmentOrigin, Pending, RunApplication,
@@ -804,10 +806,7 @@ mod tests {
         app.resume(
             "thread-resume",
             "tool-a",
-            RunResume::Confirm {
-                allow: true,
-                note: None,
-            },
+            RunResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .expect("R5");

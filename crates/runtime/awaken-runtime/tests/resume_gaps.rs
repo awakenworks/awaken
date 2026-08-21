@@ -194,10 +194,7 @@ fn resume_command() -> ResumeCommand {
         thread_id: ThreadId("thread-1".to_string()),
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FINGERPRINT.to_string()),
-        result: ResumeResult::Decision {
-            allow: false,
-            note: None,
-        },
+        result: ResumeResult::deny(None),
         now_ms: 0,
     }
 }

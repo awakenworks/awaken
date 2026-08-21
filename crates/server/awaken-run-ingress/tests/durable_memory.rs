@@ -231,10 +231,7 @@ fn allow_command() -> ResumeCommand {
         thread_id: ThreadId(THREAD.to_string()),
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
-        result: ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        result: ResumeResult::allow(),
         now_ms: 0,
     }
 }
@@ -652,17 +649,7 @@ async fn awaiting_run_resumes_through_delivered_input() {
 
     // Delivering an allow decision wakes and resumes the run to completion.
     let resumed = ingress
-        .deliver_resume(
-            pending(
-                "msg-1",
-                "run-1",
-                ResumeResult::Decision {
-                    allow: true,
-                    note: None,
-                },
-            ),
-            0,
-        )
+        .deliver_resume(pending("msg-1", "run-1", ResumeResult::allow()), 0)
         .await
         .expect("resume");
     assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
@@ -707,14 +694,7 @@ async fn installed_attempt_executor_drives_the_durable_resume_path() {
     assert_eq!(
         ingress
             .deliver_resume(
-                pending(
-                    "resume-selected",
-                    "run-1",
-                    ResumeResult::Decision {
-                        allow: true,
-                        note: None,
-                    },
-                ),
+                pending("resume-selected", "run-1", ResumeResult::allow(),),
                 1,
             )
             .await
@@ -882,14 +862,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
         RunState::Awaiting
     );
     store
-        .append(pending(
-            "msg-1",
-            "run-1",
-            ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
-        ))
+        .append(pending("msg-1", "run-1", ResumeResult::allow()))
         .await
         .unwrap();
 
@@ -1051,15 +1024,7 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     // Stale input (wrong correlation) does not resume the run.
     let state = ingress
         .deliver_resume(
-            pending_for(
-                "stale",
-                "run-1",
-                "some-old-ticket",
-                ResumeResult::Decision {
-                    allow: true,
-                    note: None,
-                },
-            ),
+            pending_for("stale", "run-1", "some-old-ticket", ResumeResult::allow()),
             0,
         )
         .await
@@ -1078,17 +1043,7 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
 
     // The correctly-correlated input resumes the run.
     let state = ingress
-        .deliver_resume(
-            pending(
-                "good",
-                "run-1",
-                ResumeResult::Decision {
-                    allow: true,
-                    note: None,
-                },
-            ),
-            0,
-        )
+        .deliver_resume(pending("good", "run-1", ResumeResult::allow()), 0)
         .await
         .expect("good delivery");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -1130,14 +1085,7 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
 
     // Stage the delivery (as if from another thread); it is not pending yet.
     let staged = ingress
-        .stage_cross_thread(pending(
-            "x1",
-            "run-1",
-            ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
-        ))
+        .stage_cross_thread(pending("x1", "run-1", ResumeResult::allow()))
         .await
         .unwrap();
     assert!(staged);

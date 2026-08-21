@@ -1101,10 +1101,7 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
             thread_id: ThreadId(THREAD.to_string()),
             correlation_id: TICKET.to_string(),
             available_at_ms: Some(1_000),
-            result: ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
+            result: ResumeResult::allow(),
         })
         .await
         .unwrap();

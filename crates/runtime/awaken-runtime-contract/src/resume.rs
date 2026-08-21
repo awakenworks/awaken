@@ -6,6 +6,7 @@
 //! fails closed (G5/G28). The clock is supplied by the caller so the runtime
 //! core stays deterministic and replayable.
 
+pub use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -21,8 +22,8 @@ use crate::tool::ToolOutput;
 pub enum ResumeResult {
     /// A tool result for the call the run was awaiting on.
     ToolResult(ToolOutput),
-    /// A permission decision: allow runs the tool, deny feeds a blocked result.
-    Decision { allow: bool, note: Option<String> },
+    /// A permission decision for the pending operation.
+    Permission(PermissionDecision),
     /// Free-form input delivered to the run (e.g. a user answer).
     Input(String),
 }
@@ -30,15 +31,12 @@ pub enum ResumeResult {
 impl ResumeResult {
     /// Approve the pending tool call.
     pub fn allow() -> Self {
-        Self::Decision {
-            allow: true,
-            note: None,
-        }
+        Self::Permission(PermissionDecision::Allow { note: None })
     }
 
     /// Reject the pending tool call, optionally with a reason for the model.
-    pub fn deny(note: Option<String>) -> Self {
-        Self::Decision { allow: false, note }
+    pub fn deny(reason: Option<String>) -> Self {
+        Self::Permission(PermissionDecision::Deny { reason })
     }
 }
 
@@ -171,10 +169,7 @@ mod tests {
             thread_id: ThreadId("thread-1".to_string()),
             snapshot_id: ExecutableAgentSnapshotId("snap-1".to_string()),
             catalog_fingerprint: CatalogFingerprint("fp-1".to_string()),
-            result: ResumeResult::Decision {
-                allow: true,
-                note: None,
-            },
+            result: ResumeResult::allow(),
             now_ms: 50,
         }
     }
@@ -182,6 +177,27 @@ mod tests {
     #[test]
     fn matching_resume_is_accepted() {
         assert!(validate_resume(&ticket(), &command()).is_ok());
+    }
+
+    #[test]
+    fn permission_decision_wire_shape_preserves_only_legal_states() {
+        // Partition the closed decision set across allow/deny and absent/present
+        // explanations. Serde must round-trip every partition without recreating
+        // the former bool/Option product.
+        let cases = [
+            ResumeResult::allow(),
+            ResumeResult::Permission(PermissionDecision::Allow {
+                note: Some("reviewed".into()),
+            }),
+            ResumeResult::deny(None),
+            ResumeResult::deny(Some("operator policy".into())),
+        ];
+        for expected in cases {
+            let encoded = serde_json::to_value(&expected).expect("serialize decision");
+            let decoded: ResumeResult =
+                serde_json::from_value(encoded).expect("deserialize decision");
+            assert_eq!(decoded, expected);
+        }
     }
 
     #[test]
@@ -211,13 +227,7 @@ mod tests {
         let cmd = ResumeCommand::from_ticket(&ticket(), ResumeResult::allow(), 50);
         assert_eq!(cmd.correlation_id, "c1");
         assert_eq!(cmd.snapshot_id.0, "snap-1");
-        assert_eq!(
-            cmd.result,
-            ResumeResult::Decision {
-                allow: true,
-                note: None
-            }
-        );
+        assert_eq!(cmd.result, ResumeResult::allow());
         assert!(validate_resume(&ticket(), &cmd).is_ok());
     }
 

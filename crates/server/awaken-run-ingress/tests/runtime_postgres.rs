@@ -31,10 +31,7 @@ fn allow_resume() -> ResumeCommand {
         thread_id: ThreadId(THREAD.to_string()),
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
-        result: ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        result: ResumeResult::allow(),
         now_ms: 0,
     }
 }

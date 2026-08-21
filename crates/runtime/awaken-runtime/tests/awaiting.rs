@@ -215,10 +215,7 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
-            resume_command(ResumeResult::Decision {
-                allow: true,
-                note: None,
-            }),
+            resume_command(ResumeResult::allow()),
             commit.as_ref(),
             context,
         )
@@ -283,10 +280,7 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
-            resume_command(ResumeResult::Decision {
-                allow: false,
-                note: Some("nope".to_string()),
-            }),
+            resume_command(ResumeResult::deny(Some("nope".to_string()))),
             commit.as_ref(),
             context,
         )
@@ -313,10 +307,7 @@ async fn resume_with_wrong_fingerprint_fails_closed() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let mut command = resume_command(ResumeResult::Decision {
-        allow: true,
-        note: None,
-    });
+    let mut command = resume_command(ResumeResult::allow());
     command.catalog_fingerprint = awaken_runtime_contract::CatalogFingerprint("wrong".to_string());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = runtime
@@ -342,10 +333,7 @@ async fn second_resume_after_completion_is_not_awaiting() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     runtime
         .resume(
-            resume_command(ResumeResult::Decision {
-                allow: true,
-                note: None,
-            }),
+            resume_command(ResumeResult::allow()),
             commit.as_ref(),
             context,
         )
@@ -356,10 +344,7 @@ async fn second_resume_after_completion_is_not_awaiting() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = runtime
         .resume(
-            resume_command(ResumeResult::Decision {
-                allow: true,
-                note: None,
-            }),
+            resume_command(ResumeResult::allow()),
             commit.as_ref(),
             context,
         )

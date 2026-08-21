@@ -828,13 +828,7 @@ impl SharedHost {
             let result = if let Some(child_ticket) = child {
                 self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
-                    HostResume::ToolPermission { allow, note } => {
-                        if allow {
-                            ResumeResult::allow()
-                        } else {
-                            ResumeResult::deny(note)
-                        }
-                    }
+                    HostResume::Permission(decision) => ResumeResult::Permission(decision),
                     HostResume::ClientResult { content, is_error } => {
                         client_result_for_ticket(&child_ticket, tool_use_id, content, is_error)
                     }
@@ -884,13 +878,7 @@ impl SharedHost {
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
         let result = match resume {
-            HostResume::ToolPermission { allow, note } => {
-                if allow {
-                    ResumeResult::allow()
-                } else {
-                    ResumeResult::deny(note)
-                }
-            }
+            HostResume::Permission(decision) => ResumeResult::Permission(decision),
             HostResume::ClientResult { content, is_error } => {
                 let call_id = ticket.call_id.clone().unwrap_or_default();
                 let output = if is_error {

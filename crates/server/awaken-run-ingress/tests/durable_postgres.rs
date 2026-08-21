@@ -253,7 +253,11 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
         message_id,
         "run-1",
         correlation,
-        ResumeResult::Decision { allow, note: None },
+        if allow {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(None)
+        },
     )
 }
 
@@ -293,10 +297,7 @@ async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
                 thread_id: ThreadId(THREAD.to_string()),
                 correlation_id: TICKET.to_string(),
                 available_at_ms: None,
-                result: ResumeResult::Decision {
-                    allow: true,
-                    note: None,
-                },
+                result: ResumeResult::allow(),
             },
             0,
         )

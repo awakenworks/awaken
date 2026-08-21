@@ -109,10 +109,7 @@ pub(crate) async fn perform_scheduled_action(
         thread_id: ticket.thread_id,
         snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id),
         catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint),
-        result: ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        result: ResumeResult::allow(),
         now_ms,
     };
     resume_run(runtime, command, reader, context).await
