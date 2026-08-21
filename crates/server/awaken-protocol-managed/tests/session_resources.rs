@@ -22,9 +22,10 @@ use awaken_protocol_managed::types::session::{
 use awaken_protocol_managed::{ManagedState, router as managed_router};
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, FileId, InputBinding, InputResourceId,
-    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RepositoryConfigVersion,
-    RepositoryDefinition, RepositoryId, ResourceAccess, ResourceCatalog, ResourceState,
-    RetentionPolicy,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, PublishMemoryStoreConfig,
+    RegisterMemoryStore, RegisterRepository, RepositoryConfigVersion, RepositoryDefinition,
+    RepositoryId, ResourceAccess, ResourceAdministration as _, ResourceInventory as _,
+    ResourceState, RetentionPolicy,
 };
 use awaken_session_contract::{
     ManagedSessionRepository, OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome,
@@ -63,11 +64,14 @@ fn input(
     }
 }
 
-fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceStore> {
-    let catalog = std::sync::Arc::new(
+fn resource_registry() -> std::sync::Arc<awaken_resource_application::RegistryApplication> {
+    let storage = std::sync::Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resource Catalog"),
+            .expect("open ephemeral Resource Registry"),
     );
+    let registry = std::sync::Arc::new(awaken_resource_application::RegistryApplication::new(
+        storage,
+    ));
     for id in [
         "mem_1",
         "mem_2",
@@ -83,9 +87,9 @@ fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceSto
         "agent-memory",
         "session-memory",
     ] {
-        catalog
-            .create_memory_store(
-                MemoryStoreDefinition {
+        registry
+            .register_memory_store(RegisterMemoryStore {
+                definition: MemoryStoreDefinition {
                     id: id.into(),
                     workspace_id: "default".into(),
                     name: if id.starts_with("mem_same_") {
@@ -99,15 +103,15 @@ fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceSto
                     current_config_version: ConfigVersion::INITIAL,
                     timestamps: Default::default(),
                 },
-                MemoryStoreConfigVersion {
+                initial_config: MemoryStoreConfigVersion {
                     memory_store_id: id.into(),
                     version: ConfigVersion::INITIAL,
                     retention_policy: RetentionPolicy::default(),
                 },
-            )
-            .unwrap();
+            })
+            .expect("register session Resource fixture");
     }
-    catalog
+    registry
 }
 
 /// A runtime that accepts every `prepare_session` — the session record exists, so
@@ -1389,7 +1393,7 @@ async fn app_with_session() -> (Router, String) {
     let app = router(std::sync::Arc::new(
         ManagedState::new(AcceptingFake::default())
             .with_vaults(vaults)
-            .with_resource_catalog(resource_catalog()),
+            .with_resource_registry(resource_registry()),
     ));
     let (s, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(s, StatusCode::OK);
@@ -1400,7 +1404,7 @@ async fn app_with_session() -> (Router, String) {
 #[tokio::test]
 async fn create_time_resources_are_backfilled_and_addressable() {
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default()).with_resource_catalog(resource_catalog()),
+        ManagedState::new(AcceptingFake::default()).with_resource_registry(resource_registry()),
     ));
 
     let (s, session) = call(
@@ -1464,7 +1468,7 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+        ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
     let (status, session) = call(
         &app,
@@ -1527,7 +1531,7 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+        ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
     let resources = (1..=8)
         .map(|index| {
@@ -1748,7 +1752,7 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     let prepared = runtime.prepared.clone();
     let state = ManagedState::new(runtime)
         .with_config_source(std::sync::Arc::new(WorkspaceScopedAgent))
-        .with_resource_catalog(resource_catalog());
+        .with_resource_registry(resource_registry());
     let app = router(std::sync::Arc::new(state));
 
     let (status, session) = call(
@@ -1806,9 +1810,9 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
 async fn resource_config_publication_only_affects_later_sessions() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(catalog.clone()),
+        ManagedState::new(runtime).with_resource_registry(catalog.clone()),
     ));
     let request = || {
         json!({
@@ -1826,18 +1830,18 @@ async fn resource_config_publication_only_affects_later_sessions() {
         StatusCode::OK
     );
     catalog
-        .publish_memory_config(
-            "default",
-            ConfigVersion::INITIAL,
-            MemoryStoreConfigVersion {
+        .publish_memory_store_config(PublishMemoryStoreConfig {
+            workspace_id: "default".into(),
+            expected_current: ConfigVersion::INITIAL,
+            config: MemoryStoreConfigVersion {
                 memory_store_id: "mem_1".into(),
                 version: ConfigVersion(2),
                 retention_policy: RetentionPolicy {
                     retention_days: Some(2),
                 },
             },
-        )
-        .unwrap();
+        })
+        .expect("publish MemoryStore config V2");
     assert_eq!(
         call(&app, "POST", "/v1/sessions", Some(request())).await.0,
         StatusCode::OK
@@ -1996,12 +2000,12 @@ async fn repository_access_compiler_follows_the_decision_table() {
 
 #[tokio::test]
 async fn terminal_session_retires_only_its_compatibility_repository_definition() {
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
     let state = ManagedState::new(AcceptingFake::default())
-        .with_resource_catalog(catalog.clone())
+        .with_resource_registry(catalog.clone())
         .with_session_repo(repo.clone());
     let request = serde_json::from_value(with_session_environment(json!({
         "agent": "a",
@@ -2020,7 +2024,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     };
     assert_eq!(
         catalog
-            .repository("default", repository_id.as_str())
+            .find_repository("default", repository_id.as_str())
             .unwrap()
             .unwrap()
             .state,
@@ -2030,7 +2034,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     state.archive_session(&id).await.unwrap();
     assert_eq!(
         catalog
-            .repository("default", repository_id.as_str())
+            .find_repository("default", repository_id.as_str())
             .unwrap()
             .unwrap()
             .state,
@@ -2041,10 +2045,10 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
 
 #[tokio::test]
 async fn terminal_session_never_deletes_a_platform_repository_definition() {
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     catalog
-        .create_repository(
-            RepositoryDefinition {
+        .register_repository(RegisterRepository {
+            definition: RepositoryDefinition {
                 id: "platform-repository".into(),
                 workspace_id: "default".into(),
                 name: "Platform Repository".into(),
@@ -2054,7 +2058,7 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
                 current_config_version: ConfigVersion::INITIAL,
                 timestamps: Default::default(),
             },
-            RepositoryConfigVersion {
+            initial_config: RepositoryConfigVersion {
                 repository_id: "platform-repository".into(),
                 version: ConfigVersion::INITIAL,
                 remote_url: "https://github.com/awaken/platform.git".into(),
@@ -2063,10 +2067,10 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
                 initial_commit: None,
                 clone_policy: ClonePolicy::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("register platform Repository");
     let state = ManagedState::new(AcceptingFake::default())
-        .with_resource_catalog(catalog.clone())
+        .with_resource_registry(catalog.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPlatformRepository));
     let request = serde_json::from_value(with_session_environment(json!({
         "agent": "repo-agent"
@@ -2077,7 +2081,7 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
 
     assert_eq!(
         catalog
-            .repository("default", "platform-repository")
+            .find_repository("default", "platform-repository")
             .unwrap()
             .unwrap()
             .state,
@@ -2140,7 +2144,7 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     );
     let state = ManagedState::new(runtime)
         .with_session_repo(repo.clone())
-        .with_resource_catalog(resource_catalog());
+        .with_resource_registry(resource_registry());
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
     let id = state.create_session(request, None).await.unwrap().id;
@@ -2321,7 +2325,7 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
         let state = ManagedState::new(runtime)
             .with_session_repo(repo.clone())
-            .with_resource_catalog(resource_catalog());
+            .with_resource_registry(resource_registry());
         let request =
             serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
         let id = state.create_session(request, None).await.unwrap().id;
@@ -2418,7 +2422,7 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
     let runtime = AcceptingFake::default();
     let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+        ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
     let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
     let id = session["id"].as_str().unwrap();
@@ -2488,7 +2492,7 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     let runtime = AcceptingFake::default();
     let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+        ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
     let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     let id = session["id"].as_str().unwrap();
@@ -2584,7 +2588,7 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime)
             .with_session_repo(repo.clone())
-            .with_resource_catalog(resource_catalog()),
+            .with_resource_registry(resource_registry()),
     ));
     let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     let id = session["id"].as_str().unwrap();
@@ -2632,7 +2636,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
         ManagedState::new(AcceptingFake::default())
             .with_session_repo(repo.clone())
             .with_vaults(vaults)
-            .with_resource_catalog(resource_catalog()),
+            .with_resource_registry(resource_registry()),
     ));
     let (_, session) = call(
         &app,
@@ -2719,7 +2723,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
     let applied = runtime.applied.clone();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+        ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
 
     let (status, _) = call(
@@ -2796,7 +2800,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         ManagedState::new(runtime)
             .with_vaults(vaults)
             .with_session_repo(sessions.clone())
-            .with_resource_catalog(resource_catalog()),
+            .with_resource_registry(resource_registry()),
     ));
 
     let (status, session) = call(

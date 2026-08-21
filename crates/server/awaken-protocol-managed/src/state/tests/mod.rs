@@ -4,9 +4,12 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn ephemeral_resource_catalog() -> awaken_resource_store::SqliteResourceStore {
-    awaken_resource_store::SqliteResourceStore::in_memory()
-        .expect("open ephemeral Resource Catalog")
+fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
+    let storage = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open ephemeral Resource Registry"),
+    );
+    awaken_resource_application::RegistryApplication::new(storage)
 }
 
 /// A runtime that records every `end_session` thread it is asked to tear down,

@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use awaken_resource_contract::{
-    BindingId, InputBinding, InputResourceId, MemoryStoreConfigVersion, RepositoryConfigVersion,
-    ResourceCatalogError, ResourceConfigSource,
+    BindingId, ExecutionResourceResolver, InputBinding, InputResourceId, MemoryStoreConfigVersion,
+    RepositoryConfigVersion, ResourceRegistryError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct SessionInputAttachment {
 }
 
 /// Exact, secret-free credential decision frozen for one Repository input.
-/// Resource Catalog configuration keeps only its Vault binding; the Session
+/// Resource Registry configuration keeps only its Vault binding; the Session
 /// application resolves that binding once into this execution pin before any
 /// Runtime or Git side effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,7 +265,7 @@ pub enum SessionInputError {
     #[error("invalid Repository credential execution pin: {0}")]
     InvalidCredentialPin(String),
     #[error(transparent)]
-    Catalog(#[from] awaken_resource_contract::ResourceCatalogError),
+    Registry(#[from] awaken_resource_contract::ResourceRegistryError),
 }
 
 fn normalized_mount(path: &str) -> Result<String, SessionInputError> {
@@ -368,7 +368,7 @@ impl SessionInputResolver {
     /// its authorization decision; this method contains no authorization policy.
     pub fn resolve_inputs(
         workspace_id: &str,
-        catalog: Option<&dyn ResourceConfigSource>,
+        catalog: Option<&dyn ExecutionResourceResolver>,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<ResolvedSessionResources, SessionInputError> {
@@ -380,7 +380,7 @@ impl SessionInputResolver {
                     InputResourceId::MemoryStore(memory_store_id) => {
                         let config = catalog
                             .ok_or_else(|| {
-                                ResourceCatalogError::NotFound(memory_store_id.to_string())
+                                ResourceRegistryError::NotFound(memory_store_id.to_string())
                             })?
                             .resolve_memory_store(workspace_id, memory_store_id.as_str())?;
                         ResolvedInputSource::MemoryStore {
@@ -391,7 +391,7 @@ impl SessionInputResolver {
                     InputResourceId::Repository(repository_id) => {
                         let config = catalog
                             .ok_or_else(|| {
-                                ResourceCatalogError::NotFound(repository_id.to_string())
+                                ResourceRegistryError::NotFound(repository_id.to_string())
                             })?
                             .resolve_repository(workspace_id, repository_id.as_str())?;
                         ResolvedInputSource::Repository {
@@ -428,25 +428,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_resource_contract::{
-        ClonePolicy, ConfigVersion, FileId, MemoryStoreId, RepositoryId, ResourceCatalogError,
-        ResourceConfigSource, RetentionPolicy,
+        ClonePolicy, ConfigVersion, ExecutionResourceResolver, FileId, MemoryStoreId, RepositoryId,
+        ResourceRegistryError, RetentionPolicy,
     };
 
     #[derive(Default)]
-    struct Catalog {
+    struct Registry {
         memory_resolves: AtomicUsize,
         repository_resolves: AtomicUsize,
     }
 
-    impl ResourceConfigSource for Catalog {
+    impl ExecutionResourceResolver for Registry {
         fn resolve_memory_store(
             &self,
             workspace_id: &str,
             id: &str,
-        ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
+        ) -> Result<MemoryStoreConfigVersion, ResourceRegistryError> {
             self.memory_resolves.fetch_add(1, Ordering::Relaxed);
             if workspace_id != "workspace-a" || id != "memory-1" {
-                return Err(ResourceCatalogError::NotFound(id.into()));
+                return Err(ResourceRegistryError::NotFound(id.into()));
             }
             Ok(MemoryStoreConfigVersion {
                 memory_store_id: id.into(),
@@ -459,10 +459,10 @@ mod tests {
             &self,
             workspace_id: &str,
             id: &str,
-        ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
+        ) -> Result<RepositoryConfigVersion, ResourceRegistryError> {
             self.repository_resolves.fetch_add(1, Ordering::Relaxed);
             if workspace_id != "workspace-a" || id != "repo-1" {
-                return Err(ResourceCatalogError::NotFound(id.into()));
+                return Err(ResourceRegistryError::NotFound(id.into()));
             }
             Ok(RepositoryConfigVersion {
                 repository_id: id.into(),
@@ -518,7 +518,7 @@ mod tests {
 
         let effective = SessionInputResolver::resolve_inputs(
             "workspace-a",
-            Some(&Catalog::default()),
+            Some(&Registry::default()),
             &defaults,
             &[SessionInputAttachment {
                 binding: file,
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn mutable_resources_resolve_once_without_content_pins_or_authorization() {
-        let catalog = Catalog::default();
+        let registry = Registry::default();
         let defaults = vec![
             binding(
                 "memory",
@@ -553,11 +553,11 @@ mod tests {
         ];
 
         let effective =
-            SessionInputResolver::resolve_inputs("workspace-a", Some(&catalog), &defaults, &[])
+            SessionInputResolver::resolve_inputs("workspace-a", Some(&registry), &defaults, &[])
                 .unwrap();
 
-        assert_eq!(catalog.memory_resolves.load(Ordering::Relaxed), 1);
-        assert_eq!(catalog.repository_resolves.load(Ordering::Relaxed), 1);
+        assert_eq!(registry.memory_resolves.load(Ordering::Relaxed), 1);
+        assert_eq!(registry.repository_resolves.load(Ordering::Relaxed), 1);
         let wire = serde_json::to_string(&effective).unwrap();
         assert!(wire.contains("\"version\":4"));
         assert!(wire.contains("\"version\":7"));
@@ -591,13 +591,13 @@ mod tests {
         assert!(matches!(
             SessionInputResolver::resolve_inputs(
                 "workspace-b",
-                Some(&Catalog::default()),
+                Some(&Registry::default()),
                 &[memory_binding],
                 &[]
             ),
-            Err(SessionInputError::Catalog(ResourceCatalogError::NotFound(
-                _
-            )))
+            Err(SessionInputError::Registry(
+                ResourceRegistryError::NotFound(_)
+            ))
         ));
     }
 
@@ -630,9 +630,9 @@ mod tests {
             );
             assert!(matches!(
                 SessionInputResolver::resolve_inputs("workspace-a", None, &[configured], &[]),
-                Err(SessionInputError::Catalog(ResourceCatalogError::NotFound(
-                    _
-                )))
+                Err(SessionInputError::Registry(
+                    ResourceRegistryError::NotFound(_)
+                ))
             ));
         }
     }

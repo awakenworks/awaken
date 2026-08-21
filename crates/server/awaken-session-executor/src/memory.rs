@@ -329,7 +329,7 @@ pub struct BoundMemory {
     session_id: String,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
-    resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     workspace_id: String,
     memory_store_id: String,
     memory_config_version: u64,
@@ -492,7 +492,7 @@ impl MemoryRuntime {
         session_id: impl Into<String>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
-        resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+        resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
         config: &awaken_resource_contract::MemoryStoreConfigVersion,
         writable: bool,
     ) -> BoundMemory {
@@ -645,7 +645,7 @@ impl BoundMemory {
             .as_ref()
             .map_or(Ok(()), |validator| {
                 validator
-                    .validate_memory_binding(
+                    .verify_memory_binding(
                         &self.workspace_id,
                         &self.memory_store_id,
                         awaken_resource_contract::ConfigVersion(self.memory_config_version),
@@ -1017,7 +1017,7 @@ impl crate::host::SharedHost {
         workspace_id: &str,
         config: &awaken_resource_contract::MemoryStoreConfigVersion,
         access: awaken_resource_contract::ResourceAccess,
-        resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+        resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     ) {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
@@ -1186,7 +1186,7 @@ mod tests {
             session_id,
             "ws-test",
             platform,
-            Some(Arc::new(TestResourceBindingValidator)),
+            Some(Arc::new(TestLiveResourceBindingVerifier)),
             &config,
             true,
         );
@@ -1198,24 +1198,24 @@ mod tests {
         (runtime, bound, repository, extractions)
     }
 
-    struct TestResourceBindingValidator;
+    struct TestLiveResourceBindingVerifier;
 
-    impl awaken_resource_contract::ResourceBindingValidator for TestResourceBindingValidator {
-        fn validate_memory_binding(
+    impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
+        fn verify_memory_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
             _version: awaken_resource_contract::ConfigVersion,
-        ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
             Ok(())
         }
 
-        fn validate_repository_binding(
+        fn verify_repository_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
             _version: awaken_resource_contract::ConfigVersion,
-        ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
             Ok(())
         }
     }

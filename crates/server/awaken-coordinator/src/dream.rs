@@ -12,7 +12,7 @@ use awaken_provisioning_contract::{
 };
 use awaken_resource_contract::{
     CreateMemoryStoreCommand, FileApplicationService, Memory, MemoryRepository,
-    MemoryStoreApplicationService, MemoryStoreId, ResourceCatalog, ResourceState,
+    MemoryStoreApplicationService, MemoryStoreId, ResourceRegistry, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
@@ -84,7 +84,7 @@ impl ExclusiveMemoryStoreWriterLease {
 pub(crate) struct BuiltInDreamAgent {
     sessions: Arc<SessionApplication>,
     memory: Arc<dyn MemoryRepository>,
-    catalog: Arc<dyn ResourceCatalog>,
+    catalog: Arc<dyn ResourceRegistry>,
     stores: Arc<dyn MemoryStoreApplicationService>,
     files: Arc<dyn FileApplicationService>,
 }
@@ -93,7 +93,7 @@ impl BuiltInDreamAgent {
     pub(crate) fn new(
         sessions: Arc<SessionApplication>,
         memory: Arc<dyn MemoryRepository>,
-        catalog: Arc<dyn ResourceCatalog>,
+        catalog: Arc<dyn ResourceRegistry>,
         stores: Arc<dyn MemoryStoreApplicationService>,
         files: Arc<dyn FileApplicationService>,
     ) -> Self {
