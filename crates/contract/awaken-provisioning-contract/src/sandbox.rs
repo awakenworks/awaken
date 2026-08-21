@@ -261,6 +261,11 @@ pub struct ContainerSandboxHandleV1 {
     pub outputs_path: String,
     pub base_env: Vec<crate::EnvVar>,
     pub live_input_projection: bool,
+    /// Sandbox-absolute paths excluded from a later mutable-layer checkpoint.
+    /// The creating provider freezes this evidence so adoption never has to
+    /// rediscover independently governed mounts from ambient infrastructure.
+    #[serde(default)]
+    pub continuation_excluded_paths: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_handle: Option<ContainerContinuationHandle>,
 }

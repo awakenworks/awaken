@@ -96,7 +96,15 @@ fn bounded_absolute(path: &str) -> bool {
 /// source consumed by product checkpoint decorators; runtime-specific code must
 /// not restate the workspace/output/tmp set.
 pub fn checkpoint_writable_roots(spec: &pc::SandboxSpec) -> Result<Vec<String>, pc::SandboxError> {
-    let output = spec.outputs_path.trim_end_matches('/');
+    checkpoint_writable_roots_from_output_path(&spec.outputs_path)
+}
+
+/// Recover the canonical writable-root set from the output path preserved in a
+/// durable Sandbox handle.
+pub fn checkpoint_writable_roots_from_output_path(
+    outputs_path: &str,
+) -> Result<Vec<String>, pc::SandboxError> {
+    let output = outputs_path.trim_end_matches('/');
     if !bounded_absolute(output) {
         return Err(pc::SandboxError::new(
             "sandbox output root must be an absolute bounded path",
@@ -219,6 +227,10 @@ mod tests {
         validate_checkpoint_writable_roots(&roots).unwrap();
         assert_eq!(
             checkpoint_writable_roots(&spec("/workspace/outputs")).unwrap(),
+            ["/workspace", "/tmp"]
+        );
+        assert_eq!(
+            checkpoint_writable_roots_from_output_path("/workspace/outputs").unwrap(),
             ["/workspace", "/tmp"]
         );
         assert_eq!(

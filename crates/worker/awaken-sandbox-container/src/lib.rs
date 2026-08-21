@@ -55,7 +55,10 @@ pub use runtime::{
 };
 use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
-pub use writable::{checkpoint_writable_roots, validate_checkpoint_writable_roots, writable_dirs};
+pub use writable::{
+    checkpoint_writable_roots, checkpoint_writable_roots_from_output_path,
+    validate_checkpoint_writable_roots, writable_dirs,
+};
 
 // ── Pure planners ─────────────────────────────────────────────────────────────
 
@@ -1358,6 +1361,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: self.file_store.clone(),
             live_input_projection: self.runtime.supports_live_input_projection(),
             runtime_handle,
+            continuation_excluded_paths: spec
+                .mounts
+                .iter()
+                .map(|mount| mount.mount_path.clone())
+                .collect(),
             realized,
             recovered: false,
             lifecycle: Arc::new(ContainerCleanupState {
@@ -1391,6 +1399,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: self.file_store.clone(),
             live_input_projection: payload.live_input_projection,
             runtime_handle: payload.runtime_handle,
+            continuation_excluded_paths: payload.continuation_excluded_paths,
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerCleanupState::completed(
@@ -1548,6 +1557,8 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     live_input_projection: bool,
     /// Runtime-owned incarnation evidence carried through Worker adoption.
     runtime_handle: Option<ContainerRuntimeHandle>,
+    /// Exact independently governed paths retained only for checkpoint safety.
+    continuation_excluded_paths: Vec<String>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1742,6 +1753,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                 outputs_path: self.outputs_path.clone(),
                 base_env: self.base_env.clone(),
                 live_input_projection: self.live_input_projection,
+                continuation_excluded_paths: self.continuation_excluded_paths.clone(),
                 runtime_handle: self.runtime_handle.clone(),
             },
         )
