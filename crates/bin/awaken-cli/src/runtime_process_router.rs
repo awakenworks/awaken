@@ -351,7 +351,7 @@ pub(super) async fn prepare_runtime_routers(
                 awaken_admin_assistant::admin_tool_descriptors(),
                 component.admin_tools.clone(),
                 mcp_bearer_token,
-            );
+            )?;
             (
                 component.router,
                 mcp_export,

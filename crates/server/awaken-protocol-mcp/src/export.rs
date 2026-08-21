@@ -45,34 +45,133 @@ pub enum ToolExec {
     WithProgress(Arc<dyn ProgressRawTool>),
 }
 
+impl ToolExec {
+    fn id(&self) -> &str {
+        match self {
+            Self::Plain(tool) => tool.id(),
+            Self::WithProgress(tool) => tool.id(),
+        }
+    }
+}
+
 /// One tool explicitly exported to external MCP clients: the model-visible
 /// descriptor (`tools/list`) plus its executable (`tools/call`).
 #[derive(Clone)]
 pub struct McpExportedTool {
-    pub descriptor: ToolDescriptor,
-    pub exec: ToolExec,
+    descriptor: ToolDescriptor,
+    exec: ToolExec,
 }
 
-impl McpExportedTool {
-    pub fn plain(descriptor: ToolDescriptor, tool: Arc<dyn RawTool>) -> Self {
-        Self {
-            descriptor,
-            exec: ToolExec::Plain(tool),
+#[derive(Debug, PartialEq, Eq)]
+pub enum McpExportError {
+    IdentityMismatch {
+        descriptor: String,
+        executable: String,
+    },
+    CardinalityMismatch {
+        descriptors: usize,
+        executables: usize,
+    },
+}
+
+impl std::fmt::Display for McpExportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentityMismatch {
+                descriptor,
+                executable,
+            } => write!(
+                formatter,
+                "MCP tool descriptor id {descriptor:?} does not match executable id {executable:?}"
+            ),
+            Self::CardinalityMismatch {
+                descriptors,
+                executables,
+            } => write!(
+                formatter,
+                "MCP export descriptor count {descriptors} does not match executable count {executables}"
+            ),
         }
     }
+}
 
+impl std::error::Error for McpExportError {}
+
+impl McpExportedTool {
+    /// Pair a statically wired descriptor and executable. Use [`Self::try_plain`]
+    /// when either identity originates outside the trusted composition root.
+    #[must_use]
+    pub fn plain(descriptor: ToolDescriptor, tool: Arc<dyn RawTool>) -> Self {
+        Self::try_plain(descriptor, tool)
+            .expect("statically wired MCP descriptor and executable ids must match")
+    }
+
+    pub fn try_plain(
+        descriptor: ToolDescriptor,
+        tool: Arc<dyn RawTool>,
+    ) -> Result<Self, McpExportError> {
+        Self::try_new(descriptor, ToolExec::Plain(tool))
+    }
+
+    /// Pair a statically wired progress descriptor and executable. Use
+    /// [`Self::try_with_progress`] for externally assembled identities.
+    #[must_use]
     pub fn with_progress(descriptor: ToolDescriptor, tool: Arc<dyn ProgressRawTool>) -> Self {
-        Self {
-            descriptor,
-            exec: ToolExec::WithProgress(tool),
+        Self::try_with_progress(descriptor, tool)
+            .expect("statically wired MCP descriptor and progress executable ids must match")
+    }
+
+    pub fn try_with_progress(
+        descriptor: ToolDescriptor,
+        tool: Arc<dyn ProgressRawTool>,
+    ) -> Result<Self, McpExportError> {
+        Self::try_new(descriptor, ToolExec::WithProgress(tool))
+    }
+
+    fn try_new(descriptor: ToolDescriptor, exec: ToolExec) -> Result<Self, McpExportError> {
+        if descriptor.id != exec.id() {
+            return Err(McpExportError::IdentityMismatch {
+                descriptor: descriptor.id,
+                executable: exec.id().to_owned(),
+            });
         }
+        Ok(Self { descriptor, exec })
+    }
+
+    pub fn try_plain_set(
+        descriptors: Vec<ToolDescriptor>,
+        executables: Vec<Arc<dyn RawTool>>,
+    ) -> Result<Vec<Self>, McpExportError> {
+        if descriptors.len() != executables.len() {
+            return Err(McpExportError::CardinalityMismatch {
+                descriptors: descriptors.len(),
+                executables: executables.len(),
+            });
+        }
+        descriptors
+            .into_iter()
+            .zip(executables)
+            .map(|(descriptor, executable)| Self::try_plain(descriptor, executable))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    pub(crate) fn execution(&self) -> &ToolExec {
+        &self.exec
     }
 }
 
 impl From<DynamicTool> for McpExportedTool {
     fn from(dynamic: DynamicTool) -> Self {
         let (descriptor, tool) = dynamic.into_parts();
-        Self::plain(descriptor, tool)
+        Self {
+            descriptor,
+            exec: ToolExec::Plain(tool),
+        }
     }
 }
 
@@ -154,12 +253,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    struct NoopTool;
+    struct NoopTool(String);
 
     #[async_trait]
     impl RawTool for NoopTool {
         fn id(&self) -> &str {
-            "noop"
+            &self.0
         }
         async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::ok(call.call_id, "ok"))
@@ -169,7 +268,7 @@ mod tests {
     fn exported(id: &str) -> McpExportedTool {
         McpExportedTool::plain(
             ToolDescriptor::pinned("test", id, "a tool", json!({ "type": "object" })),
-            Arc::new(NoopTool),
+            Arc::new(NoopTool(id.to_owned())),
         )
     }
 
@@ -197,11 +296,36 @@ mod tests {
     fn dynamic_tool_converts_to_a_plain_export() {
         let dynamic = DynamicTool::try_new(
             ToolDescriptor::pinned("test", "noop", "a tool", json!({})),
-            Arc::new(NoopTool),
+            Arc::new(NoopTool("noop".to_owned())),
         )
         .expect("matching dynamic tool identity");
         let export: McpExportedTool = dynamic.into();
-        assert_eq!(export.descriptor.id, "noop");
-        assert!(matches!(export.exec, ToolExec::Plain(_)));
+        assert_eq!(export.descriptor().id, "noop");
+        assert!(matches!(export.execution(), ToolExec::Plain(_)));
+    }
+
+    #[test]
+    fn export_pairing_rejects_identity_and_cardinality_drift() {
+        // Cause/effect table: one descriptor must bind one executor with the
+        // same id; parallel lists of unequal size must fail before `zip` can
+        // silently discard either side.
+        assert!(matches!(
+            McpExportedTool::try_plain(
+                ToolDescriptor::pinned("test", "advertised", "a tool", json!({})),
+                Arc::new(NoopTool("noop".to_owned())),
+            ),
+            Err(McpExportError::IdentityMismatch { .. })
+        ));
+        assert_eq!(
+            McpExportedTool::try_plain_set(
+                vec![ToolDescriptor::pinned("test", "noop", "a tool", json!({}))],
+                Vec::new(),
+            )
+            .err(),
+            Some(McpExportError::CardinalityMismatch {
+                descriptors: 1,
+                executables: 0,
+            })
+        );
     }
 }

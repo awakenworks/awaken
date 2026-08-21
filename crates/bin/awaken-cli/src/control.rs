@@ -320,7 +320,7 @@ async fn prepare_control_process_with_model_supply(
             managed_services,
         },
     )
-    .await;
+    .await?;
     Ok(PreparedProcess {
         public_router: prepared.public_router,
         private_router: prepared.private_router,
