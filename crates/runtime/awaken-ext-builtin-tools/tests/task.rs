@@ -217,10 +217,10 @@ fn send_message_declares_durable_request_recovery() {
     );
     let descriptor = awaken_ext_builtin_tools::builtin_tools()
         .into_iter()
-        .find(|tool| tool.descriptor.id == "send_message")
+        .find(|tool| tool.descriptor().id == "send_message")
         .expect("send_message descriptor");
     assert_eq!(
-        descriptor.descriptor.recovery_policy,
+        descriptor.descriptor().recovery_policy,
         awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request()
     );
 }

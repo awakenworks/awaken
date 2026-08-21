@@ -22,7 +22,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpWorkerProfile {
     cli_ids: BTreeSet<String>,
-    default_cli: Option<String>,
     launch_argv: BTreeMap<String, Vec<String>>,
 }
 
@@ -36,57 +35,36 @@ impl AcpWorkerProfile {
             awaken_run_executor_acp::known_acp_clis()
                 .iter()
                 .map(|cli| cli.id.to_string()),
-            None,
         )
     }
 
-    pub fn new(
-        cli_ids: impl IntoIterator<Item = String>,
-        default_cli: Option<String>,
-    ) -> Result<Self, String> {
+    pub fn new(cli_ids: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut normalized = BTreeSet::new();
         for cli_id in cli_ids {
-            let cli_id = cli_id.trim();
-            if cli_id.is_empty() {
-                continue;
+            if cli_id.is_empty() || cli_id.trim() != cli_id {
+                return Err(
+                    "ACP CLI ids must be non-empty and contain no surrounding whitespace"
+                        .to_string(),
+                );
             }
-            if awaken_run_executor_acp::acp_cli(cli_id).is_none() {
+            if awaken_run_executor_acp::acp_cli(&cli_id).is_none() {
                 return Err(format!("unknown ACP CLI `{cli_id}`"));
             }
-            if !normalized.insert(cli_id.to_string()) {
+            if !normalized.insert(cli_id.clone()) {
                 return Err(format!("duplicate ACP CLI `{cli_id}`"));
             }
         }
         if normalized.is_empty() {
             return Err("an ACP Worker profile requires at least one CLI".to_string());
         }
-        let default_cli = default_cli
-            .map(|cli_id| cli_id.trim().to_string())
-            .filter(|cli_id| !cli_id.is_empty())
-            .or_else(|| {
-                (normalized.len() == 1).then(|| normalized.first().expect("one ACP CLI").clone())
-            });
-        if let Some(default_cli) = &default_cli
-            && !normalized.contains(default_cli)
-        {
-            return Err(format!(
-                "default ACP CLI `{default_cli}` is not present in the Worker profile"
-            ));
-        }
         Ok(Self {
             cli_ids: normalized,
-            default_cli,
             launch_argv: BTreeMap::new(),
         })
     }
 
     pub fn cli_ids(&self) -> impl Iterator<Item = &str> {
         self.cli_ids.iter().map(String::as_str)
-    }
-
-    #[must_use]
-    pub fn default_cli(&self) -> Option<&str> {
-        self.default_cli.as_deref()
     }
 
     /// Pin one startup-resolved launch argv to this Worker profile. This is
@@ -889,34 +867,17 @@ mod tests {
     }
 
     #[test]
-    fn acp_worker_profile_has_exact_routes_and_an_unambiguous_default() {
-        let profile = AcpWorkerProfile::new(
-            ["claude".to_string(), "codex".to_string()],
-            Some("codex".to_string()),
-        )
-        .unwrap();
+    fn acp_worker_profile_has_only_exact_routes() {
+        let profile = AcpWorkerProfile::new(["claude".to_string(), "codex".to_string()]).unwrap();
         assert_eq!(
             profile.cli_ids().collect::<Vec<_>>(),
             vec!["claude", "codex"]
         );
-        assert_eq!(profile.default_cli(), Some("codex"));
-
-        let one = AcpWorkerProfile::new(["claude".to_string()], None).unwrap();
-        assert_eq!(one.default_cli(), Some("claude"));
-        assert!(
-            AcpWorkerProfile::new(
-                ["claude".to_string(), "claude".to_string()],
-                Some("claude".to_string())
-            )
-            .is_err()
-        );
-        assert!(
-            AcpWorkerProfile::new(
-                ["claude".to_string(), "codex".to_string()],
-                Some("gemini".to_string())
-            )
-            .is_err()
-        );
+        assert!(AcpWorkerProfile::new(["claude".to_string(), "claude".to_string()]).is_err());
+        assert!(AcpWorkerProfile::new(["unknown-third-party-cli".to_string()]).is_err());
+        assert!(AcpWorkerProfile::new(["".to_string(), "codex".to_string()]).is_err());
+        assert!(AcpWorkerProfile::new([" codex".to_string()]).is_err());
+        assert!(AcpWorkerProfile::new(["codex ".to_string()]).is_err());
 
         // Catalog-selection cause/effect rule: the production image's `all`
         // contract selects every and only canonical row; embeddings therefore
@@ -929,7 +890,6 @@ mod tests {
                 .map(|cli| cli.id)
                 .collect::<std::collections::BTreeSet<_>>()
         );
-        assert_eq!(all.default_cli(), None);
     }
 
     #[test]
@@ -943,8 +903,7 @@ mod tests {
         // A2 unadvertised route         -> reject
         // A3 empty/blank executable     -> reject
         // A4 mixed valid/invalid batch  -> reject atomically
-        let mut profile =
-            AcpWorkerProfile::new(["codex".to_string()], Some("codex".to_string())).unwrap();
+        let mut profile = AcpWorkerProfile::new(["codex".to_string()]).unwrap();
         profile
             .set_launch_argv("codex", vec!["/opt/awaken/codex-acp".into()])
             .expect("A1");

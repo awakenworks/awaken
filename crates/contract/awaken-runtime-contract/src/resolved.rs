@@ -394,30 +394,99 @@ fn advisor_never_substitutes_for_primary_model_admission() {
 pub enum Backend {
     /// The in-process awaken model+tool loop. Any non-`acp:`/`a2a:` backend.
     Native,
-    /// A launched external ACP CLI (Claude Code, Codex, …). `cli` is the catalog id
-    /// (`AcpCli::id`) parsed from `acp:<cli>` (empty for a bare `acp`).
-    Acp { cli: String },
+    /// A launched external ACP CLI (Claude Code, Codex, …).
+    Acp(AcpBackend),
     /// A remote agent reached over A2A HTTP (no local process). `endpoint` is the
     /// dial URL parsed from `a2a:<endpoint>`; the A2A executor consumes it.
-    Remote { endpoint: String },
+    Remote(A2aBackend),
+    /// A malformed or incomplete route. It is a parse outcome, never an
+    /// executable backend, so every exhaustive routing decision must fail it.
+    Invalid(InvalidBackendRef),
+}
+
+/// Exact ACP executor coordinate parsed from `acp:<cli>`.
+/// Its payload is private, so an empty CLI cannot be constructed.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::AcpBackend;
+/// let _ = AcpBackend(String::new());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpBackend(String);
+
+impl AcpBackend {
+    #[must_use]
+    pub fn cli(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AcpBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Exact HTTP(S) A2A endpoint parsed from `a2a:<url>`.
+/// Its payload is private, so an empty or non-network endpoint cannot exist.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::A2aBackend;
+/// let _ = A2aBackend("relative/path".into());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aBackend(String);
+
+impl A2aBackend {
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for A2aBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Exact rejected backend spelling. The payload is diagnostic-only and private.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidBackendRef(String);
+
+impl InvalidBackendRef {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Backend {
-    /// Parse the typed backend from a `backend_ref` string. Total: any non-`acp`
-    /// value is [`Backend::Native`] (it names a provider inside the native runtime),
-    /// `acp` / `acp:<profile>` is [`Backend::Acp`].
+    /// Classify and validate a `backend_ref`. The result is total so inspection
+    /// code can retain the rejected spelling, while runnable variants themselves
+    /// carry only valid payloads.
     #[must_use]
     pub fn from_ref(backend_ref: &str) -> Self {
-        if backend_ref == "acp" {
-            Backend::Acp { cli: String::new() }
-        } else if let Some(cli) = backend_ref.strip_prefix("acp:") {
-            Backend::Acp {
-                cli: cli.to_string(),
+        if let Some(cli) = backend_ref.strip_prefix("acp:") {
+            if !cli.is_empty() && cli.trim() == cli {
+                Backend::Acp(AcpBackend(cli.to_string()))
+            } else {
+                Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))
             }
         } else if let Some(endpoint) = backend_ref.strip_prefix("a2a:") {
-            Backend::Remote {
-                endpoint: endpoint.to_string(),
+            let valid = url::Url::parse(endpoint).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+            });
+            if valid {
+                Backend::Remote(A2aBackend(endpoint.to_string()))
+            } else {
+                Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))
             }
+        } else if backend_ref.is_empty()
+            || backend_ref.trim() != backend_ref
+            || backend_ref == "acp"
+        {
+            Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))
         } else {
             Backend::Native
         }
@@ -427,7 +496,7 @@ impl Backend {
     #[must_use]
     pub fn remote_endpoint(&self) -> Option<&str> {
         match self {
-            Backend::Remote { endpoint } => Some(endpoint),
+            Backend::Remote(endpoint) => Some(endpoint.endpoint()),
             _ => None,
         }
     }
@@ -435,7 +504,7 @@ impl Backend {
     /// Whether this run is served by an external ACP CLI rather than the native loop.
     #[must_use]
     pub fn is_acp(&self) -> bool {
-        matches!(self, Backend::Acp { .. })
+        matches!(self, Backend::Acp(_))
     }
 }
 
@@ -1447,40 +1516,41 @@ mod tests {
         assert_eq!(Backend::from_ref("default"), Backend::Native);
         assert!(!Backend::from_ref("genai").is_acp());
 
-        // `acp` / `acp:<profile>` carry the launched-CLI profile the string used to
-        // smuggle — now a typed field.
-        assert_eq!(
-            Backend::from_ref("acp"),
-            Backend::Acp { cli: String::new() }
-        );
-        assert_eq!(
-            Backend::from_ref("acp:claude"),
-            Backend::Acp {
-                cli: "claude".to_string()
-            }
+        // Only exact `acp:<profile>` routes are runnable; a bare family token is
+        // authoring syntax and cannot become an execution backend.
+        assert!(matches!(Backend::from_ref("acp"), Backend::Invalid(_)));
+        assert!(matches!(Backend::from_ref("acp:"), Backend::Invalid(_)));
+        assert!(
+            matches!(Backend::from_ref("acp:claude"), Backend::Acp(cli) if cli.cli() == "claude")
         );
         assert!(Backend::from_ref("acp:codex").is_acp());
 
         // The binding's stored `backend_ref` parses to the same typed backend.
-        assert_eq!(
+        assert!(matches!(
             Backend::from_ref(&ModelBinding::new("p", "m", "acp:codex").backend_ref),
-            Backend::Acp {
-                cli: "codex".to_string()
-            }
-        );
+            Backend::Acp(cli) if cli.cli() == "codex"
+        ));
 
         // `a2a:<endpoint>` is a remote A2A backend.
-        assert_eq!(
+        assert!(matches!(
             Backend::from_ref("a2a:https://host/a2a"),
-            Backend::Remote {
-                endpoint: "https://host/a2a".to_string()
-            }
-        );
+            Backend::Remote(endpoint) if endpoint.endpoint() == "https://host/a2a"
+        ));
         assert_eq!(
             Backend::from_ref("a2a:https://host/a2a").remote_endpoint(),
             Some("https://host/a2a")
         );
-        assert!(!Backend::from_ref("a2a:x").is_acp());
+        assert!(matches!(Backend::from_ref("a2a:x"), Backend::Invalid(_)));
+        assert!(matches!(Backend::from_ref("a2a:"), Backend::Invalid(_)));
+        assert!(matches!(
+            Backend::from_ref("a2a:ftp://agent.example"),
+            Backend::Invalid(_)
+        ));
+        assert!(matches!(
+            Backend::from_ref(" acp:codex"),
+            Backend::Invalid(_)
+        ));
+        assert!(matches!(Backend::from_ref(""), Backend::Invalid(_)));
     }
 
     #[test]

@@ -372,8 +372,9 @@ impl SessionAttemptExecutor {
         }) {
             let executor = match Backend::from_ref(&binding.backend_ref) {
                 Backend::Native => continue,
-                Backend::Acp { .. } => acp.clone(),
-                Backend::Remote { .. } => a2a.clone(),
+                Backend::Acp(_) => acp.clone(),
+                Backend::Remote(_) => a2a.clone(),
+                Backend::Invalid(_) => continue,
             };
             if let Some(executor) = executor
                 && !registry.supports(&binding.backend_ref)
@@ -450,13 +451,19 @@ impl SharedHost {
             // candidates would let one ACP route authorize another route.
             let installed = match &backend {
                 Backend::Native => self.inference_routing.credential_realization_capabilities(),
-                Backend::Acp { .. } => self
+                Backend::Acp(_) => self
                     .acp
                     .as_ref()
                     .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
                     .credential_realization_capabilities(&backend)
                     .map_err(HostError::bad_request)?,
-                Backend::Remote { .. } => self.remote_credential_realization.clone(),
+                Backend::Remote(_) => self.remote_credential_realization.clone(),
+                Backend::Invalid(invalid) => {
+                    return Err(HostError::bad_request(format!(
+                        "invalid backend_ref {}",
+                        invalid.as_str()
+                    )));
+                }
             };
             let compiled = awaken_runtime_contract::compile_candidate_credential_bindings(
                 &[*candidate],

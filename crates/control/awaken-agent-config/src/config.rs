@@ -200,7 +200,7 @@ impl ModelSelection {
             .ok_or("ACP configuration requires an explicit acp:<cli> model selection")?;
         if !matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
-            awaken_runtime_contract::resolved::Backend::Acp { cli } if !cli.is_empty()
+            awaken_runtime_contract::resolved::Backend::Acp(_)
         ) {
             return Err("ACP configuration requires an explicit acp:<cli> model selection");
         }
@@ -237,8 +237,9 @@ impl ModelSelection {
 #[non_exhaustive]
 pub enum AgentKind {
     Native,
-    Acp { cli: String },
-    A2a { endpoint: String },
+    Acp(awaken_runtime_contract::resolved::AcpBackend),
+    A2a(awaken_runtime_contract::resolved::A2aBackend),
+    Invalid(awaken_runtime_contract::resolved::InvalidBackendRef),
 }
 
 impl AgentKind {
@@ -246,10 +247,9 @@ impl AgentKind {
     pub fn from_backend_ref(backend_ref: &str) -> Self {
         match awaken_runtime_contract::resolved::Backend::from_ref(backend_ref) {
             awaken_runtime_contract::resolved::Backend::Native => Self::Native,
-            awaken_runtime_contract::resolved::Backend::Acp { cli } => Self::Acp { cli },
-            awaken_runtime_contract::resolved::Backend::Remote { endpoint } => {
-                Self::A2a { endpoint }
-            }
+            awaken_runtime_contract::resolved::Backend::Acp(backend) => Self::Acp(backend),
+            awaken_runtime_contract::resolved::Backend::Remote(backend) => Self::A2a(backend),
+            awaken_runtime_contract::resolved::Backend::Invalid(invalid) => Self::Invalid(invalid),
         }
     }
 
@@ -258,9 +258,9 @@ impl AgentKind {
     pub fn backend_ref(&self) -> String {
         match self {
             Self::Native => "genai".into(),
-            Self::Acp { cli } if cli.is_empty() => "acp".into(),
-            Self::Acp { cli } => format!("acp:{cli}"),
-            Self::A2a { endpoint } => format!("a2a:{endpoint}"),
+            Self::Acp(backend) => format!("acp:{backend}"),
+            Self::A2a(backend) => format!("a2a:{backend}"),
+            Self::Invalid(invalid) => invalid.as_str().to_string(),
         }
     }
 }
@@ -843,34 +843,22 @@ mod model_selection_tests {
 
     // Cause/effect decision table for the derived executor lens:
     // R1 Auto/Profile -> Native; R2 ordinary provider ref -> Native;
-    // R3 acp/acp:<cli> -> Acp preserving optional CLI; R4 a2a:<endpoint> ->
-    // A2a preserving endpoint. Effects: no serialized `kind` field and the
+    // R3 exact acp:<cli> -> Acp; R4 exact a2a:<endpoint> -> A2a; R5 malformed
+    // executor coordinates -> Invalid. Effects: no serialized `kind` field and the
     // canonical encoded coordinate parses back to the same discriminant.
     #[test]
     fn agent_kind_is_a_stable_derived_executor_view() {
-        let cases = [
-            ("genai", AgentKind::Native),
-            ("provider:custom", AgentKind::Native),
-            ("acp", AgentKind::Acp { cli: String::new() }),
-            (
-                "acp:codex",
-                AgentKind::Acp {
-                    cli: "codex".into(),
-                },
-            ),
-            (
-                "a2a:https://agent.example",
-                AgentKind::A2a {
-                    endpoint: "https://agent.example".into(),
-                },
-            ),
-        ];
-        for (backend_ref, expected) in cases {
+        for backend_ref in [
+            "genai",
+            "provider:custom",
+            "acp:codex",
+            "a2a:https://agent.example",
+        ] {
             let config = AgentConfig {
                 model_binding: ModelSelection::pinned("provider", "model", backend_ref),
                 ..Default::default()
             };
-            assert_eq!(config.kind(), expected);
+            let expected = config.kind();
             assert_eq!(
                 AgentKind::from_backend_ref(&config.kind().backend_ref()),
                 expected
@@ -883,6 +871,14 @@ mod model_selection_tests {
                 "kind remains a projection, never stored twice"
             );
         }
+        assert!(matches!(
+            AgentKind::from_backend_ref("acp"),
+            AgentKind::Invalid(_)
+        ));
+        assert!(matches!(
+            AgentKind::from_backend_ref("a2a:"),
+            AgentKind::Invalid(_)
+        ));
         for selection in [
             ModelSelection::Auto,
             ModelSelection::Profile {

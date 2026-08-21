@@ -125,7 +125,7 @@ impl CatalogModelPublicationResolver {
                         binding.model_ref
                     ),
                 })?;
-            let acp = if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+            let acp = if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)) {
                 let configuration = session_configuration.cloned().unwrap_or_default();
                 let (capability_adapter_version, capability_fingerprint, negotiated) = self
                     .verified_acp_capability(&binding.backend_ref, None, wall_clock_ms())
@@ -147,7 +147,7 @@ impl CatalogModelPublicationResolver {
             };
             return self.provider_candidate(catalog, workspace, binding, offering, access, acp);
         }
-        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)) {
             let configuration = Default::default();
             return self
                 .backend_candidate(
@@ -158,10 +158,7 @@ impl CatalogModelPublicationResolver {
                 )
                 .await;
         }
-        if matches!(
-            Backend::from_ref(&binding.backend_ref),
-            Backend::Remote { .. }
-        ) {
+        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Remote(_)) {
             return self.remote_candidate(workspace, binding, sources).await;
         }
         Err(PublicationResolutionError::CandidateUnavailable {
@@ -308,7 +305,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                 offering_for(&catalog, binding).is_ok()
                     || matches!(
                         Backend::from_ref(&binding.backend_ref),
-                        Backend::Acp { .. } | Backend::Remote { .. }
+                        Backend::Acp(_) | Backend::Remote(_)
                     )
             });
         let sources = if needs_credentials {
@@ -341,7 +338,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                     .expect("backend exact has ACP configuration"),
             )
             .await?
-        } else if matches!(selection, ModelSelection::Pinned(binding) if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }))
+        } else if matches!(selection, ModelSelection::Pinned(binding) if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)))
         {
             self.backend_candidate(
                 primary_binding.clone(),

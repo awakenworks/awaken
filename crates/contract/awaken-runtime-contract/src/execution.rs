@@ -22,8 +22,9 @@ pub const A2A_RUNTIME_CAPABILITY: &str = "a2a-runtime";
 pub fn execution_capability(backend_ref: &str) -> String {
     match Backend::from_ref(backend_ref) {
         Backend::Native => NATIVE_RUNTIME_CAPABILITY.to_string(),
-        Backend::Acp { .. } => backend_ref.to_string(),
-        Backend::Remote { .. } => A2A_RUNTIME_CAPABILITY.to_string(),
+        Backend::Acp(_) => backend_ref.to_string(),
+        Backend::Remote(_) => A2A_RUNTIME_CAPABILITY.to_string(),
+        Backend::Invalid(invalid) => format!("invalid-backend-ref:{}", invalid.as_str()),
     }
 }
 
@@ -183,11 +184,10 @@ impl AttemptExecutorRegistry {
         executor: Arc<dyn RunAttemptExecutor>,
     ) -> std::result::Result<(), AttemptExecutorRegistryError> {
         let backend_ref = backend_ref.into();
-        let valid = match Backend::from_ref(&backend_ref) {
-            Backend::Native => false,
-            Backend::Acp { ref cli } => backend_ref == "acp" || !cli.trim().is_empty(),
-            Backend::Remote { ref endpoint } => !endpoint.trim().is_empty(),
-        };
+        let valid = matches!(
+            Backend::from_ref(&backend_ref),
+            Backend::Acp(_) | Backend::Remote(_)
+        );
         if !valid {
             return Err(AttemptExecutorRegistryError::InvalidBackendRef(backend_ref));
         }
@@ -213,7 +213,8 @@ impl AttemptExecutorRegistry {
     pub fn supports(&self, backend_ref: &str) -> bool {
         match Backend::from_ref(backend_ref) {
             Backend::Native => self.native.is_some(),
-            Backend::Acp { .. } | Backend::Remote { .. } => self.exact.contains_key(backend_ref),
+            Backend::Acp(_) | Backend::Remote(_) => self.exact.contains_key(backend_ref),
+            Backend::Invalid(_) => false,
         }
     }
 
@@ -228,13 +229,17 @@ impl AttemptExecutorRegistry {
                     "no native attempt executor is registered for {backend_ref}"
                 ))
             }),
-            Backend::Acp { .. } | Backend::Remote { .. } => {
+            Backend::Acp(_) | Backend::Remote(_) => {
                 self.exact.get(backend_ref).cloned().ok_or_else(|| {
                     Error::Resolution(format!(
                         "no attempt executor is registered for exact backend_ref {backend_ref}"
                     ))
                 })
             }
+            Backend::Invalid(invalid) => Err(Error::Resolution(format!(
+                "invalid backend_ref {}",
+                invalid.as_str()
+            ))),
         }
     }
 }

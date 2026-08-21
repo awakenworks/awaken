@@ -106,7 +106,7 @@ pub(crate) fn requires_local_environment(
                 awaken_runtime_contract::resolved::Backend::from_ref(
                     &candidate.binding.backend_ref
                 ),
-                awaken_runtime_contract::resolved::Backend::Remote { .. }
+                awaken_runtime_contract::resolved::Backend::Remote(_)
             )
         })
 }
@@ -140,12 +140,18 @@ pub fn self_hosted_inference_holder(
         let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
             &candidate.binding.backend_ref,
         ) {
-            awaken_runtime_contract::resolved::Backend::Acp { .. } => {
+            awaken_runtime_contract::resolved::Backend::Acp(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Workload
             }
             awaken_runtime_contract::resolved::Backend::Native
-            | awaken_runtime_contract::resolved::Backend::Remote { .. } => {
+            | awaken_runtime_contract::resolved::Backend::Remote(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Worker
+            }
+            awaken_runtime_contract::resolved::Backend::Invalid(invalid) => {
+                return Err(HostError::bad_request(format!(
+                    "invalid backend_ref {}",
+                    invalid.as_str()
+                )));
             }
         };
         if boundary.is_some_and(|existing| existing != candidate_boundary) {
@@ -206,7 +212,7 @@ pub fn remote_worker_placement(
                 awaken_runtime_contract::resolved::Backend::from_ref(
                     &candidate.binding.backend_ref
                 ),
-                awaken_runtime_contract::resolved::Backend::Acp { .. }
+                awaken_runtime_contract::resolved::Backend::Acp(_)
             ) && !matches!(
                 candidate.provisioning,
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
@@ -1008,15 +1014,15 @@ mod completion_tests {
         let builtins = awaken_ext_builtin_tools::builtin_tools();
         let hand = builtins
             .iter()
-            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Hand)
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Hand)
             .expect("Hand catalog is non-empty")
-            .descriptor
+            .descriptor()
             .clone();
         let task = builtins
             .iter()
-            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Task)
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Task)
             .expect("Task catalog is non-empty")
-            .descriptor
+            .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
         models.tool_descriptors = vec![hand.clone(), task.clone()];

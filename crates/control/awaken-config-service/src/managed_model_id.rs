@@ -84,7 +84,7 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
 
     let backend_ref = parse_executor(&executor, value)?;
     match Backend::from_ref(&backend_ref) {
-        Backend::Native | Backend::Acp { .. } => Ok(ModelSelection::Target {
+        Backend::Native | Backend::Acp(_) => Ok(ModelSelection::Target {
             target: ModelTarget {
                 model_id,
                 provider_id,
@@ -95,23 +95,23 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
             backend_ref,
             configuration: AcpSessionConfiguration::default(),
         }),
-        Backend::Remote { .. } => Err(ManagedModelIdError::Invalid(value.into())),
+        Backend::Remote(_) | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(value.into())),
     }
 }
 
 fn executor_only(executor: &str, original: &str) -> Result<ModelSelection, ManagedModelIdError> {
     let backend_ref = parse_executor(executor, original)?;
     match Backend::from_ref(&backend_ref) {
-        Backend::Acp { cli } if !cli.is_empty() => Ok(ModelSelection::BackendDefault {
+        Backend::Acp(_) => Ok(ModelSelection::BackendDefault {
             backend_ref,
             configuration: AcpSessionConfiguration::default(),
         }),
-        Backend::Remote { endpoint } if !endpoint.is_empty() => Ok(ModelSelection::Pinned(
-            ModelBinding::new("", "", backend_ref),
-        )),
-        Backend::Native | Backend::Acp { .. } | Backend::Remote { .. } => {
-            Err(ManagedModelIdError::Invalid(original.into()))
-        }
+        Backend::Remote(_) => Ok(ModelSelection::Pinned(ModelBinding::new(
+            "",
+            "",
+            backend_ref,
+        ))),
+        Backend::Native | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(original.into())),
     }
 }
 
@@ -178,8 +178,8 @@ fn render_target(target: &ModelTarget, backend_ref: &str) -> Result<String, Mana
     }
     match Backend::from_ref(backend_ref) {
         Backend::Native => Ok(rendered),
-        Backend::Acp { cli } if !cli.is_empty() => {
-            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+        Backend::Acp(backend) => {
+            push_qualifier(&mut rendered, "executor", &format!("acp:{backend}"));
             Ok(rendered)
         }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
@@ -188,7 +188,7 @@ fn render_target(target: &ModelTarget, backend_ref: &str) -> Result<String, Mana
 
 fn render_executor_only(backend_ref: &str) -> Result<String, ManagedModelIdError> {
     match Backend::from_ref(backend_ref) {
-        Backend::Acp { cli } if !cli.is_empty() => Ok(format!("executor=acp:{cli}")),
+        Backend::Acp(backend) => Ok(format!("executor=acp:{backend}")),
         _ => Err(ManagedModelIdError::UnsupportedSelection),
     }
 }
@@ -202,8 +202,8 @@ fn render_model_and_executor(
     }
     let mut rendered = encode_component(model_ref);
     match Backend::from_ref(backend_ref) {
-        Backend::Acp { cli } if !cli.is_empty() => {
-            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+        Backend::Acp(backend) => {
+            push_qualifier(&mut rendered, "executor", &format!("acp:{backend}"));
             Ok(rendered)
         }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
@@ -222,21 +222,19 @@ fn render_binding(binding: &ModelBinding) -> Result<String, ManagedModelIdError>
             }
             Ok(rendered)
         }
-        Backend::Acp { cli } if !cli.is_empty() && binding.model_ref.is_empty() => {
+        Backend::Acp(_) if binding.model_ref.is_empty() => {
             render_executor_only(&binding.backend_ref)
         }
-        Backend::Acp { cli } if !cli.is_empty() => {
+        Backend::Acp(backend) => {
             let mut rendered = encode_component(&binding.model_ref);
             if !binding.provider_identity_ref.is_empty() {
                 push_qualifier(&mut rendered, "provider", &binding.provider_identity_ref);
             }
-            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+            push_qualifier(&mut rendered, "executor", &format!("acp:{backend}"));
             Ok(rendered)
         }
-        Backend::Remote { endpoint }
-            if !endpoint.is_empty()
-                && binding.provider_identity_ref.is_empty()
-                && binding.model_ref.is_empty() =>
+        Backend::Remote(endpoint)
+            if binding.provider_identity_ref.is_empty() && binding.model_ref.is_empty() =>
         {
             Ok(format!(
                 "executor={}",
