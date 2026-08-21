@@ -1806,7 +1806,7 @@ mod tests {
             .expect("observed owner");
         let replacement = Arc::new(
             host.session_provider
-                .adopt(&observed.handle())
+                .adopt(&host.sandbox_spec(thread), &observed.handle())
                 .await
                 .expect("same-handle replacement"),
         );

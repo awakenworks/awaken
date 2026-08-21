@@ -54,6 +54,25 @@ pub struct EnvironmentFile {
     pub bytes: Vec<u8>,
 }
 
+/// Canonical inputs required to reattach one existing container environment.
+///
+/// The durable handle identifies the runtime object; the frozen Sandbox
+/// specification remains the authority for security-sensitive mount and
+/// writable-root policy. Keeping both inputs in one typed request prevents
+/// adapters from reconstructing policy from an intentionally minimal handle.
+#[derive(Debug, Clone, Copy)]
+pub struct ContainerEnvironmentAdoption<'a> {
+    pub spec: &'a pc::SandboxSpec,
+    pub handle: &'a pc::SandboxHandle,
+}
+
+impl<'a> ContainerEnvironmentAdoption<'a> {
+    #[must_use]
+    pub const fn new(spec: &'a pc::SandboxSpec, handle: &'a pc::SandboxHandle) -> Self {
+        Self { spec, handle }
+    }
+}
+
 /// Backend-erased provider for Session-owned container environments.
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
@@ -89,7 +108,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
 
     async fn adopt_environment(
         &self,
-        handle: &pc::SandboxHandle,
+        adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
     async fn restore_environment(

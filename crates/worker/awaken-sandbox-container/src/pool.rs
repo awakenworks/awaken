@@ -497,9 +497,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 
     async fn adopt_environment(
         &self,
-        handle: &pc::SandboxHandle,
+        adoption: crate::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        self.inner.adopt_environment(handle).await
+        self.inner.adopt_environment(adoption).await
     }
 }
 
