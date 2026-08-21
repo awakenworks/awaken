@@ -106,7 +106,7 @@ impl SessionEnvironment {
         &self,
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<awaken_session_contract::CheckpointReceipt, pc::SandboxError> {
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         self.sandbox().checkpoint(request, store).await
     }
 
@@ -629,7 +629,9 @@ mod tests {
             limits: ResourceLimits::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 
@@ -863,7 +865,7 @@ mod tests {
                 config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "image-flow-v7".into(),
                 ),
-                sandbox: serde_json::json!({}),
+                sandbox: Default::default(),
                 sandbox_provisioning: Default::default(),
                 idle_retention: Default::default(),
                 packages: awaken_session_contract::EnvironmentPackages {
@@ -905,21 +907,13 @@ mod tests {
             Some(&vec!["tsx@4".to_string()]),
             "I1"
         );
-        assert!(
-            specs[0]
-                .extra
-                .as_ref()
-                .and_then(|extra| extra.get("environment"))
-                .is_none(),
-            "I1"
-        );
+        assert!(specs[0].environment.is_none(), "I1");
         assert!(specs[1].packages.managers.is_empty(), "I2/F3");
         assert_eq!(
-            specs[1]
-                .extra
-                .as_ref()
-                .and_then(|extra| extra.get("environment")),
-            Some(&serde_json::json!({"kind": "image", "reference": digest})),
+            specs[1].environment,
+            Some(awaken_provisioning_contract::EnvironmentKind::Image {
+                reference: digest.into()
+            }),
             "I2"
         );
     }

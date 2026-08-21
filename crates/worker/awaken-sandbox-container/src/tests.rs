@@ -15,6 +15,9 @@ fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["claude".into(), "--acp".into()],
+        deny_tool_egress: false,
         mounts: vec![
             pc::MountRequirement {
                 mount_id: "in".into(),
@@ -67,8 +70,6 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         },
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: Some(60),
-        // Process-as-container: the agent is the container's main command.
-        extra: Some(serde_json::json!({ "command": ["claude", "--acp"] })),
     }
 }
 
@@ -184,7 +185,7 @@ fn command_of_reads_the_agent_argv_or_defaults_empty() {
         vec!["claude".to_string(), "--acp".to_string()]
     );
     let mut bare = spec("s");
-    bare.extra = None;
+    bare.command.clear();
     assert!(command_of(&bare).is_empty());
 }
 
@@ -213,16 +214,15 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
 fn container_plan_honors_an_image_override_and_network_variants() {
     /* Container-image authority cause/effect decision table. Causes: C1 the
      * canonical Environment declares an OCI image; C2 it declares a non-image
-     * Environment; C3 it declares no Environment; C4 a retained/forged legacy
-     * top-level `image` field is present without canonical Environment authority.
+     * Environment; C3 it declares no Environment.
      * Effects: E1 Docker/Kubernetes `plan.image` and Podman `plan.rootfs` select
      * the same canonical reference; E2 the configured base is the final fallback.
-     * Rules: I1 C1=>E1; I2 C2=>E2; I3 C3=>E2; I4 C4=>E2. This prevents a prepared
+     * Rules: I1 C1=>E1; I2 C2=>E2; I3 C3=>E2. This prevents a prepared
      * package Environment from silently falling back to the package-free image. */
     let mut s = spec("s2");
-    s.extra = Some(serde_json::json!({
-        "environment": { "kind": "image", "reference": "custom:1" }
-    }));
+    s.environment = Some(pc::EnvironmentKind::Image {
+        reference: "custom:1".into(),
+    });
     s.network = pc::NetworkPolicy::None;
     assert_eq!(
         container_plan(&s, "def", &[], None).unwrap().image,
@@ -239,12 +239,9 @@ fn container_plan_honors_an_image_override_and_network_variants() {
         NetworkMode::Open
     );
 
-    s.extra = Some(serde_json::json!({
-        "environment": {
-            "kind": "image",
-            "reference": "registry.example/prepared@sha256:exact"
-        }
-    }));
+    s.environment = Some(pc::EnvironmentKind::Image {
+        reference: "registry.example/prepared@sha256:exact".into(),
+    });
     let prepared = container_plan(&s, "def", &[], None).unwrap();
     assert_eq!(
         prepared.image, "registry.example/prepared@sha256:exact",
@@ -256,27 +253,18 @@ fn container_plan_honors_an_image_override_and_network_variants() {
         "I1/E1"
     );
 
-    s.extra = Some(serde_json::json!({
-        "environment": { "kind": "sandbox" }
-    }));
+    s.environment = Some(pc::EnvironmentKind::Sandbox);
     assert_eq!(
         container_plan(&s, "def", &[], None).unwrap().image,
         "def",
         "I2"
     );
 
-    s.extra = None;
+    s.environment = None;
     assert_eq!(
         container_plan(&s, "def", &[], None).unwrap().image,
         "def",
         "I3"
-    );
-
-    s.extra = Some(serde_json::json!({ "image": "shadow:latest" }));
-    assert_eq!(
-        container_plan(&s, "def", &[], None).unwrap().image,
-        "def",
-        "I4: a legacy shadow field cannot override canonical image authority"
     );
 }
 
@@ -288,10 +276,10 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
 
     // A declared Image environment is honored as the rootfs.
     let mut img = spec("s");
-    img.extra = Some(serde_json::json!({
-        "command": ["x"],
-        "environment": { "kind": "image", "reference": "ghcr.io/x:2" }
-    }));
+    img.command = vec!["x".into()];
+    img.environment = Some(pc::EnvironmentKind::Image {
+        reference: "ghcr.io/x:2".into(),
+    });
     assert_eq!(
         container_plan(&img, "def:img", &["x".to_string()], None)
             .unwrap()
@@ -301,14 +289,13 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
 
     // A declared IsolatedRoot(Dir) becomes a private RootDir the podman adapter honors.
     let mut iso = spec("s");
-    iso.extra = Some(serde_json::json!({
-        "command": ["x"],
-        "environment": {
-            "kind": "isolated_root",
-            "base": { "source": "dir", "path_template": "/roots/{scope}" },
-            "writable_base": true
-        }
-    }));
+    iso.command = vec!["x".into()];
+    iso.environment = Some(pc::EnvironmentKind::IsolatedRoot {
+        base: pc::RootfsSource::Dir {
+            path_template: "/roots/{scope}".into(),
+        },
+        writable_base: true,
+    });
     assert_eq!(
         container_plan(&iso, "def:img", &["x".to_string()], None)
             .unwrap()
@@ -322,10 +309,8 @@ fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_i
     // A non-container environment (Scope) has no container-tier rootfs; it is ignored
     // and falls back to the image — never silently realized as a borrowed userland.
     let mut scope = spec("s");
-    scope.extra = Some(serde_json::json!({
-        "command": ["x"],
-        "environment": { "kind": "scope" }
-    }));
+    scope.command = vec!["x".into()];
+    scope.environment = Some(pc::EnvironmentKind::Scope);
     assert_eq!(
         container_plan(&scope, "def:img", &["x".to_string()], None)
             .unwrap()
@@ -364,7 +349,10 @@ fn mount_ref_covers_every_source_kind() {
         "r"
     );
     assert_eq!(
-        s(pc::MountSource::Other(serde_json::json!({}))).source_ref,
+        s(pc::MountSource::Inline {
+            contents: String::new()
+        })
+        .source_ref,
         ""
     );
 }
@@ -1494,11 +1482,7 @@ async fn adopt_without_container_id_fails_closed() {
 #[tokio::test]
 async fn adopt_rejects_a_handle_owned_by_another_provider() {
     let p = provider(Arc::new(FakeRuntime::default()));
-    let mut foreign = pc::SandboxHandle::new("bwrap", "run-3");
-    foreign.extra = Some(serde_json::json!({
-        "container_id": "cid-run-3",
-        "outputs_path": "/mnt/session/outputs",
-    }));
+    let foreign = pc::SandboxHandle::new("bwrap", "run-3");
 
     let error = match p.adopt(&foreign).await {
         Ok(_) => panic!("foreign provider handle was accepted"),
@@ -1519,7 +1503,7 @@ async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_
 
     // The Session environment is independent of an attempt command.
     let mut no_cmd = spec("run-4b");
-    no_cmd.extra = None;
+    no_cmd.command.clear();
     let environment = p.create(&no_cmd).await.unwrap();
     environment.dispose().await.unwrap();
 
@@ -1621,15 +1605,8 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     );
     // The durable handle carries the container id for reattach.
     assert_eq!(session.handle.provider_kind, "container");
-    assert_eq!(
-        session
-            .handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("container_id"))
-            .and_then(|v| v.as_str()),
-        Some("cid-run-oa")
-    );
+    let payload = session.handle.container_payload().unwrap();
+    assert_eq!(payload.container_id, "cid-run-oa");
     // A live duplex channel was opened (the ACP bridge would drive it).
     let _channel = session.channel;
     // The physical container is an environment keepalive, not the attempt agent.
@@ -1780,6 +1757,9 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
     let spec = pc::SandboxSpec {
         scope: "credential-refresh".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["agent".into()],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "native-auth".into(),
             source: pc::MountSource::Secret {
@@ -1799,7 +1779,6 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({"command": ["agent"]})),
     };
 
     let session = provider.open_agent(&spec).await.unwrap();
@@ -1949,6 +1928,9 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "f".into(),
             source,
@@ -1965,7 +1947,6 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
     }
 }
 

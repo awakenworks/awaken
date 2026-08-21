@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 use awaken_deployment_application::{
     AgentSelector, CreateDeploymentCommand, DeploymentApplication, DeploymentApplicationError,
-    DeploymentRunView, DeploymentSchedule, DeploymentStatus, DeploymentTrigger, DeploymentView,
-    UpdateDeploymentCommand,
+    DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
+    DeploymentRepositoryCheckout, DeploymentResource, DeploymentRunFailure, DeploymentRunView,
+    DeploymentSchedule, DeploymentSeedEvent, DeploymentStatus, DeploymentTrigger, DeploymentView,
+    FieldUpdate, MetadataUpdate, UpdateDeploymentCommand,
 };
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -23,9 +25,10 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::ManagedJson;
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
-    DeploymentUpdateParams, RunError, Schedule, TriggerContext,
+    DeploymentUpdateParams, PausedReason, PausedReasonError, RunError, Schedule, TriggerContext,
 };
-use crate::types::resource::ResourceInput;
+use crate::types::resource::{RepositoryCheckout, ResourceAccess, ResourceInput};
+use crate::types::session::{InboundEvent, OutcomeRubric};
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
 #[path = "deployments/launcher.rs"]
@@ -106,43 +109,333 @@ fn selector(input: &crate::types::AgentRef) -> Result<AgentSelector, WireError> 
     })
 }
 
-fn application_schedule(schedule: Schedule) -> Result<DeploymentSchedule, WireError> {
-    serde_json::from_value(
-        serde_json::to_value(schedule).map_err(|error| invalid(error.to_string()))?,
-    )
-    .map_err(|error| invalid(error.to_string()))
+fn application_schedule(schedule: Schedule) -> DeploymentSchedule {
+    match schedule {
+        Schedule::Cron {
+            expression,
+            timezone,
+            last_run_at,
+            upcoming_runs_at,
+        } => DeploymentSchedule::Cron {
+            expression,
+            timezone,
+            last_run_at,
+            upcoming_runs_at,
+        },
+    }
 }
 
-fn wire_schedule(schedule: DeploymentSchedule) -> Result<Schedule, WireError> {
-    serde_json::from_value(
-        serde_json::to_value(schedule).map_err(|error| wire_projection(error.to_string()))?,
-    )
-    .map_err(|error| wire_projection(error.to_string()))
+fn wire_schedule(schedule: DeploymentSchedule) -> Schedule {
+    match schedule {
+        DeploymentSchedule::Cron {
+            expression,
+            timezone,
+            last_run_at,
+            upcoming_runs_at,
+        } => Schedule::Cron {
+            expression,
+            timezone,
+            last_run_at,
+            upcoming_runs_at,
+        },
+    }
 }
 
-fn wire_projection(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorResponse::new("api_error", message)),
-    )
+fn application_rubric(rubric: OutcomeRubric) -> DeploymentOutcomeRubric {
+    match rubric {
+        OutcomeRubric::Text { content } => DeploymentOutcomeRubric::Text { content },
+        OutcomeRubric::File { file_id } => DeploymentOutcomeRubric::File { file_id },
+    }
 }
 
-fn values<T: serde::Serialize>(items: Vec<T>) -> Result<Vec<serde_json::Value>, WireError> {
-    items
-        .into_iter()
-        .map(|item| serde_json::to_value(item).map_err(|error| invalid(error.to_string())))
-        .collect()
+fn wire_rubric(rubric: DeploymentOutcomeRubric) -> OutcomeRubric {
+    match rubric {
+        DeploymentOutcomeRubric::Text { content } => OutcomeRubric::Text { content },
+        DeploymentOutcomeRubric::File { file_id } => OutcomeRubric::File { file_id },
+    }
 }
 
-fn typed_values<T: serde::de::DeserializeOwned>(
-    items: Vec<serde_json::Value>,
-) -> Result<Vec<T>, WireError> {
-    items
-        .into_iter()
-        .map(|item| {
-            serde_json::from_value(item).map_err(|error| wire_projection(error.to_string()))
-        })
-        .collect()
+fn application_event(event: DeploymentInitialEvent) -> DeploymentSeedEvent {
+    match event {
+        DeploymentInitialEvent::UserMessage { content } => {
+            DeploymentSeedEvent::UserMessage { content }
+        }
+        DeploymentInitialEvent::SystemMessage { content } => {
+            DeploymentSeedEvent::SystemMessage { content }
+        }
+        DeploymentInitialEvent::UserDefineOutcome {
+            description,
+            rubric,
+            max_iterations,
+        } => DeploymentSeedEvent::DefineOutcome {
+            description,
+            rubric: application_rubric(rubric),
+            max_iterations,
+        },
+    }
+}
+
+fn wire_event(event: DeploymentSeedEvent) -> DeploymentInitialEvent {
+    match event {
+        DeploymentSeedEvent::UserMessage { content } => {
+            DeploymentInitialEvent::UserMessage { content }
+        }
+        DeploymentSeedEvent::SystemMessage { content } => {
+            DeploymentInitialEvent::SystemMessage { content }
+        }
+        DeploymentSeedEvent::DefineOutcome {
+            description,
+            rubric,
+            max_iterations,
+        } => DeploymentInitialEvent::UserDefineOutcome {
+            description,
+            rubric: wire_rubric(rubric),
+            max_iterations,
+        },
+    }
+}
+
+fn inbound_event(event: DeploymentSeedEvent) -> InboundEvent {
+    wire_event(event).into()
+}
+
+fn application_resource(resource: ResourceInput) -> Result<DeploymentResource, WireError> {
+    Ok(match resource {
+        ResourceInput::File {
+            file_id,
+            mount_path,
+        } => DeploymentResource::File {
+            file_id,
+            mount_path,
+        },
+        ResourceInput::MemoryStore {
+            memory_store_id,
+            mount_path,
+            instructions,
+            access,
+        } => DeploymentResource::MemoryStore {
+            memory_store_id,
+            mount_path,
+            instructions,
+            access: access.map(|access| match access {
+                ResourceAccess::ReadOnly => awaken_resource_contract::ResourceAccess::ReadOnly,
+                ResourceAccess::ReadWrite => awaken_resource_contract::ResourceAccess::ReadWrite,
+            }),
+        },
+        ResourceInput::GithubRepository {
+            url,
+            authorization_token,
+            mount_path,
+            checkout,
+        } => {
+            if authorization_token.is_some() {
+                return Err(invalid(
+                    "Deployment repository authorization_token cannot be stored durably; bind a vault credential instead",
+                ));
+            }
+            DeploymentResource::GithubRepository {
+                url,
+                mount_path,
+                checkout: checkout.map(|checkout| match checkout {
+                    RepositoryCheckout::Branch { name } => {
+                        DeploymentRepositoryCheckout::Branch { name }
+                    }
+                    RepositoryCheckout::Commit { sha } => {
+                        DeploymentRepositoryCheckout::Commit { sha }
+                    }
+                }),
+            }
+        }
+    })
+}
+
+fn wire_resource(resource: DeploymentResource) -> ResourceInput {
+    match resource {
+        DeploymentResource::File {
+            file_id,
+            mount_path,
+        } => ResourceInput::File {
+            file_id,
+            mount_path,
+        },
+        DeploymentResource::MemoryStore {
+            memory_store_id,
+            mount_path,
+            instructions,
+            access,
+        } => ResourceInput::MemoryStore {
+            memory_store_id,
+            mount_path,
+            instructions,
+            access: access.map(|access| match access {
+                awaken_resource_contract::ResourceAccess::ReadOnly => ResourceAccess::ReadOnly,
+                awaken_resource_contract::ResourceAccess::ReadWrite => ResourceAccess::ReadWrite,
+            }),
+        },
+        DeploymentResource::GithubRepository {
+            url,
+            mount_path,
+            checkout,
+        } => ResourceInput::GithubRepository {
+            url,
+            authorization_token: None,
+            mount_path,
+            checkout: checkout.map(|checkout| match checkout {
+                DeploymentRepositoryCheckout::Branch { name } => {
+                    RepositoryCheckout::Branch { name }
+                }
+                DeploymentRepositoryCheckout::Commit { sha } => RepositoryCheckout::Commit { sha },
+            }),
+        },
+    }
+}
+
+fn wire_pause_error(error: DeploymentPauseError) -> PausedReasonError {
+    match error {
+        DeploymentPauseError::EnvironmentArchivedError => {
+            PausedReasonError::EnvironmentArchivedError
+        }
+        DeploymentPauseError::AgentArchivedError => PausedReasonError::AgentArchivedError,
+        DeploymentPauseError::EnvironmentNotFoundError => {
+            PausedReasonError::EnvironmentNotFoundError
+        }
+        DeploymentPauseError::VaultNotFoundError => PausedReasonError::VaultNotFoundError,
+        DeploymentPauseError::FileNotFoundError => PausedReasonError::FileNotFoundError,
+        DeploymentPauseError::SessionResourceNotFoundError => {
+            PausedReasonError::SessionResourceNotFoundError
+        }
+        DeploymentPauseError::WorkspaceArchivedError => PausedReasonError::WorkspaceArchivedError,
+        DeploymentPauseError::OrganizationDisabledError => {
+            PausedReasonError::OrganizationDisabledError
+        }
+        DeploymentPauseError::MemoryStoreArchivedError => {
+            PausedReasonError::MemoryStoreArchivedError
+        }
+        DeploymentPauseError::SkillNotFoundError => PausedReasonError::SkillNotFoundError,
+        DeploymentPauseError::VaultArchivedError => PausedReasonError::VaultArchivedError,
+        DeploymentPauseError::UnknownError => PausedReasonError::UnknownError,
+        DeploymentPauseError::SelfHostedResourcesUnsupportedError => {
+            PausedReasonError::SelfHostedResourcesUnsupportedError
+        }
+        DeploymentPauseError::McpEgressBlockedError => PausedReasonError::McpEgressBlockedError,
+    }
+}
+
+fn wire_pause_reason(reason: DeploymentPauseReason) -> PausedReason {
+    match reason {
+        DeploymentPauseReason::Manual => PausedReason::Manual,
+        DeploymentPauseReason::Error { error } => PausedReason::Error {
+            error: wire_pause_error(error),
+        },
+    }
+}
+
+macro_rules! map_run_failure {
+    ($error:expr, $target:ident) => {
+        match $error {
+            DeploymentRunFailure::EnvironmentArchivedError { message } => {
+                $target::EnvironmentArchivedError { message }
+            }
+            DeploymentRunFailure::AgentArchivedError { message } => {
+                $target::AgentArchivedError { message }
+            }
+            DeploymentRunFailure::EnvironmentNotFoundError { message } => {
+                $target::EnvironmentNotFoundError { message }
+            }
+            DeploymentRunFailure::VaultNotFoundError { message } => {
+                $target::VaultNotFoundError { message }
+            }
+            DeploymentRunFailure::VaultArchivedError { message } => {
+                $target::VaultArchivedError { message }
+            }
+            DeploymentRunFailure::FileNotFoundError { message } => {
+                $target::FileNotFoundError { message }
+            }
+            DeploymentRunFailure::MemoryStoreArchivedError { message } => {
+                $target::MemoryStoreArchivedError { message }
+            }
+            DeploymentRunFailure::SkillNotFoundError { message } => {
+                $target::SkillNotFoundError { message }
+            }
+            DeploymentRunFailure::SessionResourceNotFoundError { message } => {
+                $target::SessionResourceNotFoundError { message }
+            }
+            DeploymentRunFailure::WorkspaceArchivedError { message } => {
+                $target::WorkspaceArchivedError { message }
+            }
+            DeploymentRunFailure::OrganizationDisabledError { message } => {
+                $target::OrganizationDisabledError { message }
+            }
+            DeploymentRunFailure::SessionRateLimitedError { message } => {
+                $target::SessionRateLimitedError { message }
+            }
+            DeploymentRunFailure::SessionCreationRejectedError { message } => {
+                $target::SessionCreationRejectedError { message }
+            }
+            DeploymentRunFailure::UnknownError { message } => $target::UnknownError { message },
+            DeploymentRunFailure::SelfHostedResourcesUnsupportedError { message } => {
+                $target::SelfHostedResourcesUnsupportedError { message }
+            }
+            DeploymentRunFailure::McpEgressBlockedError { message } => {
+                $target::McpEgressBlockedError { message }
+            }
+        }
+    };
+}
+
+fn wire_run_failure(error: DeploymentRunFailure) -> RunError {
+    map_run_failure!(error, RunError)
+}
+
+fn application_run_failure(error: RunError) -> DeploymentRunFailure {
+    match error {
+        RunError::EnvironmentArchivedError { message } => {
+            DeploymentRunFailure::EnvironmentArchivedError { message }
+        }
+        RunError::AgentArchivedError { message } => {
+            DeploymentRunFailure::AgentArchivedError { message }
+        }
+        RunError::EnvironmentNotFoundError { message } => {
+            DeploymentRunFailure::EnvironmentNotFoundError { message }
+        }
+        RunError::VaultNotFoundError { message } => {
+            DeploymentRunFailure::VaultNotFoundError { message }
+        }
+        RunError::VaultArchivedError { message } => {
+            DeploymentRunFailure::VaultArchivedError { message }
+        }
+        RunError::FileNotFoundError { message } => {
+            DeploymentRunFailure::FileNotFoundError { message }
+        }
+        RunError::MemoryStoreArchivedError { message } => {
+            DeploymentRunFailure::MemoryStoreArchivedError { message }
+        }
+        RunError::SkillNotFoundError { message } => {
+            DeploymentRunFailure::SkillNotFoundError { message }
+        }
+        RunError::SessionResourceNotFoundError { message } => {
+            DeploymentRunFailure::SessionResourceNotFoundError { message }
+        }
+        RunError::WorkspaceArchivedError { message } => {
+            DeploymentRunFailure::WorkspaceArchivedError { message }
+        }
+        RunError::OrganizationDisabledError { message } => {
+            DeploymentRunFailure::OrganizationDisabledError { message }
+        }
+        RunError::SessionRateLimitedError { message } => {
+            DeploymentRunFailure::SessionRateLimitedError { message }
+        }
+        RunError::SessionCreationRejectedError { message } => {
+            DeploymentRunFailure::SessionCreationRejectedError { message }
+        }
+        RunError::UnknownError { message } => DeploymentRunFailure::UnknownError { message },
+        RunError::SelfHostedResourcesUnsupportedError { message } => {
+            DeploymentRunFailure::SelfHostedResourcesUnsupportedError { message }
+        }
+        RunError::McpEgressBlockedError { message } => {
+            DeploymentRunFailure::McpEgressBlockedError { message }
+        }
+    }
 }
 
 fn upcoming_occurrences(schedule: &DeploymentSchedule, after_ms: u64) -> Vec<String> {
@@ -170,26 +463,15 @@ fn now_ms() -> u64 {
 
 fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
     let record = view.record;
-    let schedule = record
-        .schedule
-        .map(|schedule| {
-            let upcoming = if record.archived_at.is_some() {
-                Vec::new()
-            } else {
-                upcoming_occurrences(&schedule, now_ms())
-            };
-            wire_schedule(schedule.with_runtime(record.last_run_at.clone(), upcoming))
-        })
-        .transpose()?;
-    let paused_reason = record
-        .paused_reason
-        .map(|reason| {
-            serde_json::from_value(
-                serde_json::to_value(reason).map_err(|error| wire_projection(error.to_string()))?,
-            )
-            .map_err(|error| wire_projection(error.to_string()))
-        })
-        .transpose()?;
+    let schedule = record.schedule.map(|schedule| {
+        let upcoming = if record.archived_at.is_some() {
+            Vec::new()
+        } else {
+            upcoming_occurrences(&schedule, now_ms())
+        };
+        wire_schedule(schedule.with_runtime(record.last_run_at.clone(), upcoming))
+    });
+    let paused_reason = record.paused_reason.map(wire_pause_reason);
     Ok(Deployment {
         id: view.id,
         object_type: "deployment",
@@ -202,11 +484,11 @@ fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
         updated_at: record.updated_at,
         description: record.description,
         environment_id: record.environment_id,
-        initial_events: typed_values(record.initial_events)?,
+        initial_events: record.initial_events.into_iter().map(wire_event).collect(),
         metadata: record.metadata,
         name: record.name,
         paused_reason,
-        resources: typed_values(record.resources)?,
+        resources: record.resources.into_iter().map(wire_resource).collect(),
         schedule,
         status: match record.status {
             DeploymentStatus::Active => "active",
@@ -218,19 +500,11 @@ fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
 
 fn project_run(view: DeploymentRunView) -> Result<DeploymentRun, WireError> {
     let record = view.record;
-    let error: Option<RunError> = record
-        .error
-        .map(|error| {
-            serde_json::from_value(
-                serde_json::to_value(error).map_err(|error| wire_projection(error.to_string()))?,
-            )
-            .map_err(|error| wire_projection(error.to_string()))
-        })
-        .transpose()?;
-    let trigger_context: TriggerContext = serde_json::from_value(
-        serde_json::to_value(record.trigger).map_err(|error| wire_projection(error.to_string()))?,
-    )
-    .map_err(|error| wire_projection(error.to_string()))?;
+    let error = record.error.map(wire_run_failure);
+    let trigger_context = match record.trigger {
+        DeploymentTrigger::Manual => TriggerContext::Manual,
+        DeploymentTrigger::Schedule { scheduled_at } => TriggerContext::Schedule { scheduled_at },
+    };
     Ok(DeploymentRun {
         id: view.id,
         object_type: "deployment_run",
@@ -288,9 +562,17 @@ async fn create_deployment(
         name: params.name,
         description: params.description,
         metadata: params.metadata,
-        initial_events: values(params.initial_events)?,
-        resources: values(params.resources)?,
-        schedule: params.schedule.map(application_schedule).transpose()?,
+        initial_events: params
+            .initial_events
+            .into_iter()
+            .map(application_event)
+            .collect(),
+        resources: params
+            .resources
+            .into_iter()
+            .map(application_resource)
+            .collect::<Result<_, _>>()?,
+        schedule: params.schedule.map(application_schedule),
         vault_ids: params.vault_ids,
         budget_max_list_cost_minor: params
             .budget
@@ -420,22 +702,42 @@ async fn update_deployment(
         agent: params.agent.as_ref().map(selector).transpose()?,
         environment_id: params.environment_id,
         name: params.name,
-        description: params.description,
-        metadata: params.metadata,
-        initial_events: params.initial_events.map(values).transpose()?,
+        description: params.description.map(|value| match value {
+            Some(value) => FieldUpdate::Replace(value),
+            None => FieldUpdate::Clear,
+        }),
+        metadata: params.metadata.map(|value| match value {
+            Some(value) => MetadataUpdate::Patch(value),
+            None => MetadataUpdate::Clear,
+        }),
+        initial_events: params
+            .initial_events
+            .map(|events| events.into_iter().map(application_event).collect()),
         resources: params
             .resources
-            .map(|resources| resources.map(values).transpose())
+            .map(|value| match value {
+                Some(resources) => resources
+                    .into_iter()
+                    .map(application_resource)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(FieldUpdate::Replace),
+                None => Ok(FieldUpdate::Clear),
+            })
             .transpose()?,
-        schedule: params
-            .schedule
-            .map(|schedule| schedule.map(application_schedule).transpose())
-            .transpose()?,
-        vault_ids: params.vault_ids,
+        schedule: params.schedule.map(|value| match value {
+            Some(schedule) => FieldUpdate::Replace(application_schedule(schedule)),
+            None => FieldUpdate::Clear,
+        }),
+        vault_ids: params.vault_ids.map(|value| match value {
+            Some(value) => FieldUpdate::Replace(value),
+            None => FieldUpdate::Clear,
+        }),
         budget_max_list_cost_minor: match params.budget {
             None => None,
-            Some(None) => Some(None),
-            Some(Some(budget)) => Some(Some(budget.max_list_cost_minor().map_err(invalid)?)),
+            Some(None) => Some(FieldUpdate::Clear),
+            Some(Some(budget)) => Some(FieldUpdate::Replace(
+                budget.max_list_cost_minor().map_err(invalid)?,
+            )),
         },
     };
     application

@@ -940,6 +940,18 @@ async fn update_session(
     };
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers)?;
+    let title = title.map(|value| match value {
+        Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
+        None => awaken_session_application::SessionFieldUpdate::Clear,
+    });
+    let metadata = metadata.map(|value| match value {
+        Some(value) => awaken_session_application::SessionMetadataUpdate::Patch(value),
+        None => awaken_session_application::SessionMetadataUpdate::Clear,
+    });
+    let budget = budget.map(|value| match value {
+        Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
+        None => awaken_session_application::SessionFieldUpdate::Clear,
+    });
     let (session, command_revision) = state
         .update_session(
             &id,
@@ -1355,22 +1367,6 @@ pub async fn create_profiled_session(
         PROFILED_SESSION_REQUEST_FINGERPRINT.into(),
         request_fingerprint,
     );
-    let mounts = body
-        .mounts
-        .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            error_response(StateError::Run(RunError::bad_request(error.to_string())))
-        })?;
-    let env = body
-        .env
-        .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            error_response(StateError::Run(RunError::bad_request(error.to_string())))
-        })?;
     let mcp_candidates = body
         .mcp_attachments
         .into_iter()
@@ -1416,8 +1412,8 @@ pub async fn create_profiled_session(
             source_revision: body.source_revision,
             environment_id: body.environment_id,
             model: None,
-            mounts,
-            env,
+            mounts: body.mounts,
+            env: body.env,
             prompts: body.prompts,
             mcp_candidates,
             repositories,

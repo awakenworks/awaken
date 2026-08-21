@@ -180,9 +180,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         }
         let current = tx
             .query_row(
-                "SELECT revision, scope_id, aggregate_json, agent_id, model, title,
-                        metadata_json, environment_id, status, archived_at,
-                        effective_inputs_json, environment_binding, runtime_json
+                "SELECT revision, scope_id, aggregate_json
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
@@ -191,17 +189,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         row.get::<_, String>(1)?,
                         EncodedSessionRow {
                             aggregate_json: row.get(2)?,
-                            session_id: session_id.clone(),
-                            agent_id: row.get(3)?,
-                            model: row.get(4)?,
-                            title: row.get(5)?,
-                            metadata_json: row.get(6)?,
-                            environment_id: row.get(7)?,
-                            status: row.get(8)?,
-                            archived_at: row.get(9)?,
-                            effective_inputs_json: row.get(10)?,
-                            environment_binding: row.get(11)?,
-                            runtime_json: row.get(12)?,
                             revision: row.get(0)?,
                         },
                     ))
@@ -361,58 +348,19 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().map_err(storage)?;
         let raw = conn
             .query_row(
-                "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
+                "SELECT aggregate_json, revision
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                        row.get::<_, String>(10)?,
-                        row.get::<_, i64>(11)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(storage)?;
         let Some(raw) = raw else {
             return Err(SessionRepositoryError::NotFound);
         };
-        let (
-            aggregate_json,
-            agent_id,
-            model,
-            title,
-            metadata_json,
-            environment_id,
-            status,
-            archived_at,
-            effective_inputs_json,
-            environment_binding,
-            runtime_json,
-            revision,
-        ) = raw;
+        let (aggregate_json, revision) = raw;
         decode(EncodedSessionRow {
             aggregate_json,
-            session_id: session_id.to_string(),
-            agent_id,
-            model,
-            title,
-            metadata_json,
-            environment_id,
-            effective_inputs_json,
-            environment_binding,
-            runtime_json,
-            status,
-            archived_at,
             revision,
         })
         .map_err(corrupt)
@@ -440,38 +388,29 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     .collect::<Result<Vec<_>, rusqlite::Error>>()
                     .map_err(storage)?;
             }
-            let mut statement = conn.prepare(
-                "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
+            let mut statement = conn
+                .prepare(
+                    "SELECT scope_id, session_id, aggregate_json, revision
                  FROM managed_session session
                  WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine
                                    WHERE quarantine.session_id = session.session_id)
                  ORDER BY session_id",
-            ).map_err(storage)?;
+                )
+                .map_err(storage)?;
             let rows = statement
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
                         EncodedSessionRow {
-                            session_id: row.get(1)?,
                             aggregate_json: row.get(2)?,
-                            agent_id: row.get(3)?,
-                            model: row.get(4)?,
-                            title: row.get(5)?,
-                            metadata_json: row.get(6)?,
-                            environment_id: row.get(7)?,
-                            status: row.get(8)?,
-                            archived_at: row.get(9)?,
-                            effective_inputs_json: row.get(10)?,
-                            environment_binding: row.get(11)?,
-                            runtime_json: row.get(12)?,
-                            revision: row.get(13)?,
+                            revision: row.get(3)?,
                         },
                     ))
                 })
                 .map_err(storage)?;
             for row in rows {
-                let (workspace_id, row) = row.map_err(storage)?;
-                let session_id = row.session_id.clone();
+                let (workspace_id, session_id, row) = row.map_err(storage)?;
                 match decode(row) {
                     Ok(session) if session.needs_reconciliation() => {
                         scan.sessions.push(ScopedPersistedSession {

@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::env_registry::{
-    EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation,
 };
 use crate::routes::ManagedJson;
@@ -264,7 +264,9 @@ async fn update_env(
         name: params.name,
         description: params.description,
         config,
-        scope: params.scope.map(|scope| Some(scope.as_str().to_string())),
+        scope: params
+            .scope
+            .map(|scope| EnvironmentFieldUpdate::Replace(scope.as_str().to_string())),
         metadata: params.metadata,
         ..Default::default()
     };
@@ -295,18 +297,19 @@ fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> Environ
                     allow_mcp_servers,
                     allow_package_managers,
                 }) => EnvironmentNetworkingMutation::Limited {
-                    allowed_hosts: allowed_hosts.map(|value| {
-                        value.map(|hosts| {
+                    allowed_hosts: allowed_hosts.map(|value| match value {
+                        None => EnvironmentFieldUpdate::Clear,
+                        Some(hosts) => EnvironmentFieldUpdate::Replace(
                             hosts
                                 .into_iter()
                                 .map(crate::types::environment::AllowedHost::into_inner)
                                 .collect::<std::collections::BTreeSet<_>>()
                                 .into_iter()
-                                .collect()
-                        })
+                                .collect(),
+                        ),
                     }),
-                    allow_mcp_servers,
-                    allow_package_managers,
+                    allow_mcp_servers: field_update(allow_mcp_servers),
+                    allow_package_managers: field_update(allow_package_managers),
                 },
             }),
             packages: packages.map(|value| match value {
@@ -345,8 +348,18 @@ fn package_values(values: Vec<crate::types::environment::PackageSpec>) -> Vec<St
 
 fn package_patch(
     value: Option<Option<Vec<crate::types::environment::PackageSpec>>>,
-) -> Option<Option<Vec<String>>> {
-    value.map(|value| value.map(package_values))
+) -> Option<EnvironmentFieldUpdate<Vec<String>>> {
+    value.map(|value| match value {
+        Some(value) => EnvironmentFieldUpdate::Replace(package_values(value)),
+        None => EnvironmentFieldUpdate::Clear,
+    })
+}
+
+fn field_update<T>(value: Option<Option<T>>) -> Option<EnvironmentFieldUpdate<T>> {
+    value.map(|value| match value {
+        Some(value) => EnvironmentFieldUpdate::Replace(value),
+        None => EnvironmentFieldUpdate::Clear,
+    })
 }
 
 fn canonical_environment_config(

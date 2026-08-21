@@ -7,6 +7,7 @@
 //! is written twice in one commit batch is a fail-closed conflict.
 
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -218,6 +219,81 @@ impl std::fmt::Display for StateError {
 
 impl std::error::Error for StateError {}
 
+/// A typed state cell whose address is chosen at runtime. Use this for domain
+/// identities such as `outcome/{id}/state`; use [`StateKey`] for static keys.
+/// Both forms own serialization and fail closed on persisted shape drift.
+#[derive(Debug, Clone)]
+pub struct StateCell<T> {
+    key: Key,
+    scope: Scope,
+    merge: MergePolicy,
+    value: PhantomData<fn() -> T>,
+}
+
+impl<T> StateCell<T> {
+    #[must_use]
+    pub fn new(scope: Scope, merge: MergePolicy, key: impl Into<String>) -> Self {
+        Self {
+            key: Key(key.into()),
+            scope,
+            merge,
+            value: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn remove(&self) -> Command {
+        Command::remove(self.scope, self.merge, self.key.0.clone())
+    }
+
+    fn error(&self, error: serde_json::Error) -> StateError {
+        StateError {
+            key: self.key.0.clone(),
+            scope: self.scope,
+            detail: error.to_string(),
+        }
+    }
+}
+
+impl<T: DeserializeOwned> StateCell<T> {
+    pub fn load(&self, store: &Store) -> Result<Option<T>, StateError> {
+        store
+            .get(self.scope, &self.key)
+            .map(|value| self.decode(value))
+            .transpose()
+    }
+
+    pub fn decode(&self, value: &serde_json::Value) -> Result<T, StateError> {
+        T::deserialize(value).map_err(|error| self.error(error))
+    }
+}
+
+impl<T: Serialize> StateCell<T> {
+    pub fn write(&self, value: &T) -> Result<Command, StateError> {
+        let value = serde_json::to_value(value).map_err(|error| self.error(error))?;
+        Ok(Command::set(
+            self.scope,
+            self.merge,
+            self.key.0.clone(),
+            value,
+        ))
+    }
+}
+
+impl StateCell<bool> {
+    /// Store a boolean without invoking a fallible generic serializer. Useful
+    /// for presence markers at callback boundaries that have no error channel.
+    #[must_use]
+    pub fn write_bool(&self, value: bool) -> Command {
+        Command::set(
+            self.scope,
+            self.merge,
+            self.key.0.clone(),
+            serde_json::Value::Bool(value),
+        )
+    }
+}
+
 /// A typed view over one `(scope, key)` cell of the untyped store: a key declares
 /// its address, scope, merge policy, and value type. Reads are typed and fail
 /// closed on a shape drift; writes serialize the whole value into one `Command`.
@@ -248,7 +324,7 @@ pub trait StateKey {
     fn load(store: &Store) -> Result<Self::Value, StateError> {
         match store.get(Self::SCOPE, &Self::address()) {
             None => Ok(Self::Value::default()),
-            Some(value) => serde_json::from_value(value.clone()).map_err(|error| StateError {
+            Some(value) => Self::Value::deserialize(value).map_err(|error| StateError {
                 key: Self::KEY.to_string(),
                 scope: Self::SCOPE,
                 detail: error.to_string(),
@@ -318,6 +394,48 @@ pub trait FoldStateKey: StateKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct DynamicValue {
+        revision: u64,
+    }
+
+    #[test]
+    fn dynamic_state_cell_round_trips_and_fails_closed_on_shape_drift() {
+        // State-space partition: absent -> None; exact typed write -> same value;
+        // malformed durable value -> error; remove -> absent. This verifies the
+        // dynamic-key codec has the same fail-closed semantics as StateKey.
+        let cell = StateCell::new(Scope::Thread, MergePolicy::Disjoint, "item/7/state");
+        let mut store = Store::new();
+        assert_eq!(cell.load(&store).unwrap(), None);
+        store.apply(&cell.write(&DynamicValue { revision: 7 }).unwrap());
+        assert_eq!(
+            cell.load(&store).unwrap(),
+            Some(DynamicValue { revision: 7 })
+        );
+        store.apply(&Command::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            "item/7/state",
+            serde_json::json!({"revision":"wrong"}),
+        ));
+        assert!(cell.load(&store).is_err());
+        store.apply(&cell.remove());
+        assert_eq!(cell.load(&store).unwrap(), None);
+    }
+
+    #[test]
+    fn boolean_state_cell_uses_the_exact_infallible_wire_shape() {
+        // Representation invariant: the specialized no-error callback path
+        // must still produce the same boolean consumed by the typed reader.
+        let cell = StateCell::new(Scope::Run, MergePolicy::Disjoint, "marker");
+        let command = cell.write_bool(true);
+        assert_eq!(command.action, Action::Set(serde_json::Value::Bool(true)));
+        let mut store = Store::new();
+        store.apply(&command);
+        assert_eq!(cell.load(&store).unwrap(), Some(true));
+    }
 
     #[derive(Default, Deserialize)]
     struct FailingValue;

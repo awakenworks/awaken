@@ -12,6 +12,7 @@ authority = "config"
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
+awaken-resource-contract.workspace = true
 awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
@@ -23,6 +24,9 @@ schemars = { version = "1", optional = true }
 [features]
 default = []
 schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-runtime-contract/schema"]
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

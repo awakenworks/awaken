@@ -61,10 +61,7 @@ impl ConfigService {
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
-            .filter(|publication| {
-                publication
-                    .targets_execution_workspace(configuration_scope.as_str(), execution_workspace)
-            });
+            .filter(|publication| publication.targets_execution_workspace(execution_workspace));
         // The store contract is oldest-first. Older releases allowed an exact
         // dependency rotation to persist a second fingerprint at the same
         // authored revision before executable registration rejected it. Keep
@@ -108,21 +105,7 @@ impl ConfigService {
                 continue;
             };
             let is_current = !first_for_agent.contains(&publication.agent_id);
-            let frozen_defaults = match publication
-                .agent_inputs
-                .clone()
-                .map(serde_json::from_value)
-                .transpose()
-            {
-                Ok(defaults) => defaults,
-                Err(error) => {
-                    degraded.push(format!(
-                        "publication `{}` has invalid frozen Agent inputs: {error}",
-                        publication.fingerprint
-                    ));
-                    continue;
-                }
-            };
+            let frozen_defaults = publication.agent_inputs.clone();
             let session_profile = if let Some(defaults) = frozen_defaults {
                 registered_session_profile(
                     &publication.snapshot,

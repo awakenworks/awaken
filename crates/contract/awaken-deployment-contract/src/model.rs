@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_resource_contract::ResourceAccess;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 fn agent_kind() -> String {
     "agent".to_string()
@@ -171,6 +172,69 @@ pub enum DeploymentTrigger {
     Schedule { scheduled_at: String },
 }
 
+/// Durable initial intent applied whenever this Deployment creates a Session.
+/// It deliberately contains only the closed subset admitted for repeatable
+/// launches; interactive Session events remain outside this aggregate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeploymentSeedEvent {
+    UserMessage {
+        content: Vec<ContentBlock>,
+    },
+    SystemMessage {
+        content: Vec<ContentBlock>,
+    },
+    DefineOutcome {
+        description: String,
+        rubric: DeploymentOutcomeRubric,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeploymentOutcomeRubric {
+    Text { content: String },
+    File { file_id: String },
+}
+
+/// Secret-free Resource intent frozen into a Deployment. Repository bearer
+/// material is intentionally absent: repeatable launches resolve credentials by
+/// durable reference at the Session boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeploymentResource {
+    File {
+        file_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_path: Option<String>,
+    },
+    MemoryStore {
+        memory_store_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access: Option<ResourceAccess>,
+    },
+    GithubRepository {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<DeploymentRepositoryCheckout>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeploymentRepositoryCheckout {
+    Branch { name: String },
+    Commit { sha: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentRecord {
     #[serde(default)]
@@ -183,8 +247,8 @@ pub struct DeploymentRecord {
     pub name: String,
     pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub initial_events: Vec<Value>,
-    pub resources: Vec<Value>,
+    pub initial_events: Vec<DeploymentSeedEvent>,
+    pub resources: Vec<DeploymentResource>,
     pub schedule: Option<DeploymentSchedule>,
     pub vault_ids: Vec<String>,
     #[serde(default)]
@@ -227,8 +291,8 @@ pub struct CreateDeploymentCommand {
     pub name: String,
     pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub initial_events: Vec<Value>,
-    pub resources: Vec<Value>,
+    pub initial_events: Vec<DeploymentSeedEvent>,
+    pub resources: Vec<DeploymentResource>,
     pub schedule: Option<DeploymentSchedule>,
     pub vault_ids: Vec<String>,
     pub budget_max_list_cost_minor: Option<u64>,
@@ -239,13 +303,29 @@ pub struct UpdateDeploymentCommand {
     pub agent: Option<AgentSelector>,
     pub environment_id: Option<String>,
     pub name: Option<String>,
-    pub description: Option<Option<String>>,
-    pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
-    pub initial_events: Option<Vec<Value>>,
-    pub resources: Option<Option<Vec<Value>>>,
-    pub schedule: Option<Option<DeploymentSchedule>>,
-    pub vault_ids: Option<Option<Vec<String>>>,
-    pub budget_max_list_cost_minor: Option<Option<u64>>,
+    pub description: Option<FieldUpdate<String>>,
+    pub metadata: Option<MetadataUpdate>,
+    pub initial_events: Option<Vec<DeploymentSeedEvent>>,
+    pub resources: Option<FieldUpdate<Vec<DeploymentResource>>>,
+    pub schedule: Option<FieldUpdate<DeploymentSchedule>>,
+    pub vault_ids: Option<FieldUpdate<Vec<String>>>,
+    pub budget_max_list_cost_minor: Option<FieldUpdate<u64>>,
+}
+
+/// An explicit change to an optional aggregate field. Absence from the command
+/// means "leave unchanged"; this enum distinguishes clearing from replacement
+/// without leaking a protocol's `Option<Option<T>>` encoding into the domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldUpdate<T> {
+    Clear,
+    Replace(T),
+}
+
+/// Metadata has patch semantics rather than whole-value replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataUpdate {
+    Clear,
+    Patch(BTreeMap<String, Option<String>>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,8 +336,8 @@ pub struct DeploymentLaunch {
     pub agent: DeploymentAgent,
     pub environment_id: String,
     pub metadata: BTreeMap<String, String>,
-    pub initial_events: Vec<Value>,
-    pub resources: Vec<Value>,
+    pub initial_events: Vec<DeploymentSeedEvent>,
+    pub resources: Vec<DeploymentResource>,
     pub vault_ids: Vec<String>,
     pub budget_max_list_cost_minor: Option<u64>,
 }

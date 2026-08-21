@@ -50,8 +50,8 @@ use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{ContainerEnvironment, ContainerEnvironmentProvider, EnvironmentFile};
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
-    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
-    RuntimeAgentProcess, RuntimeError,
+    ContainerRuntime, ContainerRuntimeHandle, ContainerState, K8sContinuationVolume, MemoryMount,
+    PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
 };
 use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
@@ -65,7 +65,7 @@ pub struct BindPlan {
     pub source_ref: String,
     pub mount_path: String,
     pub read_only: bool,
-    /// Self-contained content (`Inline` / `Other{content}`) carried in the plan itself,
+    /// Self-contained typed `Inline` content carried in the plan itself,
     /// not a host ref — the tier realizes it in-band without a blob store: docker/podman
     /// stage it to a host file and repoint `source_ref`; k8s projects it as a ConfigMap
     /// volume. `None` for ref-backed binds (File/Resource store id, CacheVolume path).
@@ -943,14 +943,13 @@ fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
         .collect()
 }
 
-/// The self-contained bytes of a content-bearing mount (`Inline`, `Other{content}`),
+/// The self-contained bytes of an `Inline` content-bearing mount,
 /// carried in the plan so a tier without a blob store can realize it in-band — docker
 /// stages it to a host file, k8s projects it as a ConfigMap. `None` for ref-backed
 /// sources (their bytes live in a store the tier resolves by `source_ref`).
 fn inline_content_of(source: &pc::MountSource) -> Option<String> {
     match source {
         pc::MountSource::Inline { contents } => Some(contents.clone()),
-        pc::MountSource::Other(v) => v.get("content").and_then(|c| c.as_str()).map(String::from),
         _ => None,
     }
 }
@@ -987,25 +986,15 @@ fn mount_ref(source: &pc::MountSource) -> String {
         // ref = not realized on this tier yet (bwrap realizes it, see awaken-sandbox-local).
         pc::MountSource::Inline { .. } => String::new(),
         pc::MountSource::InlineBytes { .. } => String::new(),
-        pc::MountSource::Other(_) => String::new(),
     }
 }
 
-/// The attempt-agent command read from `spec.extra.command` (a JSON array of strings).
+/// The attempt-agent command from the typed sandbox contract.
 /// The provider executes it inside the Session environment; an empty command is a
 /// caller error rejected fail-closed.
 #[must_use]
 pub fn command_of(spec: &pc::SandboxSpec) -> Vec<String> {
-    spec.extra
-        .as_ref()
-        .and_then(|v| v.get("command"))
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|s| s.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    spec.command.clone()
 }
 
 fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
@@ -1387,7 +1376,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        let (container_id, outputs_path) = recovery::container_locator(handle)?;
+        let payload = recovery::decode_handle(handle)?;
+        let container_id = payload.container_id;
         if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
             return Err(err(RuntimeError::NotFound(container_id)));
         }
@@ -1395,27 +1385,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
             container_id,
-            outputs_path,
-            base_env: handle
-                .extra
-                .as_ref()
-                .and_then(|value| value.get("base_env"))
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default(),
+            outputs_path: payload.outputs_path,
+            base_env: payload.base_env,
             blobs: self.blobs.clone(),
             file_store: self.file_store.clone(),
-            live_input_projection: handle
-                .extra
-                .as_ref()
-                .and_then(|value| value.get("live_input_projection"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
-            runtime_handle: handle
-                .extra
-                .as_ref()
-                .and_then(|value| value.get("runtime_handle"))
-                .cloned(),
+            live_input_projection: payload.live_input_projection,
+            runtime_handle: payload.runtime_handle,
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerCleanupState::completed(
@@ -1443,7 +1418,7 @@ pub struct AgentContainerSession {
 /// `spawn_agent` path, for a user-supplied container image.
 #[async_trait]
 pub trait AgentContainerProvider: Send + Sync {
-    /// Create the container from `spec` (image + `spec.extra.command`) and open its
+    /// Create the container from the typed image and command in `spec` and open its
     /// ACP channel, returning the channel + process handle for one run.
     async fn open_agent(
         &self,
@@ -1572,7 +1547,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// gain a projector merely because the newly started runtime supports one.
     live_input_projection: bool,
     /// Runtime-owned incarnation evidence carried through Worker adoption.
-    runtime_handle: Option<serde_json::Value>,
+    runtime_handle: Option<ContainerRuntimeHandle>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1733,7 +1708,7 @@ impl ContainerCleanupState {
         &self,
         runtime: &R,
         container_id: &str,
-        runtime_handle: Option<&serde_json::Value>,
+        runtime_handle: Option<&ContainerRuntimeHandle>,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         if !*done {
@@ -1760,21 +1735,16 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        let mut h = pc::SandboxHandle::new("container", &self.id);
-        let mut extra = serde_json::json!({
-            "container_id": self.container_id,
-            "outputs_path": self.outputs_path,
-            "base_env": self.base_env,
-            "live_input_projection": self.live_input_projection,
-        });
-        if let Some(runtime_handle) = &self.runtime_handle {
-            extra
-                .as_object_mut()
-                .expect("container handle metadata is an object")
-                .insert("runtime_handle".into(), runtime_handle.clone());
-        }
-        h.extra = Some(extra);
-        h
+        pc::SandboxHandle::container(
+            &self.id,
+            pc::ContainerSandboxHandleV1 {
+                container_id: self.container_id.clone(),
+                outputs_path: self.outputs_path.clone(),
+                base_env: self.base_env.clone(),
+                live_input_projection: self.live_input_projection,
+                runtime_handle: self.runtime_handle.clone(),
+            },
+        )
     }
 
     async fn spawn(

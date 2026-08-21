@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_local_process::{LocalProcess, configure_process_group};
 use awaken_provisioning_contract as pc;
-use serde_json::json;
 use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
@@ -135,14 +134,14 @@ pub(crate) fn materialize_read_only_tree_at(
 }
 
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
-/// content-addressed [`BlobSource`](pc::BlobSource), then inline `Other({content})`.
+/// content-addressed [`BlobSource`](pc::BlobSource), then typed inline content.
 pub(crate) async fn resolve_source(
     source: &pc::MountSource,
     blobs: &HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn pc::BlobSource>>,
     secret_broker: Option<&Arc<dyn pc::SecretBroker>>,
 ) -> Result<Option<Vec<u8>>, pc::SandboxError> {
-    // Inline `Other({content})` and unresolvable memory stores short-circuit before
+    // Inline content and unresolvable memory stores short-circuit before
     // any store hit; the rest resolve by id (seed map first, then the store).
     let id = match source {
         pc::MountSource::File { file_id, .. } => file_id.as_str(),
@@ -158,12 +157,6 @@ pub(crate) async fn resolve_source(
             return Ok(Some(contents.clone().into_bytes()));
         }
         pc::MountSource::InlineBytes { contents, .. } => return Ok(Some(contents.clone())),
-        pc::MountSource::Other(v) => {
-            return Ok(v
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| s.as_bytes().to_vec()));
-        }
         pc::MountSource::MemoryStore { .. } => return Ok(None),
         // A Cache Volume has no seedable content — it is mounted in place from its
         // host path and its bytes have no authority (ADR-0056), so there is nothing to
@@ -323,16 +316,9 @@ impl LocalProvider {
         pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
-        // Best-effort egress denial for the rooted `bash` tool (the Workdir-tier
-        // equivalent of the legacy `deny_egress`). It is a bwrap `--unshare-net`
-        // convenience, NOT admission-gated network isolation (which the Workdir tier
-        // cannot enforce — that is `NetworkPolicy`), so it rides the opaque `extra`.
-        sandbox.deny_egress = spec
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("deny_egress"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        // Best-effort egress denial for rooted Workdir tools. This is not
+        // admission-gated whole-sandbox isolation (`NetworkPolicy`).
+        sandbox.deny_egress = spec.deny_tool_egress;
         std::fs::create_dir_all(sandbox.root.root()).map_err(|error| {
             err(format!(
                 "create sandbox root `{}`: {error}",
@@ -398,36 +384,14 @@ impl LocalProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<LocalSandbox, pc::SandboxError> {
-        if handle.provider_kind != "local" {
-            return Err(err(format!(
-                "local provider cannot adopt {:?} sandbox",
-                handle.provider_kind
-            )));
-        }
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs");
-        let mut sandbox = self.build(&handle.sandbox_id, outputs_path);
-        sandbox.base_env = handle
-            .extra
-            .as_ref()
-            .and_then(|value| value.get("base_env"))
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        sandbox.continuation_excluded_paths = handle
-            .extra
-            .as_ref()
-            .and_then(|value| value.get("continuation_excluded_paths"))
-            .cloned()
-            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|path| sandbox.root.resolve(&path).ok())
-            .collect();
+        let payload = handle.local_payload()?;
+        let mut sandbox = self.build(&handle.sandbox_id, &payload.outputs_path);
+        sandbox.base_env.clone_from(&payload.base_env);
+        sandbox.continuation_excluded_paths = payload
+            .continuation_excluded_paths
+            .iter()
+            .map(|path| sandbox.root.resolve(path).map_err(err))
+            .collect::<Result<_, _>>()?;
         Ok(sandbox)
     }
 
@@ -615,7 +579,7 @@ impl pc::SandboxProvider for LocalProvider {
     async fn restore(
         &self,
         spec: &pc::SandboxSpec,
-        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        checkpoint: &pc::SandboxCheckpointRef,
         store: &dyn pc::SandboxCheckpointStore,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
@@ -885,13 +849,20 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        let mut h = pc::SandboxHandle::new("local", &self.id);
-        h.extra = Some(json!({
-            "outputs_path": self.outputs_path,
-            "base_env": self.base_env,
-            "continuation_excluded_paths": self.continuation_excluded_paths.iter().filter_map(|path| path.strip_prefix(self.root.root()).ok()).map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-        }));
-        h
+        let continuation_excluded_paths = self
+            .continuation_excluded_paths
+            .iter()
+            .filter_map(|path| path.strip_prefix(self.root.root()).ok())
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        pc::SandboxHandle::local(
+            &self.id,
+            pc::LocalSandboxHandleV1 {
+                outputs_path: self.outputs_path.clone(),
+                base_env: self.base_env.clone(),
+                continuation_excluded_paths,
+            },
+        )
     }
 
     async fn spawn(
@@ -915,7 +886,7 @@ impl pc::Sandbox for LocalSandbox {
         &self,
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<awaken_session_contract::CheckpointReceipt, pc::SandboxError> {
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         self.create_checkpoint(request, store).await
     }
 
@@ -1051,7 +1022,9 @@ mod shred_tests {
             limits: ResourceLimits::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 
@@ -1194,8 +1167,10 @@ mod shred_tests {
                 .unwrap(),
             Some(b"res".to_vec())
         );
-        // Inline `Other({content})` short-circuits before any store hit.
-        let inline = MountSource::Other(serde_json::json!({ "content": "inline" }));
+        // Typed inline content short-circuits before any store hit.
+        let inline = MountSource::Inline {
+            contents: "inline".into(),
+        };
         assert_eq!(
             resolve_source(&inline, &blobs, &none_store, None)
                 .await
@@ -1274,7 +1249,15 @@ mod shred_tests {
         assert!(verify(&src, b"right").is_ok());
         assert!(verify(&src, b"wrong").is_err());
         // No declared hash → nothing to verify against.
-        assert!(verify(&MountSource::Other(serde_json::json!({})), b"any").is_ok());
+        assert!(
+            verify(
+                &MountSource::Inline {
+                    contents: String::new()
+                },
+                b"any"
+            )
+            .is_ok()
+        );
     }
 
     fn bare_spec(scope: &str) -> SandboxSpec {
@@ -1395,7 +1378,9 @@ mod workdir_helper_tests {
             limits: ResourceLimits::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: deny_egress.then(|| json!({ "deny_egress": true })),
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: deny_egress,
         }
     }
 
@@ -1888,14 +1873,10 @@ mod workdir_helper_tests {
         pc::SandboxCheckpointRequest {
             workspace_id: "workspace-a".into(),
             session_id: "checkpoint-session".into(),
-            operation: awaken_session_contract::SessionEnvironmentOperation::new(
-                "checkpoint-session",
-                "suspend",
-                &generation.id,
-                4,
-                None,
-            ),
-            generation,
+            generation_id: generation.id,
+            environment_fingerprint: generation.environment_fingerprint,
+            base_image_fingerprint: generation.base_image_fingerprint,
+            effect_id: "suspend".into(),
             format: "awaken-fs-tar-v1".into(),
             created_at_unix_ms: 20,
             expires_at_unix_ms: 10_000,
@@ -1926,10 +1907,7 @@ mod workdir_helper_tests {
         sandbox.dispose().await.unwrap();
         assert!(!sandbox.workspace_path().exists(), "source terminated");
 
-        let restored = provider
-            .restore(&spec, &receipt.checkpoint, &store)
-            .await
-            .unwrap();
+        let restored = provider.restore(&spec, &receipt, &store).await.unwrap();
         let restored_root = crate::sandbox_dir(tmp.path(), "checkpoint-session");
         let restored_file = restored_root.join("workspace/bin/tool");
         assert_eq!(std::fs::read(&restored_file).unwrap(), b"mutable state");
@@ -1964,12 +1942,7 @@ mod workdir_helper_tests {
             .objects
             .lock()
             .unwrap()
-            .insert(receipt.checkpoint.id.clone(), b"corrupt".to_vec());
-        assert!(
-            provider
-                .restore(&spec, &receipt.checkpoint, &store)
-                .await
-                .is_err()
-        );
+            .insert(receipt.id.clone(), b"corrupt".to_vec());
+        assert!(provider.restore(&spec, &receipt, &store).await.is_err());
     }
 }

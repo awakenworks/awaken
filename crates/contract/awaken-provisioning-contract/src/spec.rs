@@ -2,7 +2,6 @@
 //! process launch input.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -335,14 +334,30 @@ pub enum FilesystemContinuity {
     Ephemeral,
 }
 
-/// The request to realize a sandbox environment. `extra` is forward-compatible,
-/// provider-specific data (image tag, seccomp profile, …) opaque to this crate.
+/// The request to realize a sandbox environment.
+///
+/// Every creation-time input is part of this closed contract. Provider-specific
+/// free-form data is deliberately forbidden: it bypasses admission, produces
+/// different interpretations across providers, and makes capacity fingerprints
+/// unstable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
     /// Session/thread scope — the isolation boundary and the artifact key.
     pub scope: String,
     /// Minimum isolation the caller requires; the provider must meet or exceed it.
     pub isolation: IsolationClass,
+    /// Frozen root filesystem/environment selected by the control plane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentKind>,
+    /// Container main process when the provider realizes process-as-container.
+    /// It is excluded from the reusable capacity shape because it starts only
+    /// after checkout.
+    pub command: Vec<String>,
+    /// Whether Workdir-tier rooted tools must run without a network namespace.
+    /// This is distinct from [`NetworkPolicy`], which describes whole-sandbox
+    /// enforcement and participates in provider admission.
+    pub deny_tool_egress: bool,
     #[serde(default)]
     pub mounts: Vec<MountRequirement>,
     /// Base env applied to every process launched in the sandbox.
@@ -371,8 +386,6 @@ pub struct SandboxSpec {
     /// parent anyway); set it for remote sandboxes that outlive the owning host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_ttl_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra: Option<Value>,
 }
 
 /// Canonical identity of one substitutable, never-used sandbox capacity shape.
@@ -396,12 +409,7 @@ impl SandboxCapacityShapeId {
         }
         let mut normalized = spec.clone();
         normalized.scope.clear();
-        if let Some(Value::Object(extra)) = normalized.extra.as_mut() {
-            extra.remove("command");
-            if extra.is_empty() {
-                normalized.extra = None;
-            }
-        }
+        normalized.command.clear();
         Some(Self(awaken_agent_contract::stable_fingerprint(&normalized)))
     }
 
@@ -455,6 +463,91 @@ pub enum EnvironmentKind {
     Image { reference: String },
     /// Host directory override — no isolation, cwd selection only.
     LocalDir { path_template: String },
+}
+
+/// When a Session materializes the sandbox selected by its frozen Environment.
+///
+/// This is part of the provisioning policy's published language. Session owns
+/// when the transition is requested; providers only consume the resulting
+/// decision and never reinterpret it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxProvisioning {
+    #[default]
+    Eager,
+    OnToolUse,
+}
+
+/// Full-sandbox behavior after the owning Session reaches a durable idle edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxIdleRetentionMode {
+    #[default]
+    Resident,
+    CheckpointAndRelease,
+}
+
+/// A stale checkpoint never silently becomes live state. Expiry only authorizes
+/// a fresh sandbox from the already-frozen Environment policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxCheckpointExpiryBehavior {
+    #[default]
+    FreshFromFrozenEnvironment,
+}
+
+/// Immutable continuation policy published with one sandbox policy revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxIdleRetentionPolicy {
+    #[serde(default)]
+    pub mode: SandboxIdleRetentionMode,
+    #[serde(default)]
+    pub checkpoint_after_secs: u64,
+    #[serde(default)]
+    pub retention_secs: u64,
+    #[serde(default)]
+    pub expiry_behavior: SandboxCheckpointExpiryBehavior,
+    #[serde(default)]
+    pub max_checkpoint_bytes: u64,
+    #[serde(default)]
+    pub max_checkpoint_duration_secs: u64,
+    #[serde(default)]
+    pub checkpoint_format: String,
+}
+
+impl Default for SandboxIdleRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            mode: SandboxIdleRetentionMode::Resident,
+            checkpoint_after_secs: 0,
+            retention_secs: 0,
+            expiry_behavior: SandboxCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
+            max_checkpoint_bytes: 0,
+            max_checkpoint_duration_secs: 0,
+            checkpoint_format: String::new(),
+        }
+    }
+}
+
+impl SandboxIdleRetentionPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.mode == SandboxIdleRetentionMode::Resident {
+            return Ok(());
+        }
+        if self.checkpoint_after_secs == 0 {
+            return Err("checkpoint_after_secs must be positive");
+        }
+        if self.retention_secs <= self.checkpoint_after_secs {
+            return Err("retention_secs must exceed checkpoint_after_secs");
+        }
+        if self.max_checkpoint_bytes == 0 || self.max_checkpoint_duration_secs == 0 {
+            return Err("checkpoint bounds must be positive");
+        }
+        if self.checkpoint_format.trim().is_empty() {
+            return Err("checkpoint_format must be non-empty");
+        }
+        Ok(())
+    }
 }
 
 /// Where an [`EnvironmentKind::IsolatedRoot`] base comes from — a reference, never
@@ -552,6 +645,11 @@ mod tests {
         SandboxSpec {
             scope: "session-a".into(),
             isolation: IsolationClass::Container,
+            environment: Some(EnvironmentKind::Image {
+                reference: "agent:v1".into(),
+            }),
+            command: vec!["agent".into(), "--acp".into()],
+            deny_tool_egress: false,
             mounts: Vec::new(),
             env: Vec::new(),
             packages: Default::default(),
@@ -561,10 +659,6 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: Some(serde_json::json!({
-                "command": ["agent", "--acp"],
-                "environment": { "kind": "image", "reference": "agent:v1" }
-            })),
         }
     }
 
@@ -594,7 +688,7 @@ mod tests {
         );
 
         let mut command = base.clone();
-        command.extra.as_mut().unwrap()["command"] = serde_json::json!(["other"]);
+        command.command = vec!["other".into()];
         assert_eq!(
             SandboxCapacityShapeId::from_spec(&command),
             Some(base_id.clone()),
@@ -629,9 +723,14 @@ mod tests {
         let mut lease = base.clone();
         lease.lease_ttl_secs = Some(60);
         variants.push(lease);
-        let mut extra = base.clone();
-        extra.extra.as_mut().unwrap()["seccomp_profile"] = serde_json::json!("strict-v2");
-        variants.push(extra);
+        let mut rootfs = base.clone();
+        rootfs.environment = Some(EnvironmentKind::Image {
+            reference: "agent:v2".into(),
+        });
+        variants.push(rootfs);
+        let mut tool_network = base.clone();
+        tool_network.deny_tool_egress = true;
+        variants.push(tool_network);
         for variant in variants {
             assert_ne!(
                 SandboxCapacityShapeId::from_spec(&variant),
@@ -707,29 +806,6 @@ pub struct SandboxOverride {
 }
 
 impl SandboxOverride {
-    /// Parse a frozen policy projection (or a retained legacy snapshot).
-    /// The `network`/`limits`/`isolation` shapes deserialize straight onto the contract
-    /// enums, so this is a lenient field-by-field lift — unknown keys (e.g. UI `mounts`)
-    /// are ignored, and a field that fails to parse is simply left unset (never a hard
-    /// error that would block a session on a malformed knob). Returns `None` when the
-    /// blob contributes nothing.
-    #[must_use]
-    pub fn from_config_value(sandbox: &Value) -> Option<Self> {
-        let get = |k: &str| sandbox.get(k).cloned();
-        let over = SandboxOverride {
-            environment: get("environment").and_then(|v| serde_json::from_value(v).ok()),
-            isolation: get("isolation").and_then(|v| serde_json::from_value(v).ok()),
-            network: get("network").and_then(|v| serde_json::from_value(v).ok()),
-            requests: get("requests")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            limits: get("limits")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-        };
-        (!over.is_empty()).then_some(over)
-    }
-
     /// Whether this overlay changes anything.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -745,15 +821,7 @@ impl SandboxOverride {
     #[must_use]
     pub fn apply(&self, mut spec: SandboxSpec) -> SandboxSpec {
         if let Some(environment) = &self.environment {
-            let extra = spec
-                .extra
-                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !extra.is_object() {
-                *extra = Value::Object(serde_json::Map::new());
-            }
-            if let (Value::Object(fields), Ok(value)) = (extra, serde_json::to_value(environment)) {
-                fields.insert("environment".to_string(), value);
-            }
+            spec.environment = Some(environment.clone());
         }
         if let Some(isolation) = self.isolation {
             spec.isolation = isolation;
@@ -780,6 +848,9 @@ mod sandbox_override_tests {
         SandboxSpec {
             scope: "t".into(),
             isolation: IsolationClass::Workdir,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
             mounts: Vec::new(),
             env: Vec::new(),
             packages: Default::default(),
@@ -789,7 +860,6 @@ mod sandbox_override_tests {
             limits: ResourceLimits::default(),
             filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
         }
     }
 
@@ -799,18 +869,17 @@ mod sandbox_override_tests {
         let blob = serde_json::json!({
             "environment": { "kind": "image", "reference": "registry.example/agent:v2" },
             "isolation": "namespace",
-            "mounts": [{ "mount_path": "/work", "access": "read_write" }], // ignored (no source)
             "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
             "requests": { "cpu_millis": 750, "memory_bytes": 2147483648u64 },
             "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
         });
-        let over = SandboxOverride::from_config_value(&blob).expect("blob contributes");
+        let over: SandboxOverride = serde_json::from_value(blob).expect("valid typed policy");
         let spec = over.apply(base());
         assert_eq!(
-            spec.extra,
-            Some(serde_json::json!({
-                "environment": { "kind": "image", "reference": "registry.example/agent:v2" }
-            }))
+            spec.environment,
+            Some(EnvironmentKind::Image {
+                reference: "registry.example/agent:v2".into()
+            })
         );
         assert_eq!(spec.isolation, IsolationClass::Namespace);
         assert_eq!(
@@ -823,16 +892,14 @@ mod sandbox_override_tests {
         assert_eq!(spec.requests.memory_bytes, Some(2_147_483_648));
         assert_eq!(spec.limits.cpu_millis, Some(2000));
         assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
-        // Mounts belong to Resources, never to the UI blob.
         assert!(spec.mounts.is_empty());
     }
 
     #[test]
     fn a_partial_blob_overrides_only_what_it_sets() {
-        let over = SandboxOverride::from_config_value(
-            &serde_json::json!({ "network": { "mode": "none" } }),
-        )
-        .expect("contributes");
+        let over: SandboxOverride =
+            serde_json::from_value(serde_json::json!({ "network": { "mode": "none" } }))
+                .expect("valid typed policy");
         assert!(over.environment.is_none() && over.isolation.is_none() && !over.limits.is_set());
         let spec = over.apply(base());
         assert_eq!(spec.network, NetworkPolicy::None);
@@ -844,36 +911,33 @@ mod sandbox_override_tests {
     }
 
     #[test]
-    fn an_empty_or_junk_blob_contributes_nothing() {
-        assert!(SandboxOverride::from_config_value(&serde_json::json!({})).is_none());
-        // A malformed knob is left unset, never a hard error; here nothing parses → None.
+    fn malformed_or_unknown_policy_fields_fail_closed() {
+        let empty: SandboxOverride = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.is_empty());
         assert!(
-            SandboxOverride::from_config_value(&serde_json::json!({ "isolation": "bogus" }))
-                .is_none()
+            serde_json::from_value::<SandboxOverride>(serde_json::json!({
+                "isolation": "bogus"
+            }))
+            .is_err()
         );
         assert!(
-            SandboxOverride::from_config_value(&serde_json::json!({
+            serde_json::from_value::<SandboxOverride>(serde_json::json!({
                 "environment": { "kind": "not-real" }
             }))
-            .is_none()
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SandboxOverride>(serde_json::json!({
+                "mounts": []
+            }))
+            .is_err()
         );
     }
 
     #[test]
-    fn environment_overlay_preserves_other_provider_extra_fields() {
-        let over = SandboxOverride::from_config_value(&serde_json::json!({
-            "environment": { "kind": "sandbox" }
-        }))
-        .expect("environment contributes");
-        let mut spec = base();
-        spec.extra = Some(serde_json::json!({ "provider_field": "preserved" }));
-        let spec = over.apply(spec);
-        assert_eq!(
-            spec.extra,
-            Some(serde_json::json!({
-                "provider_field": "preserved",
-                "environment": { "kind": "sandbox" }
-            }))
-        );
+    fn sandbox_spec_rejects_provider_specific_free_form_fields() {
+        let mut value = serde_json::to_value(base()).expect("encode canonical spec");
+        value["provider_field"] = serde_json::json!("must-not-cross-contract");
+        assert!(serde_json::from_value::<SandboxSpec>(value).is_err());
     }
 }

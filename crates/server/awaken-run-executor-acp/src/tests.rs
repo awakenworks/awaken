@@ -621,7 +621,12 @@ async fn permission_resume_requires_the_call_and_pending_tool_facts() {
 }
 
 #[test]
-fn restored_session_rejects_removed_mismatched_and_empty_ids() {
+fn restored_session_is_typed_fail_closed_and_backend_scoped() {
+    // Decision table for the durable state boundary:
+    // C1 absent/removed -> no resume; C2 exact typed identity -> resume;
+    // C3 other backend -> no resume; C4 empty or schema-drifted identity -> error.
+    // This partitions presence, ownership, and shape so no corrupt fact is
+    // silently interpreted as a fresh ACP session.
     let activation = activation();
     let coordinator = Arc::new(RecordingCoordinator::default());
     let context = RuntimeRunContext::new().with_reader(coordinator.clone());
@@ -630,28 +635,19 @@ fn restored_session_rejects_removed_mismatched_and_empty_ids() {
             &context,
             &activation.thread_id,
             &activation.snapshot.resolved_spec.model_binding.backend_ref,
-        ),
+        )
+        .expect("C1 absent state is valid"),
         None
     );
 
     let commands = [
-        StateCommand::set(
-            Scope::Thread,
-            MergePolicy::Disjoint,
-            ACP_SESSION_ID_STATE_KEY,
-            serde_json::json!({"backend_ref": "acp:other", "session_id": "session-7"}),
-        ),
-        StateCommand::set(
-            Scope::Thread,
-            MergePolicy::Disjoint,
-            ACP_SESSION_ID_STATE_KEY,
-            serde_json::json!({"backend_ref": "acp:claude", "session_id": ""}),
-        ),
-        StateCommand::remove(
-            Scope::Thread,
-            MergePolicy::Disjoint,
-            ACP_SESSION_ID_STATE_KEY,
-        ),
+        acp_session_cell()
+            .write(&AcpSessionReference {
+                backend_ref: "acp:other".into(),
+                session_id: "session-7".into(),
+            })
+            .expect("C3 fixture serializes"),
+        acp_session_cell().remove(),
     ];
     for command in commands {
         coordinator.commits.lock().unwrap().push(ThreadCommit {
@@ -668,10 +664,71 @@ fn restored_session_rejects_removed_mismatched_and_empty_ids() {
                 &context,
                 &activation.thread_id,
                 &activation.snapshot.resolved_spec.model_binding.backend_ref,
-            ),
+            )
+            .expect("C1/C3 are valid non-resume states"),
             None
         );
         coordinator.commits.lock().unwrap().clear();
+    }
+
+    let exact = run_state(
+        &TokenUsage::default(),
+        "model",
+        &activation.snapshot.resolved_spec.model_binding.backend_ref,
+        Some("session-7"),
+    )
+    .expect("C2 fixture serializes");
+    coordinator.commits.lock().unwrap().push(ThreadCommit {
+        thread_id: activation.thread_id.clone(),
+        run: awaken_agent_contract::thread::commit::RunDisposition::running(
+            activation.run_id.clone(),
+        ),
+        messages: Vec::new(),
+        state: exact,
+        events: Vec::new(),
+    });
+    assert_eq!(
+        restored_session_id(
+            &context,
+            &activation.thread_id,
+            &activation.snapshot.resolved_spec.model_binding.backend_ref,
+        )
+        .expect("C2 exact identity is valid"),
+        Some("session-7".into())
+    );
+
+    for invalid in [
+        serde_json::json!({"backend_ref": "acp:claude", "session_id": ""}),
+        serde_json::json!({
+            "backend_ref": "acp:claude",
+            "session_id": "session-7",
+            "unexpected": true
+        }),
+    ] {
+        coordinator.commits.lock().unwrap().clear();
+        coordinator.commits.lock().unwrap().push(ThreadCommit {
+            thread_id: activation.thread_id.clone(),
+            run: awaken_agent_contract::thread::commit::RunDisposition::running(
+                activation.run_id.clone(),
+            ),
+            messages: Vec::new(),
+            state: vec![StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                ACP_SESSION_ID_STATE_KEY,
+                invalid,
+            )],
+            events: Vec::new(),
+        });
+        assert!(
+            restored_session_id(
+                &context,
+                &activation.thread_id,
+                &activation.snapshot.resolved_spec.model_binding.backend_ref,
+            )
+            .is_err(),
+            "C4 malformed durable identity must fail closed"
+        );
     }
 }
 

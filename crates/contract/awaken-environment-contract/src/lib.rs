@@ -306,10 +306,16 @@ impl EnvItem {
             self.config.apply(config);
         }
         if let Some(scope) = patch.scope {
-            self.scope = scope;
+            self.scope = match scope {
+                EnvironmentFieldUpdate::Clear => None,
+                EnvironmentFieldUpdate::Replace(scope) => Some(scope),
+            };
         }
         if let Some(sandbox_policy) = patch.sandbox_policy {
-            self.sandbox_policy = sandbox_policy;
+            self.sandbox_policy = match sandbox_policy {
+                EnvironmentFieldUpdate::Clear => None,
+                EnvironmentFieldUpdate::Replace(policy) => Some(policy),
+            };
         }
         if let Some(md) = patch.metadata {
             for (k, v) in md {
@@ -343,11 +349,17 @@ pub struct EnvUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
     pub config: Option<EnvironmentConfigMutation>,
-    /// Outer `Some` means the field was supplied; inner `None` clears it.
-    pub scope: Option<Option<String>>,
+    pub scope: Option<EnvironmentFieldUpdate<String>>,
     pub metadata: Option<BTreeMap<String, Option<String>>>,
-    /// Outer `Some` means the binding was supplied; inner `None` clears it.
-    pub sandbox_policy: Option<Option<EnvironmentSandboxPolicyRef>>,
+    pub sandbox_policy: Option<EnvironmentFieldUpdate<EnvironmentSandboxPolicyRef>>,
+}
+
+/// Explicit update of an optional Environment field. Command absence means
+/// unchanged; clearing and replacement are distinct domain intents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentFieldUpdate<T> {
+    Clear,
+    Replace(T),
 }
 
 /// Atomic mutation vocabulary for the official Environment update semantics.
@@ -367,21 +379,21 @@ pub enum EnvironmentNetworkingMutation {
     Reset,
     Unrestricted,
     Limited {
-        allowed_hosts: Option<Option<Vec<String>>>,
-        allow_mcp_servers: Option<Option<bool>>,
-        allow_package_managers: Option<Option<bool>>,
+        allowed_hosts: Option<EnvironmentFieldUpdate<Vec<String>>>,
+        allow_mcp_servers: Option<EnvironmentFieldUpdate<bool>>,
+        allow_package_managers: Option<EnvironmentFieldUpdate<bool>>,
     },
 }
 
 #[derive(Debug, Default)]
 pub struct EnvironmentPackagesMutation {
     pub reset: bool,
-    pub apt: Option<Option<Vec<String>>>,
-    pub cargo: Option<Option<Vec<String>>>,
-    pub gem: Option<Option<Vec<String>>>,
-    pub go: Option<Option<Vec<String>>>,
-    pub npm: Option<Option<Vec<String>>>,
-    pub pip: Option<Option<Vec<String>>>,
+    pub apt: Option<EnvironmentFieldUpdate<Vec<String>>>,
+    pub cargo: Option<EnvironmentFieldUpdate<Vec<String>>>,
+    pub gem: Option<EnvironmentFieldUpdate<Vec<String>>>,
+    pub go: Option<EnvironmentFieldUpdate<Vec<String>>>,
+    pub npm: Option<EnvironmentFieldUpdate<Vec<String>>>,
+    pub pip: Option<EnvironmentFieldUpdate<Vec<String>>>,
 }
 
 impl EnvironmentConfig {
@@ -392,25 +404,27 @@ impl EnvironmentConfig {
                 networking,
                 packages,
             } => {
-                if !matches!(self, Self::Cloud { .. }) {
-                    *self = Self::Cloud {
-                        networking: EnvironmentNetworking::default(),
-                        packages: EnvironmentPackages::default(),
+                let (mut current_networking, mut current_packages) =
+                    match std::mem::replace(self, Self::SelfHosted) {
+                        Self::Cloud {
+                            networking,
+                            packages,
+                        } => (networking, packages),
+                        Self::SelfHosted => (
+                            EnvironmentNetworking::default(),
+                            EnvironmentPackages::default(),
+                        ),
                     };
-                }
-                let Self::Cloud {
-                    networking: current_networking,
-                    packages: current_packages,
-                } = self
-                else {
-                    unreachable!("Cloud initialized above")
-                };
                 if let Some(mutation) = networking {
                     current_networking.apply(mutation);
                 }
                 if let Some(mutation) = packages {
                     current_packages.apply(mutation);
                 }
+                *self = Self::Cloud {
+                    networking: current_networking,
+                    packages: current_packages,
+                };
             }
         }
     }
@@ -427,30 +441,38 @@ impl EnvironmentNetworking {
                 allow_mcp_servers,
                 allow_package_managers,
             } => {
-                if !matches!(self, Self::Limited { .. }) {
-                    *self = Self::Limited {
-                        allowed_hosts: Vec::new(),
-                        allow_mcp_servers: false,
-                        allow_package_managers: false,
+                let (mut current_hosts, mut current_mcp, mut current_packages) =
+                    match std::mem::replace(self, Self::Unrestricted) {
+                        Self::Limited {
+                            allowed_hosts,
+                            allow_mcp_servers,
+                            allow_package_managers,
+                        } => (allowed_hosts, allow_mcp_servers, allow_package_managers),
+                        Self::Unrestricted => (Vec::new(), false, false),
+                    };
+                if let Some(value) = allowed_hosts {
+                    current_hosts = match value {
+                        EnvironmentFieldUpdate::Clear => Vec::new(),
+                        EnvironmentFieldUpdate::Replace(value) => value,
                     };
                 }
-                let Self::Limited {
+                if let Some(value) = allow_mcp_servers {
+                    current_mcp = match value {
+                        EnvironmentFieldUpdate::Clear => false,
+                        EnvironmentFieldUpdate::Replace(value) => value,
+                    };
+                }
+                if let Some(value) = allow_package_managers {
+                    current_packages = match value {
+                        EnvironmentFieldUpdate::Clear => false,
+                        EnvironmentFieldUpdate::Replace(value) => value,
+                    };
+                }
+                *self = Self::Limited {
                     allowed_hosts: current_hosts,
                     allow_mcp_servers: current_mcp,
                     allow_package_managers: current_packages,
-                } = self
-                else {
-                    unreachable!("Limited initialized above")
                 };
-                if let Some(value) = allowed_hosts {
-                    *current_hosts = value.unwrap_or_default();
-                }
-                if let Some(value) = allow_mcp_servers {
-                    *current_mcp = value.unwrap_or(false);
-                }
-                if let Some(value) = allow_package_managers {
-                    *current_packages = value.unwrap_or(false);
-                }
             }
         }
     }
@@ -490,7 +512,10 @@ impl EnvironmentPackages {
         macro_rules! apply_field {
             ($field:ident) => {
                 if let Some(value) = mutation.$field {
-                    self.$field = value.unwrap_or_default();
+                    self.$field = match value {
+                        EnvironmentFieldUpdate::Clear => Vec::new(),
+                        EnvironmentFieldUpdate::Replace(value) => value,
+                    };
                 }
             };
         }

@@ -70,7 +70,7 @@ impl LocalSandbox {
         &self,
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<awaken_session_contract::CheckpointReceipt, pc::SandboxError> {
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         if request.format != "awaken-fs-tar-v1" {
             return Err(err(format!(
                 "unsupported checkpoint format {:?}",
@@ -101,8 +101,8 @@ impl LocalSandbox {
                 &pc::CheckpointObjectMetadata {
                     workspace_id: request.workspace_id.clone(),
                     session_id: request.session_id.clone(),
-                    generation_id: request.generation.id.clone(),
-                    suspend_effect_id: request.operation.effect_id.clone(),
+                    generation_id: request.generation_id.clone(),
+                    suspend_effect_id: request.effect_id.clone(),
                     created_at_unix_ms: request.created_at_unix_ms,
                     expires_at_unix_ms: request.expires_at_unix_ms,
                 },
@@ -112,27 +112,22 @@ impl LocalSandbox {
         if stored.digest != digest || stored.size_bytes != size_bytes {
             return Err(err("checkpoint store durability receipt mismatch"));
         }
-        let checkpoint = awaken_session_contract::SandboxCheckpointRef {
+        Ok(pc::SandboxCheckpointRef {
             id: stored.id,
             format: request.format.clone(),
             digest,
             size_bytes,
             created_at_unix_ms: request.created_at_unix_ms,
             expires_at_unix_ms: request.expires_at_unix_ms,
-            environment_fingerprint: request.generation.environment_fingerprint.clone(),
-            base_image_fingerprint: request.generation.base_image_fingerprint.clone(),
+            environment_fingerprint: request.environment_fingerprint.clone(),
+            base_image_fingerprint: request.base_image_fingerprint.clone(),
             excluded_mounts: self
                 .continuation_excluded_paths
                 .iter()
                 .filter_map(|path| path.strip_prefix(self.root.root()).ok())
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect(),
-            suspend_effect_id: request.operation.effect_id.clone(),
-        };
-        Ok(awaken_session_contract::CheckpointReceipt {
-            effect_id: request.operation.effect_id.clone(),
-            generation_id: request.generation.id.clone(),
-            checkpoint,
+            suspend_effect_id: request.effect_id.clone(),
         })
     }
 }

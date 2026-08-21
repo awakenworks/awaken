@@ -19,21 +19,10 @@ pub const fn runtime_placement_for_topology(
     }
 }
 
-/// Select the one physical Environment-realization owner.  Explicit frozen
-/// placement never consults today's topology; only the retained legacy upgrade
-/// state may do so.
+/// Select the one physical Environment-realization owner from the frozen fact.
 #[must_use]
-pub const fn environment_requires_external_owner(
-    frozen: SessionRuntimePlacement,
-    current_topology: SessionExecutionPlacement,
-) -> bool {
+pub const fn environment_requires_external_owner(frozen: SessionRuntimePlacement) -> bool {
     match frozen {
-        SessionRuntimePlacement::LegacyUnspecified => {
-            matches!(
-                current_topology,
-                SessionExecutionPlacement::RegisteredWorker
-            )
-        }
         SessionRuntimePlacement::Local => false,
         SessionRuntimePlacement::Worker => true,
     }
@@ -64,20 +53,11 @@ mod environment_owner_kani_proof {
             }
         );
         assert!(!environment_requires_external_owner(
-            SessionRuntimePlacement::Local,
-            topology
+            SessionRuntimePlacement::Local
         ));
         assert!(environment_requires_external_owner(
-            SessionRuntimePlacement::Worker,
-            topology
+            SessionRuntimePlacement::Worker
         ));
-        assert_eq!(
-            environment_requires_external_owner(
-                SessionRuntimePlacement::LegacyUnspecified,
-                topology,
-            ),
-            registered
-        );
     }
 }
 
@@ -221,17 +201,12 @@ impl SessionApplication {
         runtime_placement_for_topology(self.configuration.execution_placement)
     }
 
-    /// Resolve the sole physical-realization owner. `LegacyUnspecified` is an
-    /// explicit upgrade state and is the only case allowed to consult current
-    /// process topology; explicit frozen facts remain immutable across restarts.
+    /// Resolve the sole physical-realization owner from the immutable baseline.
     #[must_use]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session.frozen_baseline().is_some_and(|baseline| {
-            environment_requires_external_owner(
-                baseline.runtime_placement,
-                self.configuration.execution_placement,
-            )
-        })
+        session
+            .frozen_baseline()
+            .is_some_and(|baseline| environment_requires_external_owner(baseline.runtime_placement))
     }
 
     /// Claim the one lifecycle supervisor for this application instance.

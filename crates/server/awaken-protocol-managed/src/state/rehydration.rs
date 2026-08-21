@@ -131,26 +131,18 @@ mod tests {
         // | R2 | Environment WorkQueue | any | settled/required | stable/pending | none on read | yes |
         // | R3 | deployment-frozen Worker Runtime | any | settled/required | stable/pending | none | yes |
         // | R4 | any | any | any | any | no adopt if no binding | yes |
-        // | R5 | legacy + registered process | any | settled/required | stable/pending | none | yes |
         //
         // R1 is covered by `ensure_session_rehydrates_from_repo_after_cache_loss`;
-        // R5 follows the same guarded branch and existing binding-absent cases.
-        // This test generates the complete external R3/R5 cross-product with an adapter
+        // This test generates the complete external R3 cross-product with an adapter
         // that fails if any Coordinator-local physical effect is attempted. An
         // Lease owner/liveness never overrides the frozen custody fact. R3 is
         // covered by local Session creation and Resource activation tests.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
-        for (owner_name, placement) in [
-            (
-                "topology",
-                awaken_session_contract::SessionRuntimePlacement::Worker,
-            ),
-            (
-                "legacy",
-                awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified,
-            ),
-        ] {
+        for (owner_name, placement) in [(
+            "topology",
+            awaken_session_contract::SessionRuntimePlacement::Worker,
+        )] {
             for (lease_name, realization) in [
                 ("absent", None),
                 (

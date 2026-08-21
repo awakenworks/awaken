@@ -7,7 +7,6 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::spec::{Command, SandboxSpec};
 use crate::vocab::{Artifact, MountAccess, MountRequirement, Realization, RealizedMount};
@@ -177,22 +176,143 @@ pub trait RepositoryRealizer: Send + Sync {
 /// restart, but the handle can be stored and later passed to
 /// [`SandboxProvider::adopt`] to reconnect to a still-running remote sandbox
 /// (k8s pod / container on another host). For a local sandbox it is just the
-/// directory id. `extra` carries provider-specific locators (namespace, node).
+/// directory id. The closed, versioned payload enum makes every durable locator
+/// explicit and rejects unknown or cross-provider shapes during deserialization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxHandle {
     pub provider_kind: String,
     pub sandbox_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra: Option<Value>,
+    payload: SandboxHandlePayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "schema", rename_all = "snake_case", deny_unknown_fields)]
+enum SandboxHandlePayload {
+    Unmanaged,
+    LocalV1(LocalSandboxHandleV1),
+    NamespaceV1(NamespaceSandboxHandleV1),
+    ContainerV1(ContainerSandboxHandleV1),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSandboxHandleV1 {
+    pub outputs_path: String,
+    pub base_env: Vec<crate::EnvVar>,
+    pub continuation_excluded_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceSandboxHandleV1 {
+    pub outputs_path: String,
+    pub base_env: Vec<crate::EnvVar>,
+    pub network: crate::NetworkPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceProviderKind {
+    Bubblewrap,
+    Seatbelt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerSandboxHandleV1 {
+    pub container_id: String,
+    pub outputs_path: String,
+    pub base_env: Vec<crate::EnvVar>,
+    pub live_input_projection: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_handle: Option<ContainerContinuationHandle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContainerContinuationHandle {
+    KubernetesContinuation { claim_uid: String },
 }
 
 impl SandboxHandle {
+    /// Construct a deliberately non-resumable handle for ephemeral providers and
+    /// test doubles. Durable built-in providers use one of the typed constructors.
     pub fn new(provider_kind: impl Into<String>, sandbox_id: impl Into<String>) -> Self {
         Self {
             provider_kind: provider_kind.into(),
             sandbox_id: sandbox_id.into(),
-            extra: None,
+            payload: SandboxHandlePayload::Unmanaged,
         }
+    }
+
+    #[must_use]
+    pub fn local(sandbox_id: impl Into<String>, payload: LocalSandboxHandleV1) -> Self {
+        Self {
+            provider_kind: "local".into(),
+            sandbox_id: sandbox_id.into(),
+            payload: SandboxHandlePayload::LocalV1(payload),
+        }
+    }
+
+    #[must_use]
+    pub fn namespace(
+        provider: NamespaceProviderKind,
+        sandbox_id: impl Into<String>,
+        payload: NamespaceSandboxHandleV1,
+    ) -> Self {
+        Self {
+            provider_kind: match provider {
+                NamespaceProviderKind::Bubblewrap => "bwrap",
+                NamespaceProviderKind::Seatbelt => "seatbelt",
+            }
+            .into(),
+            sandbox_id: sandbox_id.into(),
+            payload: SandboxHandlePayload::NamespaceV1(payload),
+        }
+    }
+
+    #[must_use]
+    pub fn container(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV1) -> Self {
+        Self {
+            provider_kind: "container".into(),
+            sandbox_id: sandbox_id.into(),
+            payload: SandboxHandlePayload::ContainerV1(payload),
+        }
+    }
+
+    pub fn local_payload(&self) -> Result<&LocalSandboxHandleV1, SandboxError> {
+        match (&*self.provider_kind, &self.payload) {
+            ("local", SandboxHandlePayload::LocalV1(payload)) => Ok(payload),
+            _ => Err(self.payload_mismatch("local")),
+        }
+    }
+
+    pub fn namespace_payload(
+        &self,
+        expected_provider: &str,
+    ) -> Result<&NamespaceSandboxHandleV1, SandboxError> {
+        match (&*self.provider_kind, &self.payload) {
+            (provider, SandboxHandlePayload::NamespaceV1(payload))
+                if provider == expected_provider =>
+            {
+                Ok(payload)
+            }
+            _ => Err(self.payload_mismatch(expected_provider)),
+        }
+    }
+
+    pub fn container_payload(&self) -> Result<&ContainerSandboxHandleV1, SandboxError> {
+        match (&*self.provider_kind, &self.payload) {
+            ("container", SandboxHandlePayload::ContainerV1(payload)) => Ok(payload),
+            _ => Err(self.payload_mismatch("container")),
+        }
+    }
+
+    fn payload_mismatch(&self, expected_provider: &str) -> SandboxError {
+        SandboxError::new(format!(
+            "{expected_provider} provider cannot adopt {:?} handle payload",
+            self.provider_kind
+        ))
     }
 }
 
@@ -256,11 +376,7 @@ impl SandboxRequirements {
     pub fn from_spec(spec: &SandboxSpec, opaque_process: bool) -> Self {
         use crate::vocab::NetworkPolicy;
 
-        let custom_rootfs = spec
-            .extra
-            .as_ref()
-            .and_then(|extra| extra.get("environment"))
-            .is_some();
+        let custom_rootfs = spec.environment.is_some();
         Self {
             isolation: if opaque_process {
                 spec.isolation.max(IsolationClass::Namespace)
@@ -502,8 +618,47 @@ pub trait SandboxCheckpointStore: Send + Sync {
     async fn delete(&self, id: &str) -> Result<(), SandboxError>;
 }
 
-pub type SandboxCheckpointRequest = awaken_session_contract::SandboxCheckpointRequest;
-pub type SandboxCheckpointRef = awaken_session_contract::SandboxCheckpointRef;
+/// Exact, provider-neutral request for one idempotent filesystem checkpoint.
+///
+/// Session lifecycle types deliberately do not cross this port. The Runtime
+/// adapter projects its operation/generation into these immutable facts and
+/// later wraps the returned artifact in a Session-owned receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxCheckpointRequest {
+    pub workspace_id: String,
+    pub session_id: String,
+    pub generation_id: String,
+    pub environment_fingerprint: String,
+    pub base_image_fingerprint: String,
+    pub effect_id: String,
+    pub format: String,
+    pub created_at_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
+    pub max_bytes: u64,
+}
+
+/// Opaque, secret-free evidence for one verified durable checkpoint object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxCheckpointRef {
+    pub id: String,
+    pub format: String,
+    pub digest: String,
+    pub size_bytes: u64,
+    pub created_at_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
+    pub environment_fingerprint: String,
+    pub base_image_fingerprint: String,
+    #[serde(default)]
+    pub excluded_mounts: Vec<String>,
+    pub suspend_effect_id: String,
+}
+
+impl SandboxCheckpointRef {
+    #[must_use]
+    pub const fn expired_at(&self, now_unix_ms: u64) -> bool {
+        now_unix_ms >= self.expires_at_unix_ms
+    }
+}
 
 // A backend honors the spec's non-isolation requirements (network) — the isolation
 // floor is decided by the policy, so it is checked separately here.
@@ -674,7 +829,7 @@ pub trait SandboxProvider: Send + Sync {
     async fn restore(
         &self,
         _spec: &SandboxSpec,
-        _checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        _checkpoint: &SandboxCheckpointRef,
         _store: &dyn SandboxCheckpointStore,
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
         Err(SandboxError::new(
@@ -704,7 +859,7 @@ pub trait Sandbox: Send + Sync {
         &self,
         _request: &SandboxCheckpointRequest,
         _store: &dyn SandboxCheckpointStore,
-    ) -> Result<awaken_session_contract::CheckpointReceipt, SandboxError> {
+    ) -> Result<SandboxCheckpointRef, SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement filesystem checkpointing",
         ))
@@ -925,7 +1080,9 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: Some(60),
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 
@@ -988,9 +1145,9 @@ mod tests {
             .packages
             .managers
             .insert("npm".into(), vec!["tsx@4".into()]);
-        demanding.extra = Some(serde_json::json!({
-            "environment": {"kind": "image", "reference": "image@sha256:1"}
-        }));
+        demanding.environment = Some(crate::EnvironmentKind::Image {
+            reference: "image@sha256:1".into(),
+        });
         let r3 = SandboxRequirements::from_spec(&demanding, true);
         assert_eq!(r3.isolation, IsolationClass::Container, "R3 isolation");
         assert!(

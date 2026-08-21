@@ -203,11 +203,6 @@ impl BuiltInDreamAgent {
                     required: true,
                 }),
         );
-        let mount_values = mounts
-            .into_iter()
-            .map(serde_json::to_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         let mut prompts = vec![PLATFORM_INSTRUCTIONS.into()];
         if let Some(guidance) = &request.request_guidance {
             prompts.push(format!(
@@ -222,7 +217,7 @@ impl BuiltInDreamAgent {
                 source_revision: None,
                 environment_id: None,
                 model: Some(request.model.id.clone()),
-                mounts: mount_values,
+                mounts,
                 env: Vec::new(),
                 prompts,
                 mcp_candidates: Vec::new(),

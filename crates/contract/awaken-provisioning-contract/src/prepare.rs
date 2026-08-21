@@ -184,7 +184,9 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 

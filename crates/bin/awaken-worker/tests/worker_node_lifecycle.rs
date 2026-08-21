@@ -514,7 +514,7 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
         revision: awaken_session_contract::EnvironmentRevision(7),
         self_hosted: false,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("config-v7".into()),
-        sandbox: serde_json::json!({}),
+        sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),
@@ -573,15 +573,11 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
                         awaken_provisioning_contract::NetworkPolicy::None,
                         "E1 exact network"
                     );
-                    let extra = exact
-                        .extra
-                        .as_ref()
-                        .expect("prepared image sandbox override");
                     assert_eq!(
-                        extra
-                            .pointer("/environment/reference")
-                            .and_then(serde_json::Value::as_str),
-                        Some("registry.example/env@sha256:exact"),
+                        exact.environment,
+                        Some(awaken_provisioning_contract::EnvironmentKind::Image {
+                            reference: "registry.example/env@sha256:exact".into()
+                        }),
                         "E1 exact image"
                     );
                     upstream.set_environment_warmups_json(replacement_response.clone());

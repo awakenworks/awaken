@@ -32,6 +32,9 @@ fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: agent_argv(),
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -41,7 +44,6 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": agent_argv() })),
     }
 }
 

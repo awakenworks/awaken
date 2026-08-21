@@ -32,6 +32,7 @@ awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
+awaken-provisioning-contract.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The sqlite backend tests open a temp on-disk database.
 tempfile = "3"

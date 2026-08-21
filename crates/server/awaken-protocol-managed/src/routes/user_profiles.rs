@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use awaken_data_subject_application::{
     CreateUserProfileCommand, DataSubjectApplication, DataSubjectApplicationError,
-    EnrollmentTicket, UpdateUserProfileCommand, UserProfileRecord, UserProfileRelationship,
-    UserProfileTrustGrant, UserProfileTrustGrantStatus,
+    EnrollmentTicket, UpdateUserProfileCommand, UserProfileFieldUpdate, UserProfileRecord,
+    UserProfileRelationship, UserProfileTrustGrant, UserProfileTrustGrantStatus,
 };
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -226,14 +226,21 @@ async fn update_profile(
                     .relationship
                     .map(|value| relationship_to_application(value.unwrap_or_default())),
                 trust_grants,
-                external_id: params.external_id,
-                name: params.name,
+                external_id: field_update(params.external_id),
+                name: field_update(params.name),
             },
         )
         .await
         .map(project)
         .map(Json)
         .map_err(error_response)
+}
+
+fn field_update<T>(value: Option<Option<T>>) -> Option<UserProfileFieldUpdate<T>> {
+    value.map(|value| match value {
+        Some(value) => UserProfileFieldUpdate::Replace(value),
+        None => UserProfileFieldUpdate::Clear,
+    })
 }
 
 async fn enrollment_url(

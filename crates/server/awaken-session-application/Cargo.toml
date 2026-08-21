@@ -16,13 +16,13 @@ awaken-environment-contract.workspace = true
 awaken-environment-realization-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = "0.1"
 

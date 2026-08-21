@@ -506,14 +506,20 @@ mod tests {
     }
 
     #[test]
-    fn identity_ignores_extra_locators() {
-        let mut with_extra = SandboxHandle::new("k8s", "a");
-        with_extra.extra = Some(serde_json::json!({"node": "n1"}));
-        let plan = reconcile_adoption(&[with_extra], &[h("a")]);
+    fn identity_ignores_provider_payload() {
+        let with_payload = SandboxHandle::local(
+            "a",
+            crate::LocalSandboxHandleV1 {
+                outputs_path: "/outputs".into(),
+                base_env: Vec::new(),
+                continuation_excluded_paths: Vec::new(),
+            },
+        );
+        let plan = reconcile_adoption(&[with_payload], &[SandboxHandle::new("local", "a")]);
         assert_eq!(
             plan.adopt.len(),
             1,
-            "same (kind,id) reconciles regardless of extra"
+            "same (kind,id) reconciles regardless of provider payload"
         );
     }
 
@@ -808,7 +814,9 @@ mod actuator_tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 

@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 use awaken_agent_contract::agent::state::{
-    Action as StateAction, Command as StateCommand, MergePolicy, Scope,
+    Action as StateAction, Command as StateCommand, MergePolicy, Scope, StateCell,
 };
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_a2a::client::{get_task, send_message, try_cancel_task};
@@ -61,7 +61,8 @@ const A2A_TASK_STATE_KEY: &str = "__a2a_task";
 /// The opaque remote identity committed immediately after `message:send` returns.
 /// It is Run-scoped state, so a replacement worker can reattach without sending a
 /// second user message and durable cancellation can address the same remote task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskReference {
     endpoint: String,
     task_id: String,
@@ -74,6 +75,23 @@ impl TaskReference {
             endpoint: endpoint.to_string(),
             task_id: task.id.clone(),
             context_id: task.context_id.clone(),
+        }
+    }
+
+    fn validate(self) -> Result<Self> {
+        let missing = [
+            ("endpoint", self.endpoint.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("context_id", self.context_id.as_str()),
+        ]
+        .into_iter()
+        .find(|(_, value)| value.is_empty())
+        .map(|(name, _)| name);
+        match missing {
+            Some(name) => Err(Error::Execution(format!(
+                "durable A2A task is missing {name}"
+            ))),
+            None => Ok(self),
         }
     }
 }
@@ -184,37 +202,25 @@ fn end_cause_of(state: &TaskState) -> EndCause {
     }
 }
 
-fn task_reference_state(reference: &TaskReference) -> StateCommand {
-    StateCommand::set(
-        Scope::Run,
-        MergePolicy::Disjoint,
-        A2A_TASK_STATE_KEY,
-        serde_json::json!({
-            "endpoint": reference.endpoint,
-            "task_id": reference.task_id,
-            "context_id": reference.context_id,
-        }),
-    )
+fn task_reference_state(reference: &TaskReference) -> Result<StateCommand> {
+    task_reference_cell()
+        .write(reference)
+        .map_err(|error| Error::Execution(error.to_string()))
+}
+
+fn task_reference_cell() -> StateCell<TaskReference> {
+    StateCell::new(Scope::Run, MergePolicy::Disjoint, A2A_TASK_STATE_KEY)
 }
 
 fn decode_task_reference(value: &serde_json::Value) -> Result<TaskReference> {
-    let field = |name: &str| {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| Error::Execution(format!("durable A2A task is missing {name}")))
-    };
-    Ok(TaskReference {
-        endpoint: field("endpoint")?,
-        task_id: field("task_id")?,
-        context_id: field("context_id")?,
-    })
+    task_reference_cell()
+        .decode(value)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .validate()
 }
 
 fn clear_task_reference_state() -> StateCommand {
-    StateCommand::remove(Scope::Run, MergePolicy::Disjoint, A2A_TASK_STATE_KEY)
+    task_reference_cell().remove()
 }
 
 fn restored_task_reference(
@@ -426,7 +432,7 @@ impl RunExecutor for A2aRunExecutor {
                     activation.input.clone(),
                     vec![task_reference_state(&TaskReference::from_task(
                         &endpoint, &task,
-                    ))],
+                    ))?],
                 )
                 .await?;
                 task
@@ -498,7 +504,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
             Vec::new(),
             vec![task_reference_state(&TaskReference::from_task(
                 &endpoint, &task,
-            ))],
+            ))?],
         )
         .await?;
         drive_task(transport, &endpoint, &activation, &context, task).await
@@ -574,7 +580,7 @@ async fn drive_task(
                 activation,
                 RunDisposition::awaiting(awaiting_ticket(activation, &task)),
                 messages,
-                vec![task_reference_state(&reference)],
+                vec![task_reference_state(&reference)?],
             )
             .await?;
             Ok(RunState::Awaiting)
@@ -1793,7 +1799,7 @@ mod tests {
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![task_reference_state(&reference)],
+            vec![task_reference_state(&reference).unwrap()],
         )
         .await
         .unwrap();
@@ -1890,11 +1896,14 @@ mod tests {
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![task_reference_state(&TaskReference {
-                endpoint: "http://old.invalid".into(),
-                task_id: "task-7".into(),
-                context_id: "ctx-7".into(),
-            })],
+            vec![
+                task_reference_state(&TaskReference {
+                    endpoint: "http://old.invalid".into(),
+                    task_id: "task-7".into(),
+                    context_id: "ctx-7".into(),
+                })
+                .unwrap(),
+            ],
         )
         .await
         .unwrap();
@@ -1937,11 +1946,14 @@ mod tests {
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![task_reference_state(&TaskReference {
-                endpoint: "http://remote.invalid".into(),
-                task_id: "task-7".into(),
-                context_id: "ctx-7".into(),
-            })],
+            vec![
+                task_reference_state(&TaskReference {
+                    endpoint: "http://remote.invalid".into(),
+                    task_id: "task-7".into(),
+                    context_id: "ctx-7".into(),
+                })
+                .unwrap(),
+            ],
         )
         .await
         .unwrap();

@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use awaken_environment_contract::{
     BUILTIN_LOCAL_ENVIRONMENT_ID, CreateEnvironmentCommand, CreateEnvironmentError, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentAuthor, EnvironmentConfig, EnvironmentRegistrationIntent,
-    EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOperation, EnvironmentRevision,
-    EnvironmentSandboxPolicyRef,
+    EnvRegistry, EnvUpdate, EnvironmentAuthor, EnvironmentConfig, EnvironmentFieldUpdate,
+    EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
+    EnvironmentRegistrationOperation, EnvironmentRevision, EnvironmentSandboxPolicyRef,
 };
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
@@ -305,10 +305,12 @@ impl EnvironmentApplication {
             .update_active(
                 environment_id,
                 EnvUpdate {
-                    sandbox_policy: Some(Some(EnvironmentSandboxPolicyRef {
-                        policy_id: reference.id.0,
-                        version: reference.version.0,
-                    })),
+                    sandbox_policy: Some(EnvironmentFieldUpdate::Replace(
+                        EnvironmentSandboxPolicyRef {
+                            policy_id: reference.id.0,
+                            version: reference.version.0,
+                        },
+                    )),
                     ..Default::default()
                 },
             )

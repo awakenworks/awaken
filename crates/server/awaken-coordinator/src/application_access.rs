@@ -261,7 +261,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use async_trait::async_trait;
-    use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionBaselineState};
+    use awaken_session_contract::{
+        EnvironmentFingerprint, EnvironmentSnapshot, ManagedLifecycleFact, PersistedSession,
+        SessionBaseline, SessionBaselineInputs, SessionBaselineState, SessionMcpAuthoringContext,
+        SessionNetworkPolicy, SessionRuntimePlacement,
+    };
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use serde_json::{Value, json};
@@ -370,46 +374,39 @@ mod tests {
     }
 
     fn frozen_session(id: &str, status: &str) -> PersistedSession {
-        // Decode through the Session contract's own persistence representation;
-        // control tests must not import the credential execution layer merely to
-        // construct an otherwise opaque frozen Environment snapshot.
-        let baseline = serde_json::from_value(json!({
-            "state": "frozen",
-            "fingerprint": "test-baseline",
-            "environment": {
-                "environment_id": "env",
-                "revision": 1,
-                "config_fingerprint": "env-1",
-                "sandbox": {},
-                "network": { "mode": "none" },
-                "credential_realization": {
-                    "inference_holder": {
-                        "boundary": "workload",
-                        "trust_domain": "awaken.workload.acp"
-                    },
-                    "mcp_holder": {
-                        "boundary": "worker",
-                        "trust_domain": "awaken.worker"
-                    },
-                    "resource_holder": {
-                        "boundary": "worker",
-                        "trust_domain": "awaken.worker"
-                    }
-                }
-            },
-            "mcp_authoring": { "ordered_vault_ids": [] },
-            "agent_id": "support",
-            "model": "test-model",
-            "execution_model_ref": "test-model",
-            "runtime": null,
-            "application": null,
-            "delegate_ids": [],
-            "toolsets": [],
-            "mounts": [],
-            "env": [],
-            "prompts": []
-        }))
-        .expect("decode frozen Session fixture through the contract");
+        // Test fixtures use the same closed constructors as production. A JSON
+        // object here previously drifted behind the required Environment facts
+        // and caused authorization tests to fail before exercising policy.
+        let baseline =
+            SessionBaselineState::Frozen(SessionBaseline::compile(SessionBaselineInputs {
+                environment: EnvironmentSnapshot {
+                    environment_id: "env".into(),
+                    revision: awaken_environment_contract::EnvironmentRevision(1),
+                    self_hosted: false,
+                    config_fingerprint: EnvironmentFingerprint("env-1".into()),
+                    sandbox: Default::default(),
+                    sandbox_provisioning: Default::default(),
+                    idle_retention: Default::default(),
+                    packages: Default::default(),
+                    prepared_image: None,
+                    network: SessionNetworkPolicy::None,
+                    credential_realization:
+                        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp(),
+                },
+                runtime_placement: SessionRuntimePlacement::Local,
+                mcp_authoring: SessionMcpAuthoringContext::default(),
+                agent_id: "support".into(),
+                agent_revision: None,
+                model: "test-model".into(),
+                model_override: None,
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            }));
         PersistedSession {
             session_id: id.into(),
             revision: Default::default(),

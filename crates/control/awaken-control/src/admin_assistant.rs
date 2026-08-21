@@ -454,8 +454,6 @@ impl ConfigServiceDraftStore {
     }
 }
 
-const RESOURCE_EFFECT_KIND: &str = "agent_resource_binding";
-
 async fn apply_pending_resource_effects(
     plane: &ConfigPlane,
     scope: &ScopeId,
@@ -464,11 +462,7 @@ async fn apply_pending_resource_effects(
     let effects = plane.pending_management_effects(scope).await?;
     let mut completed = 0;
     for effect in effects {
-        if effect.kind != RESOURCE_EFFECT_KIND {
-            continue;
-        }
-        let config: AgentInputConfig =
-            serde_json::from_value(effect.payload).map_err(|error| error.to_string())?;
+        let ManagementEffect::UpsertAgentInputs { config } = effect;
         resources
             .put_agent_inputs(scope.as_str(), config.clone())
             .map_err(|error| error.to_string())?;
@@ -484,7 +478,11 @@ async fn apply_pending_resource_effects(
             ));
         }
         plane
-            .complete_management_effect(scope, &effect.kind, &effect.key)
+            .complete_management_effect(
+                scope,
+                ManagementEffect::AGENT_INPUTS_KIND,
+                &config.agent_id,
+            )
             .await?;
         completed += 1;
     }
@@ -606,14 +604,7 @@ impl DraftStore for ConfigServiceDraftStore {
         let resource_config = resources
             .map(|resources| resource_config(&draft.id, resources, environment, revision))
             .transpose()?;
-        let effect = match resource_config.as_ref() {
-            Some(config) => Some(ManagementEffect {
-                kind: RESOURCE_EFFECT_KIND.to_string(),
-                key: config.agent_id.clone(),
-                payload: serde_json::to_value(config).map_err(|error| error.to_string())?,
-            }),
-            None => None,
-        };
+        let effect = resource_config.map(|config| ManagementEffect::UpsertAgentInputs { config });
         self.plane
             .put_with_audit_effect(&scope, draft, audit, effect.as_ref())
             .await?;

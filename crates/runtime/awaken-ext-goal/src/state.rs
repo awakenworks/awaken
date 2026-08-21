@@ -7,7 +7,7 @@
 
 use awaken_runtime_contract::{
     CommitCoordinator, CommittedThreadView, EndCause, ExecutableAgentSnapshot, MergePolicy,
-    RunDisposition, RunId, Scope, StateCommand, StateKey, Store, ThreadCommit, ThreadId,
+    RunDisposition, RunId, Scope, StateCell, StateCommand, Store, ThreadCommit, ThreadId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -262,21 +262,18 @@ fn evaluation_key(id: &Id, iteration: u32) -> String {
 }
 
 fn set(key: &str, value: &impl Serialize) -> Result<StateCommand, Error> {
-    serde_json::to_value(value)
-        .map(|value| StateCommand::set(Scope::Thread, MergePolicy::Disjoint, key, value))
+    StateCell::new(Scope::Thread, MergePolicy::Disjoint, key)
+        .write(value)
         .map_err(|error| Error::Serialization(error.to_string()))
 }
 
 fn remove(key: &str) -> StateCommand {
-    StateCommand::remove(Scope::Thread, MergePolicy::Disjoint, key)
+    StateCell::<()>::new(Scope::Thread, MergePolicy::Disjoint, key).remove()
 }
 
 fn load_optional<T: DeserializeOwned>(store: &Store, key: &str) -> Result<Option<T>, Error> {
-    let Some(value) = store.get(Scope::Thread, &StateKey(key.to_string())) else {
-        return Ok(None);
-    };
-    serde_json::from_value(value.clone())
-        .map(Some)
+    StateCell::new(Scope::Thread, MergePolicy::Disjoint, key)
+        .load(store)
         .map_err(|error| Error::Serialization(format!("{key}: {error}")))
 }
 

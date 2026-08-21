@@ -67,39 +67,6 @@ pub use inmem::InMemoryWorkQueue;
 mod schema;
 use schema::*;
 
-#[cfg(test)]
-mod product_readiness_tests {
-    #[test]
-    fn volatile_queue_is_opt_in_and_its_export_is_feature_gated() {
-        // Cause/effect graph: C1 the product uses default features; C2 test-support
-        // is explicitly enabled. Effects: E1 the volatile backend is unreachable;
-        // E2 the reference backend is available to conformance tests. Constraint:
-        // C1 and C2 are mutually exclusive build selections for this boundary.
-        //
-        // | Rule | default product | test-support | InMemoryWorkQueue export |
-        // | T1   | yes             | no           | absent                   |
-        // | T2   | no              | yes          | present                  |
-        //
-        // T1 is completed by the default-feature `cargo check`; T2 is completed by
-        // the all-features conformance suite. This source-level fitness assertion
-        // prevents either selector from being silently removed or made default.
-        let manifest = include_str!("../Cargo.toml");
-        let source = include_str!("lib.rs");
-        assert!(manifest.contains("test-support = []"), "T2 selector");
-        assert!(
-            !manifest.contains("default = [\"test-support\"]"),
-            "T1 must remain the default"
-        );
-        assert!(
-            source.contains("#[cfg(any(test, feature = \"test-support\"))]\nmod inmem;")
-                && source.contains(
-                    "#[cfg(any(test, feature = \"test-support\"))]\npub use inmem::InMemoryWorkQueue;"
-                ),
-            "T1/T2 export gate"
-        );
-    }
-}
-
 /// SQLite persistence for the environment work queue. Ownership, epoch and expiry
 /// are durable because they are safety authority; only poller liveness is ephemeral.
 pub struct SqliteWorkQueue {
@@ -1424,8 +1391,10 @@ impl WorkQueue for PostgresWorkQueue {
     }
 }
 
-#[cfg(all(test, not(feature = "loom")))]
+#[cfg(test)]
 mod tests {
+    #![cfg(not(feature = "loom"))]
+
     use super::LEASE_TTL_MS;
     use super::*;
     use awaken_session_contract::work_queue::{WorkPayload, WorkState};
@@ -1945,5 +1914,38 @@ mod tests {
             "the single-active cap holds: one active lease, nothing left queued"
         );
         q.remove_env("env_a").await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod product_readiness_tests {
+    #[test]
+    fn volatile_queue_is_opt_in_and_its_export_is_feature_gated() {
+        // Cause/effect graph: C1 the product uses default features; C2 test-support
+        // is explicitly enabled. Effects: E1 the volatile backend is unreachable;
+        // E2 the reference backend is available to conformance tests. Constraint:
+        // C1 and C2 are mutually exclusive build selections for this boundary.
+        //
+        // | Rule | default product | test-support | InMemoryWorkQueue export |
+        // | T1   | yes             | no           | absent                   |
+        // | T2   | no              | yes          | present                  |
+        //
+        // T1 is completed by the default-feature `cargo check`; T2 is completed by
+        // the all-features conformance suite. This source-level fitness assertion
+        // prevents either selector from being silently removed or made default.
+        let manifest = include_str!("../Cargo.toml");
+        let source = include_str!("lib.rs");
+        assert!(manifest.contains("test-support = []"), "T2 selector");
+        assert!(
+            !manifest.contains("default = [\"test-support\"]"),
+            "T1 must remain the default"
+        );
+        assert!(
+            source.contains("#[cfg(any(test, feature = \"test-support\"))]\nmod inmem;")
+                && source.contains(
+                    "#[cfg(any(test, feature = \"test-support\"))]\npub use inmem::InMemoryWorkQueue;"
+                ),
+            "T1/T2 export gate"
+        );
     }
 }

@@ -1,10 +1,9 @@
 //! Versioned sandbox execution policy.
 
 use async_trait::async_trait;
-use awaken_session_contract::SandboxProvisioning;
 use serde::{Deserialize, Serialize};
 
-use crate::SandboxOverride;
+use crate::{SandboxIdleRetentionPolicy, SandboxOverride, SandboxProvisioning};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -34,7 +33,7 @@ pub struct SandboxExecutionPolicy {
     pub provisioning: SandboxProvisioning,
     /// Frozen into the Environment snapshot together with this exact version.
     #[serde(default)]
-    pub idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    pub idle_retention: SandboxIdleRetentionPolicy,
     #[serde(default)]
     pub disabled: bool,
 }

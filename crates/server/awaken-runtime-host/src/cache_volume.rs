@@ -151,7 +151,9 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         };
         let environment = self
             .provider
@@ -686,7 +688,9 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         };
         let environment =
             awaken_sandbox_container::ContainerEnvironmentProvider::create_environment(

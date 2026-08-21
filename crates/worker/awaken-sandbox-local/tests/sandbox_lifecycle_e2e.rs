@@ -79,7 +79,9 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
     };
 
     let sandbox = provider.create_sandbox(&spec).await.unwrap();

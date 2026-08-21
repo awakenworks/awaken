@@ -30,10 +30,13 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
     let Some(pool) = schema_pool("t_config_audit").await else {
         return;
     };
-    let effect = ManagementEffect {
-        kind: "agent_resource_binding".into(),
-        key: "agent-1".into(),
-        payload: serde_json::json!({"agent_id":"agent-1","resources":[],"version":1}),
+    let effect = ManagementEffect::UpsertAgentInputs {
+        config: awaken_agent_config::AgentInputConfig {
+            agent_id: "agent-1".into(),
+            environment: None,
+            inputs: Vec::new(),
+            revision: 1,
+        },
     };
     let store = PostgresConfigStore::with_pool(pool).await.expect("store");
     let scope = ScopeId::from("ws_a");
@@ -87,7 +90,7 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         vec![effect.clone()]
     );
     store
-        .complete_management_effect_scoped(&scope, &effect.kind, &effect.key)
+        .complete_management_effect_scoped(&scope, effect.kind(), effect.key())
         .await
         .unwrap();
 
@@ -253,7 +256,7 @@ async fn postgres_config_store_round_trips_config_and_publication() {
         serde_json::json!({"type": "object"}),
     )];
     let publication = compile(&config, &tools).expect("compile");
-    let stored = StoredPublication::published(publication.clone(), &config.id);
+    let stored = StoredPublication::published(publication.clone(), &config.id, "default");
     store
         .put_publication(&stored)
         .await
@@ -297,16 +300,16 @@ async fn postgres_conditional_publication_fences_one_fingerprint_per_source_revi
         compile(&source, &tools).expect("first compile"),
         &source.id,
         1,
-    )
-    .with_execution_workspace("runtime-a");
+        "runtime-a",
+    );
     let mut drifted = source.clone();
     drifted.instructions = "dependency-resolved behavior".into();
     let second = StoredPublication::published_at_revision(
         compile(&drifted, &tools).expect("second compile"),
         &source.id,
         1,
-    )
-    .with_execution_workspace("runtime-a");
+        "runtime-a",
+    );
     assert_ne!(first.fingerprint, second.fingerprint, "P3");
     assert_eq!(
         store
@@ -352,16 +355,16 @@ async fn postgres_allows_one_source_revision_in_distinct_execution_workspaces() 
         compile(&source, &tools).expect("first compile"),
         &source.id,
         1,
-    )
-    .with_execution_workspace("workspace-a");
+        "workspace-a",
+    );
     let mut drifted = source.clone();
     drifted.instructions = "workspace-b behavior".into();
     let second = StoredPublication::published_at_revision(
         compile(&drifted, &tools).expect("second compile"),
         &source.id,
         1,
-    )
-    .with_execution_workspace("workspace-b");
+        "workspace-b",
+    );
 
     for publication in [&first, &second] {
         assert_eq!(
@@ -394,7 +397,7 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
         "Echo",
         serde_json::json!({"type": "object"}),
     )];
-    let publication_for = |id: &str| -> StoredPublication {
+    let publication_for = |id: &str, workspace: &str| -> StoredPublication {
         let cfg = AgentConfig {
             id: id.to_string(),
             instructions: format!("body-{id}"),
@@ -405,14 +408,15 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
         };
-        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id)
+        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id, workspace)
     };
 
-    let p1 = publication_for("a1");
-    let p2 = publication_for("a2");
-    let mut p_compiled = publication_for("a3");
+    let p1 = publication_for("a1", "ws_a");
+    let p2 = publication_for("a2", "ws_a");
+    let mut p_compiled = publication_for("a3", "ws_a");
     p_compiled.state = PublicationState::Compiled; // excluded from list_published
-    let p_b = publication_for("b1");
+    let p_b = publication_for("b1", "ws_b");
+    let p1_b = publication_for("a1", "ws_b");
 
     store.put_publication_scoped(&a, &p1).await.expect("p1");
     store.put_publication_scoped(&a, &p2).await.expect("p2");
@@ -422,7 +426,7 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
         .expect("p_compiled");
     store.put_publication_scoped(&b, &p_b).await.expect("p_b");
     store
-        .put_publication_scoped(&b, &p1)
+        .put_publication_scoped(&b, &p1_b)
         .await
         .expect("the same fingerprint is independently owned by b");
 
@@ -487,7 +491,7 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
         };
-        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id)
+        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id, "ws_a")
     };
 
     let v1 = pub_v("v1");

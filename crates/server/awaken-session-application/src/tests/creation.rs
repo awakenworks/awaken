@@ -1,5 +1,26 @@
 use super::*;
 
+fn profiled_mount(id: &str) -> awaken_provisioning_contract::MountRequirement {
+    awaken_provisioning_contract::MountRequirement {
+        mount_id: id.into(),
+        source: awaken_provisioning_contract::MountSource::Inline {
+            contents: id.into(),
+        },
+        mount_path: format!("/workspace/{id}"),
+        access: awaken_provisioning_contract::MountAccess::ReadOnly,
+        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+        required: true,
+    }
+}
+
+fn profiled_env(name: &str) -> awaken_provisioning_contract::EnvVar {
+    awaken_provisioning_contract::EnvVar {
+        name: name.into(),
+        value: awaken_provisioning_contract::EnvValue::Inline { value: "1".into() },
+        visibility: awaken_provisioning_contract::EnvVisibility::Process,
+    }
+}
+
 struct AdmissionEnvironment;
 
 struct ProfiledAgent {
@@ -543,8 +564,8 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         source_revision: None,
         environment_id: None,
         model: model.map(str::to_owned),
-        mounts: vec![serde_json::json!({"mount_id": "workspace"})],
-        env: vec![serde_json::json!({"name": "PROJECT"})],
+        mounts: vec![profiled_mount("workspace")],
+        env: vec![profiled_env("PROJECT")],
         prompts: vec!["project context".into()],
         mcp_candidates: vec![
             McpAttachmentCandidate {

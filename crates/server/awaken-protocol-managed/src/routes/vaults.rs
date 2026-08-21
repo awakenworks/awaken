@@ -1068,6 +1068,9 @@ fn managed_mutation_error(error: ManagedCredentialMutationError) -> WireError {
             managed_creation_error(ManagedCredentialCreationError::Admission(error))
         }
         ManagedCredentialMutationError::Store(error) => storage_error(error),
+        error @ ManagedCredentialMutationError::Compensation { .. } => storage_error(
+            awaken_credential_vault::CredentialError::Storage(error.to_string()),
+        ),
     }
 }
 

@@ -71,6 +71,10 @@ pub enum ManagedCredentialMutationError {
     RevisionExhausted,
     #[error("Managed credential lifecycle transition is not allowed")]
     InvalidLifecycle,
+    #[error(
+        "Managed credential mutation failed ({primary}); abort reconciliation also failed ({cleanup})"
+    )]
+    Compensation { primary: String, cleanup: String },
     #[error(transparent)]
     Admission(#[from] ManagedCredentialAdmissionError),
     #[error(transparent)]

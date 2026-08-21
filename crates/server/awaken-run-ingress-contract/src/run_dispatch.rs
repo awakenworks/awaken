@@ -590,7 +590,7 @@ mod tests {
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                 "environment-a@1".into(),
             ),
-            sandbox: serde_json::json!({}),
+            sandbox: Default::default(),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
             packages: Default::default(),

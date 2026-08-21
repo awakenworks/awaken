@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_deployment_application::{
     DeploymentAgent, DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome,
-    DeploymentSessionLauncher,
+    DeploymentSeedEvent, DeploymentSessionLauncher,
 };
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_executable_agent_contract::{
@@ -88,10 +89,11 @@ async fn failed_initial_events_are_compensated_before_deployment_acknowledgement
         agent: DeploymentAgent::new("assistant", 1),
         environment_id: "env_local".into(),
         metadata: Default::default(),
-        initial_events: vec![json!({
-            "type": "system.message",
-            "content": [{"type": "text", "text": "must initialize the frozen publication"}]
-        })],
+        initial_events: vec![DeploymentSeedEvent::SystemMessage {
+            content: vec![ContentBlock::Text {
+                text: "must initialize the frozen publication".into(),
+            }],
+        }],
         resources: Vec::new(),
         vault_ids: Vec::new(),
         budget_max_list_cost_minor: None,
@@ -201,21 +203,20 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     let app = awaken_coordinator::mount_with_managed(host, managed.clone())
         .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
-    let request: DeploymentLaunch = serde_json::from_value(json!({
-        "deployment_id": "depl_retry",
-        "deployment_run_id": "drun_retry",
-        "workspace_id": workspace_id,
-        "agent": {"id": "assistant", "type": "agent", "version": 1},
-        "environment_id": "env_local",
-        "metadata": {},
-        "initial_events": [{
-            "type": "user.message",
-            "content": [{"type": "text", "text": "one launch only"}]
+    let request = DeploymentLaunch {
+        deployment_id: "depl_retry".into(),
+        deployment_run_id: "drun_retry".into(),
+        workspace_id,
+        agent: DeploymentAgent::new("assistant", 1),
+        environment_id: "env_local".into(),
+        metadata: Default::default(),
+        initial_events: vec![DeploymentSeedEvent::UserMessage {
+            content: vec![ContentBlock::text("one launch only")],
         }],
-        "resources": [],
-        "vault_ids": []
-    }))
-    .unwrap();
+        resources: Vec::new(),
+        vault_ids: Vec::new(),
+        budget_max_list_cost_minor: None,
+    };
 
     let first = launcher.launch(request.clone()).await;
     let second = launcher.launch(request.clone()).await;

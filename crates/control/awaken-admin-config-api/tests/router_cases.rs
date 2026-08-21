@@ -870,8 +870,8 @@ async fn agent_input_bindings_reject_non_positive_versions() {
             "/v1/config/agents/agent-1/resources",
             Some(json!({
                 "agent_id": "ignored-body-id",
-                "resources": [],
-                "version": version
+                "inputs": [],
+                "revision": version
             })),
         )
         .await;

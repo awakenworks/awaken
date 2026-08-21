@@ -25,6 +25,8 @@ fn session_environment(
     network: awaken_session_contract::SessionNetworkPolicy,
     sandbox: serde_json::Value,
 ) -> awaken_session_contract::EnvironmentSnapshot {
+    let sandbox: awaken_provisioning_contract::SandboxOverride =
+        serde_json::from_value(sandbox).expect("valid SandboxOverride test fixture");
     let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
         awaken_agent_contract::stable_fingerprint(&(network.clone(), sandbox.clone())),
     );
@@ -908,13 +910,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "test.worker",
         );
         let mounts = with_environment_inputs
-            .then(|| serde_json::to_value(&mount).unwrap())
+            .then_some(mount)
             .into_iter()
             .collect();
-        let env = with_environment_inputs
-            .then(|| serde_json::to_value(&env).unwrap())
-            .into_iter()
-            .collect();
+        let env = with_environment_inputs.then_some(env).into_iter().collect();
         let baseline = awaken_session_contract::SessionBaseline::compile(
             awaken_session_contract::SessionBaselineInputs {
                 environment: awaken_session_contract::EnvironmentSnapshot {
@@ -924,7 +923,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),
-                    sandbox: serde_json::json!({}),
+                    sandbox: Default::default(),
                     sandbox_provisioning: Default::default(),
                     idle_retention: Default::default(),
                     packages: Default::default(),
@@ -1144,12 +1143,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         awaken_provisioning_contract::NetworkPolicy::Unrestricted,
         "Workdir does not advertise strict network isolation"
     );
-    assert_eq!(
-        spec.extra
-            .as_ref()
-            .and_then(|value| value.get("deny_egress"))
-            .and_then(serde_json::Value::as_bool),
-        Some(true),
+    assert!(
+        spec.deny_tool_egress,
         "the Workdir tool wrapper retains the frozen deny intent"
     );
     assert_eq!(
@@ -2801,13 +2796,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
-    let denies = |spec: awaken_provisioning_contract::SandboxSpec| {
-        spec.extra
-            .as_ref()
-            .and_then(|v| v.get("deny_egress"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
+    let denies = |spec: awaken_provisioning_contract::SandboxSpec| spec.deny_tool_egress;
     let rules = [
         (
             "N1",
@@ -2901,12 +2890,8 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         NetworkPolicy::Unrestricted,
         "Workdir does not claim strict allowlist enforcement"
     );
-    assert_eq!(
-        spec.extra
-            .as_ref()
-            .and_then(|value| value.get("deny_egress"))
-            .and_then(serde_json::Value::as_bool),
-        Some(true),
+    assert!(
+        spec.deny_tool_egress,
         "the Workdir tool wrapper retains the frozen restriction intent"
     );
     assert_eq!(spec.limits.cpu_millis, Some(2000));

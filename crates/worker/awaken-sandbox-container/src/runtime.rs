@@ -99,6 +99,9 @@ pub struct RuntimeAgentProcess {
     pub channel: Box<dyn AgentChannel>,
 }
 
+/// Runtime-owned, secret-free incarnation evidence persisted in a Sandbox handle.
+pub type ContainerRuntimeHandle = pc::ContainerContinuationHandle;
+
 /// Independent package-image build/publish port.
 #[async_trait]
 pub trait PackageImageProvisioner: Send + Sync {
@@ -213,7 +216,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn handle_extra(
         &self,
         _container_id: &str,
-    ) -> Result<Option<serde_json::Value>, RuntimeError> {
+    ) -> Result<Option<ContainerRuntimeHandle>, RuntimeError> {
         Ok(None)
     }
 
@@ -265,7 +268,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn remove_with_handle(
         &self,
         container_id: &str,
-        _runtime_handle: Option<&serde_json::Value>,
+        _runtime_handle: Option<&ContainerRuntimeHandle>,
     ) -> Result<(), RuntimeError> {
         self.remove(container_id).await
     }

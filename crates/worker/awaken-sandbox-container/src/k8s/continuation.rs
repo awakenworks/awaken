@@ -119,7 +119,7 @@ pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&
 
 pub(super) fn handle_extra(
     pod: &k8s_openapi::api::core::v1::Pod,
-) -> Result<Option<serde_json::Value>, RuntimeError> {
+) -> Result<Option<crate::ContainerRuntimeHandle>, RuntimeError> {
     let binds_continuation_claim = pod
         .spec
         .as_ref()
@@ -131,7 +131,11 @@ pub(super) fn handle_extra(
         });
     match (binds_continuation_claim, bound_claim_uid(pod)) {
         (false, None) => Ok(None),
-        (true, Some(uid)) => Ok(Some(serde_json::json!({ "continuation_claim_uid": uid }))),
+        (true, Some(uid)) => Ok(Some(
+            crate::ContainerRuntimeHandle::KubernetesContinuation {
+                claim_uid: uid.to_owned(),
+            },
+        )),
         (true, None) => Err(backend(
             "Kubernetes Sandbox Pod has no continuation PVC incarnation evidence",
         )),
@@ -371,9 +375,9 @@ mod tests {
         bind_claim_uid(&mut retained, "claim-incarnation-1");
         assert_eq!(
             handle_extra(&retained).unwrap(),
-            Some(serde_json::json!({
-                "continuation_claim_uid": "claim-incarnation-1"
-            })),
+            Some(crate::ContainerRuntimeHandle::KubernetesContinuation {
+                claim_uid: "claim-incarnation-1".into(),
+            }),
             "H3"
         );
 

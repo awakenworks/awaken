@@ -692,7 +692,7 @@ mod tests {
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),
-                    sandbox: serde_json::json!({}),
+                    sandbox: Default::default(),
                     sandbox_provisioning: Default::default(),
                     idle_retention: Default::default(),
                     packages: Default::default(),
@@ -1473,8 +1473,10 @@ mod tests {
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
         let resident = ctx.env.as_ref().expect("eager environment").handle();
-        let mut stale = resident.clone();
-        stale.extra = Some(serde_json::json!({"generation": "stale"}));
+        let stale = awaken_provisioning_contract::SandboxHandle::new(
+            resident.provider_kind.clone(),
+            resident.sandbox_id.clone(),
+        );
         let encoded = serde_json::to_string(&stale).unwrap();
 
         assert!(

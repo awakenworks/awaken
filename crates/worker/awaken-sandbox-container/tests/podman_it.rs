@@ -185,6 +185,15 @@ async fn podman_materializes_inline_content_through_the_provider() {
     let spec = pc::SandboxSpec {
         scope: "pod-inline".into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(pc::EnvironmentKind::Image {
+            reference: "docker.io/library/busybox:latest".into(),
+        }),
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "grep -q hello-podman-inline /data/config.toml".into(),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "cfg".into(),
             source: pc::MountSource::Inline {
@@ -203,13 +212,6 @@ async fn podman_materializes_inline_content_through_the_provider() {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", "grep -q hello-podman-inline /data/config.toml"],
-            "environment": {
-                "kind": "image",
-                "reference": "docker.io/library/busybox:latest"
-            },
-        })),
     };
 
     let sandbox = provider
@@ -254,6 +256,9 @@ async fn podman_separates_container_environment_from_cli_environment() {
     let spec = pc::SandboxSpec {
         scope: "pod-exec-env".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["sleep".into(), "30".into()],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: vec![pc::EnvVar {
             name: "PODMAN_E2E_SECRET".into(),
@@ -269,7 +274,6 @@ async fn podman_separates_container_environment_from_cli_environment() {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     };
     let sandbox = provider.create(&spec).await.expect("create environment");
     let process = sandbox
@@ -313,6 +317,9 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
     let spec = pc::SandboxSpec {
         scope: "pod-adopt".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["sleep".into(), "30".into()],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -322,7 +329,6 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     };
     let handle = {
         let sandbox = provider_a.create(&spec).await.expect("create by worker A");
@@ -339,11 +345,10 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
         .renew_lease()
         .await
         .expect("renew the adopted live environment");
-    let physical_id = handle
-        .extra
-        .as_ref()
-        .and_then(|extra| extra["container_id"].as_str())
-        .expect("physical container id");
+    let physical_id = &handle
+        .container_payload()
+        .expect("typed container handle")
+        .container_id;
     assert_eq!(
         runtime_b.inspect(physical_id).await.unwrap(),
         ContainerState::Running
@@ -362,6 +367,17 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
     let spec = pc::SandboxSpec {
         scope: "pod-native-credential".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "test \"$(cat /acp-config/.credentials.json)\" = '{}' && printf '%s' '{}' > /acp-config/.credentials.json",
+                String::from_utf8_lossy(initial),
+                String::from_utf8_lossy(refreshed)
+            ),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "claude-auth".into(),
             source: pc::MountSource::Secret {
@@ -381,9 +397,6 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", format!("test \"$(cat /acp-config/.credentials.json)\" = '{}' && printf '%s' '{}' > /acp-config/.credentials.json", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
-        })),
     };
     let sandbox = provider.create(&spec).await.unwrap();
     let process = sandbox

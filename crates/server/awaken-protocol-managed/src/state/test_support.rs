@@ -47,7 +47,7 @@ pub(super) type RestoredRuntime = (
     Option<String>,
     usize,
     awaken_session_contract::SessionNetworkPolicy,
-    serde_json::Value,
+    awaken_provisioning_contract::SandboxOverride,
 );
 
 /// A runtime that reports a non-empty committed transcript, so a session can

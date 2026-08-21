@@ -12,9 +12,9 @@
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
-    EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentNetworking,
-    EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentPackagesMutation,
-    EnvironmentRevision, EnvironmentSandboxPolicyRef,
+    EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentFieldUpdate,
+    EnvironmentNetworking, EnvironmentNetworkingMutation, EnvironmentPackages,
+    EnvironmentPackagesMutation, EnvironmentRevision, EnvironmentSandboxPolicyRef,
 };
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -186,7 +186,7 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
         .update(
             &item.id,
             EnvUpdate {
-                sandbox_policy: Some(Some(reference.clone())),
+                sandbox_policy: Some(EnvironmentFieldUpdate::Replace(reference.clone())),
                 ..Default::default()
             },
         )
@@ -206,7 +206,7 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
         r.update(
             "env_missing",
             EnvUpdate {
-                sandbox_policy: Some(None),
+                sandbox_policy: Some(EnvironmentFieldUpdate::Clear),
                 ..Default::default()
             }
         )
@@ -234,7 +234,7 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
         .update(
             &item.id,
             EnvUpdate {
-                scope: Some(Some("account".into())),
+                scope: Some(EnvironmentFieldUpdate::Replace("account".into())),
                 ..Default::default()
             },
         )
@@ -274,11 +274,11 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
             config: Some(EnvironmentConfigMutation::PatchCloud {
                 networking: Some(EnvironmentNetworkingMutation::Limited {
                     allowed_hosts: None,
-                    allow_mcp_servers: Some(Some(false)),
+                    allow_mcp_servers: Some(EnvironmentFieldUpdate::Replace(false)),
                     allow_package_managers: None,
                 }),
                 packages: Some(EnvironmentPackagesMutation {
-                    npm: Some(None),
+                    npm: Some(EnvironmentFieldUpdate::Clear),
                     ..Default::default()
                 }),
             }),

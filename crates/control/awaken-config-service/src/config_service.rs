@@ -1129,7 +1129,7 @@ pub(crate) mod resource_prompt_tests {
             "registered Coordinator view remains frozen when Control defaults later change"
         );
         assert_eq!(
-            publication.agent_inputs.as_ref().unwrap()["revision"],
+            publication.agent_inputs.as_ref().unwrap().revision,
             1,
             "the publication owns the exact Resource defaults used at compile time"
         );
@@ -1174,7 +1174,7 @@ pub(crate) mod resource_prompt_tests {
             .await
             .expect("R3 matching reviewed aggregate publishes");
         assert_eq!(publication.source_revision, 1);
-        assert_eq!(publication.agent_inputs.unwrap()["revision"], 1);
+        assert_eq!(publication.agent_inputs.unwrap().revision, 1);
     }
 
     #[tokio::test]

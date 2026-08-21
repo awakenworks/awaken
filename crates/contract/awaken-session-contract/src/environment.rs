@@ -158,21 +158,7 @@ impl SessionEnvironmentOperation {
     }
 }
 
-/// Opaque, secret-free evidence for one verified checkpoint object.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SandboxCheckpointRef {
-    pub id: String,
-    pub format: String,
-    pub digest: String,
-    pub size_bytes: u64,
-    pub created_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-    pub environment_fingerprint: String,
-    pub base_image_fingerprint: String,
-    #[serde(default)]
-    pub excluded_mounts: Vec<String>,
-    pub suspend_effect_id: String,
-}
+pub use awaken_provisioning_contract::SandboxCheckpointRef;
 
 /// Exact bounds and aggregate identity for one idempotent checkpoint effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,13 +171,6 @@ pub struct SandboxCheckpointRequest {
     pub created_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub max_bytes: u64,
-}
-
-impl SandboxCheckpointRef {
-    #[must_use]
-    pub const fn expired_at(&self, now_unix_ms: u64) -> bool {
-        now_unix_ms >= self.expires_at_unix_ms
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

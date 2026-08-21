@@ -82,17 +82,17 @@ fn fixture_image() -> String {
     std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string())
 }
 
-fn container_extra(command: Vec<String>, image: String) -> serde_json::Value {
-    serde_json::json!({
-        "command": command,
-        "environment": { "kind": "image", "reference": image }
-    })
+fn container_environment(image: String) -> pc::EnvironmentKind {
+    pc::EnvironmentKind::Image { reference: image }
 }
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -102,7 +102,6 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -123,6 +122,9 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "cfg".into(),
             source: pc::MountSource::Inline {
@@ -141,7 +143,6 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -149,6 +150,9 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: format!("managed-{marker}"),
             source: pc::MountSource::Inline {
@@ -167,7 +171,6 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -177,6 +180,9 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "cfg".into(),
             source: pc::MountSource::File {
@@ -196,7 +202,6 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -266,6 +271,9 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "cfg".into(),
             source: pc::MountSource::File {
@@ -285,7 +293,6 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -293,6 +300,16 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "printf '%s' '{}' > /acp-config/auth.json; sleep 300",
+                String::from_utf8_lossy(refreshed)
+            ),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "codex-auth".into(),
             source: pc::MountSource::Secret {
@@ -312,17 +329,6 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(container_extra(
-            vec![
-                "sh".into(),
-                "-c".into(),
-                format!(
-                    "printf '%s' '{}' > /acp-config/auth.json; sleep 300",
-                    String::from_utf8_lossy(refreshed)
-                ),
-            ],
-            fixture_image(),
-        )),
     }
 }
 
@@ -335,12 +341,10 @@ fn kubectl(args: &[&str]) -> std::process::Output {
 
 fn pod_of(sandbox: &ContainerSandbox<K8sRuntime>) -> String {
     pc::Sandbox::handle(sandbox)
-        .extra
-        .as_ref()
-        .and_then(|extra| extra.get("container_id"))
-        .and_then(serde_json::Value::as_str)
-        .expect("the provider handle owns the exact Kubernetes Pod identity")
-        .to_string()
+        .container_payload()
+        .expect("the provider handle owns a typed Kubernetes payload")
+        .container_id
+        .clone()
 }
 
 fn cleanup_credential_pod(pod: &str) {
@@ -387,14 +391,12 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
         environment.status().await.unwrap(),
         pc::SandboxStatus::Ready
     );
-    let pod = environment
-        .handle()
-        .extra
-        .as_ref()
-        .and_then(|extra| extra.get("container_id"))
-        .and_then(serde_json::Value::as_str)
-        .expect("warm Session owns an exact Pod")
-        .to_string();
+    let handle = environment.handle();
+    let pod = handle
+        .container_payload()
+        .expect("warm Session owns a typed Kubernetes payload")
+        .container_id
+        .clone();
 
     pool.shutdown().await;
     assert_eq!(pool.ready_len(&session_spec), 0, "E3");
@@ -994,7 +996,8 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
         .expect("connect to Kubernetes");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
     let mut sandbox_spec = spec(&scope);
-    sandbox_spec.extra = Some(container_extra(session_argv(), image));
+    sandbox_spec.environment = Some(container_environment(image));
+    sandbox_spec.command = session_argv();
     let sandbox = provider
         .create_container(&sandbox_spec)
         .await

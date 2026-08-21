@@ -405,8 +405,14 @@ pub struct UpdateUserProfileCommand {
     pub metadata: Option<BTreeMap<String, String>>,
     pub relationship: Option<UserProfileRelationship>,
     pub trust_grants: Option<BTreeMap<String, UserProfileTrustGrant>>,
-    pub external_id: Option<Option<String>>,
-    pub name: Option<Option<String>>,
+    pub external_id: Option<UserProfileFieldUpdate<String>>,
+    pub name: Option<UserProfileFieldUpdate<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserProfileFieldUpdate<T> {
+    Clear,
+    Replace(T),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,12 +597,20 @@ impl DataSubjectApplication {
         self.mutate_scoped(org, id, move |subject| {
             let mut changed = false;
             if let Some(external_id) = &command.external_id {
-                changed |= subject.external_id != *external_id;
-                subject.external_id.clone_from(external_id);
+                let external_id = match external_id {
+                    UserProfileFieldUpdate::Clear => None,
+                    UserProfileFieldUpdate::Replace(value) => Some(value.clone()),
+                };
+                changed |= subject.external_id != external_id;
+                subject.external_id = external_id;
             }
             if let Some(name) = &command.name {
-                changed |= subject.name != *name;
-                subject.name.clone_from(name);
+                let name = match name {
+                    UserProfileFieldUpdate::Clear => None,
+                    UserProfileFieldUpdate::Replace(value) => Some(value.clone()),
+                };
+                changed |= subject.name != name;
+                subject.name = name;
             }
             if let Some(relationship) = command.relationship {
                 changed |= subject.relationship != relationship;

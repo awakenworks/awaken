@@ -208,7 +208,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                     revision: awaken_session_contract::EnvironmentRevision(1),
                     self_hosted: false,
                     config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
-                    sandbox: serde_json::json!({}),
+                    sandbox: Default::default(),
                     sandbox_provisioning: Default::default(),
                     idle_retention: Default::default(),
                     packages: Default::default(),
@@ -838,7 +838,10 @@ async fn round_trips_and_survives_a_reopen() {
 }
 
 #[tokio::test]
-async fn legacy_manifest_rows_upgrade_to_resource_state_on_read() {
+async fn rows_without_the_canonical_aggregate_fail_closed() {
+    // Persistence authority partition: the complete aggregate is the only
+    // readable truth. A row containing every retired split column still cannot
+    // synthesize current Resource state after schema convergence.
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
     let legacy = serde_json::json!({
         "inputs": [{
@@ -860,11 +863,10 @@ async fn legacy_manifest_rows_upgrade_to_resource_state_on_read() {
             )
             .unwrap();
 
-    let loaded = repo.get("legacy").await.unwrap();
-    assert_eq!(loaded.resources.revision, 1);
-    assert_eq!(loaded.resources.active.inputs.len(), 1);
-    assert!(loaded.resources.activations.is_empty());
-    assert!(!loaded.resources.needs_reconciliation());
+    assert!(matches!(
+        repo.get("legacy").await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
 }
 
 #[tokio::test]
@@ -901,16 +903,14 @@ async fn owner_scope_is_recorded_and_survives_a_reopen() {
     );
 }
 
-/// Persistence authority causal graph:
-/// aggregate present -> decode aggregate only; aggregate absent -> migrate
-/// legacy columns once. Corruption in the selected authority fails loudly.
+/// Persistence authority causal graph: the canonical aggregate is the only
+/// selected authority and corruption never falls back to retired split columns.
 ///
-/// | Rule | aggregate present | selected payload valid | legacy valid | Effect |
-/// |---|---|---|---|---|
-/// | P1 | T | T | - | aggregate |
-/// | P2 | T | F | - | fail closed |
-/// | P3 | F | T | T | legacy migration |
-/// | P4 | F | F | F | fail closed |
+/// | Rule | aggregate present | payload valid | Effect |
+/// |---|---|---|---|
+/// | P1 | T | T | aggregate |
+/// | P2 | T | F | fail closed |
+/// | P3 | F | - | fail closed |
 #[tokio::test]
 async fn corrupt_canonical_aggregate_fails_closed() {
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
@@ -949,11 +949,9 @@ async fn legacy_columns_are_not_a_parallel_authority() {
 }
 
 #[tokio::test]
-async fn legacy_managed_tool_projection_migrates_to_neutral_session_configuration() {
-    // Cause/effect decision table: R1 canonical `tools` exists -> use it;
-    // R2 only legacy `agent_tools` exists -> lower toolsets and client tools
-    // once; R3 neither exists -> explicit empty default. This test covers R2
-    // and proves protocol encoding does not remain persistence authority.
+async fn noncanonical_aggregate_fields_fail_closed() {
+    // The strict aggregate grammar rejects a retired protocol projection rather
+    // than retaining a second tool-configuration decoder in persistence.
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
     create_fixture(&repo, "default", sample("legacy-tools"), Vec::new()).await;
     let mut legacy = serde_json::to_value(sample("legacy-tools")).unwrap();
@@ -979,32 +977,10 @@ async fn legacy_managed_tool_projection_migrates_to_neutral_session_configuratio
         )
         .unwrap();
 
-    let loaded = repo.get("legacy-tools").await.unwrap();
-    assert_eq!(loaded.tools.toolsets.len(), 1, "R2 toolset");
-    assert_eq!(loaded.tools.client_tools.len(), 1, "R2 client tool");
-    assert_eq!(loaded.tools.client_tools[0].name, "client_lookup");
-}
-
-#[tokio::test]
-async fn corrupt_selected_legacy_payload_fails_closed() {
-    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    repo.conn
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO managed_session
-                 (session_id, agent_id, model, metadata_json, environment_id, mcp_json,
-                  effective_inputs_json, runtime_json)
-                 VALUES (?1, 'agent', 'model', ?2, 'env', '[]', '{\"inputs\":[]}',
-                  '{\"mcp_servers\":[],\"runtime\":null,\"deny_egress\":false,\"sandbox\":null}')",
-            params!["legacy-corrupt", "{bad"],
-        )
-        .unwrap();
-    let error = repo
-        .get("legacy-corrupt")
-        .await
-        .expect_err("corrupt legacy authority must be distinguishable from absence");
-    assert!(matches!(error, SessionRepositoryError::Corrupt(_)));
+    assert!(matches!(
+        repo.get("legacy-tools").await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
 }
 
 /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres

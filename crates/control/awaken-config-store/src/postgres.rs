@@ -250,15 +250,15 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                  WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE"
             ))
             .bind(&scope.0)
-            .bind(&effect.kind)
-            .bind(&effect.key)
+            .bind(effect.kind())
+            .bind(effect.key())
             .fetch_optional(&mut *tx)
             .await
             .map_err(reject)?;
             if let Some(row) = existing {
-                let Json(payload): Json<serde_json::Value> =
+                let Json(existing_effect): Json<ManagementEffect> =
                     row.try_get("payload").map_err(reject)?;
-                if payload != effect.payload {
+                if existing_effect != *effect {
                     return Err(ConfigStoreError(
                         "stable management effect key was reused with different content".into(),
                     ));
@@ -269,9 +269,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                      (scope_id, kind, effect_key, payload) VALUES ($1, $2, $3, $4)"
                 ))
                 .bind(&scope.0)
-                .bind(&effect.kind)
-                .bind(&effect.key)
-                .bind(Json(&effect.payload))
+                .bind(effect.kind())
+                .bind(effect.key())
+                .bind(Json(effect))
                 .execute(&mut *tx)
                 .await
                 .map_err(reject)?;
@@ -324,12 +324,15 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?
         .into_iter()
         .map(|row| {
-            let Json(payload): Json<serde_json::Value> = row.try_get("payload").map_err(reject)?;
-            Ok(ManagementEffect {
-                kind: row.try_get("kind").map_err(reject)?,
-                key: row.try_get("effect_key").map_err(reject)?,
-                payload,
-            })
+            let kind: String = row.try_get("kind").map_err(reject)?;
+            let key: String = row.try_get("effect_key").map_err(reject)?;
+            let Json(effect): Json<ManagementEffect> = row.try_get("payload").map_err(reject)?;
+            if kind != effect.kind() || key != effect.key() {
+                return Err(ConfigStoreError(
+                    "management effect index does not match its typed payload".into(),
+                ));
+            }
+            Ok(effect)
         })
         .collect()
     }
@@ -646,13 +649,12 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             .map(|row| row.try_get("record").map_err(reject))
             .collect::<Result<Vec<Json<StoredPublication>>, _>>()?;
         let decision = publication_revision_decision(
-            scope.as_str(),
-            publication.execution_workspace.as_deref(),
+            publication.execution_workspace.as_str(),
             publication.source_revision,
             publication.fingerprint.as_str(),
             existing.iter().map(|Json(existing)| {
                 (
-                    existing.execution_workspace.as_deref(),
+                    existing.execution_workspace.as_str(),
                     existing.source_revision,
                     existing.fingerprint.as_str(),
                 )

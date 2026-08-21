@@ -125,10 +125,27 @@ impl ManagedHost {
                     "Resident Session environment is unavailable for checkpoint",
                 )
             })?;
-        environment
-            .checkpoint(&request, store.as_ref())
+        let provider_request = awaken_provisioning_contract::SandboxCheckpointRequest {
+            workspace_id: request.workspace_id,
+            session_id: request.session_id,
+            generation_id: request.generation.id.clone(),
+            environment_fingerprint: request.generation.environment_fingerprint.clone(),
+            base_image_fingerprint: request.generation.base_image_fingerprint.clone(),
+            effect_id: request.operation.effect_id.clone(),
+            format: request.format,
+            created_at_unix_ms: request.created_at_unix_ms,
+            expires_at_unix_ms: request.expires_at_unix_ms,
+            max_bytes: request.max_bytes,
+        };
+        let checkpoint = environment
+            .checkpoint(&provider_request, store.as_ref())
             .await
-            .map_err(|error| RunError::unavailable(error.to_string()))
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        Ok(awaken_session_contract::CheckpointReceipt {
+            effect_id: provider_request.effect_id,
+            generation_id: provider_request.generation_id,
+            checkpoint,
+        })
     }
 
     pub(super) async fn dispose_environment_continuation_source(
