@@ -41,7 +41,8 @@ pub mod service;
 pub mod stdio;
 
 pub use export::{
-    McpExportedTool, ProgressRawTool, SharedExports, StaticExports, ToolExec, ToolExportSource,
+    McpExportError, McpExportedTool, ProgressRawTool, SharedExports, StaticExports, ToolExec,
+    ToolExportSource,
 };
 pub use http::{McpHttpConfig, router};
 pub use service::{AwakenMcpContext, McpToolService};

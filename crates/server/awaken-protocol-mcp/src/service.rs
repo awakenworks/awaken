@@ -164,9 +164,10 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             .tools()
             .into_iter()
             .map(|tool| {
-                McpToolDefinition::new(tool.descriptor.id)
-                    .with_description(tool.descriptor.description)
-                    .with_schema(tool.descriptor.parameters)
+                let descriptor = tool.descriptor();
+                McpToolDefinition::new(descriptor.id.clone())
+                    .with_description(descriptor.description.clone())
+                    .with_schema(descriptor.parameters.clone())
             })
             .collect())
     }
@@ -181,7 +182,7 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             .source
             .tools()
             .into_iter()
-            .find(|tool| tool.descriptor.id == call.name)
+            .find(|tool| tool.descriptor().id == call.name)
             .ok_or_else(|| McpHostError::NotFound(format!("unknown tool: {}", call.name)))?;
         let progress_token = call
             .meta
@@ -254,7 +255,7 @@ async fn invoke(
     progress_token: Option<Value>,
     sink: &dyn NotifySink,
 ) -> Result<ToolOutput, ToolError> {
-    let progress_tool = match &exported.exec {
+    let progress_tool = match exported.execution() {
         ToolExec::Plain(tool) => return tool.invoke(call).await,
         ToolExec::WithProgress(tool) => tool,
     };

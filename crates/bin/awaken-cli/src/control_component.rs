@@ -127,7 +127,7 @@ pub(super) async fn prepare_control_routers(
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     model_supply: PublicationModelSupply,
     process: ProcessStartup,
-) -> ProcessRouters {
+) -> Result<ProcessRouters, String> {
     debug_assert_eq!(process.role, config::Role::Control);
     let (
         _,
@@ -320,8 +320,8 @@ pub(super) async fn prepare_control_routers(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
         process.mcp_bearer_token,
-    );
-    ProcessRouters::new(
+    )?;
+    Ok(ProcessRouters::new(
         process_surface::finish(
             component.router,
             mcp_export,
@@ -333,7 +333,7 @@ pub(super) async fn prepare_control_routers(
         Some(component.registration_supervisor),
         process.service_lifecycle,
         admin_tools,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -399,6 +399,7 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
         },
     )
     .await
+    .expect("Control MCP exports have matching descriptors and executors")
     .public_router;
     let response = app
         .oneshot(
@@ -467,6 +468,7 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
             },
         )
         .await
+        .expect("Control MCP exports have matching descriptors and executors")
         .public_router;
         let response = app
             .oneshot(
@@ -513,7 +515,8 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
             ..Default::default()
         },
     )
-    .await;
+    .await
+    .expect("Control MCP exports have matching descriptors and executors");
 }
 
 #[cfg(test)]

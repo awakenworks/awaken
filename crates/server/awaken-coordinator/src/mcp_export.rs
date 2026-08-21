@@ -36,7 +36,8 @@ impl awaken_runtime_host::AcpToolExporter for SessionToolExporter {
         tool: Arc<dyn RawTool>,
     ) -> Result<awaken_runtime_host::AcpToolExport, String> {
         let source = Arc::new(awaken_protocol_mcp::StaticExports::new(vec![
-            awaken_protocol_mcp::McpExportedTool::plain(descriptor, tool),
+            awaken_protocol_mcp::McpExportedTool::try_plain(descriptor, tool)
+                .map_err(|error| error.to_string())?,
         ]));
         let service = Arc::new(awaken_protocol_mcp::McpToolService::new(
             server_name,
@@ -78,30 +79,25 @@ pub fn router(
     descriptors: Vec<ToolDescriptor>,
     executables: Vec<Arc<dyn RawTool>>,
     bearer_token: Option<String>,
-) -> Router {
+) -> Result<Router, String> {
     let Some(bearer_token) = bearer_token.filter(|token| !token.is_empty()) else {
-        return Router::new();
+        return Ok(Router::new());
     };
-    let exports = descriptors
-        .into_iter()
-        .zip(executables)
-        .map(|(descriptor, executable)| {
-            awaken_protocol_mcp::McpExportedTool::plain(descriptor, executable)
-        })
-        .collect();
+    let exports = awaken_protocol_mcp::McpExportedTool::try_plain_set(descriptors, executables)
+        .map_err(|error| error.to_string())?;
     let source = Arc::new(awaken_protocol_mcp::StaticExports::new(exports));
     let service = Arc::new(awaken_protocol_mcp::McpToolService::new(
         "awaken",
         env!("CARGO_PKG_VERSION"),
         source,
     ));
-    awaken_protocol_mcp::router(
+    Ok(awaken_protocol_mcp::router(
         service,
         awaken_protocol_mcp::McpHttpConfig {
             path: "/v1/mcp".to_string(),
             bearer_token: Some(bearer_token),
         },
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -133,6 +129,7 @@ mod tests {
     #[tokio::test]
     async fn endpoint_is_absent_until_a_bearer_is_configured() {
         let response = router(Vec::new(), Vec::new(), None)
+            .expect("empty disabled export is valid")
             .oneshot(initialize(false))
             .await
             .unwrap();
@@ -141,7 +138,8 @@ mod tests {
 
     #[tokio::test]
     async fn configured_endpoint_requires_its_bearer_and_initializes() {
-        let app = router(Vec::new(), Vec::new(), Some("test-token".into()));
+        let app = router(Vec::new(), Vec::new(), Some("test-token".into()))
+            .expect("empty enabled export is valid");
         let denied = app.clone().oneshot(initialize(false)).await.unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
         let accepted = app.oneshot(initialize(true)).await.unwrap();

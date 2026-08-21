@@ -1415,7 +1415,8 @@ mod process_role_surface_tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("Control MCP exports have matching descriptors and executors");
         let app = control_routers.public_router;
 
         let control = app
@@ -1819,6 +1820,7 @@ mod process_role_surface_tests {
             },
         )
         .await
+        .expect("Control MCP exports have matching descriptors and executors")
         .public_router;
 
         let authored = app
