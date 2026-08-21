@@ -706,10 +706,10 @@ pub struct DiscoveredSkillFile {
 #[error("sandbox provisioning failed: {0}")]
 pub struct SandboxError(pub String);
 
-/// Inject typed Basic credentials into one transient HTTPS Git URL. Every byte
-/// outside the RFC 3986 unreserved set is percent-encoded; malformed, non-HTTPS,
-/// or already-authenticated targets fail closed instead of dropping or combining
-/// credentials.
+/// Inject typed Basic credentials into one transient Git URL. Upstream secrets
+/// require HTTPS. A short-lived Gateway capability may use the deployment's
+/// in-cluster HTTP endpoint. Every byte outside the RFC 3986 unreserved set is
+/// percent-encoded; malformed or already-authenticated targets fail closed.
 fn authed_url(
     url: &str,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
@@ -717,7 +717,16 @@ fn authed_url(
     let Some(credential) = credential else {
         return Ok(url.to_string());
     };
-    let Some(target) = url.strip_prefix("https://") else {
+    let (scheme, target) = if let Some(target) = url.strip_prefix("https://") {
+        ("https", target)
+    } else if credential.is_gateway_capability() {
+        let Some(target) = url.strip_prefix("http://") else {
+            return Err(SandboxError(
+                "credentialed repository URL must use its admitted HTTP transport without embedded user info".into(),
+            ));
+        };
+        ("http", target)
+    } else {
         return Err(SandboxError(
             "credentialed repository URL must be HTTPS without embedded user info".into(),
         ));
@@ -733,7 +742,7 @@ fn authed_url(
         ));
     }
     Ok(format!(
-        "https://{}:{}@{target}",
+        "{scheme}://{}:{}@{target}",
         percent_encode_userinfo(credential.expose_username()),
         percent_encode_userinfo(credential.expose_password()),
     ))
@@ -820,6 +829,9 @@ mod tests {
         // R2 typed credential + clean HTTPS    -> escaped transient user info;
         // R3 typed credential + non-HTTPS      -> fail closed;
         // R4 typed credential + existing login -> fail closed, never combine.
+        // R5 Gateway capability + clean HTTP   -> admitted transient user info;
+        // R6 Gateway capability + clean HTTPS  -> admitted transient user info;
+        // R7 Gateway capability + other scheme -> fail closed.
         let credential = awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
             "git user".to_string(),
             "p@ss".to_string(),
@@ -846,6 +858,26 @@ mod tests {
         assert!(
             authed_url("https://already@example.test/repo.git", Some(&credential)).is_err(),
             "R4"
+        );
+        let gateway =
+            awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(
+                "short-lived-capability".to_owned(),
+            );
+        assert!(
+            authed_url("http://gateway.internal/repo.git", Some(&gateway))
+                .expect("R5")
+                .starts_with("http://git:short-lived-capability@gateway.internal/"),
+            "R5"
+        );
+        assert!(
+            authed_url("https://gateway.internal/repo.git", Some(&gateway))
+                .expect("R6")
+                .starts_with("https://git:short-lived-capability@gateway.internal/"),
+            "R6"
+        );
+        assert!(
+            authed_url("ssh://gateway.internal/repo.git", Some(&gateway)).is_err(),
+            "R7"
         );
     }
 

@@ -122,6 +122,13 @@ pub struct RepositoryRealizationPlan {
 pub struct RepositoryHttpBasicCredential {
     username: awaken_agent_contract::RedactedString,
     password: awaken_agent_contract::RedactedString,
+    source: RepositoryHttpBasicCredentialSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepositoryHttpBasicCredentialSource {
+    Upstream,
+    GatewayCapability,
 }
 
 impl RepositoryHttpBasicCredential {
@@ -133,7 +140,27 @@ impl RepositoryHttpBasicCredential {
         Self {
             username: username.into(),
             password: password.into(),
+            source: RepositoryHttpBasicCredentialSource::Upstream,
         }
+    }
+
+    /// A short-lived platform Gateway capability, not an upstream Repository
+    /// credential. The distinction lets the target adapter admit an in-cluster
+    /// Gateway endpoint without weakening HTTPS for upstream secrets.
+    #[must_use]
+    pub fn gateway_capability(
+        capability: impl Into<awaken_agent_contract::RedactedString>,
+    ) -> Self {
+        Self {
+            username: "git".to_owned().into(),
+            password: capability.into(),
+            source: RepositoryHttpBasicCredentialSource::GatewayCapability,
+        }
+    }
+
+    #[must_use]
+    pub fn is_gateway_capability(&self) -> bool {
+        self.source == RepositoryHttpBasicCredentialSource::GatewayCapability
     }
 
     #[must_use]
