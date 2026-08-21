@@ -99,6 +99,23 @@ async fn reap_broken_continuation_pod(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreationFailureCleanup {
+    pod: bool,
+    claim: bool,
+}
+
+fn creation_failure_cleanup(
+    failed: bool,
+    pod_created: bool,
+    claim_created: bool,
+) -> CreationFailureCleanup {
+    CreationFailureCleanup {
+        pod: failed && pod_created,
+        claim: failed && claim_created,
+    }
+}
+
 pub(super) async fn create(
     runtime: &K8sRuntime,
     id: &str,
@@ -214,13 +231,16 @@ pub(super) async fn create(
     }
     .await;
 
-    if result.is_err() && claim_created {
-        if let Some(expected_pod_uid) = created_pod_uid.as_deref()
-            && let Ok(observed) = pods.get(&managed_pod_name).await
-            && observed.metadata.uid.as_deref() == Some(expected_pod_uid)
-        {
-            let _ = delete_exact_pod(&pods, &observed).await;
-        }
+    let cleanup =
+        creation_failure_cleanup(result.is_err(), created_pod_uid.is_some(), claim_created);
+    if cleanup.pod
+        && let Some(expected_pod_uid) = created_pod_uid.as_deref()
+        && let Ok(observed) = pods.get(&managed_pod_name).await
+        && observed.metadata.uid.as_deref() == Some(expected_pod_uid)
+    {
+        let _ = delete_exact_pod(&pods, &observed).await;
+    }
+    if cleanup.claim {
         // Preserve a claim only when an exact concurrent Pod already binds it.
         if let Some(uid) = claim_uid.as_deref() {
             let claim_is_in_use = pods
@@ -246,6 +266,52 @@ pub(super) async fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_creation_cleans_only_resources_created_by_that_attempt() {
+        /* Create-failure cleanup cause/effect table.
+         * Causes: C1 realization failed; C2 this attempt created the Pod; C3
+         * this attempt created the continuation claim. Effects: E1 reap the
+         * exact created Pod; E2 evaluate deletion of the exact created claim.
+         * Rules: F1 !C1=>!E1+!E2; F2 C1+C2+!C3=>E1 only (ephemeral Session);
+         * F3 C1+!C2+C3=>E2 only (a peer owns the Pod); F4 C1+C2+C3=>E1+E2.
+         * UID/resourceVersion and claim-UID fencing remain in the existing
+         * deletion owners; this kernel only prevents one condition from
+         * suppressing cleanup of the other resource.
+         */
+        assert_eq!(
+            creation_failure_cleanup(false, true, true),
+            CreationFailureCleanup {
+                pod: false,
+                claim: false,
+            },
+            "F1"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, true, false),
+            CreationFailureCleanup {
+                pod: true,
+                claim: false,
+            },
+            "F2"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, false, true),
+            CreationFailureCleanup {
+                pod: false,
+                claim: true,
+            },
+            "F3"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, true, true),
+            CreationFailureCleanup {
+                pod: true,
+                claim: true,
+            },
+            "F4"
+        );
+    }
 
     #[test]
     fn stale_continuation_reference_decision_table() {
