@@ -55,8 +55,10 @@ and explain what you changed. Prefer `edit` over `write` for existing files.";
 pub fn coding_tool_descriptors() -> Vec<ToolDescriptor> {
     builtin_tools()
         .into_iter()
-        .filter(|t| t.toolset == Toolset::Hand && CODING_TOOLS.contains(&t.descriptor.id.as_str()))
-        .map(|t| t.descriptor)
+        .filter(|tool| {
+            tool.toolset() == Toolset::Hand && CODING_TOOLS.contains(&tool.descriptor().id.as_str())
+        })
+        .map(|tool| tool.into_descriptor())
         .collect()
 }
 

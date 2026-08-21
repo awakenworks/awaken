@@ -1188,12 +1188,7 @@ mod tests {
                 let executions = executions.clone();
                 let received_permission = received_permission.clone();
                 Arc::new(move |backend, permission| {
-                    assert_eq!(
-                        backend,
-                        Backend::Acp {
-                            cli: "claude".into()
-                        }
-                    );
+                    assert_eq!(backend, Backend::from_ref("acp:claude"));
                     materializations.fetch_add(1, Ordering::SeqCst);
                     *received_permission.lock().unwrap() = Some(permission);
                     Ok(Arc::new(AcpChildRecorder {

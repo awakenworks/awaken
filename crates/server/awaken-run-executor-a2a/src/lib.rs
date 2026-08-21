@@ -1,7 +1,7 @@
 //! `A2aRunExecutor`: a remote A2A agent (Coze / any A2A HTTP endpoint) driven as a
 //! peer [`RunAttemptExecutor`]. Like the ACP executor it is *a second implementation*
 //! of the one attempt port — no local process, no model loop of our own: it dials the
-//! endpoint on `Backend::Remote { endpoint }`, sends the run's prompt as an A2A
+//! endpoint on `Backend::Remote(endpoint)`, sends the run's prompt as an A2A
 //! `message:send`, and commits the returned task's reply through the same commit
 //! boundary as the native and ACP paths.
 //!
@@ -253,7 +253,7 @@ fn restored_task_reference(
 
 fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandidate> {
     let backend = Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref);
-    if !matches!(backend, Backend::Remote { .. }) {
+    if !matches!(backend, Backend::Remote(_)) {
         return Err(Error::Execution(
             "A2A executor received a non-remote backend".to_string(),
         ));

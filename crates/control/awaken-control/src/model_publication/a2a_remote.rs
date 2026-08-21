@@ -48,17 +48,18 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
         sources: &[CredentialSource],
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        let Backend::Remote { endpoint } = Backend::from_ref(&binding.backend_ref) else {
+        let Backend::Remote(backend) = Backend::from_ref(&binding.backend_ref) else {
             unreachable!("caller matched Remote");
         };
+        let endpoint = backend.endpoint();
         let unavailable = |reason| PublicationResolutionError::CandidateUnavailable {
             binding: binding.clone(),
             reason,
         };
-        let origin = Self::remote_origin(&endpoint).map_err(unavailable)?;
+        let origin = Self::remote_origin(endpoint).map_err(unavailable)?;
         let card = self
             .a2a_cards
-            .discover(&endpoint)
+            .discover(endpoint)
             .await
             .map_err(|error| unavailable(format!("discover A2A Agent Card: {error}")))?;
         let card_origin = Self::remote_origin(&card.url)

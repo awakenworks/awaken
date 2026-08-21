@@ -537,12 +537,12 @@ impl AcpRunExecutor {
         &self,
         activation: &RunActivation,
     ) -> Option<(SessionHomeKey, SessionHomePlan)> {
-        let Backend::Acp { cli } =
+        let Backend::Acp(backend) =
             Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref)
         else {
             return None;
         };
-        let row = acp_cli(&cli)?;
+        let row = acp_cli(backend.cli())?;
         let SessionPersistence::LocalDir {
             session_subpath,
             keyed_by,
@@ -557,7 +557,7 @@ impl AcpRunExecutor {
                     .as_ref()
                     .map(|subject| subject.0.clone()),
                 thread_id: activation.thread_id.0.clone(),
-                adapter: cli,
+                adapter: backend.cli().to_string(),
             },
             SessionHomePlan {
                 config_home_env: row.config_home_env?.to_string(),
@@ -715,7 +715,7 @@ impl AcpRunExecutor {
             config.expected_capability = session.expected_capability.clone();
             config.session_cwd = session.workspace_cwd.clone();
             config.auth_method_id = match Backend::from_ref(&backend_ref) {
-                Backend::Acp { cli } => acp_cli(&cli)
+                Backend::Acp(backend) => acp_cli(backend.cli())
                     .and_then(|row| row.auth_method_id)
                     .map(str::to_string),
                 _ => None,

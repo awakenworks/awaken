@@ -140,12 +140,13 @@ impl CatalogModelPublicationResolver {
         binding: &ModelBinding,
         source: &CredentialSource,
     ) -> Result<CredentialUsage, String> {
-        let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) else {
+        let Backend::Acp(backend) = Backend::from_ref(&binding.backend_ref) else {
             if source.is_claude_code_setup_token() {
                 return Err("Claude Code setup tokens require backend acp:claude".into());
             }
             return Ok(CredentialUsage::ProviderAdapter);
         };
+        let cli = backend.cli();
         let capability = self
             .acp_capabilities
             .iter()

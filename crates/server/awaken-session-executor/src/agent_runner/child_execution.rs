@@ -79,7 +79,7 @@ pub(crate) fn child_attempt_executor(
         .collect::<Vec<_>>();
     let acp = backends
         .iter()
-        .find(|backend| matches!(backend, Backend::Acp { .. }))
+        .find(|backend| matches!(backend, Backend::Acp(_)))
         .cloned()
         .map(|backend| {
             adapters.acp.as_ref().ok_or_else(|| {
@@ -92,7 +92,7 @@ pub(crate) fn child_attempt_executor(
         .transpose()?;
     let remote = if backends
         .iter()
-        .any(|backend| matches!(backend, Backend::Remote { .. }))
+        .any(|backend| matches!(backend, Backend::Remote(_)))
     {
         Some(adapters.remote.clone().ok_or_else(|| {
             AgentRunError::Configuration(

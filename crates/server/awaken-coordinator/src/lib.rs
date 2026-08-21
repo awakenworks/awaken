@@ -1111,7 +1111,7 @@ fn dream_model_can_consume_local_inputs(model_id: &str) -> Result<bool, String> 
         awaken_agent_config::ModelSelection::Pinned(ref binding)
             if matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(&binding.backend_ref),
-                awaken_runtime_contract::resolved::Backend::Remote { .. }
+                awaken_runtime_contract::resolved::Backend::Remote(_)
             )
     ))
 }

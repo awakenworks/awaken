@@ -16,9 +16,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn generated_read_descriptor() -> ToolDescriptor {
     builtin_tools()
         .into_iter()
-        .find(|tool| tool.descriptor.id == "read")
+        .find(|tool| tool.descriptor().id == "read")
         .expect("the typed ReadTool is registered")
-        .descriptor
+        .into_descriptor()
 }
 
 fn request(model: &str, tool: ToolDescriptor) -> ChatRequest {

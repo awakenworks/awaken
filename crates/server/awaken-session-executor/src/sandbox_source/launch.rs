@@ -24,27 +24,19 @@ pub(super) struct ProjectedLaunch {
 #[derive(Clone)]
 pub struct AcpLaunchRegistry {
     routes: Arc<BTreeMap<String, ProjectedLaunch>>,
-    default_cli: Option<String>,
 }
 
 impl AcpLaunchRegistry {
-    pub fn new(
-        routes: Vec<(AcpCli, Arc<dyn LaunchResolver>)>,
-        default_cli: Option<String>,
-    ) -> Result<Self, String> {
+    pub fn new(routes: Vec<(AcpCli, Arc<dyn LaunchResolver>)>) -> Result<Self, String> {
         Self::with_resolved_argv(
             routes
                 .into_iter()
                 .map(|(cli, resolver)| (cli, resolver, None))
                 .collect(),
-            default_cli,
         )
     }
 
-    pub(crate) fn with_resolved_argv(
-        routes: Vec<ResolvedRoute>,
-        default_cli: Option<String>,
-    ) -> Result<Self, String> {
+    pub(crate) fn with_resolved_argv(routes: Vec<ResolvedRoute>) -> Result<Self, String> {
         let mut indexed = BTreeMap::new();
         for (cli, resolver, launch_argv) in routes {
             if cli.id.trim().is_empty() {
@@ -77,23 +69,13 @@ impl AcpLaunchRegistry {
         if indexed.is_empty() {
             return Err("ACP launch registry must contain at least one route".into());
         }
-        if let Some(default) = &default_cli
-            && !indexed.contains_key(default)
-        {
-            return Err(format!(
-                "default ACP CLI `acp:{default}` has no launch route"
-            ));
-        }
         Ok(Self {
             routes: Arc::new(indexed),
-            default_cli,
         })
     }
 
     pub fn single(cli: AcpCli, resolver: Arc<dyn LaunchResolver>) -> Self {
-        let default = cli.id.to_string();
-        Self::new(vec![(cli, resolver)], Some(default))
-            .expect("one known ACP CLI is a valid launch registry")
+        Self::new(vec![(cli, resolver)]).expect("one known ACP CLI is a valid launch registry")
     }
 
     pub fn single_with_resolved_argv(
@@ -101,24 +83,17 @@ impl AcpLaunchRegistry {
         resolver: Arc<dyn LaunchResolver>,
         launch_argv: Option<Vec<String>>,
     ) -> Result<Self, String> {
-        let default = cli.id.to_string();
-        Self::with_resolved_argv(vec![(cli, resolver, launch_argv)], Some(default))
+        Self::with_resolved_argv(vec![(cli, resolver, launch_argv)])
     }
 
     pub(super) fn selected(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,
     ) -> Result<&ProjectedLaunch, OpenError> {
-        let awaken_runtime_contract::resolved::Backend::Acp { cli } = backend else {
+        let awaken_runtime_contract::resolved::Backend::Acp(backend) = backend else {
             return Err(OpenError("run backend is not ACP".to_string()));
         };
-        let id = if cli.is_empty() {
-            self.default_cli.as_deref().ok_or_else(|| {
-                OpenError("bare `acp` has no configured default CLI route".to_string())
-            })?
-        } else {
-            cli.as_str()
-        };
+        let id = backend.cli();
         self.routes.get(id).ok_or_else(|| {
             let available = self
                 .routes
@@ -252,9 +227,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_routes_multiple_clis_and_requires_a_default_for_bare_acp() {
-        // Cause graph: explicit cli -> exact route; bare acp -> configured
-        // default; unknown cli or missing default -> closed failure.
+    fn exact_routes_multiple_clis_and_rejects_bare_acp() {
+        // Cause graph: explicit cli -> exact route; bare/unknown cli -> closed
+        // failure. ACP Default is a model-selection policy after an exact CLI
+        // route is chosen; it never means a default CLI.
         // Decision table:
         // explicit/known | any default     | selected route
         // explicit/other | any default     | error
@@ -264,46 +240,29 @@ mod tests {
             .into_iter()
             .map(|id| {
                 (
-                    *awaken_run_executor_acp::acp_cli(id).unwrap(),
+                    *awaken_run_executor_acp::acp_cli(id).expect("known test ACP CLI"),
                     Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
                 )
             })
             .collect();
-        let registry = AcpLaunchRegistry::new(routes, Some("codex".to_string())).unwrap();
+        let registry = AcpLaunchRegistry::new(routes).expect("two exact ACP routes");
         let selected = registry
-            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
-                cli: "claude".to_string(),
-            })
-            .unwrap();
+            .selected(&awaken_runtime_contract::resolved::Backend::from_ref(
+                "acp:claude",
+            ))
+            .expect("known exact route");
         assert_eq!(selected.cli.id, "claude");
-        let selected = registry
-            .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
-            .unwrap();
-        assert_eq!(selected.cli.id, "codex");
         assert!(
             registry
-                .selected(&awaken_runtime_contract::resolved::Backend::Acp {
-                    cli: "gemini".to_string(),
-                })
-                .is_err()
+                .selected(&awaken_runtime_contract::resolved::Backend::from_ref("acp"))
+                .is_err(),
+            "bare ACP is not an execution route"
         );
-
-        let no_default = AcpLaunchRegistry::new(
-            ["claude", "codex"]
-                .into_iter()
-                .map(|id| {
-                    (
-                        *awaken_run_executor_acp::acp_cli(id).unwrap(),
-                        Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
-                    )
-                })
-                .collect(),
-            None,
-        )
-        .unwrap();
         assert!(
-            no_default
-                .selected(&awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() })
+            registry
+                .selected(&awaken_runtime_contract::resolved::Backend::from_ref(
+                    "acp:gemini",
+                ))
                 .is_err()
         );
     }
@@ -318,9 +277,9 @@ mod tests {
         )
         .unwrap();
         let selected = registry
-            .selected(&awaken_runtime_contract::resolved::Backend::Acp {
-                cli: "claude".to_string(),
-            })
+            .selected(&awaken_runtime_contract::resolved::Backend::from_ref(
+                "acp:claude",
+            ))
             .unwrap();
         assert_eq!(
             selected.launch_argv.as_deref(),

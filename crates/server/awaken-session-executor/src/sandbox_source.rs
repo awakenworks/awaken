@@ -590,9 +590,7 @@ mod tests {
                 Arc::new(FakeResolver),
             )),
             codec: awaken_run_executor_acp::Codec::Acp,
-            backend: awaken_runtime_contract::resolved::Backend::Acp {
-                cli: cli_id.to_string(),
-            },
+            backend: awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli_id}")),
             mcp_servers: Vec::new(),
         }
     }
@@ -611,9 +609,7 @@ mod tests {
                 Arc::new(BackendOwnedResolver { selection, model }),
             )),
             codec: awaken_run_executor_acp::Codec::Acp,
-            backend: awaken_runtime_contract::resolved::Backend::Acp {
-                cli: cli_id.to_string(),
-            },
+            backend: awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli_id}")),
             mcp_servers: Vec::new(),
         }
     }
@@ -801,9 +797,7 @@ mod tests {
                 }),
             )),
             codec: awaken_run_executor_acp::Codec::Acp,
-            backend: awaken_runtime_contract::resolved::Backend::Acp {
-                cli: "codex".into(),
-            },
+            backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:codex"),
             mcp_servers: Vec::new(),
         };
 
@@ -872,12 +866,12 @@ mod tests {
                 sandbox: sandbox.clone(),
                 launch: LaunchSource::Fixed(AcpLaunch::custom(vec!["fixture".into()], vec![])),
                 codec: awaken_run_executor_acp::Codec::Newline,
-                backend: awaken_runtime_contract::resolved::Backend::Acp { cli: String::new() },
+                backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
                 mcp_servers: Vec::new(),
             };
             source
                 .open(
-                    &acp_activation("acp"),
+                    &acp_activation("acp:fixture"),
                     &awaken_runtime_contract::RuntimeRunContext::new(),
                 )
                 .await
@@ -965,9 +959,7 @@ mod tests {
     async fn bound_container_rejects_a_cli_other_than_the_one_it_serves() {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let mut source = bound_projecting_source(sandbox.clone(), "claude");
-        source.backend = awaken_runtime_contract::resolved::Backend::Acp {
-            cli: "codex".to_string(),
-        };
+        source.backend = awaken_runtime_contract::resolved::Backend::from_ref("acp:codex");
 
         let error = source
             .open(
