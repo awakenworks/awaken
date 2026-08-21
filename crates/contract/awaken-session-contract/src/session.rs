@@ -771,7 +771,9 @@ pub trait SessionRuntime: Send + Sync {
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
-    async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
+    /// `agent` supplies the immutable publication identity when this is the
+    /// first event admitted for a newly-created Session.
+    async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError>;
 
     /// End `thread`'s session at a terminal edge (session delete/archive): dispose
     /// its sandbox at the OS boundary — flush memory/skills back to durable truth
@@ -1047,7 +1049,12 @@ mod tests {
             unreachable!("not exercised by the default-method tests")
         }
 
-        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        async fn add_system(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _text: &str,
+        ) -> Result<(), RunError> {
             Ok(())
         }
 

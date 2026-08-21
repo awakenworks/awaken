@@ -135,7 +135,7 @@ impl SessionRuntime for PreparingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
@@ -255,7 +255,7 @@ impl SessionRuntime for HotRuntime {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn replace_session_tools(
@@ -2108,7 +2108,12 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             // A previous process persisted threads sesn_0 and sesn_1.
             Ok(thread == "sesn_0" || thread == "sesn_1")
         }
-        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        async fn add_system(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _text: &str,
+        ) -> Result<(), RunError> {
             Ok(())
         }
         async fn define_outcome(

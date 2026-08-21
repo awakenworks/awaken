@@ -139,7 +139,7 @@ impl SessionRuntime for QueueFake {
         Err(unsupported_runtime_operation())
     }
 
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
 
@@ -283,8 +283,8 @@ fn app(fake: Arc<QueueFake>) -> Router {
         ) -> Result<StepOutcome, RunError> {
             self.0.resume_custom(t, i, c, e).await
         }
-        async fn add_system(&self, t: &str, x: &str) -> Result<(), RunError> {
-            self.0.add_system(t, x).await
+        async fn add_system(&self, agent: &str, t: &str, x: &str) -> Result<(), RunError> {
+            self.0.add_system(agent, t, x).await
         }
         async fn define_outcome(
             &self,

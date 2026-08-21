@@ -1077,9 +1077,9 @@ impl SessionRuntime for ManagedHost {
         inbox.reorder(&order).map_err(to_live_inbox_error)
     }
 
-    async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError> {
         self.host
-            .add_system(thread, text)
+            .add_system(agent, thread, text)
             .await
             .map_err(to_run_error)
     }

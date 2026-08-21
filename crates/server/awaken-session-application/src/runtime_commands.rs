@@ -383,8 +383,8 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError> {
-        self.runtime.add_system(thread, text).await
+    pub async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError> {
+        self.runtime.add_system(agent, thread, text).await
     }
 
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {

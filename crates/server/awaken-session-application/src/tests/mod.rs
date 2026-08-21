@@ -210,7 +210,7 @@ impl SessionRuntime for NoopRuntime {
         Err(RunError::internal("unused test runtime"))
     }
 
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Err(RunError::internal("unused test runtime"))
     }
 
@@ -264,7 +264,7 @@ impl SessionRuntime for SuccessfulRuntime {
         unreachable!("message test never resumes")
     }
 
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         unreachable!("message test never adds a system message")
     }
 
@@ -348,7 +348,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
         Err(RunError::internal("unused test runtime"))
     }
 
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Err(RunError::internal("unused test runtime"))
     }
 
