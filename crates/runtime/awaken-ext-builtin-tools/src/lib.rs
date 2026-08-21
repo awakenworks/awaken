@@ -49,7 +49,7 @@ pub fn all_hand_tools_in(
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::{Tool, ToolRecoveryMode, ToolRecoveryPolicy};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
 /// that backs it (`RunDelegationService::tool_id`) must agree on this one value.
@@ -58,17 +58,70 @@ pub const AGENT_RUN: &str = "agent_run";
 /// deliberately distinct from the model-visible delegation contract.
 pub const AUXILIARY_AGENT: &str = "auxiliary_agent";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toolset {
     Hand,
     Task,
     Delegation,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One catalog-owned built-in descriptor and its execution family.
+///
+/// The fields are deliberately private: delegation descriptors and ordinary
+/// Hand/Task descriptors have different runtime semantics and cannot be paired
+/// arbitrarily.
+///
+/// ```compile_fail
+/// use awaken_ext_builtin_tools::{AgentRunArgs, BuiltinTool, Toolset};
+/// use awaken_runtime_contract::resolved::ToolDescriptor;
+///
+/// let descriptor = ToolDescriptor::for_args::<AgentRunArgs>(
+///     "invalid", "tool", "tool",
+/// );
+/// let _ = BuiltinTool { toolset: Toolset::Delegation, descriptor };
+/// ```
+#[derive(Debug, Clone, PartialEq)]
 pub struct BuiltinTool {
-    pub toolset: Toolset,
-    pub descriptor: ToolDescriptor,
+    toolset: Toolset,
+    descriptor: ToolDescriptor,
+}
+
+impl BuiltinTool {
+    fn hand(descriptor: ToolDescriptor) -> Self {
+        Self {
+            toolset: Toolset::Hand,
+            descriptor,
+        }
+    }
+
+    fn task(descriptor: ToolDescriptor) -> Self {
+        Self {
+            toolset: Toolset::Task,
+            descriptor,
+        }
+    }
+
+    fn delegation(descriptor: ToolDescriptor) -> Self {
+        Self {
+            toolset: Toolset::Delegation,
+            descriptor,
+        }
+    }
+
+    #[must_use]
+    pub const fn toolset(&self) -> Toolset {
+        self.toolset
+    }
+
+    #[must_use]
+    pub const fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    #[must_use]
+    pub fn into_descriptor(self) -> ToolDescriptor {
+        self.descriptor
+    }
 }
 
 /// Recovery modes frozen on the selected canonical Hand descriptors. This is
@@ -79,8 +132,8 @@ pub fn selected_hand_recovery_modes(
 ) -> std::collections::BTreeSet<ToolRecoveryMode> {
     let hand_ids = builtin_tools()
         .into_iter()
-        .filter(|tool| tool.toolset == Toolset::Hand)
-        .map(|tool| tool.descriptor.id)
+        .filter(|tool| tool.toolset() == Toolset::Hand)
+        .map(|tool| tool.into_descriptor().id)
         .collect::<std::collections::BTreeSet<_>>();
     descriptors
         .iter()
@@ -103,37 +156,28 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         task_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
         task_tool::<CancelTaskTool>(),
         task_tool::<RecoverFailedMessagesTool>(),
-        BuiltinTool {
-            toolset: Toolset::Delegation,
-            descriptor: ToolDescriptor::for_args::<AgentRunArgs>(
+        BuiltinTool::delegation(
+            ToolDescriptor::for_args::<AgentRunArgs>(
                 "builtin:delegation",
                 AGENT_RUN,
                 "Delegate a Run to another Agent",
             )
             .with_kind(ToolKind::AgentDelegation)
             .with_recovery(ToolRecoveryPolicy::durable_request()),
-        },
+        ),
     ]
 }
 
 fn hand_tool<T: Tool>() -> BuiltinTool {
-    BuiltinTool {
-        toolset: Toolset::Hand,
-        descriptor: ToolDescriptor::for_tool::<T>("builtin:hand"),
-    }
+    BuiltinTool::hand(ToolDescriptor::for_tool::<T>("builtin:hand"))
 }
 
 fn task_tool<T: Tool>() -> BuiltinTool {
-    BuiltinTool {
-        toolset: Toolset::Task,
-        descriptor: ToolDescriptor::for_tool::<T>("builtin:task"),
-    }
+    BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task"))
 }
 
 fn task_tool_with_recovery<T: Tool>(recovery: ToolRecoveryPolicy) -> BuiltinTool {
-    let mut tool = task_tool::<T>();
-    tool.descriptor = tool.descriptor.with_recovery(recovery);
-    tool
+    BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task").with_recovery(recovery))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -156,17 +200,17 @@ mod tests {
     fn delegation_uses_one_stable_agent_run_tool_id() {
         let delegation_tools: Vec<_> = builtin_tools()
             .into_iter()
-            .filter(|tool| tool.toolset == Toolset::Delegation)
+            .filter(|tool| tool.toolset() == Toolset::Delegation)
             .collect();
 
         assert_eq!(delegation_tools.len(), 1);
-        assert_eq!(delegation_tools[0].descriptor.id, "agent_run");
+        assert_eq!(delegation_tools[0].descriptor().id, "agent_run");
     }
 
     #[test]
     fn every_builtin_carries_a_schema_and_a_schema_derived_hash() {
         for tool in builtin_tools() {
-            let d = &tool.descriptor;
+            let d = tool.descriptor();
             assert!(!d.description.is_empty(), "{} needs a description", d.id);
             assert_eq!(
                 d.parameters["type"], "object",
@@ -199,7 +243,7 @@ mod tests {
     fn unique_tool_ids() {
         let ids: Vec<_> = builtin_tools()
             .into_iter()
-            .map(|t| t.descriptor.id)
+            .map(|tool| tool.into_descriptor().id)
             .collect();
         let mut deduped = ids.clone();
         deduped.sort();
@@ -217,16 +261,16 @@ mod tests {
         let builtins = builtin_tools();
         let hand = builtins
             .iter()
-            .find(|tool| tool.toolset == Toolset::Hand)
-            .unwrap()
-            .descriptor
+            .find(|tool| tool.toolset() == Toolset::Hand)
+            .expect("Hand catalog is non-empty")
+            .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
         let task = builtins
             .iter()
-            .find(|tool| tool.toolset == Toolset::Task)
-            .unwrap()
-            .descriptor
+            .find(|tool| tool.toolset() == Toolset::Task)
+            .expect("Task catalog is non-empty")
+            .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
         assert_eq!(

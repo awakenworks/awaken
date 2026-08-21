@@ -1,8 +1,8 @@
 //! Drift guards tying the `Toolset::Hand` descriptors to the erased hand-tool
-//! implementations, plus the `BuiltinTool` / `Toolset` serde wire shape.
+//! implementations and the closed built-in catalog pairings.
 
 use awaken_ext_builtin_tools::{
-    BuiltinTool, Toolset, all_hand_tools, builtin_tools, executable_hand_tools, web_hand_tools,
+    Toolset, all_hand_tools, builtin_tools, executable_hand_tools, web_hand_tools,
 };
 use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
@@ -19,8 +19,8 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
     // registry contains 8 local tools plus the one web fetch implementation.
     let descriptor_ids: BTreeSet<String> = builtin_tools()
         .into_iter()
-        .filter(|tool| tool.toolset == Toolset::Hand)
-        .map(|tool| tool.descriptor.id)
+        .filter(|tool| tool.toolset() == Toolset::Hand)
+        .map(|tool| tool.into_descriptor().id)
         .collect();
 
     let implementation_ids: BTreeSet<String> = all_hand_tools()
@@ -62,45 +62,31 @@ fn grep_descriptor_exposes_every_executor_input() {
     // recovery by passing `path` explicitly.
     let grep = builtin_tools()
         .into_iter()
-        .find(|tool| tool.descriptor.id == "grep")
+        .find(|tool| tool.descriptor().id == "grep")
         .expect("grep descriptor");
-    let properties = grep.descriptor.parameters["properties"]
+    let properties = grep.descriptor().parameters["properties"]
         .as_object()
         .expect("G1 properties");
     assert!(properties.contains_key("pattern"), "G1/C1");
     assert!(properties.contains_key("path"), "G1/C2");
     assert_eq!(
-        grep.descriptor.parameters["required"],
+        grep.descriptor().parameters["required"],
         serde_json::json!(["pattern"]),
         "G1/E1"
     );
 }
 
 #[test]
-fn builtin_tool_round_trips_through_json() {
-    // Any concrete descriptor is enough to exercise the whole `BuiltinTool` wire
-    // shape (toolset tag + nested `ToolDescriptor`).
-    let original = builtin_tools()
-        .into_iter()
-        .next()
-        .expect("at least one builtin");
-    let json = serde_json::to_value(&original).expect("serialize");
-    let back: BuiltinTool = serde_json::from_value(json).expect("deserialize");
-    assert_eq!(back, original);
-}
-
-#[test]
-fn toolset_variants_round_trip() {
-    for variant in [Toolset::Hand, Toolset::Task, Toolset::Delegation] {
-        let json = serde_json::to_value(variant).expect("serialize");
-        let back: Toolset = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(back, variant);
+fn catalog_pairs_each_execution_family_with_its_only_legal_descriptor_kind() {
+    // Decision table: C1 Hand => Regular; C2 Task => Regular;
+    // C3 Delegation => AgentDelegation. `BuiltinTool` has no public constructor,
+    // mutable fields, or serde input, so these are the complete constructible
+    // states rather than validation of an open tuple.
+    for tool in builtin_tools() {
+        let expected = match tool.toolset() {
+            Toolset::Hand | Toolset::Task => awaken_runtime_contract::resolved::ToolKind::Regular,
+            Toolset::Delegation => awaken_runtime_contract::resolved::ToolKind::AgentDelegation,
+        };
+        assert_eq!(tool.descriptor().kind, expected);
     }
-    // The wire tokens are the variant names (no rename attribute).
-    assert_eq!(serde_json::to_value(Toolset::Hand).unwrap(), "Hand");
-    assert_eq!(serde_json::to_value(Toolset::Task).unwrap(), "Task");
-    assert_eq!(
-        serde_json::to_value(Toolset::Delegation).unwrap(),
-        "Delegation"
-    );
 }

@@ -1008,15 +1008,15 @@ mod completion_tests {
         let builtins = awaken_ext_builtin_tools::builtin_tools();
         let hand = builtins
             .iter()
-            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Hand)
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Hand)
             .expect("Hand catalog is non-empty")
-            .descriptor
+            .descriptor()
             .clone();
         let task = builtins
             .iter()
-            .find(|tool| tool.toolset == awaken_ext_builtin_tools::Toolset::Task)
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Task)
             .expect("Task catalog is non-empty")
-            .descriptor
+            .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
         models.tool_descriptors = vec![hand.clone(), task.clone()];

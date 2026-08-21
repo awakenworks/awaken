@@ -211,8 +211,10 @@ fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect();
     builtin_tools()
         .into_iter()
-        .filter(|t| t.toolset == Toolset::Hand && registered.contains(&t.descriptor.id))
-        .map(|t| t.descriptor)
+        .filter(|tool| {
+            tool.toolset() == Toolset::Hand && registered.contains(&tool.descriptor().id)
+        })
+        .map(|tool| tool.into_descriptor())
         .collect()
 }
 
@@ -256,8 +258,8 @@ pub(crate) fn session_client_tool_descriptor(
 pub(crate) fn delegation_descriptor() -> ToolDescriptor {
     builtin_tools()
         .into_iter()
-        .find(|t| t.toolset == Toolset::Delegation)
-        .map(|t| t.descriptor)
+        .find(|tool| tool.toolset() == Toolset::Delegation)
+        .map(|tool| tool.into_descriptor())
         .expect("agent_run descriptor exists")
 }
 
