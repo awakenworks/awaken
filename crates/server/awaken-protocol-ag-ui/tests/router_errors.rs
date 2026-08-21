@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
@@ -477,7 +478,7 @@ impl RunApplication for DenyRecordingRuntime {
         _id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        if let RunResume::Confirm { allow: false, .. } = resume {
+        if let RunResume::Permission(PermissionDecision::Deny { .. }) = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
         Ok(StepOutcome::ended(

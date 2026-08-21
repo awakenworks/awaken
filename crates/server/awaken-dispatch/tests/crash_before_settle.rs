@@ -70,10 +70,7 @@ impl RunTerminalObserver for TerminalCount {
 }
 
 fn allow() -> ResumeResult {
-    ResumeResult::Decision {
-        allow: true,
-        note: None,
-    }
+    ResumeResult::allow()
 }
 
 // --- 1. Bound pending survives a crash-before-settle and re-delivers once -----
@@ -713,15 +710,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
         );
 
         store
-            .append(pending(
-                "good",
-                "run-1",
-                TICKET,
-                ResumeResult::Decision {
-                    allow: true,
-                    note: None,
-                },
-            ))
+            .append(pending("good", "run-1", TICKET, ResumeResult::allow()))
             .await
             .unwrap();
         assert_eq!(

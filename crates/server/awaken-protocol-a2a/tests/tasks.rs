@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
@@ -50,7 +51,7 @@ impl RunApplication for AwaitingRuntime {
         _tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        if let RunResume::Confirm { allow: false, .. } = resume {
+        if let RunResume::Permission(PermissionDecision::Deny { .. }) = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
         Ok(StepOutcome::ended(

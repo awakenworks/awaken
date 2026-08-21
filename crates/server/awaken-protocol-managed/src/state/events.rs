@@ -869,9 +869,11 @@ impl ManagedState {
                 deny_message,
             } => {
                 let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                let decision = ToolPermissionDecision {
-                    allow: matches!(result, ConfirmResult::Allow),
-                    note: deny_message.clone(),
+                let decision = match result {
+                    ConfirmResult::Allow => ToolPermissionDecision::Allow { note: None },
+                    ConfirmResult::Deny => ToolPermissionDecision::Deny {
+                        reason: deny_message.clone(),
+                    },
                 };
                 let outcome = self
                     .application

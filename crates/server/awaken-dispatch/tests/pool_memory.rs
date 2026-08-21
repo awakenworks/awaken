@@ -754,10 +754,7 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
         thread_id: thread.clone(),
         correlation_id: harness::TICKET.to_string(),
         available_at_ms: None,
-        result: ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        result: ResumeResult::allow(),
     };
     pool.send(staged).await.unwrap();
 

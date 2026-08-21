@@ -14,7 +14,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,
     TokenUsage, ToolCall,
 };
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::resume::{PermissionDecision, ResumeCommand, ResumeResult};
 use awaken_runtime_examples::prelude::*;
 
 /// A coordinator model: it calls `agent_run` once, then replies with the delegate's
@@ -155,8 +155,11 @@ impl RunDelegationService for AwaitingResolver {
         let input = match request.result {
             ResumeResult::Input(text) => text,
             ResumeResult::ToolResult(output) => output.text(),
-            ResumeResult::Decision { allow, note } => {
-                note.unwrap_or_else(|| if allow { "allow" } else { "deny" }.into())
+            ResumeResult::Permission(PermissionDecision::Allow { note }) => {
+                note.unwrap_or_else(|| "allow".into())
+            }
+            ResumeResult::Permission(PermissionDecision::Deny { reason }) => {
+                reason.unwrap_or_else(|| "deny".into())
             }
         };
         Ok(DelegationStep::Ended {

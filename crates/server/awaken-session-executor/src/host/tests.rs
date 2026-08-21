@@ -2185,10 +2185,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
         .resume(
             "t-res",
             &pending.tool_use_id,
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .expect("resume");
@@ -7789,10 +7786,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
         .resume(
             "t-awaiting",
             "w1",
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .expect("resume the untouched await");
@@ -7808,10 +7802,7 @@ async fn resume_with_no_awaiting_run_fails_closed() {
         .resume(
             "t-idle",
             "w1",
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .err()
@@ -7840,10 +7831,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         .resume(
             "t-wrongid",
             "not-the-pending-id",
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .err()
@@ -7860,10 +7848,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         .resume(
             "t-wrongid",
             &r1.pending.expect("a pending tool").tool_use_id,
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .expect("the real id resumes");
@@ -7914,10 +7899,7 @@ async fn confirm_cannot_answer_a_client_tool() {
         .resume(
             "t-bind2",
             &pending.tool_use_id,
-            HostResume::ToolPermission {
-                allow: true,
-                note: None,
-            },
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
         )
         .await
         .err()

@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
@@ -330,18 +331,15 @@ fn to_resume(kind: &DecisionKind, pending: &Pending) -> RunResume {
         }
     } else {
         match kind {
-            DecisionKind::Approved | DecisionKind::Output(_) => RunResume::Confirm {
-                allow: true,
-                note: None,
-            },
-            DecisionKind::Denied => RunResume::Confirm {
-                allow: false,
-                note: None,
-            },
-            DecisionKind::Error(e) => RunResume::Confirm {
-                allow: false,
-                note: Some(e.clone()),
-            },
+            DecisionKind::Approved | DecisionKind::Output(_) => {
+                RunResume::Permission(PermissionDecision::Allow { note: None })
+            }
+            DecisionKind::Denied => {
+                RunResume::Permission(PermissionDecision::Deny { reason: None })
+            }
+            DecisionKind::Error(error) => RunResume::Permission(PermissionDecision::Deny {
+                reason: Some(error.clone()),
+            }),
         }
     }
 }
@@ -590,7 +588,7 @@ mod tests {
     fn builtin_approved_allows() {
         assert!(matches!(
             to_resume(&DecisionKind::Approved, &pending(false)),
-            RunResume::Confirm { allow: true, .. }
+            RunResume::Permission(PermissionDecision::Allow { note: None })
         ));
     }
 
@@ -601,7 +599,7 @@ mod tests {
                 &DecisionKind::Output(serde_json::Value::Null),
                 &pending(false)
             ),
-            RunResume::Confirm { allow: true, .. }
+            RunResume::Permission(PermissionDecision::Allow { note: None })
         ));
     }
 
@@ -609,16 +607,15 @@ mod tests {
     fn builtin_denied_rejects() {
         assert!(matches!(
             to_resume(&DecisionKind::Denied, &pending(false)),
-            RunResume::Confirm {
-                allow: false,
-                note: None
-            }
+            RunResume::Permission(PermissionDecision::Deny { reason: None })
         ));
     }
 
     #[test]
     fn builtin_error_rejects_with_a_note() {
         let r = to_resume(&DecisionKind::Error("bad args".into()), &pending(false));
-        assert!(matches!(r, RunResume::Confirm { allow: false, note: Some(n) } if n == "bad args"));
+        assert!(
+            matches!(r, RunResume::Permission(PermissionDecision::Deny { reason: Some(n) }) if n == "bad args")
+        );
     }
 }

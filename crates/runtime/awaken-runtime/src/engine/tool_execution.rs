@@ -253,8 +253,10 @@ pub(super) async fn resume_into_messages(
                 fold_resume_tool_output(env, run_id, &call_id, call, &output, store).await;
             Ok((messages, state, Some(output)))
         }
-        ResumeResult::Decision { allow, note } => {
-            if allow && let Some(pending) = &ticket.pending_tool {
+        ResumeResult::Permission(decision) => {
+            if matches!(decision, PermissionDecision::Allow { .. })
+                && let Some(pending) = &ticket.pending_tool
+            {
                 let call = ToolCall {
                     call_id: call_id.clone(),
                     tool_id: pending.tool_id.clone(),
@@ -267,18 +269,22 @@ pub(super) async fn resume_into_messages(
                 let (messages, state) =
                     fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store)
                         .await;
-                Ok((messages, state, Some(output)))
-            } else {
-                let reason = note.unwrap_or_else(|| "denied".to_string());
-                let output = ToolOutput::error(&call_id, format!("blocked: {reason}"));
-                let output = spill_tool_output(context, run_id, output).await?;
-                let messages = vec![tool_result_message_from(
-                    &call_id,
-                    &output.content,
-                    output.is_error,
-                )];
-                Ok((messages, Vec::new(), Some(output)))
+                return Ok((messages, state, Some(output)));
             }
+            let reason = match decision {
+                PermissionDecision::Allow { .. } => "no pending operation".to_string(),
+                PermissionDecision::Deny { reason } => {
+                    reason.unwrap_or_else(|| "denied".to_string())
+                }
+            };
+            let output = ToolOutput::error(&call_id, format!("blocked: {reason}"));
+            let output = spill_tool_output(context, run_id, output).await?;
+            let messages = vec![tool_result_message_from(
+                &call_id,
+                &output.content,
+                output.is_error,
+            )];
+            Ok((messages, Vec::new(), Some(output)))
         }
         ResumeResult::Input(text) => Ok((
             vec![Message::text(
