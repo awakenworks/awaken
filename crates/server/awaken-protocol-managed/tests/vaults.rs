@@ -1870,6 +1870,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     // | R3 | no | yes | yes | reject before the issuer and attach nothing |
     // | R4 | yes | source-only | no | reject a cross-Workspace material binding before opening |
     // | R5 | yes | yes | no | reject a holder outside the exact policy before opening |
+    // | R6 | yes | yes | Platform holder | return the exact reference without opening or issuing an envelope |
     //
     // Holder/target integrity is cryptographically represented by the payload
     // fingerprint returned by the issuer; the contract admission decision table
@@ -1906,6 +1907,27 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         "R2 cross-Workspace source must fail closed"
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1);
+
+    let platform_holder = awaken_credential_contract::PlaintextHolder::new(
+        awaken_credential_contract::PlaintextBoundary::Platform,
+        "awaken.platform.egress-gateway",
+    );
+    let platform_access = state
+        .credential_access_for_source(
+            &source_id,
+            &source_workspace,
+            usage.clone(),
+            awaken_credential_contract::CredentialExecutionPolicy::exact(
+                platform_holder.clone(),
+                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+            ),
+            &platform_holder,
+            &binding,
+        )
+        .await
+        .expect("R6 Platform holder keeps a secret-free reference");
+    assert!(platform_access.envelope.is_none(), "R6");
+    assert_eq!(issuer.issued.lock().unwrap().len(), 1, "R6");
 
     let cross_workspace_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
         "workspace-b",

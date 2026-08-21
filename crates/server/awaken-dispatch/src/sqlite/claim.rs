@@ -7,6 +7,39 @@
 
 use super::*;
 
+pub(super) struct CommitEpochRow {
+    pub(super) epoch: i64,
+    pub(super) owner: Option<String>,
+    pub(super) expires_ms: Option<i64>,
+    pub(super) cancellation_requested: bool,
+    pub(super) request: String,
+}
+
+pub(super) fn read_commit_epoch(
+    conn: &Connection,
+    prefix: &str,
+    run_id: &str,
+) -> Result<Option<CommitEpochRow>, DispatchError> {
+    conn.query_row(
+        &format!(
+            "SELECT lease_epoch, lease_owner, lease_until, cancel_requested, request \
+             FROM {prefix}_dispatch WHERE run_id = ?1"
+        ),
+        params![run_id],
+        |row| {
+            Ok(CommitEpochRow {
+                epoch: row.get(0)?,
+                owner: row.get(1)?,
+                expires_ms: row.get(2)?,
+                cancellation_requested: row.get::<_, i64>(3)? != 0,
+                request: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(reject)
+}
+
 pub(super) fn claim_retry_exhausted_transaction(
     conn: &mut Connection,
     prefix: &str,

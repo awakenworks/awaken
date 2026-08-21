@@ -156,6 +156,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             worker_placement_policy: coordinator_services.worker_placement_policy,
             cloud_native_credential_realization: coordinator_services
                 .cloud_native_credential_realization,
+            repository_transport_authorizer: coordinator_services.repository_transport_authorizer,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority.clone()),
             worker_observations: Some(worker_observations),
