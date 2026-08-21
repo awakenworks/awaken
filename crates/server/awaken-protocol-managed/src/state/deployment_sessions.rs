@@ -2,6 +2,9 @@
 
 use super::*;
 
+const DEPLOYMENT_RUN_ID: &str = "awaken.deployment_run_id";
+const DEPLOYMENT_LAUNCH_FINGERPRINT: &str = "awaken.deployment_launch_fingerprint";
+
 impl ManagedState {
     /// Create or replay the one Session owned by a durable DeploymentRun.
     ///
@@ -38,12 +41,10 @@ impl ManagedState {
             return Ok(session);
         }
 
+        req.metadata
+            .insert(DEPLOYMENT_RUN_ID.into(), deployment_run_id.to_owned());
         req.metadata.insert(
-            "awaken.deployment_run_id".into(),
-            deployment_run_id.to_owned(),
-        );
-        req.metadata.insert(
-            "awaken.deployment_launch_fingerprint".into(),
+            DEPLOYMENT_LAUNCH_FINGERPRINT.into(),
             launch_fingerprint.to_owned(),
         );
         // Deployment initial events have the wider official union (including
@@ -90,30 +91,15 @@ impl ManagedState {
         launch_fingerprint: &str,
         workspace_id: &str,
     ) -> Result<Option<Session>, StateError> {
-        let persisted = match self.application.session(session_id).await {
-            Ok(persisted) => persisted,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
-            Err(error) => return Err(StateError::from(error)),
-        };
-        let owner = self
-            .application
-            .owner(session_id)
-            .await
-            .map_err(Self::map_application_mutation_error)?;
-        if owner != workspace_id
-            || persisted
-                .metadata
-                .get("awaken.deployment_run_id")
-                .is_none_or(|value| value != deployment_run_id)
-            || persisted
-                .metadata
-                .get("awaken.deployment_launch_fingerprint")
-                .is_none_or(|value| value != launch_fingerprint)
-        {
-            return Err(StateError::IdempotencyMismatch);
-        }
-        self.ensure_session(session_id).await?;
-        self.get_session(session_id).map(Some)
+        self.replay_session_with_metadata(
+            session_id,
+            workspace_id,
+            &[
+                (DEPLOYMENT_RUN_ID, deployment_run_id),
+                (DEPLOYMENT_LAUNCH_FINGERPRINT, launch_fingerprint),
+            ],
+        )
+        .await
     }
 }
 
