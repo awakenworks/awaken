@@ -311,7 +311,7 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     let authorizer = Arc::new(GatewayAuthorizer::default());
     let service = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryCatalog { active: true }),
+            Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
         )
@@ -351,7 +351,7 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 
     let denied = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryCatalog { active: true }),
+            Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
         )
@@ -378,7 +378,7 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
     let cancelling = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryCatalog { active: true }),
+            Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
         )
