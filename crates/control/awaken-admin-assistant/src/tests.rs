@@ -237,7 +237,7 @@ fn descriptors_are_the_admin_tools_and_carry_no_publish_tool() {
     assert!(
         admin_tool_descriptors()
             .iter()
-            .all(|d| d.content_hash.starts_with("admin:"))
+            .all(|d| d.content_hash().starts_with("admin:"))
     );
     // No descriptor schema uses `additionalProperties` (Gemini rejects it).
     for d in admin_tool_descriptors() {

@@ -860,14 +860,11 @@ fn to_genai_request_with_adapter(
         .tools
         .iter()
         .map(|tool| {
-            Ok(GenaiTool::new(tool.id.clone())
+            GenaiTool::new(tool.id.clone())
                 .with_description(tool.description.clone())
-                .with_schema(
-                    tool.model_parameters()
-                        .map_err(|error| Error::InvalidRequest(error.to_string()))?,
-                ))
+                .with_schema(tool.model_parameters())
         })
-        .collect::<Result<_>>()?;
+        .collect();
 
     let mut genai_request = GenaiChatRequest::new(messages);
     if !tools.is_empty() {

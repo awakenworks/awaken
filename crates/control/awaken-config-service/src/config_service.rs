@@ -1145,7 +1145,7 @@ pub(crate) mod resource_prompt_tests {
         );
         assert_eq!(
             metadata.resolution.inputs[3].version,
-            awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash)
+            awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash())
         );
 
         use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;

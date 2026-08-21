@@ -544,7 +544,7 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
         AgentTool::Custom {
             name: tool.id.clone(),
             description: tool.description.clone(),
-            input_schema: CustomToolInputSchema::from_value(tool.parameters.clone())
+            input_schema: CustomToolInputSchema::from_value(tool.model_parameters())
                 .expect("published client-tool schemas were validated at admission"),
         }
     }));

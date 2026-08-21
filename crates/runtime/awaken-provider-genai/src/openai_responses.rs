@@ -214,19 +214,14 @@ fn request_body(request: &ChatRequest) -> Result<ResponsesRequest, Error> {
     let tools = request
         .tools
         .iter()
-        .map(|tool| {
-            let parameters = tool
-                .model_parameters()
-                .map_err(|error| Error::InvalidRequest(error.to_string()))?;
-            Ok(ResponseTool {
-                kind: ResponseToolType::Function,
-                name: tool.id.clone(),
-                description: tool.description.clone(),
-                parameters,
-                strict: false,
-            })
+        .map(|tool| ResponseTool {
+            kind: ResponseToolType::Function,
+            name: tool.id.clone(),
+            description: tool.description.clone(),
+            parameters: tool.model_parameters(),
+            strict: false,
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect();
     Ok(ResponsesRequest {
         model: request.model_binding.model_ref.clone(),
         input: items,
@@ -526,14 +521,12 @@ mod tests {
                 )],
             },
         ]);
-        request.tools.push(ToolDescriptor {
-            id: "weather".into(),
-            description: "Get weather".into(),
-            parameters: json!({"type":"object"}),
-            content_hash: "hash".into(),
-            kind: Default::default(),
-            recovery_policy: Default::default(),
-        });
+        request.tools.push(ToolDescriptor::pinned(
+            "test",
+            "weather",
+            "Get weather",
+            json!({"type":"object"}),
+        ));
         let body = serde_json::to_value(request_body(&request).unwrap()).unwrap();
         assert_eq!(body["model"], "gpt-exact");
         assert_eq!(body["store"], false);

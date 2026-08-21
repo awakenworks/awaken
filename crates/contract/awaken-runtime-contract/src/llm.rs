@@ -29,8 +29,9 @@ pub struct ChatRequest {
     pub inference: InferenceOptions,
     pub messages: Vec<ChatMessage>,
     /// Model-visible tool descriptors resolved for this run — the same
-    /// [`ToolDescriptor`] the resolved spec carries (its `content_hash` rides
-    /// along, ignored by the provider mapping). Empty means no tools.
+    /// [`ToolDescriptor`] the resolved spec carries. Its content identity is
+    /// derived only when resolution needs it and never enters provider mapping.
+    /// Empty means no tools.
     pub tools: Vec<ToolDescriptor>,
 }
 

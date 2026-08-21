@@ -405,7 +405,7 @@ fn compile_with_models(
                     kind: "tool".into(),
                     id: tool.id.clone(),
                     version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
-                        tool.content_hash.clone(),
+                        tool.content_hash(),
                     ),
                 }),
         );

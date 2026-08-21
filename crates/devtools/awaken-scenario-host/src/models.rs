@@ -848,14 +848,7 @@ mod tests {
     }
 
     fn tool(id: &str) -> ToolDescriptor {
-        ToolDescriptor {
-            id: id.into(),
-            kind: Default::default(),
-            description: String::new(),
-            parameters: serde_json::json!({}),
-            content_hash: String::new(),
-            recovery_policy: Default::default(),
-        }
+        ToolDescriptor::pinned("scenario", id, "", serde_json::json!({}))
     }
 
     async fn infer(model: &impl LlmExecutor, request: ChatRequest) -> ChatResponse {

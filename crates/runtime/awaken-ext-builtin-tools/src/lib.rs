@@ -186,8 +186,12 @@ mod tests {
                 d.id
             );
             // The hash is derived from the schema surface, so it ends in a hex digest.
-            assert!(d.content_hash.contains(&d.id), "{} hash names the id", d.id);
-            assert_ne!(d.content_hash, format!("builtin:hand:{}:v1", d.id));
+            assert!(
+                d.content_hash().contains(&d.id),
+                "{} hash names the id",
+                d.id
+            );
+            assert_ne!(d.content_hash(), format!("builtin:hand:{}:v1", d.id));
         }
     }
 
