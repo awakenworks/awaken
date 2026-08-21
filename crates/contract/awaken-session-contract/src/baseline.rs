@@ -720,15 +720,18 @@ mod tests {
         // | Z2 | complete | Session + Agent | unique | Session draft wins |
         // | Z3 | complete | none | duplicate | MCP conflict |
         let mut z1_control = control_inputs(SessionNetworkPolicy::Unrestricted);
-        z1_control.resources.inputs.push(crate::ResolvedInput {
-            binding_id: awaken_resource_contract::BindingId::new("input"),
-            source: crate::ResolvedInputSource::File {
-                file_id: awaken_resource_contract::FileId::from("file"),
-            },
-            mount_path: "/inputs/file".into(),
-            access: awaken_resource_contract::ResourceAccess::ReadOnly,
-            instructions: None,
-        });
+        z1_control.resources = z1_control
+            .resources
+            .attach(crate::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::new("input"),
+                source: crate::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from("file"),
+                },
+                mount_path: "/inputs/file".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            })
+            .unwrap();
         let z1 = SessionCreationIntent {
             control: z1_control,
         }
@@ -737,7 +740,7 @@ mod tests {
         assert_eq!(z1.baseline.mounts.len(), 1, "Z1");
         assert_eq!(z1.baseline.env.len(), 1, "Z1");
         assert_eq!(z1.baseline.prompts, vec!["control"], "Z1");
-        assert_eq!(z1.initial_resources.inputs.len(), 1, "Z1");
+        assert_eq!(z1.initial_resources.inputs().len(), 1, "Z1");
 
         let mut z2_control = control_inputs(SessionNetworkPolicy::Unrestricted);
         z2_control.initial_mcp.extend([

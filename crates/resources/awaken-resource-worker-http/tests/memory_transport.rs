@@ -86,13 +86,14 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     ));
     create_store(&catalog, "memory-rw");
     create_store(&catalog, "memory-ro");
-    let resources = awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![
+    let resources = awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![
             memory_input("rw", "memory-rw", ResourceAccess::ReadWrite),
             memory_input("ro", "memory-ro", ResourceAccess::ReadOnly),
         ],
-        skills: Vec::new(),
-    };
+        Vec::new(),
+    )
+    .unwrap();
     let dispatch = Arc::new(MemoryDispatchStore::new());
     dispatch
         .enqueue(

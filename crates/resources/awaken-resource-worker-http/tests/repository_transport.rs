@@ -50,8 +50,8 @@ impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
 }
 
 fn resources() -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("repository-binding"),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from("repository-exact"),
@@ -70,8 +70,9 @@ fn resources() -> awaken_session_contract::ResolvedSessionResources {
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 async fn claimed_dispatch(dispatch: &Arc<MemoryDispatchStore>, owner: &str) -> RunClaim {

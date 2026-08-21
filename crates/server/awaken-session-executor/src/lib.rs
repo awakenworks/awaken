@@ -290,7 +290,7 @@ impl ManagedHost {
     ) -> Result<CompiledEffectiveInputs, RunError> {
         let mut all = crate::provisioning::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
-        for input in &inputs.inputs {
+        for input in inputs.inputs() {
             let one = self.stage_resolved_input(workspace, input, claim).await?;
             if let awaken_session_contract::ResolvedInputSource::MemoryStore {
                 memory_store_id,
@@ -433,7 +433,7 @@ impl ManagedHost {
         let versions = self
             .host
             .skills
-            .load_pinned(workspace, &resources.skills, claim)
+            .load_pinned(workspace, resources.skills(), claim)
             .await
             .map_err(skill_store_run_error)?;
         self.host
@@ -588,7 +588,7 @@ impl ManagedHost {
             })
             .collect();
         let desired_memory: Vec<_> = inputs
-            .inputs
+            .inputs()
             .iter()
             .filter_map(|input| match &input.source {
                 awaken_session_contract::ResolvedInputSource::MemoryStore {
@@ -643,7 +643,7 @@ impl ManagedHost {
         let skill_versions = Some(
             self.host
                 .skills
-                .load_pinned(workspace_id, &inputs.skills, claim)
+                .load_pinned(workspace_id, inputs.skills(), claim)
                 .await
                 .map_err(skill_store_run_error)?,
         );

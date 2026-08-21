@@ -532,13 +532,17 @@ mod tests {
         // remote custom Skill bytes and acknowledge that Resource generation.
         let mut pending = repo.get("session-phase").await.unwrap();
         let active_resource_revision = pending.resources.active_revision();
-        let mut desired = pending.resources.active.clone();
-        desired.skills = vec![awaken_session_contract::ResolvedSkillBinding {
-            kind: awaken_agent_contract::AgentSkillKind::Custom,
-            skill_id: "design".into(),
-            version: 36,
-            bundle_sha256: "sha256-design-v36".into(),
-        }];
+        let desired = pending
+            .resources
+            .active
+            .clone()
+            .with_skills(vec![awaken_session_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "design".into(),
+                version: 36,
+                bundle_sha256: "sha256-design-v36".into(),
+            }])
+            .unwrap();
         pending
             .resources
             .prepare("session-phase", desired.clone())

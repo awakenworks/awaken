@@ -55,10 +55,7 @@ async fn claimed_dispatch(
     frozen: &ResolvedSkillBinding,
     owner: &str,
 ) -> RunClaim {
-    let resources = ResolvedSessionResources {
-        inputs: Vec::new(),
-        skills: vec![frozen.clone()],
-    };
+    let resources = ResolvedSessionResources::try_new(Vec::new(), vec![frozen.clone()]).unwrap();
     let request = RunDispatch::new(support::activation("skill-bundle"))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-skill"),

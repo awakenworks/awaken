@@ -57,6 +57,28 @@ pub struct SessionResourceState {
     pub activations: Vec<SessionResourceActivation>,
 }
 
+/// Physical Resource pins retained across an active/pending replacement. This
+/// is intentionally not an effective [`ResolvedSessionResources`] manifest:
+/// both generations may contain the same binding identity with different
+/// physical targets, and both must remain retained until commit or rollback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionResourceReferences {
+    inputs: Vec<ResolvedInput>,
+    skills: Vec<crate::ResolvedSkillBinding>,
+}
+
+impl SessionResourceReferences {
+    #[must_use]
+    pub fn inputs(&self) -> &[ResolvedInput] {
+        &self.inputs
+    }
+
+    #[must_use]
+    pub fn skills(&self) -> &[crate::ResolvedSkillBinding] {
+        &self.skills
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceActivationError {
     #[error("a Session resource activation is already pending")]
@@ -82,27 +104,28 @@ impl SessionResourceState {
     /// replacement both the installed and desired manifests are live facts;
     /// dropping either side before the phase commits opens a reclamation race.
     #[must_use]
-    pub fn reference_manifest(&self) -> ResolvedSessionResources {
-        let mut referenced = self.active.clone();
+    pub fn resource_references(&self) -> SessionResourceReferences {
+        let mut inputs = self.active.inputs().to_vec();
+        let mut skills = self.active.skills().to_vec();
         if let Some(pending) = &self.pending {
-            referenced.inputs.extend(pending.inputs.clone());
-            referenced.skills.extend(pending.skills.clone());
+            inputs.extend_from_slice(pending.inputs());
+            skills.extend_from_slice(pending.skills());
         }
-        referenced
+        SessionResourceReferences { inputs, skills }
     }
 
     /// Whether this aggregate owns any durable Resource-retention edge.
     #[must_use]
     pub fn has_references(&self) -> bool {
-        let referenced = self.reference_manifest();
-        !referenced.inputs.is_empty() || !referenced.skills.is_empty()
+        let referenced = self.resource_references();
+        !referenced.inputs().is_empty() || !referenced.skills().is_empty()
     }
 
     /// Initialize activation state from the currently installed manifest.
     #[must_use]
     pub fn from_active(active: ResolvedSessionResources) -> Self {
         Self {
-            revision: u64::from(!active.inputs.is_empty()),
+            revision: u64::from(!active.inputs().is_empty()),
             active,
             pending: None,
             activations: Vec::new(),
@@ -136,7 +159,7 @@ impl SessionResourceState {
         }
         self.activations.extend(
             desired
-                .inputs
+                .inputs()
                 .iter()
                 .map(|input| prepared_activation(session_id, revision, input)),
         );
@@ -186,7 +209,7 @@ impl SessionResourceState {
         });
         self.activations.extend(
             desired
-                .inputs
+                .inputs()
                 .iter()
                 .map(|input| prepared_activation(session_id, self.revision, input)),
         );
@@ -252,12 +275,12 @@ impl SessionResourceState {
 
     /// Adopt a legacy active manifest after it has been re-realized once.
     pub fn adopt_legacy_active(&mut self, session_id: &str) {
-        if !self.activations.is_empty() || self.active.inputs.is_empty() {
+        if !self.activations.is_empty() || self.active.inputs().is_empty() {
             return;
         }
         self.revision = self.revision.max(1);
         self.activations
-            .extend(self.active.inputs.iter().map(|input| {
+            .extend(self.active.inputs().iter().map(|input| {
                 let mut activation = prepared_activation(session_id, self.revision, input);
                 activation.state = ActivationState::Active;
                 activation.attempts = 1;
@@ -383,8 +406,8 @@ mod tests {
     use super::*;
 
     fn manifest(id: &str) -> ResolvedSessionResources {
-        ResolvedSessionResources {
-            inputs: vec![ResolvedInput {
+        ResolvedSessionResources::try_new(
+            vec![ResolvedInput {
                 binding_id: BindingId::from(format!("binding-{id}")),
                 source: ResolvedInputSource::File {
                     file_id: FileId::from(format!("file-{id}")),
@@ -393,8 +416,9 @@ mod tests {
                 access: ResourceAccess::ReadOnly,
                 instructions: None,
             }],
-            skills: Vec::new(),
-        }
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -533,27 +557,39 @@ mod tests {
     /// | G4 | yes | no | commit | desired only |
     /// | G5 | yes | no | rollback | installed only |
     #[test]
-    fn reference_manifest_retains_both_sides_until_settlement() {
+    fn resource_references_retain_both_sides_until_settlement() {
         let empty = SessionResourceState::default();
         assert!(!empty.has_references(), "G1");
 
         let mut commit = SessionResourceState::default();
         commit.prepare("session-1", manifest("a")).unwrap();
         commit.commit().unwrap();
-        assert_eq!(commit.reference_manifest(), manifest("a"), "G2");
+        assert_eq!(
+            commit.resource_references().inputs(),
+            manifest("a").inputs(),
+            "G2"
+        );
         commit.prepare("session-1", manifest("b")).unwrap();
-        let retained = commit.reference_manifest();
-        assert_eq!(retained.inputs.len(), 2, "G3");
+        let retained = commit.resource_references();
+        assert_eq!(retained.inputs().len(), 2, "G3");
         assert!(commit.has_references(), "G3");
         commit.commit().unwrap();
-        assert_eq!(commit.reference_manifest(), manifest("b"), "G4");
+        assert_eq!(
+            commit.resource_references().inputs(),
+            manifest("b").inputs(),
+            "G4"
+        );
 
         let mut rollback = SessionResourceState::default();
         rollback.prepare("session-2", manifest("a")).unwrap();
         rollback.commit().unwrap();
         rollback.prepare("session-2", manifest("b")).unwrap();
         rollback.rollback("injected").unwrap();
-        assert_eq!(rollback.reference_manifest(), manifest("a"), "G5");
+        assert_eq!(
+            rollback.resource_references().inputs(),
+            manifest("a").inputs(),
+            "G5"
+        );
     }
 
     #[test]
@@ -587,7 +623,7 @@ mod tests {
         state.prepare("session-1", manifest("b")).unwrap();
         state.complete_terminal_release("terminated");
 
-        assert!(state.active.inputs.is_empty(), "T2/E3");
+        assert!(state.active.inputs().is_empty(), "T2/E3");
         assert!(state.pending.is_none(), "T2/E3");
         assert!(!state.has_references(), "T2/E3");
         assert_eq!(
