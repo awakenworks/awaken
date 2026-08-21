@@ -854,7 +854,7 @@ impl SessionRuntime for AwaitingFake {
         _tool_use_id: &str,
         decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
-        assert!(decision.allow);
+        assert!(matches!(decision, ToolPermissionDecision::Allow { .. }));
         *self.awaiting.lock().unwrap() = false;
         Ok(ended(vec![
             Message {

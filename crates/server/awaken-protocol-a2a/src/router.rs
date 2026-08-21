@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -1185,10 +1186,9 @@ async fn cancel_task(
             .resume(
                 &task.context_id,
                 &pending.tool_use_id,
-                RunResume::Confirm {
-                    allow: false,
-                    note: Some("task canceled by the client".into()),
-                },
+                RunResume::Permission(PermissionDecision::Deny {
+                    reason: Some("task canceled by the client".into()),
+                }),
             )
             .await;
     } else {

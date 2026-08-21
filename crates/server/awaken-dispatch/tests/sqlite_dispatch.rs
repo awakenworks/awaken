@@ -56,7 +56,11 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
         message_id,
         "run-1",
         correlation,
-        ResumeResult::Decision { allow, note: None },
+        if allow {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(None)
+        },
     )
 }
 

@@ -526,10 +526,7 @@ async fn commit_ticket(coordinator: &Arc<RecordingCoordinator>, ticket: ResumeTi
 fn resume_command_for(ticket: &ResumeTicket) -> awaken_runtime_contract::resume::ResumeCommand {
     awaken_runtime_contract::resume::ResumeCommand::from_ticket(
         ticket,
-        awaken_runtime_contract::resume::ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        awaken_runtime_contract::resume::ResumeResult::allow(),
         0,
     )
 }
@@ -1866,9 +1863,10 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             "the first process is released before durable HITL"
         );
 
-        let result = ResumeResult::Decision {
-            allow,
-            note: (!allow).then(|| "operator policy".to_string()),
+        let result = if allow {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(Some("operator policy".to_string()))
         };
         let resumed = AcpRunExecutor::new(source)
             .with_permission_policy(Arc::new(AskPolicy))

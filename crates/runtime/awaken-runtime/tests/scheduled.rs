@@ -504,10 +504,7 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(
             "wrong-fingerprint".to_string(),
         ),
-        result: ResumeResult::Decision {
-            allow: true,
-            note: None,
-        },
+        result: ResumeResult::allow(),
         now_ms: 0,
     };
     let err = runtime
