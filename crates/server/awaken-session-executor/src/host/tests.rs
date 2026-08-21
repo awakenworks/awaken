@@ -8564,7 +8564,11 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
     assert_eq!(client_tools.len(), 1, "R3/E2");
     assert_eq!(client_tools[0].id, lookup.name, "R3/E2");
     assert_eq!(client_tools[0].description, lookup.description, "R3/E2");
-    assert_eq!(client_tools[0].parameters, lookup.input_schema, "R3/E2");
+    assert_eq!(
+        client_tools[0].model_parameters(),
+        lookup.input_schema,
+        "R3/E2"
+    );
     assert!(
         publication
             .resolved_spec

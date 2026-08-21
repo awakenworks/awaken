@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(descriptor.description, "the echo tool");
         assert_eq!(descriptor.parameters["properties"]["q"]["type"], "string");
         // The id feeds the content hash, so it is present in the pinned hash.
-        assert!(descriptor.content_hash.contains("mcp__srv__echo"));
+        assert!(descriptor.content_hash().contains("mcp__srv__echo"));
     }
 
     #[test]
