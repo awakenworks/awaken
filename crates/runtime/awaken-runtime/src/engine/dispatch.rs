@@ -51,12 +51,8 @@ pub(super) async fn run_tool_calls(
         };
         (call, policy)
     });
-    let mut batch = ToolBatch::new(
-        ToolBatchId::for_step(run_id, step),
-        run_id.clone(),
-        policies,
-    )
-    .map_err(|error| Error::Execution(error.to_string()))?;
+    let mut batch = ToolBatch::for_step(run_id.clone(), step, policies)
+        .map_err(|error| Error::Execution(error.to_string()))?;
 
     // Commit the assistant tool-use blocks and the complete Requested batch before
     // entering any executor. Recovery can now distinguish "never entered" from an
@@ -166,7 +162,7 @@ pub(super) async fn run_tool_calls(
                     )?;
                     let capability = recovery_capability(runtime, context, env, &call);
                     let policy = batch
-                        .calls
+                        .calls()
                         .iter()
                         .find(|entry| entry.call.call_id == call.call_id)
                         .expect("batch was built from calls")
@@ -277,7 +273,8 @@ pub(super) async fn run_tool_calls(
                                     }
                                     output
                                 } else {
-                                    let operation_id = format!("{}:{}", batch.id.0, call.call_id);
+                                    let operation_id =
+                                        format!("{}:{}", batch.id().as_str(), call.call_id);
                                     execute_tool(
                                         runtime,
                                         Some(env),
@@ -394,7 +391,7 @@ pub(super) async fn run_tool_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in &batch.calls {
+    for entry in batch.calls() {
         ledger.staged_state.extend(entry.result_state.clone());
         for message in &entry.result_messages {
             ledger.push_message(message.clone());
@@ -438,7 +435,7 @@ async fn run_parallel_delegation_calls(
     for call in &calls {
         let capability = recovery_capability(runtime, context, env, call);
         let policy = batch
-            .calls
+            .calls()
             .iter()
             .find(|entry| entry.call.call_id == call.call_id)
             .expect("batch was built from calls")
@@ -531,7 +528,7 @@ async fn run_parallel_delegation_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in &batch.calls {
+    for entry in batch.calls() {
         ledger.staged_state.extend(entry.result_state.clone());
         for message in &entry.result_messages {
             ledger.push_message(message.clone());
@@ -614,15 +611,15 @@ pub(super) async fn recover_tool_batch(
     // Rehydrate terminal per-call effects into the attempt's live state. They
     // remain unpublished StateCommands until Finalized, but later gates/hooks in
     // this recovery must observe the same state as the original attempt.
-    for entry in &batch.calls {
+    for entry in batch.calls() {
         if entry.phase.is_terminal() {
             for command in &entry.result_state {
                 store.apply(command);
             }
         }
     }
-    for index in 0..batch.calls.len() {
-        let durable = batch.calls[index].clone();
+    for index in 0..batch.calls().len() {
+        let durable = batch.calls()[index].clone();
         let call = durable.call;
         match &durable.phase {
             ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. } => continue,
@@ -649,7 +646,7 @@ pub(super) async fn recover_tool_batch(
                 continue;
             }
             ToolCallPhase::Executing { .. }
-                if durable.recovery_policy.mode == ToolRecoveryMode::NeverReplay =>
+                if durable.recovery_policy.mode() == ToolRecoveryMode::NeverReplay =>
             {
                 batch
                     .mark_indeterminate(
@@ -861,7 +858,7 @@ pub(super) async fn recover_tool_batch(
                 }
                 Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                 None => {
-                    let operation_id = format!("{}:{}", batch.id.0, call.call_id);
+                    let operation_id = format!("{}:{}", batch.id().as_str(), call.call_id);
                     execute_tool(runtime, Some(env), &call, context, run_id, operation_id).await
                 }
             }
@@ -878,7 +875,7 @@ pub(super) async fn recover_tool_batch(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in &batch.calls {
+    for entry in batch.calls() {
         ledger.staged_state.extend(entry.result_state.clone());
         for message in &entry.result_messages {
             ledger.push_message(message.clone());

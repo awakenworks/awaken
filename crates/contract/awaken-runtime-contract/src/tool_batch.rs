@@ -7,17 +7,30 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use std::num::NonZeroU16;
 
 use crate::llm::ToolCall;
 use crate::tool::{ToolOutput, ToolRecoveryPolicy};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolBatchId(pub String);
+pub struct ToolBatchId(String);
 
 impl ToolBatchId {
     #[must_use]
-    pub fn for_step(run_id: &RunId, step: usize) -> Self {
+    fn for_step(run_id: &RunId, step: usize) -> Self {
         Self(format!("tool-batch:{}:{step}", run_id.0))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn belongs_to(&self, run_id: &RunId) -> bool {
+        self.0
+            .strip_prefix("tool-batch:")
+            .and_then(|value| value.rsplit_once(':'))
+            .is_some_and(|(owner, step)| owner == run_id.0.as_str() && step.parse::<u64>().is_ok())
     }
 }
 
@@ -81,12 +94,27 @@ pub enum ToolBatchPhase {
     Finalized,
 }
 
+/// Validated aggregate for a non-empty, uniquely identified tool-call batch.
+/// Its storage is private so callers cannot insert duplicate calls, reopen a
+/// finalized batch, or publish staged effects before a terminal result.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::tool_batch::{ToolBatch, ToolBatchPhase, ToolBatchId};
+/// use awaken_runtime_contract::RunId;
+///
+/// let _ = ToolBatch {
+///     id: ToolBatchId("tool-batch:run:0".into()),
+///     run_id: RunId("run".into()),
+///     calls: Vec::new(),
+///     phase: ToolBatchPhase::Open,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolBatch {
-    pub id: ToolBatchId,
-    pub run_id: RunId,
-    pub calls: Vec<DurableToolCall>,
-    pub phase: ToolBatchPhase,
+    id: ToolBatchId,
+    run_id: RunId,
+    calls: Vec<DurableToolCall>,
+    phase: ToolBatchPhase,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +141,10 @@ impl<'de> Deserialize<'de> for ToolBatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolBatchError {
+    #[error("tool batch run id must not be empty")]
+    EmptyRunId,
+    #[error("tool batch id does not belong to its run")]
+    InvalidBatchId,
     #[error("tool batch must contain at least one call")]
     Empty,
     #[error("duplicate tool call id {0}")]
@@ -200,7 +232,7 @@ fn phase_view(phase: &ToolCallPhase) -> CallPhaseView {
 /// Kani. It is the single authority for entering an executor attempt.
 fn next_execution_attempt(
     phase: CallPhaseView,
-    max_attempts: u16,
+    max_attempts: NonZeroU16,
     request: ExecutionRequest,
 ) -> Result<u16, ToolBatchError> {
     let attempt = match (phase, request) {
@@ -220,7 +252,7 @@ fn next_execution_attempt(
         }
         _ => return Err(ToolBatchError::InvalidTransition),
     };
-    if attempt > max_attempts {
+    if attempt > max_attempts.get() {
         Err(ToolBatchError::AttemptsExhausted)
     } else {
         Ok(attempt)
@@ -228,11 +260,15 @@ fn next_execution_attempt(
 }
 
 impl ToolBatch {
-    pub fn new(
-        id: ToolBatchId,
+    pub fn for_step(
         run_id: RunId,
+        step: usize,
         calls: impl IntoIterator<Item = (ToolCall, ToolRecoveryPolicy)>,
     ) -> Result<Self, ToolBatchError> {
+        if run_id.0.trim().is_empty() {
+            return Err(ToolBatchError::EmptyRunId);
+        }
+        let id = ToolBatchId::for_step(&run_id, step);
         let calls: Vec<_> = calls
             .into_iter()
             .map(|(call, recovery_policy)| DurableToolCall {
@@ -260,10 +296,36 @@ impl ToolBatch {
         })
     }
 
+    #[must_use]
+    pub fn id(&self) -> &ToolBatchId {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+
+    #[must_use]
+    pub fn calls(&self) -> &[DurableToolCall] {
+        &self.calls
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> ToolBatchPhase {
+        self.phase
+    }
+
     /// Validate the complete persisted aggregate before recovery can act on it.
     /// Custom deserialization calls this automatically, so corrupted indexes,
     /// attempts, waits, or publication state fail closed at the state boundary.
     pub fn validate(&self) -> Result<(), ToolBatchError> {
+        if self.run_id.0.trim().is_empty() {
+            return Err(ToolBatchError::EmptyRunId);
+        }
+        if !self.id.belongs_to(&self.run_id) {
+            return Err(ToolBatchError::InvalidBatchId);
+        }
         if self.calls.is_empty() {
             return Err(ToolBatchError::Empty);
         }
@@ -273,14 +335,9 @@ impl ToolBatch {
             if !ids.insert(call_id) {
                 return Err(ToolBatchError::DuplicateCall(call_id.clone()));
             }
-            if entry.recovery_policy.max_attempts == 0 {
-                return Err(ToolBatchError::InvalidPersistedState(format!(
-                    "call {call_id} has a zero attempt budget"
-                )));
-            }
             match &entry.phase {
                 ToolCallPhase::Executing { attempt }
-                    if *attempt == 0 || *attempt > entry.recovery_policy.max_attempts =>
+                    if *attempt == 0 || *attempt > entry.recovery_policy.max_attempts().get() =>
                 {
                     return Err(ToolBatchError::InvalidPersistedState(format!(
                         "call {call_id} has an out-of-budget execution attempt"
@@ -325,7 +382,7 @@ impl ToolBatch {
         let phase = phase_view(&call.phase);
         let attempt = next_execution_attempt(
             phase,
-            call.recovery_policy.max_attempts,
+            call.recovery_policy.max_attempts(),
             ExecutionRequest::StartOrRetry,
         )?;
         call.phase = ToolCallPhase::Executing { attempt };
@@ -349,7 +406,7 @@ impl ToolBatch {
         };
         let attempt = next_execution_attempt(
             phase_view(&call.phase),
-            call.recovery_policy.max_attempts,
+            call.recovery_policy.max_attempts(),
             ExecutionRequest::Resume {
                 expected_kind,
                 correlation_matches,
@@ -534,22 +591,18 @@ impl StateKey for ActiveToolBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::ToolRecoveryMode;
 
     fn batch() -> ToolBatch {
-        ToolBatch::new(
-            ToolBatchId("b".into()),
+        ToolBatch::for_step(
             RunId("r".into()),
+            0,
             [(
                 ToolCall {
                     call_id: "c".into(),
                     tool_id: "t".into(),
                     arguments: serde_json::json!({}),
                 },
-                ToolRecoveryPolicy {
-                    mode: ToolRecoveryMode::ReplaySafe,
-                    ..ToolRecoveryPolicy::default()
-                },
+                ToolRecoveryPolicy::replay_safe(),
             )],
         )
         .unwrap()
@@ -625,6 +678,40 @@ mod tests {
     }
 
     #[test]
+    fn persisted_empty_or_duplicate_batches_never_construct_the_aggregate() {
+        let mut empty = serde_json::to_value(batch()).unwrap();
+        empty["calls"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<ToolBatch>(empty).is_err());
+
+        let mut duplicate = serde_json::to_value(batch()).unwrap();
+        duplicate["calls"] =
+            serde_json::json!([duplicate["calls"][0].clone(), duplicate["calls"][0].clone()]);
+        assert!(serde_json::from_value::<ToolBatch>(duplicate).is_err());
+    }
+
+    #[test]
+    fn batch_identity_is_derived_from_and_bound_to_a_non_empty_run() {
+        let call = || {
+            [(
+                ToolCall {
+                    call_id: "c".into(),
+                    tool_id: "t".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolRecoveryPolicy::default(),
+            )]
+        };
+        assert_eq!(
+            ToolBatch::for_step(RunId(String::new()), 0, call()),
+            Err(ToolBatchError::EmptyRunId)
+        );
+
+        let mut mismatched = serde_json::to_value(batch()).unwrap();
+        mismatched["id"] = serde_json::json!("tool-batch:another-run:0");
+        assert!(serde_json::from_value::<ToolBatch>(mismatched).is_err());
+    }
+
+    #[test]
     fn persisted_completed_call_cannot_contain_another_calls_output() {
         let mut batch = batch();
         batch.mark_executing("c").unwrap();
@@ -641,10 +728,11 @@ mod verification {
 
     #[kani::proof]
     fn terminal_calls_are_never_reentered() {
+        let budget = NonZeroU16::new(kani::any()).unwrap_or(NonZeroU16::MIN);
         assert_eq!(
             next_execution_attempt(
                 CallPhaseView::Completed,
-                kani::any(),
+                budget,
                 ExecutionRequest::StartOrRetry,
             ),
             Err(ToolBatchError::InvalidTransition)
@@ -662,7 +750,7 @@ mod verification {
         };
         let entered = next_execution_attempt(
             CallPhaseView::Awaiting(actual_kind),
-            1,
+            NonZeroU16::MIN,
             ExecutionRequest::Resume {
                 expected_kind: ToolWaitKind::ToolPermission,
                 correlation_matches: correct_correlation,

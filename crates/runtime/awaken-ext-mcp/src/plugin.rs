@@ -197,11 +197,9 @@ impl Plugin for McpPlugin {
             if let (Ok(descriptor), Ok(tool)) = (
                 mcp_tool_descriptor(&self.server_name, def),
                 McpRawTool::new(&self.server_name, &def.name, Arc::clone(&self.transport)),
-            ) {
-                contributions.register_dynamic_tool(DynamicTool {
-                    descriptor,
-                    tool: Arc::new(tool),
-                });
+            ) && let Ok(dynamic) = DynamicTool::try_new(descriptor, Arc::new(tool))
+            {
+                contributions.register_dynamic_tool(dynamic);
             }
         }
         contributions
@@ -281,7 +279,7 @@ mod tests {
         let contributions = plugin.resolve();
         assert_eq!(contributions.dynamic_tools.len(), 1);
         assert_eq!(
-            contributions.dynamic_tools[0].descriptor.id,
+            contributions.dynamic_tools[0].descriptor().id,
             "mcp__srv__alpha"
         );
     }
@@ -297,7 +295,7 @@ mod tests {
             .expect("starts");
         assert_eq!(server.version(), 1);
         assert_eq!(
-            server.plugin().resolve().dynamic_tools[0].descriptor.id,
+            server.plugin().resolve().dynamic_tools[0].descriptor().id,
             "mcp__srv__alpha"
         );
 
@@ -312,7 +310,7 @@ mod tests {
         }
         assert_eq!(server.version(), 2, "version advanced on list_changed");
         assert_eq!(
-            server.plugin().resolve().dynamic_tools[0].descriptor.id,
+            server.plugin().resolve().dynamic_tools[0].descriptor().id,
             "mcp__srv__beta",
             "the refreshed tool set is projected"
         );
@@ -364,7 +362,7 @@ mod tests {
             "the unmappable tool is skipped, the valid one kept"
         );
         assert_eq!(
-            contributions.dynamic_tools[0].descriptor.id,
+            contributions.dynamic_tools[0].descriptor().id,
             "mcp__srv__good"
         );
     }
@@ -413,7 +411,7 @@ mod tests {
             .resolve()
             .dynamic_tools
             .iter()
-            .map(|t| t.descriptor.id.clone())
+            .map(|tool| tool.descriptor().id.clone())
             .collect();
         assert_eq!(
             ids,
@@ -444,7 +442,7 @@ mod tests {
             .expect("starts");
 
         let descriptor = server.plugin().resolve().dynamic_tools[0]
-            .descriptor
+            .descriptor()
             .clone();
         assert_eq!(
             descriptor.parameters["properties"]["token"]["x-sensitive"],
@@ -467,7 +465,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let descriptor = server.plugin().resolve().dynamic_tools[0]
-            .descriptor
+            .descriptor()
             .clone();
         assert_eq!(descriptor.id, "mcp__srv__beta");
         assert_eq!(

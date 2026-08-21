@@ -10,10 +10,10 @@
 //! a store or bypass permission (G9).
 //!
 //! The mechanism is split by concern, and every public item is re-exported here so
-//! `plugin::X` paths stay stable: [`phase`] (hook points and the `PhaseHook`
-//! trait), [`capability`] (bounds and their fail-closed enforcement), [`guard`]
-//! (run-end continuation), [`contributions`] (the `Plugin` factory and its
-//! registrar), and [`env`] (the merged per-run execution environment).
+//! `plugin::X` paths stay stable: `phase` (hook points and the `PhaseHook`
+//! trait), `capability` (bounds and their fail-closed enforcement), `guard`
+//! (run-end continuation), `contributions` (the `Plugin` factory and its
+//! registrar), and `env` (the merged per-run execution environment).
 
 mod capability;
 mod contributions;
@@ -22,7 +22,7 @@ mod guard;
 mod phase;
 
 pub use capability::{BoundViolation, CapabilityBound, IdBound, PluginManifest, enforce_bound};
-pub use contributions::{Contributions, DynamicTool, Plugin, PluginConfigError};
+pub use contributions::{Contributions, DynamicTool, DynamicToolError, Plugin, PluginConfigError};
 pub use env::{
     MergeError, PluginActivationDecision, ResolvedExecutionEnv, exact_plugin_selection,
     plugin_activation_decision,
@@ -321,7 +321,7 @@ mod tests {
         // Input order is [b, a]; a must come first because b requires it.
         let plugins = vec![(b, Contributions::new("b")), (a, Contributions::new("a"))];
         let env = ResolvedExecutionEnv::merge(plugins).expect("merges");
-        assert_eq!(env.order, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(env.plugin_order(), ["a", "b"]);
     }
 
     #[test]
@@ -360,15 +360,38 @@ mod tests {
     }
 
     fn dynamic_tool(id: &'static str) -> DynamicTool {
-        DynamicTool {
-            descriptor: crate::resolved::ToolDescriptor::pinned(
+        DynamicTool::try_new(
+            crate::resolved::ToolDescriptor::pinned(
                 "mcp",
                 id,
                 "a dynamic tool",
                 serde_json::json!({ "type": "object" }),
             ),
-            tool: Arc::new(FakeRawTool(id)),
-        }
+            Arc::new(FakeRawTool(id)),
+        )
+        .expect("matching dynamic tool identity")
+    }
+
+    #[test]
+    fn dynamic_tool_identity_mismatch_never_constructs_a_pair() {
+        let error = DynamicTool::try_new(
+            crate::resolved::ToolDescriptor::pinned(
+                "mcp",
+                "mcp__srv__advertised",
+                "a dynamic tool",
+                serde_json::json!({ "type": "object" }),
+            ),
+            Arc::new(FakeRawTool("mcp__srv__executed")),
+        )
+        .err()
+        .expect("mismatched identities are rejected");
+        assert_eq!(
+            error,
+            DynamicToolError::IdentityMismatch {
+                descriptor: "mcp__srv__advertised".into(),
+                executable: "mcp__srv__executed".into(),
+            }
+        );
     }
 
     #[test]

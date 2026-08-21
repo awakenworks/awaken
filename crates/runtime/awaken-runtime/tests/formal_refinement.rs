@@ -49,7 +49,7 @@ use awaken_runtime_contract::tool::{
     ToolRecoveryPolicy,
 };
 use awaken_runtime_contract::tool_batch::{
-    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase,
+    ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 use serde::Serialize;
@@ -139,7 +139,7 @@ impl CommitCoordinator for CrashAfterChildResult {
 fn assert_execution_was_committed(trace: &TracingCoordinator, call_id: &str) {
     let batch = trace.latest_batch().expect("a durable batch before invoke");
     let call = batch
-        .calls
+        .calls()
         .iter()
         .find(|entry| entry.call.call_id == call_id)
         .expect("the invoked call is durable");
@@ -485,12 +485,8 @@ async fn seed_executing_batch(
 ) {
     let run_id = RunId(RUN_ID.to_string());
     let thread_id = ThreadId(THREAD_ID.to_string());
-    let mut batch = ToolBatch::new(
-        ToolBatchId("formal-recovery-batch".to_string()),
-        run_id.clone(),
-        [(call.clone(), policy)],
-    )
-    .expect("recovery seed batch");
+    let mut batch = ToolBatch::for_step(run_id.clone(), 0, [(call.clone(), policy)])
+        .expect("recovery seed batch");
     trace
         .commit(ThreadCommit::assemble(
             thread_id.clone(),
@@ -748,14 +744,14 @@ fn project_trace(name: &str, commits: Vec<ThreadCommit>) -> TraceDocument {
                 ActiveToolBatch::load(&discovery).expect("valid discovered ToolBatch")
         {
             calls = batch
-                .calls
+                .calls()
                 .iter()
                 .map(|entry| entry.call.call_id.clone())
                 .collect();
             max_attempts = batch
-                .calls
+                .calls()
                 .iter()
-                .map(|entry| entry.recovery_policy.max_attempts)
+                .map(|entry| entry.recovery_policy.max_attempts().get())
                 .max()
                 .unwrap_or(1);
         }
@@ -805,7 +801,7 @@ fn project_trace(name: &str, commits: Vec<ThreadCommit>) -> TraceDocument {
         if let Some(batch) = &batch {
             for call_id in &calls {
                 let entry = batch
-                    .calls
+                    .calls()
                     .iter()
                     .find(|entry| &entry.call.call_id == call_id)
                     .expect("one stable batch in a refinement scenario");
@@ -847,7 +843,7 @@ fn project_trace(name: &str, commits: Vec<ThreadCommit>) -> TraceDocument {
                 .unwrap_or_else(|| "no_call".to_string()),
             call_state,
             attempts: attempts.clone(),
-            batch_state: match batch.as_ref().map(|batch| batch.phase) {
+            batch_state: match batch.as_ref().map(ToolBatch::phase) {
                 None => "Absent",
                 Some(ToolBatchPhase::Open) => "Open",
                 Some(ToolBatchPhase::Finalized) => "Finalized",
@@ -1062,9 +1058,9 @@ async fn delegated_child_cancel_produces_a_refinement_trace() {
         RunState::Ended(EndCause::Cancelled)
     );
     assert_eq!(
-        trace.latest_batch().expect("delegation batch").calls[0]
+        trace.latest_batch().expect("delegation batch").calls()[0]
             .recovery_policy
-            .mode,
+            .mode(),
         ToolRecoveryMode::DurableRequest,
         "agent_run pins durable-request recovery automatically"
     );
@@ -1077,10 +1073,8 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
     // again, but its new result must pass the same spiller before Completed state
     // and transcript publication; crash recovery is not an oversized-output bypass.
     let trace = TracingCoordinator::default();
-    let policy = ToolRecoveryPolicy {
-        mode: ToolRecoveryMode::ReplaySafe,
-        max_attempts: 3,
-    };
+    let policy = ToolRecoveryPolicy::try_new(ToolRecoveryMode::ReplaySafe, 3)
+        .expect("non-zero recovery attempt budget");
     let call = tool_call("replay_call", "replay_tool");
     seed_executing_batch(&trace, call, policy.clone(), Vec::new()).await;
 
@@ -1109,7 +1103,7 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
         .latest_batch()
         .expect("recovered batch remains durable");
     assert!(matches!(
-        &batch.calls[0].phase,
+        &batch.calls()[0].phase,
         ToolCallPhase::Completed(output) if output.text() == "recovered-preview: ok"
     ));
     emit_trace("replay_safe_recovery", &trace);
@@ -1142,7 +1136,7 @@ async fn never_replay_crash_recovery_is_fail_closed() {
         .latest_batch()
         .expect("recovered batch remains durable");
     assert!(matches!(
-        batch.calls[0].phase,
+        batch.calls()[0].phase,
         ToolCallPhase::Indeterminate { .. }
     ));
     emit_trace("never_replay_recovery", &trace);

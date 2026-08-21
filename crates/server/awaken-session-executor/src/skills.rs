@@ -204,7 +204,10 @@ impl SessionSkillPlugin {
                     descriptor.id
                 )
             })?;
-            tools.push(DynamicTool { descriptor, tool });
+            tools.push(
+                DynamicTool::try_new(descriptor, tool)
+                    .map_err(|error| format!("Invalid Skill runtime tool: {error}"))?,
+            );
         }
         if tools.len() != executors.len() {
             return Err("Skill runtime executor has no matching descriptor".into());
@@ -223,7 +226,7 @@ impl Plugin for SessionSkillPlugin {
                 tools: IdBound::Exact(
                     self.tools
                         .iter()
-                        .map(|tool| tool.descriptor.id.clone())
+                        .map(|tool| tool.descriptor().id.clone())
                         .collect(),
                 ),
                 ..Default::default()

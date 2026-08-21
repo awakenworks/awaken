@@ -66,15 +66,18 @@ impl Plugin for DynPlugin {
     fn resolve(&self) -> Contributions {
         let mut contributions = Contributions::new("mcp:srv");
         for id in self.tools.lock().unwrap().iter() {
-            contributions.dynamic_tools.push(DynamicTool {
-                descriptor: ToolDescriptor::pinned(
-                    "mcp",
-                    id.clone(),
-                    "dynamic",
-                    serde_json::json!({ "type": "object" }),
-                ),
-                tool: Arc::new(EchoDyn(id.clone())),
-            });
+            contributions.dynamic_tools.push(
+                DynamicTool::try_new(
+                    ToolDescriptor::pinned(
+                        "mcp",
+                        id.clone(),
+                        "dynamic",
+                        serde_json::json!({ "type": "object" }),
+                    ),
+                    Arc::new(EchoDyn(id.clone())),
+                )
+                .expect("matching dynamic tool identity"),
+            );
         }
         contributions
     }

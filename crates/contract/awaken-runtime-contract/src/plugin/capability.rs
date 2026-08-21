@@ -132,7 +132,7 @@ pub fn enforce_bound(
         }
     }
     for dynamic in &contributions.dynamic_tools {
-        let tool_id = dynamic.tool.id();
+        let tool_id = dynamic.executable().id();
         if !bound.tools.allows(tool_id) {
             return Err(BoundViolation::Tool {
                 plugin: id.clone(),

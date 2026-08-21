@@ -7,12 +7,15 @@
 //! AWAKEN_GENAI_MODEL=gpt-4o-mini cargo test -p awaken-provider-genai --test live -- --ignored
 //! ```
 
+mod support;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::ModelBinding;
 use std::sync::Mutex;
+use support::compatibility_tool;
 
 #[derive(Default)]
 struct RecordingDeltas {
@@ -357,22 +360,6 @@ async fn assert_deepseek_reasoning_tool_round_trip(
         second.output.text_content().contains(result_marker),
         "R2/E3 final answer must use the returned tool result"
     );
-}
-
-fn compatibility_tool() -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "live-fixture-v1",
-        "read_compatibility_fixture",
-        "Read the fixed compatibility marker requested by the user.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "marker": {"type": "string"}
-            },
-            "required": ["marker"],
-            "additionalProperties": false
-        }),
-    )
 }
 
 fn compatibility_user(requested_marker: &str) -> ChatMessage {
