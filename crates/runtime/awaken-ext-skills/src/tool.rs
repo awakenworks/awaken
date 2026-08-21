@@ -637,7 +637,7 @@ mod tests {
         assert!(!a.description.contains("commit"));
         assert!(a.description.contains("list_skills"));
         // Identical regardless of any registry state.
-        assert_eq!(a.content_hash, skill_tool_descriptor().content_hash);
+        assert_eq!(a.content_hash(), skill_tool_descriptor().content_hash());
     }
 
     #[tokio::test]

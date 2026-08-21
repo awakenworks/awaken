@@ -167,7 +167,7 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
                 let descriptor = tool.descriptor();
                 McpToolDefinition::new(descriptor.id.clone())
                     .with_description(descriptor.description.clone())
-                    .with_schema(descriptor.parameters.clone())
+                    .with_schema(descriptor.model_parameters())
             })
             .collect())
     }

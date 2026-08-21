@@ -109,7 +109,7 @@ fn project(
             .map(|descriptor| awaken_agent_contract::ClientToolDescriptor {
                 name: descriptor.id.clone(),
                 description: descriptor.description.clone(),
-                input_schema: descriptor.parameters.clone(),
+                input_schema: descriptor.model_parameters(),
             })
             .collect(),
         mcp_servers: bindings

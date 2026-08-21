@@ -73,24 +73,15 @@ fn invalid_tool_schema_fails_before_provider_projection() {
     // Cause/effect rule P2: contradictory root argument type -> fail closed at
     // the neutral descriptor boundary; no provider-specific sanitizer may turn
     // it into a different callable contract.
-    let request = ChatRequest {
-        model_binding: binding("gpt-4o-mini"),
-        inference: Default::default(),
-        messages: vec![ChatMessage {
-            role: Role::User,
-            content: vec![ContentBlock::text("hi")],
-        }],
-        tools: vec![ToolDescriptor {
-            id: "broken".into(),
-            description: "broken".into(),
-            parameters: serde_json::json!({"type":"string"}),
-            content_hash: "legacy".into(),
-            kind: Default::default(),
-            recovery_policy: Default::default(),
-        }],
-    };
-
-    assert!(to_genai_request(&request).is_err());
+    assert!(
+        ToolDescriptor::try_pinned(
+            "test",
+            "broken",
+            "broken",
+            serde_json::json!({"type":"string"}),
+        )
+        .is_err()
+    );
 }
 
 #[test]

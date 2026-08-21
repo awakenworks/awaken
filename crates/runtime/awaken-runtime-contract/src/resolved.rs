@@ -685,19 +685,53 @@ impl ModelBinding {
     }
 }
 
+/// A normalized model-visible tool input schema. Construction and deserialization
+/// share one validation boundary, so an invalid root shape cannot enter a
+/// [`ToolDescriptor`] and provider adapters need no defensive normalization.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::ToolSchema;
+///
+/// let _ = ToolSchema(serde_json::json!({"type": "string"}));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ToolSchema(serde_json::Value);
+
+impl<'de> Deserialize<'de> for ToolSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        normalize_model_tool_schema(value)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl std::ops::Deref for ToolSchema {
+    type Target = serde_json::Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Model-visible tool identity pinned in the resolved spec. The runtime projects
-/// `id`/`description`/`parameters` into the inference request, and `content_hash`
-/// covers all three so a schema change changes the hash (G3/G8). It carries no
-/// executable handle — authority lives behind the gate and `ToolExecutor`.
+/// `id`/`description`/`parameters` into the inference request. Content identity
+/// is derived from the current complete state, never stored as a second mutable
+/// fact. It carries no executable handle — authority lives behind the gate and
+/// `ToolExecutor`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDescriptor {
+    content_namespace: String,
     pub id: String,
     /// Natural-language description shown to the model.
     pub description: String,
     /// JSON Schema for the tool arguments. The executing side validates calls
     /// against this; an empty object means "no declared parameters".
-    pub parameters: serde_json::Value,
-    pub content_hash: String,
+    pub parameters: ToolSchema,
     /// Strong semantic role used by configuration compilation. The compiler can
     /// select a delegation capability without naming a concrete builtin tool id.
     #[serde(default, skip_serializing_if = "ToolKind::is_regular")]
@@ -755,9 +789,8 @@ impl ToolDescriptor {
         Self::pinned(prefix, id, description, parameters)
     }
 
-    /// Build a descriptor whose `content_hash` is derived from the id,
-    /// description, and parameter schema, so any of those changing changes the
-    /// hash. `prefix` namespaces the owner (e.g. `builtin:hand`).
+    /// Build a descriptor whose content identity is derived from its complete
+    /// current state. `prefix` namespaces the owner (e.g. `builtin:hand`).
     pub fn pinned(
         prefix: &str,
         id: impl Into<String>,
@@ -777,27 +810,38 @@ impl ToolDescriptor {
         description: impl Into<String>,
         parameters: serde_json::Value,
     ) -> Result<Self, ToolSchemaError> {
-        let parameters = normalize_model_tool_schema(parameters)?;
+        let parameters = ToolSchema(normalize_model_tool_schema(parameters)?);
         let id = id.into();
         let description = description.into();
-        let content_hash = content_hash(prefix, &id, &description, &parameters);
         Ok(Self {
+            content_namespace: prefix.to_string(),
             id,
             description,
             parameters,
-            content_hash,
             kind: ToolKind::Regular,
             recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
         })
     }
 
-    /// Return the one provider-compatible projection of this descriptor's
-    /// parameter schema. Persisted legacy descriptors may predate explicit
-    /// empty `properties`; normalize that equivalent shape at the descriptor
-    /// authority instead of teaching every provider adapter a compatibility
-    /// rule. Structurally invalid schemas still fail before network I/O.
-    pub fn model_parameters(&self) -> Result<serde_json::Value, ToolSchemaError> {
-        normalize_model_tool_schema(self.parameters.clone())
+    /// Return the one provider-compatible projection. The schema was already
+    /// normalized at construction or deserialization, so adapters cannot forget
+    /// a validation step.
+    pub fn model_parameters(&self) -> serde_json::Value {
+        self.parameters.0.clone()
+    }
+
+    /// Stable content identity derived from every descriptor fact that changes
+    /// model projection or execution semantics.
+    #[must_use]
+    pub fn content_hash(&self) -> String {
+        content_hash(
+            &self.content_namespace,
+            &self.id,
+            &self.description,
+            &self.parameters,
+            self.kind,
+            &self.recovery_policy,
+        )
     }
 
     /// Build a tool whose result is owned by the calling protocol client. This
@@ -816,10 +860,7 @@ impl ToolDescriptor {
     /// part of its content identity even though it is not model-visible.
     #[must_use]
     pub fn with_kind(mut self, kind: ToolKind) -> Self {
-        if self.kind != kind {
-            self.kind = kind;
-            self.content_hash = format!("{}:kind:{kind:?}", self.content_hash);
-        }
+        self.kind = kind;
         self
     }
 
@@ -828,11 +869,6 @@ impl ToolDescriptor {
     /// semantics produces a different resolved snapshot.
     #[must_use]
     pub fn with_recovery(mut self, recovery: crate::tool::ToolRecoveryPolicy) -> Self {
-        if self.recovery_policy == recovery {
-            return self;
-        }
-        let encoded = serde_json::to_string(&recovery).unwrap_or_default();
-        self.content_hash = format!("{}:recovery:{encoded}", self.content_hash);
         self.recovery_policy = recovery;
         self
     }
@@ -1153,30 +1189,44 @@ impl ToolPresentation {
 /// Stable content hash over the model-visible descriptor surface. Uses a
 /// canonical JSON encoding so equal schemas hash equally regardless of the
 /// in-memory `Value` shape, and SHA-256 so the digest is portable across
-/// processes and Rust versions — this value is persisted in the snapshot and
-/// re-checked fail-closed, matching the `sha256` the catalog fingerprint uses.
+/// processes and Rust versions. Only its source facts are persisted; the hash is
+/// always derived, so stale or forged duplicate identity cannot be represented.
 fn content_hash(
     prefix: &str,
     id: &str,
     description: &str,
     parameters: &serde_json::Value,
+    kind: ToolKind,
+    recovery: &crate::tool::ToolRecoveryPolicy,
 ) -> String {
     use sha2::{Digest, Sha256};
-    let canonical = serde_json::to_string(parameters).unwrap_or_default();
+    let canonical = parameters.to_string();
     let mut hasher = Sha256::new();
     // Length-prefix each field so `(id, description)` and `(id+description, "")`
     // cannot collide by concatenation.
-    for field in [id, description, canonical.as_str()] {
+    let kind = match kind {
+        ToolKind::Regular => "regular",
+        ToolKind::ClientExecuted => "client_executed",
+        ToolKind::AgentDelegation => "agent_delegation",
+        ToolKind::Advisor => "advisor",
+    };
+    let recovery_mode = match recovery.mode() {
+        crate::tool::ToolRecoveryMode::NeverReplay => "never_replay",
+        crate::tool::ToolRecoveryMode::ReplaySafe => "replay_safe",
+        crate::tool::ToolRecoveryMode::Idempotent => "idempotent",
+        crate::tool::ToolRecoveryMode::DurableRequest => "durable_request",
+    };
+    for field in [id, description, canonical.as_str(), kind, recovery_mode] {
         hasher.update((field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
     }
+    hasher.update(recovery.max_attempts().get().to_le_bytes());
     let digest = hasher.finalize();
+    let mut short_digest = [0_u8; 8];
+    short_digest.copy_from_slice(&digest[..8]);
     // 16 hex chars (64 bits) keeps the id readable while a schema change still
     // moves the digest; the full prefix keeps owner namespacing.
-    format!(
-        "{prefix}:{id}:{:016x}",
-        u64::from_le_bytes(digest[..8].try_into().unwrap())
-    )
+    format!("{prefix}:{id}:{:016x}", u64::from_le_bytes(short_digest))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1192,7 +1242,7 @@ mod tests {
 
     use super::{
         AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
-        ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet,
+        ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet, ToolKind,
         ToolPresentation, content_hash, normalize_model_tool_schema,
     };
 
@@ -1583,16 +1633,44 @@ mod tests {
 
         // Same inputs hash equally.
         let same = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1}));
-        assert_eq!(base.content_hash, same.content_hash);
+        assert_eq!(base.content_hash(), same.content_hash());
 
         // Any surface change moves the hash.
         let schema_changed = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 2}));
         let desc_changed = ToolDescriptor::pinned("p", "t", "other", serde_json::json!({"a": 1}));
         let id_changed = ToolDescriptor::pinned("p", "u", "desc", serde_json::json!({"a": 1}));
-        assert_ne!(base.content_hash, schema_changed.content_hash);
-        assert_ne!(base.content_hash, desc_changed.content_hash);
-        assert_ne!(base.content_hash, id_changed.content_hash);
-        assert!(base.content_hash.starts_with("p:t:"));
+        assert_ne!(base.content_hash(), schema_changed.content_hash());
+        assert_ne!(base.content_hash(), desc_changed.content_hash());
+        assert_ne!(base.content_hash(), id_changed.content_hash());
+        assert!(base.content_hash().starts_with("p:t:"));
+    }
+
+    #[test]
+    fn descriptor_state_owns_one_derived_content_identity() {
+        // Metamorphic contract: every semantic mutation changes the derived
+        // identity; serialization carries the source facts, never a stale hash
+        // that could disagree with them.
+        let base = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
+        let kind_changed = base.clone().with_kind(ToolKind::Advisor);
+        let recovery_changed = base
+            .clone()
+            .with_recovery(crate::tool::ToolRecoveryPolicy::durable_request());
+        assert_ne!(base.content_hash(), kind_changed.content_hash());
+        assert_ne!(base.content_hash(), recovery_changed.content_hash());
+
+        let encoded = serde_json::to_value(&base).expect("serialize descriptor facts");
+        assert!(encoded.get("content_hash").is_none());
+        let decoded: ToolDescriptor =
+            serde_json::from_value(encoded).expect("deserialize valid descriptor facts");
+        assert_eq!(decoded.content_hash(), base.content_hash());
+    }
+
+    #[test]
+    fn persisted_invalid_tool_schema_never_constructs_a_descriptor() {
+        let descriptor = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
+        let mut encoded = serde_json::to_value(descriptor).expect("serialize descriptor");
+        encoded["parameters"] = serde_json::json!({"type": "string"});
+        assert!(serde_json::from_value::<ToolDescriptor>(encoded).is_err());
     }
 
     #[test]
@@ -1673,7 +1751,7 @@ mod tests {
             serde_json::json!({"type":"object","properties":{}}),
         );
         assert_eq!(omitted.parameters, explicit.parameters);
-        assert_eq!(omitted.content_hash, explicit.content_hash);
+        assert_eq!(omitted.content_hash(), explicit.content_hash());
     }
 
     #[test]
@@ -1681,8 +1759,23 @@ mod tests {
         // Without length-prefixing, ("ab","c") and ("a","bc") would concatenate to
         // the same byte stream and collide. The id is part of the readable prefix,
         // so vary the description/schema boundary where the digest actually matters.
-        let a = content_hash("p", "t", "ab", &serde_json::json!("c"));
-        let b = content_hash("p", "t", "a", &serde_json::json!("bc"));
+        let recovery = crate::tool::ToolRecoveryPolicy::default();
+        let a = content_hash(
+            "p",
+            "t",
+            "ab",
+            &serde_json::json!("c"),
+            ToolKind::Regular,
+            &recovery,
+        );
+        let b = content_hash(
+            "p",
+            "t",
+            "a",
+            &serde_json::json!("bc"),
+            ToolKind::Regular,
+            &recovery,
+        );
         assert_ne!(a, b);
     }
 
@@ -1690,7 +1783,8 @@ mod tests {
     fn content_hash_is_deterministic_sha256_hex() {
         // Portable digest: the same inputs always yield the same 16 hex chars, and
         // the tail is valid lowercase hex (not a platform-dependent SipHash value).
-        let h = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1})).content_hash;
+        let h =
+            ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1})).content_hash();
         let tail = h.rsplit(':').next().unwrap();
         assert_eq!(tail.len(), 16);
         assert!(

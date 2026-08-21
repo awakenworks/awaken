@@ -13,10 +13,13 @@ impl ManagedHost {
                 .host
                 .custom_tools()
                 .into_iter()
-                .map(|descriptor| CustomTool {
-                    name: descriptor.id,
-                    description: descriptor.description,
-                    input_schema: descriptor.parameters,
+                .map(|descriptor| {
+                    let input_schema = descriptor.model_parameters();
+                    CustomTool {
+                        name: descriptor.id,
+                        description: descriptor.description,
+                        input_schema,
+                    }
                 })
                 .collect(),
             skills: self.host.skills.ids_in(workspace),
