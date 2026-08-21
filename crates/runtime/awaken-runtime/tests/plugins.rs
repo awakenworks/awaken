@@ -191,17 +191,20 @@ impl Plugin for SessionToolPlugin {
 
     fn resolve(&self) -> Contributions {
         let mut contributions = Contributions::new("session-tools");
-        contributions.register_dynamic_tool(DynamicTool {
-            descriptor: ToolDescriptor::pinned(
-                "session",
-                "echo",
-                "Echo from the realized Session.",
-                serde_json::json!({"type": "object"}),
-            ),
-            tool: Arc::new(CountingEcho {
-                ran: self.ran.clone(),
-            }),
-        });
+        contributions.register_dynamic_tool(
+            DynamicTool::try_new(
+                ToolDescriptor::pinned(
+                    "session",
+                    "echo",
+                    "Echo from the realized Session.",
+                    serde_json::json!({"type": "object"}),
+                ),
+                Arc::new(CountingEcho {
+                    ran: self.ran.clone(),
+                }),
+            )
+            .expect("matching dynamic tool identity"),
+        );
         contributions
     }
 }

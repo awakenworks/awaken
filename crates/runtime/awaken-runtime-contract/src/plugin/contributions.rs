@@ -18,10 +18,64 @@ use super::phase::PhaseHook;
 /// plugins whose tool set is dynamic (e.g. an MCP server's live tools), where
 /// the id is not known at composition time and so cannot be pre-registered on
 /// the runtime like a static built-in tool.
+/// The descriptor and executable are identity-bound at construction. Callers
+/// cannot create a pair whose advertised id differs from the invoked tool id.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use awaken_runtime_contract::plugin::DynamicTool;
+/// use awaken_runtime_contract::resolved::ToolDescriptor;
+/// use awaken_runtime_contract::tool::RawTool;
+///
+/// fn bypass(descriptor: ToolDescriptor, tool: Arc<dyn RawTool>) {
+///     let _ = DynamicTool { descriptor, tool };
+/// }
+/// ```
 #[derive(Clone)]
 pub struct DynamicTool {
-    pub descriptor: ToolDescriptor,
-    pub tool: Arc<dyn RawTool>,
+    descriptor: ToolDescriptor,
+    tool: Arc<dyn RawTool>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DynamicToolError {
+    #[error(
+        "dynamic tool descriptor id {descriptor:?} does not match executable id {executable:?}"
+    )]
+    IdentityMismatch {
+        descriptor: String,
+        executable: String,
+    },
+}
+
+impl DynamicTool {
+    pub fn try_new(
+        descriptor: ToolDescriptor,
+        tool: Arc<dyn RawTool>,
+    ) -> Result<Self, DynamicToolError> {
+        if descriptor.id != tool.id() {
+            return Err(DynamicToolError::IdentityMismatch {
+                descriptor: descriptor.id,
+                executable: tool.id().to_owned(),
+            });
+        }
+        Ok(Self { descriptor, tool })
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    #[must_use]
+    pub fn executable(&self) -> &Arc<dyn RawTool> {
+        &self.tool
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (ToolDescriptor, Arc<dyn RawTool>) {
+        (self.descriptor, self.tool)
+    }
 }
 
 /// One plugin's resolved contributions. Built once by `Plugin::resolve`; holds

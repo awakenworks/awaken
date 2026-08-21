@@ -91,24 +91,30 @@ pub enum MergeError {
 /// The merged contributions of every active plugin for one run. Built by
 /// validating each plugin against its bound, rejecting duplicate tool ids, and
 /// ordering plugins so dependencies resolve first.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::plugin::ResolvedExecutionEnv;
+///
+/// fn corrupt(env: &mut ResolvedExecutionEnv) {
+///     env.order.clear();
+/// }
+/// ```
 pub struct ResolvedExecutionEnv {
-    pub order: Vec<String>,
-    pub tools: Vec<String>,
-    pub state_keys: Vec<String>,
-    pub phase_hooks: Vec<Arc<dyn PhaseHook>>,
+    order: Vec<String>,
+    phase_hooks: Vec<Arc<dyn PhaseHook>>,
     /// Scheduled-action kinds the selected plugins contribute. A kind absent here
     /// (its plugin is not selected for the run) cannot be staged (ADR-0027).
-    pub action_kinds: Vec<String>,
+    action_kinds: Vec<String>,
     /// Run-end continuation guards the selected plugins contribute, in dependency
     /// order. Consulted at the natural-end boundary.
-    pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
+    run_end_guards: Vec<Arc<dyn RunEndGuard>>,
     /// Pre-execution tool gates the selected plugins contribute, in dependency
     /// order. Consulted after the host gate; each can only restrict.
-    pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
+    tool_gates: Vec<Arc<dyn ToolGateHook>>,
     /// Dynamic tools (descriptor + executable) contributed by the selected
     /// plugins, in dependency order. Merged into the model-visible tool face and
     /// consulted for execution alongside the runtime's static tool registry.
-    pub dynamic_tools: Vec<DynamicTool>,
+    dynamic_tools: Vec<DynamicTool>,
 }
 
 impl ResolvedExecutionEnv {
@@ -155,10 +161,8 @@ impl ResolvedExecutionEnv {
         let order = topological_order(&plugins)?;
 
         // Re-emit contributions in dependency order.
-        let mut tools: Vec<String> = Vec::new();
         let mut tool_owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
-        let mut state_keys: Vec<String> = Vec::new();
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
         let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
         let mut tool_gates: Vec<Arc<dyn ToolGateHook>> = Vec::new();
@@ -181,10 +185,9 @@ impl ResolvedExecutionEnv {
                     });
                 }
                 tool_owner.insert(tool.clone(), id.clone());
-                tools.push(tool.clone());
             }
             for dynamic in &contributions.dynamic_tools {
-                let tool_id = dynamic.tool.id().to_string();
+                let tool_id = dynamic.executable().id().to_string();
                 if let Some(first) = tool_owner.get(&tool_id) {
                     return Err(MergeError::DuplicateTool {
                         id: tool_id,
@@ -194,11 +197,6 @@ impl ResolvedExecutionEnv {
                 }
                 tool_owner.insert(tool_id, id.clone());
                 dynamic_tools.push(dynamic.clone());
-            }
-            for key in &contributions.state_keys {
-                if !state_keys.contains(key) {
-                    state_keys.push(key.clone());
-                }
             }
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
             run_end_guards.extend(contributions.run_end_guards.iter().cloned());
@@ -218,8 +216,6 @@ impl ResolvedExecutionEnv {
 
         Ok(Self {
             order,
-            tools,
-            state_keys,
             phase_hooks,
             action_kinds,
             run_end_guards,
@@ -239,7 +235,7 @@ impl ResolvedExecutionEnv {
     pub fn dynamic_descriptors(&self) -> Vec<ToolDescriptor> {
         self.dynamic_tools
             .iter()
-            .map(|d| d.descriptor.clone())
+            .map(|dynamic| dynamic.descriptor().clone())
             .collect()
     }
 
@@ -247,8 +243,15 @@ impl ResolvedExecutionEnv {
     pub fn dynamic_tool(&self, id: &str) -> Option<Arc<dyn RawTool>> {
         self.dynamic_tools
             .iter()
-            .find(|d| d.tool.id() == id)
-            .map(|d| Arc::clone(&d.tool))
+            .find(|dynamic| dynamic.executable().id() == id)
+            .map(|dynamic| Arc::clone(dynamic.executable()))
+    }
+
+    /// Active plugin ids in dependency order. The returned slice cannot mutate
+    /// the order proven by [`Self::merge`].
+    #[must_use]
+    pub fn plugin_order(&self) -> &[String] {
+        &self.order
     }
 
     /// Hooks registered for one phase point, in dependency order.

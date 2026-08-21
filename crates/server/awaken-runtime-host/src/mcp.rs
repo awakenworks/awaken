@@ -651,7 +651,7 @@ async fn append_connected(
         contributions
             .dynamic_tools
             .iter()
-            .map(|tool| tool.tool.id().to_string()),
+            .map(|tool| tool.executable().id().to_string()),
     );
     wiring.plugins.push(Arc::new(plugin));
     Ok(())

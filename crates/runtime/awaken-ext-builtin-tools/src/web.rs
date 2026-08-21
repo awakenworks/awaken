@@ -507,10 +507,10 @@ impl Plugin for WebSearchPlugin {
     ) -> Result<Contributions, PluginConfigError> {
         let (descriptor, tool) = self.configured_tool(config)?;
         let mut contributions = Contributions::new(WEB_SEARCH_PLUGIN_ID);
-        contributions.register_dynamic_tool(awaken_runtime_contract::plugin::DynamicTool {
-            descriptor,
-            tool,
-        });
+        contributions.register_dynamic_tool(
+            awaken_runtime_contract::plugin::DynamicTool::try_new(descriptor, tool)
+                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?,
+        );
         Ok(contributions)
     }
 }

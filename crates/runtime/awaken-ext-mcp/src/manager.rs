@@ -164,7 +164,7 @@ mod tests {
         let ids: Vec<_> = manager
             .plugins()
             .iter()
-            .map(|p| p.resolve().dynamic_tools[0].descriptor.id.clone())
+            .map(|p| p.resolve().dynamic_tools[0].descriptor().id.clone())
             .collect();
         assert_eq!(ids, vec!["mcp__a__one", "mcp__b__two"]);
     }
@@ -201,7 +201,7 @@ mod tests {
         let ids: Vec<_> = manager
             .plugins()
             .iter()
-            .map(|p| p.resolve().dynamic_tools[0].descriptor.id.clone())
+            .map(|p| p.resolve().dynamic_tools[0].descriptor().id.clone())
             .collect();
         assert_eq!(ids, vec!["mcp__a_b__t".to_string()]);
     }
