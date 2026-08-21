@@ -246,7 +246,7 @@ async fn scheduled_action_commits_then_perform_runs_it() {
     let ticket = commit
         .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("a scheduled action is committed");
-    assert_eq!(ticket.reason, AwaitReason::ScheduledAction);
+    assert_eq!(ticket.reason(), AwaitReason::ScheduledAction);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,

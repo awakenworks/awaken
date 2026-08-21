@@ -1822,10 +1822,10 @@ mod tests {
         assert!(matches!(first, AgentRunBoundary::Awaiting));
         let ticket = commit.resume_ticket(&child_run_id).expect("child ticket");
         assert_eq!(
-            ticket.reason,
+            ticket.reason(),
             awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
         );
-        assert_eq!(ticket.call_id.as_deref(), Some("child-write"));
+        assert_eq!(ticket.call_id(), Some("child-write"));
         assert_eq!(ticket.delegation_origin.as_ref(), Some(&origin));
 
         // A replacement process reopens the durable queue and rebuilds every live

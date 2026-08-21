@@ -45,8 +45,8 @@ async fn agent_reads_then_edits_a_file_after_approval() {
     let new_messages = session
         .turn("Mark the status done.", move |ticket| {
             asked_for.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(ticket.reason, AwaitReason::ToolPermission);
-            assert_eq!(ticket.call_id.as_deref(), Some("edit-1"));
+            assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
+            assert_eq!(ticket.call_id(), Some("edit-1"));
             Approval::Allow
         })
         .await

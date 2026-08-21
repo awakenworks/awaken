@@ -7,7 +7,9 @@
 //! source (G1/G13).
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitReason, AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
+};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::{
     DelegationId, DelegationOrigin, DelegationRegistry, RequestDelegation,

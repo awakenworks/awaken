@@ -120,7 +120,7 @@ async fn minimax_agent_denied_edit_leaves_the_file_unchanged() {
     let messages = session
         .turn(&prompt, move |ticket| {
             asked_for.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(ticket.reason, AwaitReason::ToolPermission);
+            assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
             Approval::Deny
         })
         .await

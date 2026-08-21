@@ -1,4 +1,4 @@
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -15,19 +15,14 @@ use awaken_run_ingress::{
 };
 
 fn ticket(run_id: &RunId, thread_id: &ThreadId) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: "corr".to_string(),
-        run_id: run_id.clone(),
-        thread_id: thread_id.clone(),
-        snapshot_id: "snapshot".to_string(),
-        catalog_fingerprint: "catalog".to_string(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::UserInput,
-        call_id: None,
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    ResumeTicket::new(
+        "corr",
+        run_id.clone(),
+        thread_id.clone(),
+        "snapshot",
+        "catalog",
+        AwaitTarget::Pause(PauseReason::Manual),
+    )
 }
 
 fn snapshot() -> RunRecoverySnapshot {

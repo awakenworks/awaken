@@ -21,7 +21,9 @@ use awaken_agent_channel::AgentChannel;
 // Re-exported so a host composing an [`AgentSession`] can name the channel type without
 // a direct dependency on the foundational channel crate (crate-boundary compliant).
 pub use awaken_agent_channel::AgentChannel as AgentChannelType;
-use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitReason, AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
+};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -473,7 +475,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
             ));
         }
         match command.result {
-            ResumeResult::Input(input) if ticket.reason == AwaitReason::ManualPause => {
+            ResumeResult::Input(input) if ticket.reason() == AwaitReason::ManualPause => {
                 activation.input = vec![Message::text(
                     MessageId(format!("acp-resume-{}", command.correlation_id)),
                     Role::User,
@@ -483,12 +485,9 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     .await
             }
             ResumeResult::Permission(permission)
-                if ticket.reason == AwaitReason::ToolPermission =>
+                if ticket.reason() == AwaitReason::ToolPermission =>
             {
-                let call_id = ticket.call_id.clone().ok_or_else(|| {
-                    Error::Execution("ACP permission ticket has no tool call id".to_string())
-                })?;
-                let pending = ticket.pending_tool.as_ref().ok_or_else(|| {
+                let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
                     Error::Execution("ACP permission ticket has no pending tool".to_string())
                 })?;
                 let (allow, decision, reason) = match permission {
@@ -515,7 +514,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     activation,
                     context,
                     Some(PermissionResume {
-                        call_id,
+                        call_id: call_id.to_string(),
                         tool_id: pending.tool_id.clone(),
                         arguments: pending.arguments.clone(),
                         allow,
@@ -800,25 +799,28 @@ impl AcpRunExecutor {
                 }) => {
                     committed.extend(appender.messages);
                     ensure_pending_tool_use(&run_id, &mut committed, &ask);
-                    let ticket = ResumeTicket {
+                    let ticket = ResumeTicket::new(
                         correlation_id,
-                        run_id: run_id.clone(),
-                        thread_id: activation.thread_id.clone(),
-                        snapshot_id: activation.snapshot.id.0.clone(),
-                        catalog_fingerprint: activation.snapshot.fingerprint.0.clone(),
-                        delegation_origin: activation.delegation_origin.clone(),
-                        data_subject_id: activation
+                        run_id.clone(),
+                        activation.thread_id.clone(),
+                        &activation.snapshot.id.0,
+                        &activation.snapshot.fingerprint.0,
+                        AwaitTarget::ToolCall {
+                            reason: ToolAwaitReason::Permission,
+                            call_id: ask.call_id.clone(),
+                            tool: PendingTool {
+                                tool_id: ask.tool,
+                                arguments: ask.arguments,
+                            },
+                        },
+                    )
+                    .with_delegation_origin(activation.delegation_origin.clone())
+                    .with_data_subject(
+                        activation
                             .data_subject_id
                             .as_ref()
                             .map(|subject| subject.0.clone()),
-                        reason: AwaitReason::ToolPermission,
-                        call_id: Some(ask.call_id.clone()),
-                        pending_tool: Some(PendingTool {
-                            tool_id: ask.tool,
-                            arguments: ask.arguments,
-                        }),
-                        deadline_ms: None,
-                    };
+                    );
                     let disposition = RunDisposition::awaiting(ticket);
                     let state = disposition.state();
                     commit(
@@ -1228,28 +1230,22 @@ fn restored_session_id(
 /// with no pending tool and no call id, correlated by run id, resumed by an
 /// explicit operator resume rather than a tool result. Mirrors the native
 /// engine's `pause_ticket` so a paused ACP run is resumable identically.
-fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: run_id.0.clone(),
-        run_id: run_id.clone(),
-        thread_id: activation.thread_id.clone(),
-        snapshot_id: activation.snapshot.id.0.clone(),
-        catalog_fingerprint: activation
-            .snapshot
-            .resolved_spec
-            .catalog_fingerprint
-            .0
-            .clone(),
-        delegation_origin: activation.delegation_origin.clone(),
-        data_subject_id: activation
+fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: PauseReason) -> ResumeTicket {
+    ResumeTicket::new(
+        &run_id.0,
+        run_id.clone(),
+        activation.thread_id.clone(),
+        &activation.snapshot.id.0,
+        &activation.snapshot.resolved_spec.catalog_fingerprint.0,
+        AwaitTarget::Pause(reason),
+    )
+    .with_delegation_origin(activation.delegation_origin.clone())
+    .with_data_subject(
+        activation
             .data_subject_id
             .as_ref()
             .map(|subject| subject.0.clone()),
-        reason,
-        call_id: None,
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    )
 }
 
 /// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral

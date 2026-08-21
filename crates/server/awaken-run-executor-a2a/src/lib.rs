@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 #[cfg(test)]
 use awaken_agent_contract::agent::run::Record as RunRecord;
@@ -315,31 +315,28 @@ fn resume_text(result: &ResumeResult) -> String {
 }
 
 fn awaiting_ticket(activation: &RunActivation, task: &Task) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: format!("a2a:{}:{:?}", task.id, task.status.state),
-        run_id: activation.run_id.clone(),
-        thread_id: activation.thread_id.clone(),
-        snapshot_id: activation.snapshot.id.0.clone(),
-        catalog_fingerprint: activation
-            .snapshot
-            .resolved_spec
-            .catalog_fingerprint
-            .0
-            .clone(),
-        delegation_origin: activation.delegation_origin.clone(),
-        data_subject_id: activation
+    ResumeTicket::new(
+        format!("a2a:{}:{:?}", task.id, task.status.state),
+        activation.run_id.clone(),
+        activation.thread_id.clone(),
+        &activation.snapshot.id.0,
+        &activation.snapshot.resolved_spec.catalog_fingerprint.0,
+        AwaitTarget::RemoteInput {
+            reason: match task.status.state {
+                TaskState::InputRequired => RemoteInputReason::UserInput,
+                TaskState::AuthRequired => RemoteInputReason::ExternalEvent,
+                _ => unreachable!("only input/auth-required tasks await"),
+            },
+            call_id: task.id.clone(),
+        },
+    )
+    .with_delegation_origin(activation.delegation_origin.clone())
+    .with_data_subject(
+        activation
             .data_subject_id
             .as_ref()
             .map(|subject| subject.0.clone()),
-        reason: match task.status.state {
-            TaskState::InputRequired => AwaitReason::UserInput,
-            TaskState::AuthRequired => AwaitReason::ExternalEvent,
-            _ => unreachable!("only input/auth-required tasks await"),
-        },
-        call_id: Some(task.id.clone()),
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    )
 }
 
 #[async_trait]
@@ -1716,8 +1713,14 @@ mod tests {
             "the partial 'auth-required' prompt is committed for the reader"
         );
         assert_eq!(
-            commits.last().unwrap().run.resume_ticket().unwrap().reason,
-            AwaitReason::ExternalEvent
+            commits
+                .last()
+                .unwrap()
+                .run
+                .resume_ticket()
+                .unwrap()
+                .reason(),
+            awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent
         );
     }
 

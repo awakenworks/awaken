@@ -199,28 +199,31 @@ pub(super) fn resume_ticket(
     delegation_origin: Option<&DelegationOrigin>,
     correlation_id: &str,
     call: &ToolCall,
-    reason: AwaitReason,
+    reason: ToolAwaitReason,
 ) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: correlation_id.to_string(),
-        run_id: run_id.clone(),
-        thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
-        snapshot_id: resolved.snapshot_id.0.clone(),
-        catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
-        delegation_origin: delegation_origin.cloned(),
-        data_subject_id: context
+    ResumeTicket::new(
+        correlation_id,
+        run_id.clone(),
+        ThreadId(String::new()), // filled in finish via the commit thread id
+        &resolved.snapshot_id.0,
+        &resolved.spec.catalog_fingerprint.0,
+        AwaitTarget::ToolCall {
+            reason,
+            call_id: call.call_id.clone(),
+            tool: PendingTool {
+                tool_id: call.tool_id.clone(),
+                arguments: call.arguments.clone(),
+            },
+        },
+    )
+    .with_delegation_origin(delegation_origin.cloned())
+    .with_data_subject(
+        context
             .capture
             .subject
             .as_ref()
             .map(|subject| subject.0.clone()),
-        reason,
-        call_id: Some(call.call_id.clone()),
-        pending_tool: Some(PendingTool {
-            tool_id: call.tool_id.clone(),
-            arguments: call.arguments.clone(),
-        }),
-        deadline_ms: None,
-    }
+    )
 }
 
 /// Turn a resumed result into the tool/user message(s) and any staged state.
@@ -235,11 +238,10 @@ pub(super) async fn resume_into_messages(
     store: &Store,
     context: &RuntimeRunContext,
 ) -> Result<(Vec<Message>, Vec<StateCommand>, Option<ToolOutput>)> {
-    let call_id = ticket.call_id.clone().unwrap_or_default();
     // The pending call, when the ticket carries one, so a tool-outcome hook can
     // advance a machine on the replayed result exactly like a first-time call.
     let pending_call = |output: &ToolOutput| {
-        ticket.pending_tool.as_ref().map(|pending| ToolCall {
+        ticket.pending_tool().map(|pending| ToolCall {
             call_id: output.call_id.clone(),
             tool_id: pending.tool_id.clone(),
             arguments: pending.arguments.clone(),
@@ -247,18 +249,22 @@ pub(super) async fn resume_into_messages(
     };
     match result {
         ResumeResult::ToolResult(output) => {
+            let call_id = ticket.call_id().ok_or_else(|| {
+                Error::Execution("tool result resumed a ticket without a tool call".to_string())
+            })?;
             let output = spill_tool_output(context, run_id, output).await?;
             let call = pending_call(&output);
             let (messages, state) =
-                fold_resume_tool_output(env, run_id, &call_id, call, &output, store).await;
+                fold_resume_tool_output(env, run_id, call_id, call, &output, store).await;
             Ok((messages, state, Some(output)))
         }
         ResumeResult::Permission(decision) => {
-            if matches!(decision, PermissionDecision::Allow { .. })
-                && let Some(pending) = &ticket.pending_tool
-            {
+            let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
+                Error::Execution("permission resumed a ticket without a pending tool".to_string())
+            })?;
+            if matches!(decision, PermissionDecision::Allow { .. }) {
                 let call = ToolCall {
-                    call_id: call_id.clone(),
+                    call_id: call_id.to_string(),
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
@@ -267,8 +273,7 @@ pub(super) async fn resume_into_messages(
                     execute_tool(runtime, Some(env), &call, context, run_id, operation_id).await;
                 let output = spill_tool_output(context, run_id, output).await?;
                 let (messages, state) =
-                    fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store)
-                        .await;
+                    fold_resume_tool_output(env, run_id, call_id, Some(call), &output, store).await;
                 return Ok((messages, state, Some(output)));
             }
             let reason = match decision {
@@ -277,10 +282,10 @@ pub(super) async fn resume_into_messages(
                     reason.unwrap_or_else(|| "denied".to_string())
                 }
             };
-            let output = ToolOutput::error(&call_id, format!("blocked: {reason}"));
+            let output = ToolOutput::error(call_id, format!("blocked: {reason}"));
             let output = spill_tool_output(context, run_id, output).await?;
             let messages = vec![tool_result_message_from(
-                &call_id,
+                call_id,
                 &output.content,
                 output.is_error,
             )];
@@ -288,7 +293,7 @@ pub(super) async fn resume_into_messages(
         }
         ResumeResult::Input(text) => Ok((
             vec![Message::text(
-                MessageId::resume_input(&call_id),
+                MessageId::resume_input(ticket.call_id().unwrap_or(&ticket.correlation_id)),
                 Role::User,
                 text,
             )],

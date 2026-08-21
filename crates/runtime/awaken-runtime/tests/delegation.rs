@@ -539,7 +539,7 @@ async fn approved_agent_run_reenters_the_delegation_router() {
     let ticket = commit
         .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("approval ticket");
-    assert_eq!(ticket.reason, AwaitReason::ToolPermission);
+    assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
     let command = ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0);
     let state = runtime
         .resume(
@@ -600,8 +600,8 @@ async fn delegation_awaiting_awaits_the_parent_on_a_delegation_ticket() {
     let ticket = commit
         .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("a delegation ticket is committed");
-    assert_eq!(ticket.reason, AwaitReason::Delegation);
-    assert_eq!(ticket.call_id.as_deref(), Some(CALL_ID));
+    assert_eq!(ticket.reason(), AwaitReason::Delegation);
+    assert_eq!(ticket.call_id(), Some(CALL_ID));
     assert_eq!(
         committed_delegation_reference(commit.as_ref(), CALL_ID),
         Some(handle),
@@ -924,7 +924,7 @@ async fn resuming_a_delegation_that_awaits_again_uses_the_new_handle() {
     let ticket = commit
         .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("a fresh delegation ticket is committed");
-    assert_eq!(ticket.reason, AwaitReason::Delegation);
+    assert_eq!(ticket.reason(), AwaitReason::Delegation);
     assert_eq!(
         committed_delegation_reference(commit.as_ref(), CALL_ID),
         Some(new_handle),

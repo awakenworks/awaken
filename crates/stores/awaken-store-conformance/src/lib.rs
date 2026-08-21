@@ -6,7 +6,9 @@
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason,
+};
 use awaken_agent_contract::agent::delegation::{
     DelegationId, DelegationLimits, DelegationRegistry, DelegationStatus, RequestDelegation,
 };
@@ -99,19 +101,21 @@ fn running_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommi
 /// A awaiting ticket correlated to `thread`/`run` — the shape `ThreadCommit::validate`
 /// accepts (matching run/thread ids), so awaiting never orphans a ticket.
 fn ticket(thread: &ThreadId, run: &RunId) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: "conf-corr".to_string(),
-        run_id: run.clone(),
-        thread_id: thread.clone(),
-        snapshot_id: "conf-snap".to_string(),
-        catalog_fingerprint: "conf-fp".to_string(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::ToolPermission,
-        call_id: Some("conf-call".to_string()),
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    ResumeTicket::new(
+        "conf-corr",
+        run.clone(),
+        thread.clone(),
+        "conf-snap",
+        "conf-fp",
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id: "conf-call".into(),
+            tool: PendingTool {
+                tool_id: "conf-tool".into(),
+                arguments: serde_json::json!({}),
+            },
+        },
+    )
 }
 
 /// A `Awaiting` checkpoint that awaits the run with a correlated ticket, committed
@@ -350,13 +354,15 @@ pub async fn resume_ticket_awaits_then_clears<S: Coordinator + CheckpointReader>
     let thread = ThreadId("conf-wait".to_string());
     let run = RunId("conf-wait-r".to_string());
 
+    let expected = ticket(&thread, &run);
     store
         .commit(awaiting_checkpoint(&thread, &run))
         .await
         .expect("await");
-    assert!(
-        store.resume_ticket(&run).is_some(),
-        "an awaiting run exposes its ticket"
+    assert_eq!(
+        store.resume_ticket(&run),
+        Some(expected),
+        "the complete closed tool target survives the storage boundary"
     );
 
     // Resume to a terminal fact clears the ticket.

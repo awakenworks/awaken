@@ -354,19 +354,17 @@ async fn second_resume_after_completion_is_not_awaiting() {
 }
 
 #[tokio::test]
-async fn resume_with_a_client_tool_result_is_used_directly() {
-    // Cause-effect rule R-EXT: an External/permission wait resumed with a client
-    // ToolResult must pass through the same spiller as a freshly executed result;
-    // the client payload is never a bypass around the oversized-output boundary.
+async fn permission_wait_rejects_a_client_result_bypass() {
+    // A permission target accepts only an allow/deny decision. Treating an
+    // injected ToolResult as equivalent would bypass both authorization and the
+    // real tool execution path.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new()
-        .with_commit(commit.clone())
-        .with_tool_output_spiller(Arc::new(PrefixSpiller));
-    let outcome = runtime
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let error = runtime
         .resume(
             resume_command(ResumeResult::ToolResult(ToolOutput::ok(
                 "call-1",
@@ -376,16 +374,12 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
             context,
         )
         .await
-        .expect("resume runs");
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    // The client's result is materialized directly; the host tool never ran.
+        .expect_err("a client result cannot answer a permission wait");
+    assert!(error.to_string().contains("incompatible"));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(
-        commit
-            .committed()
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.text_content() == "preview: client-computed")
+        commit.resume_ticket_for(&RunId("run-1".into())).is_some(),
+        "the rejected resume leaves the durable wait intact"
     );
 }
 
@@ -420,8 +414,8 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
     let ticket = commit
         .resume_ticket_for(&RunId("run-1".into()))
         .expect("external result ticket is durable");
-    assert_eq!(ticket.reason, AwaitReason::ExternalEvent);
-    assert_eq!(ticket.call_id.as_deref(), Some("call-1"));
+    assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
+    assert_eq!(ticket.call_id(), Some("call-1"));
 
     let outcome = runtime
         .resume(
@@ -435,14 +429,16 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
                 now_ms: 0,
             },
             commit.as_ref(),
-            RuntimeRunContext::new().with_commit(commit.clone()),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_tool_output_spiller(Arc::new(PrefixSpiller)),
         )
         .await
         .expect("exact client result resumes the run");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(commit.committed().messages.iter().any(|message| {
-        message.role == Role::Tool && message.text_content() == "client-computed"
+        message.role == Role::Tool && message.text_content() == "preview: client-computed"
     }));
 }
 

@@ -2,7 +2,7 @@
 //! run (no external server, no skip): an in-memory database covers commit, the
 //! fence, reads, and awaiting tickets; a temp file covers rehydration on restart.
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -33,19 +33,14 @@ fn ended(run: &str) -> RunDisposition {
 }
 
 fn ticket(run: &str, thread: &str) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: "corr-1".to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(thread.to_string()),
-        snapshot_id: "snap-1".to_string(),
-        catalog_fingerprint: "fp-1".to_string(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::ToolPermission,
-        call_id: Some("call-1".to_string()),
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    ResumeTicket::new(
+        "corr-1",
+        RunId(run.to_string()),
+        ThreadId(thread.to_string()),
+        "snap-1",
+        "fp-1",
+        AwaitTarget::Pause(PauseReason::Manual),
+    )
 }
 
 fn empty_commit(thread: &str, run: RunDisposition) -> ThreadCommit {

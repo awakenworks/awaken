@@ -61,8 +61,10 @@ pub fn run(
 
                 // Run the turn, prompting inline before each mutating tool.
                 let result = runtime.block_on(session.turn(&prompt, |ticket| {
-                    let tool = ticket.call_id.clone().unwrap_or_default();
-                    approve_prompt(&mut terminal, &log, model, &tool).unwrap_or(Approval::Deny)
+                    let Some((tool, _)) = ticket.tool_call() else {
+                        return Approval::Deny;
+                    };
+                    approve_prompt(&mut terminal, &log, model, tool).unwrap_or(Approval::Deny)
                 }));
                 match result {
                     Ok(messages) => log.extend(messages.iter().filter_map(render)),

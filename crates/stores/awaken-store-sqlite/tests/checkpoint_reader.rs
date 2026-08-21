@@ -1,7 +1,9 @@
 //! SQLite passes the shared store conformance suite, and a fresh instance over
 //! the same database file resumes from committed facts (ADR-0039 2.5 / D4).
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitTarget, PauseReason, RemoteInputReason, ResumeTicket,
+};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
@@ -227,19 +229,14 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
     let writer = SqliteCommitCoordinator::open(path).expect("open peer writer");
     for disposition in [
         RunDisposition::running(run.clone()),
-        RunDisposition::awaiting(ResumeTicket {
-            correlation_id: "lifecycle-correlation".into(),
-            run_id: run.clone(),
-            thread_id: thread.clone(),
-            snapshot_id: "snapshot".into(),
-            catalog_fingerprint: "catalog".into(),
-            delegation_origin: None,
-            data_subject_id: None,
-            reason: AwaitReason::UserInput,
-            call_id: None,
-            pending_tool: None,
-            deadline_ms: None,
-        }),
+        RunDisposition::awaiting(ResumeTicket::new(
+            "lifecycle-correlation",
+            run.clone(),
+            thread.clone(),
+            "snapshot",
+            "catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        )),
         RunDisposition::running(run.clone()),
         RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
     ] {
@@ -356,19 +353,17 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
     let path = path.to_str().expect("utf8 path");
     let thread = ThreadId("latest-wait-thread".into());
     let old_run = RunId("old-awaiting-run".into());
-    let old_ticket = ResumeTicket {
-        correlation_id: "old-correlation".into(),
-        run_id: old_run.clone(),
-        thread_id: thread.clone(),
-        snapshot_id: "old-snapshot".into(),
-        catalog_fingerprint: "catalog".into(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::UserInput,
-        call_id: Some("old-call".into()),
-        pending_tool: None,
-        deadline_ms: None,
-    };
+    let old_ticket = ResumeTicket::new(
+        "old-correlation",
+        old_run.clone(),
+        thread.clone(),
+        "old-snapshot",
+        "catalog",
+        AwaitTarget::RemoteInput {
+            reason: RemoteInputReason::UserInput,
+            call_id: "old-call".into(),
+        },
+    );
 
     {
         let store = SqliteCommitCoordinator::open(path).expect("open");
@@ -419,19 +414,17 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
     );
 
     let latest_run = RunId("latest-awaiting-run".into());
-    let latest_ticket = ResumeTicket {
-        correlation_id: "latest-correlation".into(),
-        run_id: latest_run.clone(),
-        thread_id: thread.clone(),
-        snapshot_id: "latest-snapshot".into(),
-        catalog_fingerprint: "catalog".into(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::UserInput,
-        call_id: Some("latest-call".into()),
-        pending_tool: None,
-        deadline_ms: None,
-    };
+    let latest_ticket = ResumeTicket::new(
+        "latest-correlation",
+        latest_run.clone(),
+        thread.clone(),
+        "latest-snapshot",
+        "catalog",
+        AwaitTarget::RemoteInput {
+            reason: RemoteInputReason::UserInput,
+            call_id: "latest-call".into(),
+        },
+    );
     reopened
         .commit(ThreadCommit::assemble(
             thread.clone(),

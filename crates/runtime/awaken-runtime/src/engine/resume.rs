@@ -43,7 +43,7 @@ pub(super) async fn drive_resumed(
     let permission_decision = match &result {
         ResumeResult::Permission(decision)
             if matches!(
-                ticket.reason,
+                ticket.reason(),
                 AwaitReason::ToolPermission | AwaitReason::ScheduledAction
             ) =>
         {
@@ -56,12 +56,12 @@ pub(super) async fn drive_resumed(
     };
     let mut decision_precommitted = false;
     let mut delegation_state = Vec::new();
-    if ticket.reason == AwaitReason::Delegation
+    if ticket.reason() == AwaitReason::Delegation
         && matches!(&result, ResumeResult::ToolResult(_))
-        && let Some(pending) = &ticket.pending_tool
+        && let Some((call_id, pending)) = ticket.tool_call()
     {
         let call = ToolCall {
-            call_id: ticket.call_id.clone().unwrap_or_default(),
+            call_id: call_id.to_string(),
             tool_id: pending.tool_id.clone(),
             arguments: pending.arguments.clone(),
         };
@@ -74,14 +74,14 @@ pub(super) async fn drive_resumed(
         &result,
         ResumeResult::Permission(PermissionDecision::Allow { .. })
     ) && matches!(
-        ticket.reason,
+        ticket.reason(),
         AwaitReason::ToolPermission | AwaitReason::ScheduledAction
-    ) && let Some(call_id) = ticket.call_id.as_deref()
+    ) && let Some((call_id, pending)) = ticket.tool_call()
         && let Some(mut batch) = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
     {
-        let wait_kind = match ticket.reason {
+        let wait_kind = match ticket.reason() {
             AwaitReason::ToolPermission => ToolWaitKind::ToolPermission,
             AwaitReason::ScheduledAction => ToolWaitKind::ScheduledAction,
             _ => unreachable!("guarded by the resume reason above"),
@@ -91,22 +91,20 @@ pub(super) async fn drive_resumed(
             .map_err(|error| Error::Execution(error.to_string()))?;
         let command = ActiveToolBatch::write(&Some(batch));
         let mut approval_state = Vec::new();
-        if let Some(pending) = &ticket.pending_tool {
-            let call = ToolCall {
-                call_id: call_id.to_string(),
-                tool_id: pending.tool_id.clone(),
-                arguments: pending.arguments.clone(),
-            };
-            stage_delegation_request(
-                runtime,
-                resolved,
-                ticket.delegation_origin.as_ref(),
-                run_id,
-                &call,
-                &mut store,
-                &mut approval_state,
-            )?;
-        }
+        let call = ToolCall {
+            call_id: call_id.to_string(),
+            tool_id: pending.tool_id.clone(),
+            arguments: pending.arguments.clone(),
+        };
+        stage_delegation_request(
+            runtime,
+            resolved,
+            ticket.delegation_origin.as_ref(),
+            run_id,
+            &call,
+            &mut store,
+            &mut approval_state,
+        )?;
         approval_state.push(command.clone());
         if let Some(coordinator) = &context.commit {
             coordinator
@@ -118,11 +116,7 @@ pub(super) async fn drive_resumed(
                     approval_state,
                     vec![
                         RunEvent::PermissionDecided {
-                            tool_id: ticket
-                                .pending_tool
-                                .as_ref()
-                                .map(|tool| tool.tool_id.clone())
-                                .unwrap_or_default(),
+                            tool_id: pending.tool_id.clone(),
                             call_id: call_id.to_string(),
                             decision: "approved".to_string(),
                         }
@@ -135,9 +129,9 @@ pub(super) async fn drive_resumed(
         store.apply(&command);
         decision_precommitted = true;
     }
-    let result = if approved && let Some(pending) = &ticket.pending_tool {
+    let result = if approved && let Some((call_id, pending)) = ticket.tool_call() {
         let call = ToolCall {
-            call_id: ticket.call_id.clone().unwrap_or_default(),
+            call_id: call_id.to_string(),
             tool_id: pending.tool_id.clone(),
             arguments: pending.arguments.clone(),
         };
@@ -178,7 +172,7 @@ pub(super) async fn drive_resumed(
                     ticket.delegation_origin.as_ref(),
                     &call.call_id,
                     &call,
-                    AwaitReason::Delegation,
+                    ToolAwaitReason::Delegation,
                 );
                 let mut batch = ActiveToolBatch::load(&store)
                     .map_err(|error| Error::Execution(error.to_string()))?
@@ -226,23 +220,19 @@ pub(super) async fn drive_resumed(
     seed_state.splice(0..0, delegation_state);
     let seed_audit = if decision_precommitted {
         Vec::new()
+    } else if let (Some(decision), Some((call_id, pending))) =
+        (permission_decision, ticket.tool_call())
+    {
+        vec![
+            RunEvent::PermissionDecided {
+                tool_id: pending.tool_id.clone(),
+                call_id: call_id.to_string(),
+                decision: decision.to_string(),
+            }
+            .into(),
+        ]
     } else {
-        permission_decision
-            .map(|decision| {
-                vec![
-                    RunEvent::PermissionDecided {
-                        tool_id: ticket
-                            .pending_tool
-                            .as_ref()
-                            .map(|tool| tool.tool_id.clone())
-                            .unwrap_or_default(),
-                        call_id: ticket.call_id.clone().unwrap_or_default(),
-                        decision: decision.to_string(),
-                    }
-                    .into(),
-                ]
-            })
-            .unwrap_or_default()
+        Vec::new()
     };
     // The resumed tool's own state is folded into the store so a later step in
     // this resume observes the advanced state; it also seeds the attempt's batch
@@ -257,7 +247,7 @@ pub(super) async fn drive_resumed(
     let resumed_new_messages = if let Some(mut batch) = ActiveToolBatch::load(&store)
         .map_err(|error| Error::Execution(error.to_string()))?
         .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
-        && let Some(call_id) = ticket.call_id.as_deref()
+        && let Some(call_id) = ticket.call_id()
         && batch
             .calls()
             .iter()
