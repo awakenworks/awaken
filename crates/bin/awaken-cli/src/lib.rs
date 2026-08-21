@@ -1306,6 +1306,9 @@ mod process_role_surface_tests {
 
     fn executable_agent_registration_body() -> Vec<u8> {
         let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .fingerprint("fp-a")
             .build();
         snapshot.metadata = awaken_runtime_contract::AgentSnapshotMetadata {

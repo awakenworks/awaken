@@ -198,6 +198,7 @@ mod tests {
             host: Arc::downgrade(&host),
         };
         let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+            .model(ModelBinding::new("test", "model", "native"))
             .fingerprint("researcher-v2")
             .metadata(AgentSnapshotMetadata {
                 source: AgentConfigRevisionRef {

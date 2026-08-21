@@ -6,11 +6,14 @@ use awaken_ext_goal::state::{
     Binding, Error, ThreadOutcomeState, acknowledgment_run_id, grader_run_id, grader_thread_id,
     worker_run_id,
 };
+use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 fn snapshot(id: &str) -> ExecutableAgentSnapshot {
-    ExecutableAgentSnapshot::builder(id).build()
+    ExecutableAgentSnapshot::builder(id)
+        .model(ModelBinding::new("test", "model", "native"))
+        .build()
 }
 
 fn fixture() -> (Definition, Binding, State) {

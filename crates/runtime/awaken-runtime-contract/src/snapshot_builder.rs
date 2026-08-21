@@ -34,17 +34,32 @@ impl ExecutableAgentSnapshot {
     }
 }
 
+/// Builder state before a primary execution route has been selected.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::ExecutableAgentSnapshot;
+///
+/// // `build` exists only after `.model(...)` or `.resolved_model(...)`.
+/// let _ = ExecutableAgentSnapshot::builder("agent-without-model").build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct MissingModel;
+
+/// Builder state carrying the selected primary execution route.
+#[derive(Debug, Clone)]
+pub struct SelectedModel(ResolvedModelCandidate);
+
 /// Fluent builder for [`ExecutableAgentSnapshot`]. `build` stamps one fingerprint
 /// into the snapshot envelope and resolved payload. This is the single assembly path: a
 /// compiler feeds resolved tool descriptors plus a content-hash `fingerprint`; a
 /// direct caller feeds descriptors and lets the id stand in as the token.
 #[derive(Debug, Clone)]
-pub struct ExecutableAgentSnapshotBuilder {
+pub struct ExecutableAgentSnapshotBuilder<ModelState = MissingModel> {
     id: String,
     instructions: String,
     max_steps: usize,
     delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
-    model_binding: ResolvedModelCandidate,
+    model_binding: ModelState,
     model_candidates: Vec<ResolvedModelCandidate>,
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
@@ -57,14 +72,14 @@ pub struct ExecutableAgentSnapshotBuilder {
     metadata: AgentSnapshotMetadata,
 }
 
-impl ExecutableAgentSnapshotBuilder {
+impl ExecutableAgentSnapshotBuilder<MissingModel> {
     fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             instructions: String::new(),
             max_steps: DEFAULT_MAX_STEPS,
             delegation_limits: Default::default(),
-            model_binding: ResolvedModelCandidate::host(ModelBinding::default()),
+            model_binding: MissingModel,
             model_candidates: Vec::new(),
             tools: Vec::new(),
             plugin_ids: Vec::new(),
@@ -77,26 +92,47 @@ impl ExecutableAgentSnapshotBuilder {
             metadata: AgentSnapshotMetadata::default(),
         }
     }
+}
 
+impl<ModelState> ExecutableAgentSnapshotBuilder<ModelState> {
     /// The behavior text injected as the leading system message.
     #[must_use]
     pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = instructions.into();
         self
     }
-
     /// The provider instance / model / backend this agent runs on.
     #[must_use]
-    pub fn model(mut self, model_binding: ModelBinding) -> Self {
-        self.model_binding = ResolvedModelCandidate::host(model_binding);
-        self
+    pub fn model(
+        self,
+        model_binding: ModelBinding,
+    ) -> ExecutableAgentSnapshotBuilder<SelectedModel> {
+        self.resolved_model(ResolvedModelCandidate::host(model_binding))
     }
 
     /// Set the complete primary candidate resolved by configuration publication.
     #[must_use]
-    pub fn resolved_model(mut self, model: ResolvedModelCandidate) -> Self {
-        self.model_binding = model;
-        self
+    pub fn resolved_model(
+        self,
+        model: ResolvedModelCandidate,
+    ) -> ExecutableAgentSnapshotBuilder<SelectedModel> {
+        ExecutableAgentSnapshotBuilder {
+            id: self.id,
+            instructions: self.instructions,
+            max_steps: self.max_steps,
+            delegation_limits: self.delegation_limits,
+            model_binding: SelectedModel(model),
+            model_candidates: self.model_candidates,
+            tools: self.tools,
+            plugin_ids: self.plugin_ids,
+            plugin_config: self.plugin_config,
+            agent_bindings: self.agent_bindings,
+            inference: self.inference,
+            context_policy: self.context_policy,
+            tool_presentation: self.tool_presentation,
+            fingerprint: self.fingerprint,
+            metadata: self.metadata,
+        }
     }
 
     /// Ordered pool fallbacks tried after the primary [`model`](Self::model) when
@@ -216,9 +252,14 @@ impl ExecutableAgentSnapshotBuilder {
         self.metadata = metadata;
         self
     }
+}
 
+impl ExecutableAgentSnapshotBuilder<SelectedModel> {
     /// Assemble one immutable [`ExecutableAgentSnapshot`], stamping the same
-    /// fingerprint into its envelope and resolved payload.
+    /// fingerprint into its envelope and resolved payload. This method only
+    /// exists after [`model`](Self::model) or [`resolved_model`](Self::resolved_model)
+    /// selected a primary route, so an executable snapshot without a model is
+    /// unrepresentable.
     pub fn build(self) -> ExecutableAgentSnapshot {
         let fingerprint = self.fingerprint.unwrap_or_else(|| self.id.clone());
         let fp = CatalogFingerprint(fingerprint.clone());
@@ -240,7 +281,7 @@ impl ExecutableAgentSnapshotBuilder {
                 instructions: self.instructions,
                 max_steps: self.max_steps,
                 delegation_limits: self.delegation_limits,
-                model_binding: self.model_binding,
+                model_binding: self.model_binding.0,
                 model_candidates: self.model_candidates,
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
@@ -304,6 +345,7 @@ mod tests {
     #[test]
     fn explicit_fingerprint_overrides_the_id_token() {
         let snapshot = ExecutableAgentSnapshot::builder("assistant")
+            .model(ModelBinding::new("test", "model", "native"))
             .fingerprint("sha256:abc")
             .build();
         assert_eq!(snapshot.fingerprint.0, "sha256:abc");

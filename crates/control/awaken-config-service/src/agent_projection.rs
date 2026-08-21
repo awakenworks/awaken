@@ -159,6 +159,7 @@ mod tests {
         AgentEnvironmentBinding, AgentInputConfig, BindingId, FileId, InputBinding,
         InputResourceId, ResourceAccess,
     };
+    use awaken_runtime_contract::resolved::ModelBinding;
     use awaken_runtime_contract::snapshot::AgentId;
     use awaken_runtime_contract::{
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
@@ -172,6 +173,7 @@ mod tests {
         // P2 current rev3 or P3 missing current -> no current registration view;
         // P4 historical projection -> executable fields retained, defaults empty.
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
+            .model(ModelBinding::new("test", "model", "native"))
             .fingerprint("fp")
             .build();
         snapshot.metadata = AgentSnapshotMetadata {

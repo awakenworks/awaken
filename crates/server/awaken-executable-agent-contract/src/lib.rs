@@ -221,6 +221,9 @@ mod tests {
 
     fn registration() -> ExecutableAgentRegistration {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .fingerprint("fp-a")
             .build();
         snapshot.metadata = AgentSnapshotMetadata {

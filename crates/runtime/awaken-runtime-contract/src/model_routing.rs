@@ -57,7 +57,7 @@ mod kani_proofs {
     use crate::resolved::{ModelBinding, ResolvedModelCandidate};
 
     fn candidate() -> ResolvedModelCandidate {
-        ResolvedModelCandidate::host(ModelBinding::default())
+        ResolvedModelCandidate::host(ModelBinding::new("provider", "model", "native"))
     }
 
     #[kani::proof]

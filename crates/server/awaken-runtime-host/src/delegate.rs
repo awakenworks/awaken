@@ -570,10 +570,16 @@ mod durable_cancel_tests {
         // | V3 | none | current=v2 | freeze v2 once |
         // | V4 | duplicate | either | fail before child start |
         let first = ExecutableAgentSnapshot::builder("worker")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .instructions("version one")
             .fingerprint("worker-v1")
             .build();
         let current = ExecutableAgentSnapshot::builder("worker")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .instructions("version two")
             .fingerprint("worker-v2")
             .build();
@@ -583,6 +589,9 @@ mod durable_cancel_tests {
         };
         let parent = |source_revision| {
             ExecutableAgentSnapshot::builder("coordinator")
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model", "native",
+                ))
                 .agent_bindings(AgentBindings {
                     delegates: vec![AgentDelegateBinding {
                         agent_id: AgentId("worker".into()),
