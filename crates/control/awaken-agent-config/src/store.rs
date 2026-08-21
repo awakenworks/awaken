@@ -6,6 +6,7 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_tenancy::ScopeId;
 use serde::{Deserialize, Serialize};
 
+use crate::AgentInputConfig;
 use crate::config::AgentConfig;
 
 /// A neutral config-store failure (storage or serialization). Compilation errors
@@ -47,27 +48,21 @@ pub enum PublicationRevisionDecision {
 
 /// Classify a publication attempt without performing storage I/O.
 ///
-/// `None` is the legacy representation of an execution target and resolves to
-/// the durable configuration scope. An exact replay wins over a conflicting
-/// legacy duplicate so retries remain compatible with data written before the
-/// execution-target coordinate was introduced.
 pub fn publication_revision_decision<'a, T, I>(
-    configuration_scope: &'a T,
-    proposed_execution_target: Option<&'a T>,
+    proposed_execution_target: &'a T,
     proposed_source_revision: u64,
     proposed_fingerprint: &'a T,
     existing: I,
 ) -> PublicationRevisionDecision
 where
     T: PartialEq + ?Sized + 'a,
-    I: IntoIterator<Item = (Option<&'a T>, u64, &'a T)>,
+    I: IntoIterator<Item = (&'a T, u64, &'a T)>,
 {
-    let proposed_execution_target = proposed_execution_target.unwrap_or(configuration_scope);
     let mut conflicting_fingerprint = false;
 
     for (execution_target, source_revision, fingerprint) in existing {
         if source_revision != proposed_source_revision
-            || execution_target.unwrap_or(configuration_scope) != proposed_execution_target
+            || execution_target != proposed_execution_target
         {
             continue;
         }
@@ -102,10 +97,27 @@ pub struct ManagementAuditEntry {
 /// after the config transaction commits. The config store durably journals it
 /// in the same transaction as the draft and audit record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagementEffect {
-    pub kind: String,
-    pub key: String,
-    pub payload: serde_json::Value,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagementEffect {
+    UpsertAgentInputs { config: AgentInputConfig },
+}
+
+impl ManagementEffect {
+    pub const AGENT_INPUTS_KIND: &'static str = "agent_inputs.upsert";
+
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UpsertAgentInputs { .. } => Self::AGENT_INPUTS_KIND,
+        }
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::UpsertAgentInputs { config } => &config.agent_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,10 +157,7 @@ pub struct StoredPublication {
     /// publications use their authoring scope; reserved platform Agents may be
     /// authored once and published into several execution Workspaces.
     ///
-    /// Legacy rows omitted this coordinate and therefore inherit their durable
-    /// configuration scope at the store boundary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_workspace: Option<String>,
+    pub execution_workspace: ScopeId,
     pub state: PublicationState,
     pub snapshot: ExecutableAgentSnapshot,
     /// Exact Agent input defaults used to compile this publication. Keeping the
@@ -157,28 +166,33 @@ pub struct StoredPublication {
     /// Agent, and startup recovery never has to reconstruct an old Resource revision
     /// from the mutable authoring repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_inputs: Option<serde_json::Value>,
+    pub agent_inputs: Option<AgentInputConfig>,
 }
 
 impl StoredPublication {
     /// Wrap a freshly compiled config as `published`. The fingerprint and
     /// publication id come from the snapshot itself (the producer stamped it), so
     /// the store never re-derives content identity.
-    pub fn published(config: ExecutableAgentSnapshot, agent_id: impl Into<String>) -> Self {
-        Self::published_at_revision(config, agent_id, 0)
+    pub fn published(
+        config: ExecutableAgentSnapshot,
+        agent_id: impl Into<String>,
+        execution_workspace: impl Into<ScopeId>,
+    ) -> Self {
+        Self::published_at_revision(config, agent_id, 0, execution_workspace)
     }
 
     pub fn published_at_revision(
         config: ExecutableAgentSnapshot,
         agent_id: impl Into<String>,
         source_revision: u64,
+        execution_workspace: impl Into<ScopeId>,
     ) -> Self {
         Self {
             publication_id: config.fingerprint.0.clone(),
             fingerprint: config.fingerprint.0.clone(),
             agent_id: agent_id.into(),
             source_revision,
-            execution_workspace: None,
+            execution_workspace: execution_workspace.into(),
             state: PublicationState::Published,
             snapshot: config,
             agent_inputs: None,
@@ -187,34 +201,14 @@ impl StoredPublication {
 
     /// Freeze the exact Resource bindings that belong to this publication.
     #[must_use]
-    pub fn with_agent_inputs(mut self, inputs: Option<serde_json::Value>) -> Self {
+    pub fn with_agent_inputs(mut self, inputs: Option<AgentInputConfig>) -> Self {
         self.agent_inputs = inputs;
         self
     }
 
-    /// Bind the immutable publication to its explicit execution Workspace.
     #[must_use]
-    pub fn with_execution_workspace(mut self, workspace_id: impl Into<String>) -> Self {
-        self.execution_workspace = Some(workspace_id.into());
-        self
-    }
-
-    /// Resolve the durable execution target. Legacy rows are scoped exactly as
-    /// they were before this coordinate was persisted.
-    #[must_use]
-    pub fn execution_workspace_or<'a>(&'a self, configuration_scope: &'a str) -> &'a str {
-        self.execution_workspace
-            .as_deref()
-            .unwrap_or(configuration_scope)
-    }
-
-    #[must_use]
-    pub fn targets_execution_workspace(
-        &self,
-        configuration_scope: &str,
-        execution_workspace: &str,
-    ) -> bool {
-        self.execution_workspace_or(configuration_scope) == execution_workspace
+    pub fn targets_execution_workspace(&self, execution_workspace: &str) -> bool {
+        self.execution_workspace.as_str() == execution_workspace
     }
 }
 
@@ -487,8 +481,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
         }
         let existing = self.list_published_scoped(scope).await?;
         let decision = publication_revision_decision(
-            scope.as_str(),
-            publication.execution_workspace.as_deref(),
+            publication.execution_workspace.as_str(),
             publication.source_revision,
             publication.fingerprint.as_str(),
             existing
@@ -496,7 +489,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
                 .filter(|existing| existing.agent_id == publication.agent_id)
                 .map(|existing| {
                     (
-                        existing.execution_workspace.as_deref(),
+                        existing.execution_workspace.as_str(),
                         existing.source_revision,
                         existing.fingerprint.as_str(),
                     )
@@ -683,46 +676,59 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
 
 #[cfg(test)]
 mod publication_revision_tests {
-    use super::{PublicationRevisionDecision, publication_revision_decision};
+    use super::{ManagementEffect, PublicationRevisionDecision, publication_revision_decision};
+
+    #[test]
+    fn management_effect_derives_its_index_from_typed_content() {
+        let effect = ManagementEffect::UpsertAgentInputs {
+            config: crate::AgentInputConfig {
+                agent_id: "agent-a".into(),
+                environment: None,
+                inputs: Vec::new(),
+                revision: 3,
+            },
+        };
+        assert_eq!(effect.kind(), ManagementEffect::AGENT_INPUTS_KIND);
+        assert_eq!(effect.key(), "agent-a");
+        let wire = serde_json::to_value(&effect).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ManagementEffect>(wire).unwrap(),
+            effect
+        );
+        assert!(
+            serde_json::from_value::<ManagementEffect>(serde_json::json!({
+                "type":"unknown", "payload":{}
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn different_execution_target_does_not_conflict() {
-        let existing = [(Some("workspace-b"), 7, "old")];
+        let existing = [("workspace-b", 7, "old")];
 
         assert_eq!(
-            publication_revision_decision(
-                "authoring-scope",
-                Some("workspace-a"),
-                7,
-                "new",
-                existing,
-            ),
+            publication_revision_decision("workspace-a", 7, "new", existing),
             PublicationRevisionDecision::Apply
         );
     }
 
     #[test]
     fn same_execution_target_and_revision_with_different_fingerprint_conflicts() {
-        let existing = [(Some("workspace-a"), 7, "old")];
+        let existing = [("workspace-a", 7, "old")];
 
         assert_eq!(
-            publication_revision_decision(
-                "authoring-scope",
-                Some("workspace-a"),
-                7,
-                "new",
-                existing,
-            ),
+            publication_revision_decision("workspace-a", 7, "new", existing),
             PublicationRevisionDecision::Conflict
         );
     }
 
     #[test]
-    fn exact_replay_wins_over_conflicting_legacy_row() {
-        let existing = [(None, 7, "old"), (Some("authoring-scope"), 7, "new")];
+    fn exact_replay_wins_over_an_explicit_conflicting_publication() {
+        let existing = [("workspace-a", 7, "old"), ("workspace-a", 7, "new")];
 
         assert_eq!(
-            publication_revision_decision("authoring-scope", None, 7, "new", existing),
+            publication_revision_decision("workspace-a", 7, "new", existing),
             PublicationRevisionDecision::ExactReplay
         );
     }

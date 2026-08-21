@@ -148,7 +148,7 @@ mod tests {
                 revision: awaken_environment_contract::EnvironmentRevision(1),
                 self_hosted: false,
                 config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
-                sandbox: serde_json::json!({}),
+                sandbox: Default::default(),
                 sandbox_provisioning: Default::default(),
                 idle_retention: Default::default(),
                 packages: Default::default(),

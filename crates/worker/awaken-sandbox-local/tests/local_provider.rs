@@ -24,7 +24,9 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
     }
 }
 
@@ -484,7 +486,9 @@ async fn runtime_attach_and_process_reattach_are_unsupported_locally() {
         .unwrap();
     let req = pc::MountRequirement {
         mount_id: "late".into(),
-        source: pc::MountSource::Other(serde_json::json!({ "content": "x" })),
+        source: pc::MountSource::Inline {
+            contents: "x".into(),
+        },
         mount_path: "/workspace/late.txt".into(),
         access: pc::MountAccess::ReadWrite,
         lifetime: pc::MountLifetime::PerRun,

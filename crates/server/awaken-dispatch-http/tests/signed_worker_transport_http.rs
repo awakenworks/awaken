@@ -150,7 +150,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
                 config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "env-fingerprint".into(),
                 ),
-                sandbox: serde_json::json!({}),
+                sandbox: Default::default(),
                 sandbox_provisioning: Default::default(),
                 idle_retention: Default::default(),
                 packages: Default::default(),
@@ -476,7 +476,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         revision: awaken_session_contract::EnvironmentRevision(3),
         self_hosted: false,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("signed-shape".into()),
-        sandbox: serde_json::json!({}),
+        sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),

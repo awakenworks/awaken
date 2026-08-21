@@ -7,8 +7,17 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+mod model;
 mod schedule;
 
+pub use model::{
+    AgentSelector, CreateDeploymentCommand, DeploymentAgent, DeploymentLaunch,
+    DeploymentLaunchOutcome, DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
+    DeploymentRecord, DeploymentRepositoryCheckout, DeploymentResource, DeploymentRunFailure,
+    DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentSeedEvent,
+    DeploymentStatus, DeploymentTrigger, DeploymentView, FieldUpdate, MetadataUpdate,
+    UpdateDeploymentCommand,
+};
 pub use schedule::Cron;
 
 /// Largest revision representable by every supported durable SQL adapter.
@@ -24,22 +33,6 @@ pub struct DeploymentLifecycleFact {
     pub workspace_id: Option<String>,
     pub event_type: String,
     pub timestamp: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeploymentRecord {
-    pub deployment_id: String,
-    pub workspace_id: String,
-    pub revision: u64,
-    pub data: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeploymentRunRecord {
-    pub run_id: String,
-    pub deployment_id: String,
-    pub workspace_id: String,
-    pub data: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -64,16 +57,16 @@ pub enum ScheduledRunClaimOutcome {
 
 #[async_trait]
 pub trait DeploymentRepository: Send + Sync {
-    async fn deployments(&self) -> Result<Vec<DeploymentRecord>, DeploymentRepositoryError>;
+    async fn deployments(&self) -> Result<Vec<DeploymentView>, DeploymentRepositoryError>;
 
-    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunRecord>, DeploymentRepositoryError>;
+    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunView>, DeploymentRepositoryError>;
 
     /// Create at revision zero (`expected_revision=None`) or compare-and-swap
     /// one Deployment to the exact successor revision. Capacity admission and
     /// the lifecycle fact commit in the same transaction.
     async fn write_deployment(
         &self,
-        record: DeploymentRecord,
+        deployment: DeploymentView,
         expected_revision: Option<u64>,
         scheduled_limit: usize,
         lifecycle: Option<DeploymentLifecycleFact>,
@@ -81,7 +74,7 @@ pub trait DeploymentRepository: Send + Sync {
 
     async fn upsert_deployment_run(
         &self,
-        record: DeploymentRunRecord,
+        run: DeploymentRunView,
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError>;
 
@@ -91,8 +84,8 @@ pub trait DeploymentRepository: Send + Sync {
         &self,
         claim_id: &str,
         expected_deployment_revision: u64,
-        deployment: DeploymentRecord,
-        run: DeploymentRunRecord,
+        deployment: DeploymentView,
+        run: DeploymentRunView,
         lifecycle: DeploymentLifecycleFact,
     ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError>;
 }

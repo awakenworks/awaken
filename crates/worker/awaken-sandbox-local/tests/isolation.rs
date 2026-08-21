@@ -24,7 +24,9 @@ fn spec(scope: &str, deny: bool) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: deny.then(|| serde_json::json!({ "deny_egress": true })),
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: deny,
     }
 }
 

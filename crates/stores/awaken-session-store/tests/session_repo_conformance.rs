@@ -7,8 +7,9 @@
 //! remains in the backend-specific suite.
 
 use awaken_deployment_contract::{
-    DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository, DeploymentRunRecord,
-    DeploymentWriteOutcome, ScheduledRunClaimOutcome,
+    DeploymentAgent, DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository,
+    DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentStatus,
+    DeploymentTrigger, DeploymentView, DeploymentWriteOutcome, ScheduledRunClaimOutcome,
 };
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
@@ -36,7 +37,10 @@ fn session(id: &str, title: &str) -> PersistedSession {
         revision: awaken_session_contract::EnvironmentRevision(4),
         self_hosted: false,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
-        sandbox: json!({"isolation": "namespace"}),
+        sandbox: awaken_provisioning_contract::SandboxOverride {
+            isolation: Some(awaken_provisioning_contract::IsolationClass::Namespace),
+            ..Default::default()
+        },
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),
@@ -813,16 +817,35 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     root_cas_decision_table(&cas_repo).await;
 }
 
-fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentRecord {
-    DeploymentRecord {
-        deployment_id: id.to_string(),
-        workspace_id: "ws_a".into(),
-        revision,
-        data: json!({
-            "schedule": scheduled.then_some(json!({"type": "cron"})),
-            "archived_at": null
-        })
-        .to_string(),
+fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView {
+    DeploymentView {
+        id: id.to_string(),
+        record: DeploymentRecord {
+            revision,
+            created_at: "1970-01-01T00:00:00Z".into(),
+            updated_at: "1970-01-01T00:00:00Z".into(),
+            workspace_id: "ws_a".into(),
+            agent: DeploymentAgent::new("agent_a", 1),
+            environment_id: "env_a".into(),
+            name: id.to_string(),
+            description: None,
+            metadata: Default::default(),
+            initial_events: Vec::new(),
+            resources: Vec::new(),
+            schedule: scheduled.then(|| DeploymentSchedule::Cron {
+                expression: "0 * * * *".into(),
+                timezone: "UTC".into(),
+                last_run_at: None,
+                upcoming_runs_at: Vec::new(),
+            }),
+            vault_ids: Vec::new(),
+            budget_max_list_cost_minor: None,
+            status: DeploymentStatus::Active,
+            paused_reason: None,
+            archived_at: None,
+            last_run_at: None,
+            next_fire_ms: scheduled.then_some(60_000),
+        },
     }
 }
 
@@ -881,10 +904,10 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         "D2 exact successor"
     );
     let mut left = created.clone();
-    left.revision = 1;
-    left.data = json!({"schedule": null, "archived_at": null, "writer": "left"}).to_string();
+    left.record.revision = 1;
+    left.record.name = "left".into();
     let mut right = left.clone();
-    right.data = json!({"schedule": null, "archived_at": null, "writer": "right"}).to_string();
+    right.record.name = "right".into();
     let (left_outcome, right_outcome) = tokio::join!(
         repo.write_deployment(left, Some(0), 1, Some(deployment_fact("left-writer")),),
         repo.write_deployment(right, Some(0), 1, Some(deployment_fact("right-writer")),)
@@ -935,16 +958,24 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     );
 
     let mut advanced = deployment_record("depl_cas", 2, false);
-    advanced.data = json!({"schedule": null, "archived_at": null, "cursor": 2}).to_string();
-    let run = DeploymentRunRecord {
-        run_id: "drun_current".into(),
-        deployment_id: "depl_cas".into(),
-        workspace_id: "ws_a".into(),
-        data: json!({"state": "started"}).to_string(),
+    advanced.record.name = "advanced".into();
+    let run = DeploymentRunView {
+        id: "drun_current".into(),
+        record: DeploymentRunRecord {
+            created_at: "1970-01-01T00:00:01Z".into(),
+            deployment_id: "depl_cas".into(),
+            workspace_id: "ws_a".into(),
+            agent: DeploymentAgent::new("agent_a", 1),
+            trigger: DeploymentTrigger::Schedule {
+                scheduled_at: "1970-01-01T00:00:01Z".into(),
+            },
+            session_id: None,
+            error: None,
+        },
     };
     let fact = DeploymentLifecycleFact {
         id: "deployment-run-started".into(),
-        object_id: run.run_id.clone(),
+        object_id: run.id.clone(),
         workspace_id: Some("ws_a".into()),
         event_type: "deployment_run.started".into(),
         timestamp: 1,
@@ -962,11 +993,17 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
             "depl_cas:stale",
             1,
             advanced,
-            DeploymentRunRecord {
-                run_id: "drun_stale".into(),
-                deployment_id: "depl_cas".into(),
-                workspace_id: "ws_a".into(),
-                data: json!({"state": "started"}).to_string(),
+            DeploymentRunView {
+                id: "drun_stale".into(),
+                record: DeploymentRunRecord {
+                    created_at: "1970-01-01T00:00:02Z".into(),
+                    deployment_id: "depl_cas".into(),
+                    workspace_id: "ws_a".into(),
+                    agent: DeploymentAgent::new("agent_a", 1),
+                    trigger: DeploymentTrigger::Manual,
+                    session_id: None,
+                    error: None,
+                },
             },
             DeploymentLifecycleFact {
                 id: "stale-fact".into(),

@@ -797,11 +797,12 @@ mod completion_tests {
             revision: awaken_session_contract::EnvironmentRevision(3),
             self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp-env".into()),
-            sandbox: serde_json::json!({
+            sandbox: serde_json::from_value(serde_json::json!({
                 "isolation": "container",
                 "requests": {"cpu_millis": 250, "memory_bytes": 33554432},
                 "limits": {"memory_bytes": 67108864}
-            }),
+            }))
+            .expect("valid SandboxOverride fixture"),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
             packages: awaken_session_contract::EnvironmentPackages {
@@ -960,7 +961,7 @@ mod completion_tests {
         };
         trusted.model_binding.binding.backend_ref = "acp:codex".into();
         let mut workdir = frozen.clone();
-        workdir.sandbox = serde_json::json!({});
+        workdir.sandbox = Default::default();
         workdir.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
         workdir.packages = Default::default();
         let trusted = remote_worker_placement(&trusted, Some(&workdir), None, true);

@@ -654,6 +654,9 @@ mod tests {
         pc::SandboxSpec {
             scope: scope.into(),
             isolation: pc::IsolationClass::Container,
+            environment: None,
+            command: cmd.iter().map(|part| (*part).to_owned()).collect(),
+            deny_tool_egress: false,
             mounts: Vec::new(),
             env: Vec::new(),
             packages: Default::default(),
@@ -663,7 +666,6 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: Some(serde_json::json!({ "command": cmd })),
         }
     }
 

@@ -185,9 +185,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             });
         }
         let current = sqlx::query(
-            "SELECT revision, scope_id, aggregate_json, agent_id, model, title,
-                    metadata_json, environment_id, status, archived_at,
-                    effective_inputs_json, environment_binding, runtime_json
+            "SELECT revision, scope_id, aggregate_json
              FROM managed_session WHERE session_id = $1 FOR UPDATE",
         )
         .bind(&session_id)
@@ -220,17 +218,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
             let current_session = decode(EncodedSessionRow {
                 aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
-                session_id: session_id.clone(),
-                agent_id: current.try_get("agent_id").map_err(storage)?,
-                model: current.try_get("model").map_err(storage)?,
-                title: current.try_get("title").map_err(storage)?,
-                metadata_json: current.try_get("metadata_json").map_err(storage)?,
-                environment_id: current.try_get("environment_id").map_err(storage)?,
-                status: current.try_get("status").map_err(storage)?,
-                archived_at: current.try_get("archived_at").map_err(storage)?,
-                effective_inputs_json: current.try_get("effective_inputs_json").map_err(storage)?,
-                environment_binding: current.try_get("environment_binding").map_err(storage)?,
-                runtime_json: current.try_get("runtime_json").map_err(storage)?,
                 revision: current.try_get("revision").map_err(storage)?,
             })
             .map_err(corrupt)?;
@@ -364,7 +351,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
         let row = sqlx::query(
-            "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
+            "SELECT aggregate_json, revision \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -374,22 +361,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let Some(row) = row else {
             return Err(SessionRepositoryError::NotFound);
         };
-        let metadata_json: String = row.try_get("metadata_json").map_err(storage)?;
-        let effective_inputs_json: String =
-            row.try_get("effective_inputs_json").map_err(storage)?;
         decode(EncodedSessionRow {
             aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-            session_id: session_id.to_string(),
-            agent_id: row.try_get("agent_id").map_err(storage)?,
-            model: row.try_get("model").map_err(storage)?,
-            title: row.try_get("title").map_err(storage)?,
-            metadata_json,
-            environment_id: row.try_get("environment_id").map_err(storage)?,
-            effective_inputs_json,
-            environment_binding: row.try_get("environment_binding").map_err(storage)?,
-            runtime_json: row.try_get("runtime_json").map_err(storage)?,
-            status: row.try_get("status").map_err(storage)?,
-            archived_at: row.try_get("archived_at").map_err(storage)?,
             revision: row.try_get("revision").map_err(storage)?,
         })
         .map_err(corrupt)
@@ -411,7 +384,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             });
         }
         let rows = sqlx::query(
-            "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
+            "SELECT scope_id, session_id, aggregate_json, revision \
              FROM managed_session session \
              WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine \
                                WHERE quarantine.session_id = session.session_id) \
@@ -424,17 +397,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             let session_id: String = row.try_get("session_id").map_err(storage)?;
             let encoded = EncodedSessionRow {
                 aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                session_id: session_id.clone(),
-                agent_id: row.try_get("agent_id").map_err(storage)?,
-                model: row.try_get("model").map_err(storage)?,
-                title: row.try_get("title").map_err(storage)?,
-                metadata_json: row.try_get("metadata_json").map_err(storage)?,
-                environment_id: row.try_get("environment_id").map_err(storage)?,
-                status: row.try_get("status").map_err(storage)?,
-                archived_at: row.try_get("archived_at").map_err(storage)?,
-                effective_inputs_json: row.try_get("effective_inputs_json").map_err(storage)?,
-                environment_binding: row.try_get("environment_binding").map_err(storage)?,
-                runtime_json: row.try_get("runtime_json").map_err(storage)?,
                 revision: row.try_get("revision").map_err(storage)?,
             };
             match decode(encoded) {

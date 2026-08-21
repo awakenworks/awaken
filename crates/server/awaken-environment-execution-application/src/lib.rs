@@ -506,14 +506,13 @@ async fn snapshot_from_registration(
     };
     let (sandbox, sandbox_provisioning, idle_retention) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
-        Some(policy) => {
-            let Ok(config) = serde_json::to_value(&policy.config) else {
-                return Ok(None);
-            };
-            (config, policy.provisioning, policy.idle_retention.clone())
-        }
+        Some(policy) => (
+            policy.config.clone(),
+            policy.provisioning,
+            policy.idle_retention.clone(),
+        ),
         None => (
-            serde_json::json!({}),
+            Default::default(),
             awaken_session_contract::SandboxProvisioning::Eager,
             Default::default(),
         ),
@@ -1131,7 +1130,7 @@ mod tests {
         revision_two = ExecutableEnvironmentRegistration::new(revision_two.definition, Some(v2));
         registrar.register(revision_two).await.unwrap();
         let lazy = application.snapshot("policy", None).await.unwrap().unwrap();
-        let frozen: SandboxOverride = serde_json::from_value(lazy.sandbox.clone()).unwrap();
+        let frozen = lazy.sandbox.clone();
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace), "P2");
         assert_eq!(
             lazy.sandbox_provisioning,

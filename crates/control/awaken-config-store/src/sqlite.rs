@@ -238,14 +238,14 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 false
             };
             if let Some(effect) = effect {
-                let effect_payload = serde_json::to_string(&effect.payload).map_err(reject)?;
+                let effect_payload = serde_json::to_string(&effect).map_err(reject)?;
                 let existing_payload: Option<String> = tx
                     .query_row(
                         &format!(
                             "SELECT payload FROM {p}_management_effect \
                              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
                         ),
-                        params![scope, effect.kind, effect.key],
+                        params![scope, effect.kind(), effect.key()],
                         |row| row.get(0),
                     )
                     .optional()
@@ -263,7 +263,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                                 "INSERT INTO {p}_management_effect \
                                  (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"
                             ),
-                            params![scope, effect.kind, effect.key, effect_payload],
+                            params![scope, effect.kind(), effect.key(), effect_payload],
                         )
                         .map_err(reject)?;
                     }
@@ -325,11 +325,13 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .map_err(reject)?;
             rows.map(|row| {
                 let (kind, key, payload) = row.map_err(reject)?;
-                Ok(ManagementEffect {
-                    kind,
-                    key,
-                    payload: serde_json::from_str(&payload).map_err(reject)?,
-                })
+                let effect: ManagementEffect = serde_json::from_str(&payload).map_err(reject)?;
+                if kind != effect.kind() || key != effect.key() {
+                    return Err(ConfigStoreError(
+                        "management effect index does not match its typed payload".into(),
+                    ));
+                }
+                Ok(effect)
             })
             .collect()
         })
@@ -698,13 +700,12 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 existing
             };
             let decision = publication_revision_decision(
-                scope.as_str(),
-                execution_workspace.as_deref(),
+                execution_workspace.as_str(),
                 source_revision,
                 fingerprint.as_str(),
                 existing.iter().map(|existing| {
                     (
-                        existing.execution_workspace.as_deref(),
+                        existing.execution_workspace.as_str(),
                         existing.source_revision,
                         existing.fingerprint.as_str(),
                     )

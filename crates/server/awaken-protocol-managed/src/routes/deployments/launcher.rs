@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_deployment_application::{
-    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunFailure, DeploymentSessionLauncher,
+    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
 };
 
 pub struct ManagedDeploymentSessionLauncher {
@@ -28,14 +28,8 @@ impl ManagedDeploymentSessionLauncher {
 }
 
 fn failed(error: crate::types::deployment::RunError) -> DeploymentLaunchOutcome {
-    match serde_json::to_value(error)
-        .ok()
-        .and_then(|value| serde_json::from_value::<DeploymentRunFailure>(value).ok())
-    {
-        Some(error) => DeploymentLaunchOutcome::Failed { error },
-        None => DeploymentLaunchOutcome::Unavailable {
-            message: "cannot project Managed Session launch error".into(),
-        },
+    DeploymentLaunchOutcome::Failed {
+        error: super::application_run_failure(error),
     }
 }
 
@@ -125,35 +119,17 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 message: format!("subagent `{delegate}` is archived"),
             });
         }
-        let initial_events = match request
-            .initial_events
-            .iter()
-            .cloned()
-            .map(serde_json::from_value)
-            .collect::<Result<Vec<crate::types::deployment::DeploymentInitialEvent>, _>>()
-        {
-            Ok(events) => events.into_iter().map(Into::into).collect(),
-            Err(error) => {
-                return failed(RunError::SessionCreationRejectedError {
-                    message: format!("stored Deployment initial Event is invalid: {error}"),
-                });
-            }
-        };
-        let resources = match request
-            .resources
-            .iter()
-            .cloned()
-            .map(serde_json::from_value)
-            .collect::<Result<Vec<crate::types::resource::ResourceInput>, _>>()
-        {
-            Ok(resources) => resources,
-            Err(error) => {
-                return failed(RunError::SessionCreationRejectedError {
-                    message: format!("stored Deployment Resource is invalid: {error}"),
-                });
-            }
-        };
         let launch_fingerprint = awaken_session_contract::stable_fingerprint(&request);
+        let initial_events = request
+            .initial_events
+            .into_iter()
+            .map(super::inbound_event)
+            .collect();
+        let resources = request
+            .resources
+            .into_iter()
+            .map(super::wire_resource)
+            .collect();
         let mut metadata = request.metadata;
         metadata.insert(
             "awaken.deployment_id".to_string(),

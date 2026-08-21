@@ -759,7 +759,7 @@ impl crate::SharedHost {
             )
         });
         let expected_environment_binding = projection.environment.binding().map(str::to_owned);
-        let baseline = decode_baseline_projection(&projection.baseline)?;
+        let baseline = baseline_projection(&projection.baseline);
         let init = projection.session_init();
 
         if let Some(existing) = self
@@ -860,7 +860,7 @@ impl crate::SharedHost {
                 "frozen Session baseline fingerprint must not be empty",
             ));
         }
-        let baseline = decode_baseline_projection(baseline)?;
+        let baseline = baseline_projection(baseline);
         let current = self.session_slots.read(thread, |slot| {
             (
                 slot.baseline.clone(),
@@ -952,42 +952,18 @@ impl crate::SharedHost {
     }
 }
 
-fn decode_baseline_projection(
+fn baseline_projection(
     baseline: &awaken_session_contract::SessionBaseline,
-) -> Result<crate::session_slot::FrozenBaselineRuntimeProjection, crate::HostError> {
-    let mounts = baseline
-        .mounts
-        .iter()
-        .cloned()
-        .map(|value| {
-            serde_json::from_value(value).map_err(|error| {
-                crate::HostError::internal(format!(
-                    "frozen Session baseline has an invalid mount: {error}"
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let env = baseline
-        .env
-        .iter()
-        .cloned()
-        .map(|value| {
-            serde_json::from_value(value).map_err(|error| {
-                crate::HostError::internal(format!(
-                    "frozen Session baseline has an invalid environment value: {error}"
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
+) -> crate::session_slot::FrozenBaselineRuntimeProjection {
+    crate::session_slot::FrozenBaselineRuntimeProjection {
         fingerprint: baseline.fingerprint.clone(),
         agent_id: baseline.agent_id.clone(),
         agent_revision: baseline.agent_revision,
         model_override: baseline.model_override.clone(),
-        mounts,
-        env,
+        mounts: baseline.mounts.clone(),
+        env: baseline.env.clone(),
         prompts: baseline.prompts.clone(),
-    })
+    }
 }
 
 fn validate_baseline_projection(
@@ -1046,7 +1022,7 @@ mod network_policy_tests {
             revision: awaken_session_contract::EnvironmentRevision(3),
             self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
-            sandbox: serde_json::json!({}),
+            sandbox: Default::default(),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
             packages: awaken_session_contract::EnvironmentPackages {

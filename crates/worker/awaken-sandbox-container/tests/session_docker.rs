@@ -32,7 +32,9 @@ async fn native_acp_and_hand_share_one_production_container() {
         isolation: pc::IsolationClass::Container,
         mounts: vec![pc::MountRequirement {
             mount_id: "seed".into(),
-            source: pc::MountSource::Other(serde_json::json!({"content": "mounted-seed"})),
+            source: pc::MountSource::Inline {
+                contents: "mounted-seed".into(),
+            },
             mount_path: "/workspace/.mnt/seed.txt".into(),
             access: pc::MountAccess::ReadOnly,
             lifetime: pc::MountLifetime::PerRun,
@@ -46,7 +48,9 @@ async fn native_acp_and_hand_share_one_production_container() {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
     };
     let sandbox = provider
         .create_container(&spec)
@@ -54,12 +58,10 @@ async fn native_acp_and_hand_share_one_production_container() {
         .expect("create Session environment despite the image's legacy entrypoint");
     let handle = pc::Sandbox::handle(&sandbox);
     let container_id = handle
-        .extra
-        .as_ref()
-        .and_then(|value| value.get("container_id"))
-        .and_then(serde_json::Value::as_str)
-        .expect("physical container id")
-        .to_string();
+        .container_payload()
+        .expect("typed container handle")
+        .container_id
+        .clone();
     assert_eq!(
         ContainerEnvironment::read_files(&sandbox, "/workspace/.mnt")
             .await

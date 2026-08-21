@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub use awaken_agent_config::{AgentEnvironmentBinding, AgentInputConfig};
 pub use awaken_agent_contract::ModelTarget;
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{
@@ -739,171 +740,6 @@ impl WebhookEndpointDef {
         } else {
             WebhookDeliveryState::Active {
                 consecutive_failures: self.consecutive_failures,
-            }
-        }
-    }
-}
-
-/// An Agent's authored default inputs. The repository supplies Workspace as the
-/// aggregate key, so this value contains only Agent-local configuration. The same
-/// typed [`InputBinding`] language is used by Session attachments; no authorization
-/// subject, policy, API key, secret, content pin, Project, or WorkUnit enters it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AgentInputConfig {
-    pub agent_id: String,
-    /// Exact Environment revision selected as this Agent's Session default.
-    /// It is secret-free and shares the same CAS revision as Resource bindings,
-    /// so callers cannot observe a mixed default bundle.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<AgentEnvironmentBinding>,
-    #[cfg_attr(feature = "schema", schemars(with = "Vec<InputBindingSchema>"))]
-    pub inputs: Vec<InputBinding>,
-    pub revision: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AgentEnvironmentBinding {
-    pub environment_id: String,
-    pub revision: u64,
-}
-
-// JSON Schema is an API representation concern, not part of the resource-domain
-// contract. Keep these private shadows at the configuration boundary so the
-// resource contract does not depend on schemars (or any HTTP/OpenAPI tooling).
-#[cfg(feature = "schema")]
-#[allow(dead_code, reason = "type-only JSON Schema projection")]
-#[derive(schemars::JsonSchema)]
-#[schemars(rename = "InputBinding")]
-struct InputBindingSchema {
-    binding_id: String,
-    target: InputResourceIdSchema,
-    mount_path: String,
-    access: ResourceAccessSchema,
-    instructions: Option<String>,
-}
-
-#[cfg(feature = "schema")]
-#[allow(dead_code, reason = "type-only JSON Schema projection")]
-#[derive(schemars::JsonSchema)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-#[schemars(rename = "InputResourceId")]
-enum InputResourceIdSchema {
-    File(String),
-    MemoryStore(String),
-    Repository(String),
-}
-
-#[cfg(feature = "schema")]
-#[allow(dead_code, reason = "type-only JSON Schema projection")]
-#[derive(schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[schemars(rename = "ResourceAccess")]
-enum ResourceAccessSchema {
-    ReadOnly,
-    ReadWrite,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum AgentInputConfigWire {
-    Canonical {
-        agent_id: String,
-        #[serde(default)]
-        environment: Option<AgentEnvironmentBinding>,
-        inputs: Vec<InputBinding>,
-        revision: i64,
-    },
-    Legacy {
-        agent_id: String,
-        resources: Vec<LegacyResourceBinding>,
-        version: i64,
-    },
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyResourceBinding {
-    kind: LegacyResourceKind,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    resource_id: String,
-    mount_path: String,
-    access: ResourceAccess,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacyResourceKind {
-    Outputs,
-    File,
-    MemoryStore,
-    GithubRepository,
-    Skill,
-}
-
-impl<'de> serde::Deserialize<'de> for AgentInputConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error as _;
-
-        match AgentInputConfigWire::deserialize(deserializer)? {
-            AgentInputConfigWire::Canonical {
-                agent_id,
-                environment,
-                inputs,
-                revision,
-            } => Ok(Self {
-                agent_id,
-                environment,
-                inputs,
-                revision,
-            }),
-            AgentInputConfigWire::Legacy {
-                agent_id,
-                resources,
-                version,
-            } => {
-                let mut inputs = Vec::with_capacity(resources.len());
-                for (index, resource) in resources.into_iter().enumerate() {
-                    let target = match resource.kind {
-                        LegacyResourceKind::File => {
-                            InputResourceId::File(FileId::from(resource.resource_id))
-                        }
-                        LegacyResourceKind::MemoryStore => {
-                            InputResourceId::MemoryStore(MemoryStoreId::from(resource.resource_id))
-                        }
-                        LegacyResourceKind::GithubRepository => {
-                            InputResourceId::Repository(RepositoryId::from(resource.resource_id))
-                        }
-                        LegacyResourceKind::Outputs | LegacyResourceKind::Skill => {
-                            return Err(D::Error::custom(
-                                "legacy outputs/skill resource bindings are not Agent inputs; migrate outputs to the Environment and skills to Agent skills",
-                            ));
-                        }
-                    };
-                    let access = if matches!(target, InputResourceId::File(_)) {
-                        ResourceAccess::ReadOnly
-                    } else {
-                        resource.access
-                    };
-                    inputs.push(InputBinding {
-                        binding_id: BindingId::new(format!("agent:{agent_id}:input:{index}")),
-                        target,
-                        mount_path: resource.mount_path,
-                        access,
-                        instructions: resource.instructions,
-                    });
-                }
-                Ok(Self {
-                    agent_id,
-                    environment: None,
-                    inputs,
-                    revision: version,
-                })
             }
         }
     }
@@ -1910,8 +1746,8 @@ mod tests {
     }
 }
 
-/// The canonical Agent input configuration is the same typed language Sessions
-/// consume. The legacy flat resource wire remains a read-only migration boundary.
+/// The canonical Agent input configuration is the same strict typed language
+/// Sessions consume. There is no parallel legacy resource grammar.
 #[cfg(test)]
 mod resource_binding_serde_contract {
     use super::{
@@ -1947,7 +1783,7 @@ mod resource_binding_serde_contract {
     }
 
     #[test]
-    fn a_supported_legacy_binding_migrates_to_the_typed_language() {
+    fn legacy_resource_bindings_are_rejected_instead_of_reinterpreted() {
         const LEGACY: &str = r#"{
           "agent_id": "a",
           "resources": [
@@ -1956,12 +1792,7 @@ mod resource_binding_serde_contract {
           ],
           "version": 1
         }"#;
-        let back: AgentInputConfig =
-            serde_json::from_str(LEGACY).expect("a persisted legacy binding must still load");
-        assert_eq!(back.revision, 1);
-        assert_eq!(back.inputs[0].binding_id.as_str(), "agent:a:input:0");
-        assert_eq!(back.inputs[0].target.id(), "store-1");
-        assert_eq!(back.inputs[0].access, ResourceAccess::ReadWrite);
+        assert!(serde_json::from_str::<AgentInputConfig>(LEGACY).is_err());
     }
 
     #[test]
@@ -1975,10 +1806,8 @@ mod resource_binding_serde_contract {
     }
 
     #[test]
-    fn an_unknown_future_field_is_ignored_not_rejected() {
+    fn unknown_fields_fail_closed() {
         let json = r#"{"agent_id":"a","inputs":[],"revision":1,"a_future_field":42}"#;
-        let back: AgentInputConfig =
-            serde_json::from_str(json).expect("an unknown field is ignored");
-        assert_eq!(back.agent_id, "a");
+        assert!(serde_json::from_str::<AgentInputConfig>(json).is_err());
     }
 }

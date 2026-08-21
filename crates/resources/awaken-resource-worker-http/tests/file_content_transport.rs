@@ -111,7 +111,7 @@ fn frozen_application_session(
         revision: awaken_environment_contract::EnvironmentRevision(1),
         self_hosted: true,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
-        sandbox: serde_json::json!({}),
+        sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),

@@ -48,6 +48,10 @@ struct AmbiguousManagedPutStore {
     release_response: tokio::sync::Barrier,
 }
 
+struct FailedPutAndCleanupStore {
+    inner: InMemorySecretStore,
+}
+
 #[async_trait::async_trait]
 impl SecretStore for FaultyDeleteStore {
     async fn put(
@@ -117,6 +121,28 @@ impl SecretStore for AmbiguousManagedPutStore {
 
     async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
         self.inner.delete(r).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SecretStore for FailedPutAndCleanupStore {
+    async fn put(
+        &self,
+        r: &crate::SecretRef,
+        secret: RedactedString,
+    ) -> Result<(), CredentialError> {
+        self.inner.put(r, secret).await?;
+        Err(CredentialError::Storage("primary put response lost".into()))
+    }
+
+    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
+        self.inner.get(r).await
+    }
+
+    async fn delete(&self, _r: &crate::SecretRef) -> Result<(), CredentialError> {
+        Err(CredentialError::Storage(
+            "cleanup delete unavailable".into(),
+        ))
     }
 }
 
@@ -560,12 +586,16 @@ async fn stale_writer_cannot_cleanup_material_after_recovery_publishes_it() {
     let committed_reference = committed.material_ref.clone().unwrap();
 
     secrets.release_response.wait().await;
-    assert!(matches!(
-        writer.await.unwrap(),
-        Err(ManagedCredentialMutationError::Store(
-            CredentialError::Storage(_)
-        ))
-    ));
+    let stale_error = writer.await.unwrap().unwrap_err();
+    assert!(
+        matches!(
+                stale_error,
+                ManagedCredentialMutationError::Compensation { ref primary, ref cleanup }
+                if primary.contains("lost Managed put response")
+                    && cleanup.contains("cannot abort a published")
+        ),
+        "a fenced stale writer reports both the ambiguous write and rejected cleanup: {stale_error}"
+    );
     assert_eq!(
         secrets
             .get(&committed_reference)
@@ -972,6 +1002,59 @@ async fn ambiguous_aborted_delete_keeps_exact_cleanup_fact_for_retry() {
         1
     );
     assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn failed_material_write_and_failed_compensation_preserve_both_failures() {
+    // Failure-product test: primary write {ok, err} × compensation {ok, err}.
+    // This covers the err×err corner: the caller receives both causes and the
+    // durable ReclaimingAbort fact remains the sole retry authority.
+    let store = FailedPutAndCleanupStore {
+        inner: InMemorySecretStore::new(),
+    };
+    let repo = InMemoryCredentialRepo::new();
+    repo.insert_vault("ws", managed_vault()).await.unwrap();
+    let command = managed_command("https://mcp.example.com");
+    let (source, secret) =
+        prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
+    let child = ManagedVaultCredential {
+        id: command.credential_id,
+        vault_id: command.vault_id,
+        workspace_id: source.workspace_id.clone(),
+        source_id: source.id.clone(),
+        auth: command.auth,
+        metadata: command.metadata,
+        display_name: command.display_name,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    let pending = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let reference = pending.after_source.material_ref.clone().unwrap();
+
+    let error = execute_managed_mutation(
+        pending,
+        vec![(reference.clone(), secret.unwrap())],
+        &store,
+        &repo,
+    )
+    .await
+    .unwrap_err();
+
+    match error {
+        ManagedCredentialMutationError::Compensation { primary, cleanup } => {
+            assert!(primary.contains("primary put response lost"));
+            assert!(cleanup.contains("cleanup delete unavailable"));
+        }
+        other => panic!("expected composite compensation error, got {other}"),
+    }
+    let durable = repo.pending_managed_mutations().await.unwrap();
+    assert_eq!(durable.len(), 1);
+    assert_eq!(
+        durable[0].phase,
+        ManagedCredentialMutationPhase::ReclaimingAbort
+    );
+    let durable_reference = durable[0].after_source.material_ref.as_ref().unwrap();
+    assert!(store.get(durable_reference).await.is_ok());
 }
 
 #[tokio::test]

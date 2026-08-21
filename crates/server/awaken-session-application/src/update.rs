@@ -14,9 +14,9 @@ use super::{
 /// Protocol-neutral mutable Session command.
 #[derive(Clone, Debug)]
 pub struct SessionUpdateCommand {
-    pub title: Option<Option<String>>,
-    pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
-    pub budget: Option<Option<u64>>,
+    pub title: Option<SessionFieldUpdate<String>>,
+    pub metadata: Option<SessionMetadataUpdate>,
+    pub budget: Option<SessionFieldUpdate<u64>>,
     pub tools: Option<SessionToolConfiguration>,
     pub mcp_candidates: Option<Vec<McpAttachmentCandidate>>,
     pub idempotency_key: Option<String>,
@@ -24,6 +24,21 @@ pub struct SessionUpdateCommand {
     /// owns the request representation.
     pub request_fingerprint: String,
     pub if_match: Option<SessionRevision>,
+}
+
+/// Explicit mutation of an optional Session field. `None` on the command means
+/// unchanged; the enum distinguishes clear from replace without nested Options.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionFieldUpdate<T> {
+    Clear,
+    Replace(T),
+}
+
+/// Session metadata is patched by key rather than replaced wholesale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionMetadataUpdate {
+    Clear,
+    Patch(BTreeMap<String, Option<String>>),
 }
 
 /// Which durable projections changed while applying an update.
@@ -306,20 +321,23 @@ impl SessionApplication {
             }
         }
 
-        if let Some(title) = command.title.clone() {
-            session.title = title;
+        if let Some(title) = &command.title {
+            session.title = match title {
+                SessionFieldUpdate::Clear => None,
+                SessionFieldUpdate::Replace(title) => Some(title.clone()),
+            };
         }
-        if let Some(patch) = command.metadata.clone() {
+        if let Some(patch) = &command.metadata {
             match patch {
-                None => session.metadata.clear(),
-                Some(patch) => {
+                SessionMetadataUpdate::Clear => session.metadata.clear(),
+                SessionMetadataUpdate::Patch(patch) => {
                     for (key, value) in patch {
                         match value {
                             Some(value) => {
-                                session.metadata.insert(key, value);
+                                session.metadata.insert(key.clone(), value.clone());
                             }
                             None => {
-                                session.metadata.remove(&key);
+                                session.metadata.remove(key);
                             }
                         }
                     }
@@ -329,7 +347,7 @@ impl SessionApplication {
         if let Some(tools) = &command.tools {
             session.tools = tools.clone();
         }
-        if let Some(requested) = command.budget {
+        if let Some(requested) = &command.budget {
             use awaken_session_contract::SessionBudgetState;
             session.budget = match (session.budget, requested) {
                 (
@@ -340,9 +358,9 @@ impl SessionApplication {
                         reached_event_emitted,
                         ..
                     },
-                    Some(max_list_cost_minor),
+                    SessionFieldUpdate::Replace(max_list_cost_minor),
                 ) => {
-                    let threshold = u128::from(max_list_cost_minor)
+                    let threshold = u128::from(*max_list_cost_minor)
                         * SessionBudgetState::MICROS_PER_MINOR_USD
                         * SessionBudgetState::COST_DENOMINATOR;
                     if threshold <= consumed_numerator {
@@ -351,7 +369,7 @@ impl SessionApplication {
                         )));
                     }
                     SessionBudgetState::Active {
-                        max_list_cost_minor,
+                        max_list_cost_minor: *max_list_cost_minor,
                         consumed_numerator,
                         usage_cursor,
                         snapshot,
@@ -365,7 +383,7 @@ impl SessionApplication {
                         snapshot,
                         ..
                     },
-                    None,
+                    SessionFieldUpdate::Clear,
                 ) => SessionBudgetState::Removed {
                     consumed_numerator,
                     usage_cursor,
@@ -376,8 +394,10 @@ impl SessionApplication {
                         "a budget cannot be added to a Session created without one",
                     )));
                 }
-                (removed @ SessionBudgetState::Removed { .. }, None) => removed,
-                (SessionBudgetState::Removed { .. }, Some(_)) => {
+                (removed @ SessionBudgetState::Removed { .. }, SessionFieldUpdate::Clear) => {
+                    removed
+                }
+                (SessionBudgetState::Removed { .. }, SessionFieldUpdate::Replace(_)) => {
                     return Err(SessionUpdateError::Rejected(RunError::bad_request(
                         "a removed Session budget cannot be re-added",
                     )));

@@ -269,12 +269,12 @@ pub struct SessionRealizationLease {
 /// id (which is also its thread id). Everything here is what the wire `Session`
 /// object needs beyond the runtime's committed transcript.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersistedSession {
     pub session_id: String,
     /// The one optimistic-concurrency fence for baseline, Resource, MCP,
     /// environment, execution, and disposition mutations. New, not-yet-inserted
     /// values use 0.
-    #[serde(default)]
     pub revision: SessionRevision,
     /// The only immutable configuration authority. A preparation intent is
     /// consumed exactly once and replaced by its frozen baseline.
@@ -283,12 +283,10 @@ pub struct PersistedSession {
     pub metadata: BTreeMap<String, String>,
     /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
     /// public protocol tool unions are projections and never persistence truth.
-    #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
     /// Monotonic root-CAS fence for overlapping driving events. Execution and
     /// disposition remain the durable logical state; this scalar only prevents
     /// a stale completion from settling a newer turn.
-    #[serde(default)]
     pub activity_epoch: u64,
     /// One continuous authoritative Running interval. It is persisted in the
     /// aggregate so process recovery and overlapping driving events cannot
@@ -298,16 +296,13 @@ pub struct PersistedSession {
     /// Cumulative wall-clock milliseconds across closed Running intervals.
     /// Overlapping activities share one interval, so this is the authoritative
     /// non-double-counted Session runtime quantity used by list-cost pricing.
-    #[serde(default)]
     pub runtime_active_millis: u64,
     /// Exact Managed list-cost budget and immutable price snapshot. All
     /// Session threads share this root-owned admission and settlement fence.
-    #[serde(default)]
     pub budget: crate::SessionBudgetState,
     /// Durable, secret-free execution-environment phase. Opaque bindings are
     /// interpreted only by the runtime that produced them; this aggregate owns
     /// their transition, not their substrate meaning.
-    #[serde(default)]
     pub environment: crate::SessionEnvironmentState,
     /// The only initial and hot MCP desired-state authority.
     pub mcp: crate::SessionMcpAttachmentSet,
@@ -320,18 +315,15 @@ pub struct PersistedSession {
     pub realization: Option<SessionRealizationLease>,
     /// Initial Environment realization retry state. Kept inside the Session
     /// root so a reclaimed Worker claim cannot reset the failure budget.
-    #[serde(default)]
     pub realization_progress: crate::SessionRealizationProgress,
     /// The only durable execution-state authority. The retained serialized key
     /// keeps historical aggregate JSON readable through the store codec.
-    #[serde(rename = "status", alias = "lifecycle")]
+    #[serde(rename = "status")]
     pub execution: SessionExecutionState,
     /// Retention/public-visibility is independent from execution progress.
-    #[serde(default)]
     pub disposition: SessionDisposition,
     /// Durable intent/receipt state for terminal Runtime effects. Resource,
     /// Environment, artifact, and process cleanup project from this one fact.
-    #[serde(default)]
     pub terminal_cleanup: crate::SessionCleanupOperation,
 }
 
@@ -1065,7 +1057,7 @@ mod mutation_tests {
                         revision: awaken_environment_contract::EnvironmentRevision(1),
                         self_hosted: false,
                         config_fingerprint: crate::EnvironmentFingerprint("config".into()),
-                        sandbox: serde_json::json!({}),
+                        sandbox: Default::default(),
                         sandbox_provisioning: Default::default(),
                         idle_retention: Default::default(),
                         packages: Default::default(),
@@ -1174,42 +1166,49 @@ mod mutation_tests {
     }
 
     #[test]
-    fn execution_state_preserves_the_historical_key_and_rejects_unknown_truth() {
-        // Compatibility causes/effects: C1 current `status`; C2 legacy
-        // `lifecycle`; C3 unknown execution value; C4 row predates persisted
-        // realization progress. Effects: E1 C1/C2 decode the exact state; E2 C3
-        // fails closed; E3 C4 defaults to zero attempts/no error. Decision rules
-        // S1=C1=>E1, S2=C2=>E1, S3=C3=>E2, S4=C4=>E3. FMECA: rejecting C4 would
-        // quarantine every existing Session during rollout (S9/O10/D2).
+    fn persisted_session_accepts_only_the_complete_canonical_grammar() {
+        // Grammar partition: S1 complete canonical `status` -> exact decode;
+        // S2 unknown status, S3 removed required fact, S4 old alias, and S5
+        // unknown top-level fact -> reject. Recovery never synthesizes domain
+        // truth from defaults or alternate spellings.
         let value = serde_json::to_value(session("session-1", SessionRevision(1))).unwrap();
         assert_eq!(value.get("status"), Some(&serde_json::json!("idle")));
         assert!(value.get("lifecycle").is_none());
+        assert!(
+            serde_json::from_value::<PersistedSession>(value.clone()).is_ok(),
+            "S1"
+        );
 
         let mut unknown = value.clone();
         unknown["status"] = serde_json::json!("legacy-unknown");
-        assert!(serde_json::from_value::<PersistedSession>(unknown).is_err());
+        assert!(
+            serde_json::from_value::<PersistedSession>(unknown).is_err(),
+            "S2"
+        );
 
-        let mut legacy_progress = value.clone();
-        legacy_progress
+        let mut missing = value.clone();
+        missing
             .as_object_mut()
             .unwrap()
             .remove("realization_progress");
-        assert_eq!(
-            serde_json::from_value::<PersistedSession>(legacy_progress)
-                .unwrap()
-                .realization_progress,
-            crate::SessionRealizationProgress::default(),
-            "S4/E3"
+        assert!(
+            serde_json::from_value::<PersistedSession>(missing).is_err(),
+            "S3"
         );
 
-        let mut aliased = value;
+        let mut aliased = value.clone();
         let status = aliased.as_object_mut().unwrap().remove("status").unwrap();
         aliased["lifecycle"] = status;
-        assert_eq!(
-            serde_json::from_value::<PersistedSession>(aliased)
-                .unwrap()
-                .execution,
-            SessionExecutionState::Idle
+        assert!(
+            serde_json::from_value::<PersistedSession>(aliased).is_err(),
+            "S4"
+        );
+
+        let mut extra = value;
+        extra["unknown"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<PersistedSession>(extra).is_err(),
+            "S5"
         );
     }
 
