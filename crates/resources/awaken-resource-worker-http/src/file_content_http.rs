@@ -244,7 +244,7 @@ async fn read_file_content(
         .filter(|envelope| envelope.workspace_id == request.workspace_id)
         .and_then(|envelope| envelope.decode_manifest().ok());
     let file_is_frozen = manifest.as_ref().is_some_and(|manifest| {
-        manifest.resources.inputs.iter().any(|input| {
+        manifest.resources.inputs().iter().any(|input| {
             matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::File { file_id }
@@ -382,7 +382,7 @@ async fn application_session_file_is_frozen(
     session.frozen_baseline().is_some()
         && !session.is_terminal()
         && lease_matches
-        && session.resources.desired().inputs.iter().any(|input| {
+        && session.resources.desired().inputs().iter().any(|input| {
             matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::File { file_id }

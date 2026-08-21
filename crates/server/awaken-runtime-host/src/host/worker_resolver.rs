@@ -975,8 +975,8 @@ mod tests {
             .id;
         let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_session_contract::ResolvedSessionResources {
-                inputs: vec![awaken_session_contract::ResolvedInput {
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![awaken_session_contract::ResolvedInput {
                     binding_id: awaken_resource_contract::BindingId::new("file-binding"),
                     source: awaken_session_contract::ResolvedInputSource::File {
                         file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
@@ -985,8 +985,9 @@ mod tests {
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Vec::new(),
-            },
+                Vec::new(),
+            )
+            .unwrap(),
         );
 
         host.install_dispatched_resources("thread-cold-resource", &manifest, None)
@@ -1026,10 +1027,7 @@ mod tests {
         let cleared = awaken_session_contract::SessionResourceManifest::at_revision(
             "workspace-a",
             2,
-            awaken_session_contract::ResolvedSessionResources {
-                inputs: Vec::new(),
-                skills: Vec::new(),
-            },
+            awaken_session_contract::ResolvedSessionResources::default(),
         );
         host.install_dispatched_resources("thread-cold-resource", &cleared, None)
             .await
@@ -1094,15 +1092,16 @@ mod tests {
             awaken_session_contract::SessionResourceManifest::at_revision(
                 "workspace-a",
                 4,
-                awaken_session_contract::ResolvedSessionResources {
-                    inputs: Vec::new(),
-                    skills: vec![awaken_session_contract::ResolvedSkillBinding {
+                awaken_session_contract::ResolvedSessionResources::try_new(
+                    Vec::new(),
+                    vec![awaken_session_contract::ResolvedSkillBinding {
                         kind: awaken_agent_contract::AgentSkillKind::Custom,
                         skill_id: "different-same-generation".into(),
                         version: 1,
                         bundle_sha256: "sha256-different".into(),
                     }],
-                },
+                )
+                .unwrap(),
             ),
             awaken_session_contract::SessionResourceManifest::at_revision(
                 "workspace-b",
@@ -1187,8 +1186,8 @@ mod tests {
         let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-remote",
-            awaken_session_contract::ResolvedSessionResources {
-                inputs: vec![awaken_session_contract::ResolvedInput {
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![awaken_session_contract::ResolvedInput {
                     binding_id: awaken_resource_contract::BindingId::new("remote-file-binding"),
                     source: awaken_session_contract::ResolvedInputSource::File {
                         file_id: awaken_resource_contract::FileId::from("file-remote"),
@@ -1197,8 +1196,9 @@ mod tests {
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Vec::new(),
-            },
+                Vec::new(),
+            )
+            .unwrap(),
         );
         let claim = awaken_run_ingress::RunClaim {
             run_id: RunId("run-remote".into()),

@@ -97,7 +97,7 @@ impl SessionRecord {
         session.resources = self
             .resource_state
             .desired()
-            .inputs
+            .inputs()
             .iter()
             .map(|input| resolved_resource_dto(&session.id, input))
             .collect();

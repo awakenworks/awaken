@@ -34,7 +34,10 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         )
         .await
         .expect("M1 intent accepted");
-    assert!(outcome.session.resources.active.inputs.is_empty(), "M1/E1");
+    assert!(
+        outcome.session.resources.active.inputs().is_empty(),
+        "M1/E1"
+    );
     assert_eq!(
         outcome.session.resources.pending.as_ref(),
         Some(&desired),

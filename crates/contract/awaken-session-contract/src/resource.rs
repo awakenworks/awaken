@@ -8,7 +8,7 @@ use awaken_resource_contract::{
     BindingId, ExecutionResourceResolver, InputBinding, InputResourceId, MemoryStoreConfigVersion,
     RepositoryConfigVersion, ResourceRegistryError,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Pure Session input resolver. Runtime receives only this resolved output
 /// and never reads the Agent binding repository itself.
@@ -123,11 +123,37 @@ pub struct ResolvedSkillBinding {
 /// Inputs and Skill capabilities remain distinct collections because Skills are
 /// executable capabilities, not mounted user inputs. An empty list is the one
 /// canonical representation of a Session that selected no Skills.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ```compile_fail
+/// use awaken_session_contract::ResolvedSessionResources;
+///
+/// let _ = ResolvedSessionResources {
+///     inputs: Vec::new(),
+///     skills: Vec::new(),
+/// };
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ResolvedSessionResources {
-    pub inputs: Vec<ResolvedInput>,
+    inputs: Vec<ResolvedInput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skills: Vec<ResolvedSkillBinding>,
+    skills: Vec<ResolvedSkillBinding>,
+}
+
+#[derive(Deserialize)]
+struct ResolvedSessionResourcesWire {
+    inputs: Vec<ResolvedInput>,
+    #[serde(default)]
+    skills: Vec<ResolvedSkillBinding>,
+}
+
+impl<'de> Deserialize<'de> for ResolvedSessionResources {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ResolvedSessionResourcesWire::deserialize(deserializer)?;
+        Self::try_new(wire.inputs, wire.skills).map_err(de::Error::custom)
+    }
 }
 
 /// Frozen, secret-free resource input installed before a Session execution
@@ -173,13 +199,41 @@ impl SessionResourceManifest {
 }
 
 impl ResolvedSessionResources {
-    /// Validate a complete already-resolved manifest before it becomes the
-    /// Session's desired generation. This is the whole-set counterpart to
-    /// [`Self::validate_new_binding`]; callers must not validate entries one at
-    /// a time because collisions can occur between two new entries.
-    pub fn validate(&self) -> Result<(), SessionInputError> {
-        let mut inputs = self.inputs.clone();
-        validate_resolved_inputs(&mut inputs)
+    /// Construct one complete effective manifest. Mount paths normalize here,
+    /// and every whole-set identity invariant is checked before the value can
+    /// cross an application or persistence boundary.
+    pub fn try_new(
+        mut inputs: Vec<ResolvedInput>,
+        skills: Vec<ResolvedSkillBinding>,
+    ) -> Result<Self, SessionInputError> {
+        validate_resolved_inputs(&mut inputs)?;
+        validate_resolved_skills(&skills)?;
+        Ok(Self { inputs, skills })
+    }
+
+    #[must_use]
+    pub fn inputs(&self) -> &[ResolvedInput] {
+        &self.inputs
+    }
+
+    #[must_use]
+    pub fn skills(&self) -> &[ResolvedSkillBinding] {
+        &self.skills
+    }
+
+    pub fn into_parts(self) -> (Vec<ResolvedInput>, Vec<ResolvedSkillBinding>) {
+        (self.inputs, self.skills)
+    }
+
+    /// Replace the complete resolved Skill set without opening the input
+    /// collection or allowing duplicate/invalid pins to be installed.
+    pub fn with_skills(
+        mut self,
+        skills: Vec<ResolvedSkillBinding>,
+    ) -> Result<Self, SessionInputError> {
+        validate_resolved_skills(&skills)?;
+        self.skills = skills;
+        Ok(self)
     }
 
     /// Validate identity and mount invariants before an adapter performs any
@@ -233,6 +287,30 @@ impl ResolvedSessionResources {
         Ok(next)
     }
 
+    /// Transform one binding through a closed copy-on-write boundary. The
+    /// candidate is revalidated before it replaces the current manifest, so a
+    /// caller can update source-specific pins without receiving mutable access
+    /// to identity or mount invariants.
+    pub fn update_input(
+        &self,
+        binding_id: &BindingId,
+        update: impl FnOnce(&mut ResolvedInput),
+    ) -> Result<Self, SessionInputError> {
+        let mut input = self
+            .inputs
+            .iter()
+            .find(|input| &input.binding_id == binding_id)
+            .cloned()
+            .ok_or_else(|| SessionInputError::UnknownBinding(binding_id.to_string()))?;
+        update(&mut input);
+        if &input.binding_id != binding_id {
+            return Err(SessionInputError::InvalidBindingId(
+                input.binding_id.to_string(),
+            ));
+        }
+        self.replace(input)
+    }
+
     /// Remove one live binding, returning both the new manifest and removed input.
     pub fn detach(
         &self,
@@ -263,6 +341,8 @@ pub enum SessionInputError {
     UnknownBinding(String),
     #[error("invalid Repository credential execution pin: {0}")]
     InvalidCredentialPin(String),
+    #[error("invalid resolved Skill pin: {0}")]
+    InvalidSkillPin(String),
     #[error(transparent)]
     Registry(#[from] awaken_resource_contract::ResourceRegistryError),
 }
@@ -314,6 +394,41 @@ fn validate_resolved_inputs(inputs: &mut [ResolvedInput]) -> Result<(), SessionI
         input.mount_path = normalized_mount(&input.mount_path)?;
         if !paths.insert(input.mount_path.clone()) {
             return Err(SessionInputError::MountCollision(input.mount_path.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_resolved_skills(skills: &[ResolvedSkillBinding]) -> Result<(), SessionInputError> {
+    if skills.len() > 500 {
+        return Err(SessionInputError::InvalidSkillPin(
+            "at most 500 Skills may be selected".into(),
+        ));
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for skill in skills {
+        if skill.skill_id.trim().is_empty() {
+            return Err(SessionInputError::InvalidSkillPin(
+                "Skill id must be non-empty".into(),
+            ));
+        }
+        if skill.version == 0 {
+            return Err(SessionInputError::InvalidSkillPin(format!(
+                "Skill `{}` has version zero",
+                skill.skill_id
+            )));
+        }
+        if skill.bundle_sha256.trim().is_empty() {
+            return Err(SessionInputError::InvalidSkillPin(format!(
+                "Skill `{}` has an empty bundle digest",
+                skill.skill_id
+            )));
+        }
+        if !identities.insert((skill.kind, skill.skill_id.as_str())) {
+            return Err(SessionInputError::InvalidSkillPin(format!(
+                "Skill `{}` is duplicated",
+                skill.skill_id
+            )));
         }
     }
     Ok(())
@@ -414,10 +529,7 @@ impl SessionInputResolver {
                 })
             })
             .collect::<Result<Vec<_>, SessionInputError>>()?;
-        Ok(ResolvedSessionResources {
-            inputs,
-            skills: Vec::new(),
-        })
+        ResolvedSessionResources::try_new(inputs, Vec::new())
     }
 }
 
@@ -673,6 +785,78 @@ mod tests {
         assert!(matches!(
             detached.detach(&BindingId::from("missing")),
             Err(SessionInputError::UnknownBinding(_))
+        ));
+    }
+
+    #[test]
+    fn complete_manifest_constructor_and_serde_share_the_same_invariants() {
+        // Decision table: duplicate binding, duplicate normalized mount, invalid
+        // Skill pin, and duplicate Skill identity all fail at both Rust and wire
+        // construction boundaries; a legal relative mount normalizes once.
+        let normalized = ResolvedSessionResources::try_new(
+            vec![resolved_file("input-a", "file-a", "mnt/a")],
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(normalized.inputs()[0].mount_path, "/mnt/a");
+
+        let invalid_inputs = [
+            vec![
+                resolved_file("same", "file-a", "/mnt/a"),
+                resolved_file("same", "file-b", "/mnt/b"),
+            ],
+            vec![
+                resolved_file("input-a", "file-a", "mnt/shared"),
+                resolved_file("input-b", "file-b", "/mnt/shared"),
+            ],
+        ];
+        for inputs in invalid_inputs {
+            let wire = serde_json::json!({ "inputs": inputs, "skills": [] });
+            assert!(ResolvedSessionResources::try_new(inputs.clone(), Vec::new()).is_err());
+            assert!(serde_json::from_value::<ResolvedSessionResources>(wire).is_err());
+        }
+
+        let skill = ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "review".into(),
+            version: 1,
+            bundle_sha256: "sha256-review".into(),
+        };
+        for skills in [
+            vec![ResolvedSkillBinding {
+                version: 0,
+                ..skill.clone()
+            }],
+            vec![skill.clone(), skill.clone()],
+        ] {
+            let wire = serde_json::json!({ "inputs": [], "skills": skills });
+            assert!(ResolvedSessionResources::try_new(Vec::new(), skills.clone()).is_err());
+            assert!(serde_json::from_value::<ResolvedSessionResources>(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn copy_on_write_input_update_cannot_publish_a_collision() {
+        let resources = ResolvedSessionResources::try_new(
+            vec![
+                resolved_file("input-a", "file-a", "/mnt/a"),
+                resolved_file("input-b", "file-b", "/mnt/b"),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let result = resources.update_input(&BindingId::from("input-b"), |input| {
+            input.mount_path = "/mnt/a".into();
+        });
+        assert!(matches!(result, Err(SessionInputError::MountCollision(_))));
+        assert_eq!(resources.inputs()[1].mount_path, "/mnt/b");
+
+        let result = resources.update_input(&BindingId::from("input-b"), |input| {
+            input.binding_id = BindingId::from("input-a");
+        });
+        assert!(matches!(
+            result,
+            Err(SessionInputError::InvalidBindingId(_))
         ));
     }
 

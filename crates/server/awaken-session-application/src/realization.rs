@@ -935,7 +935,7 @@ impl SessionRealizationControl for SessionApplication {
         };
         let prepared_legacy_resources = if session.resources.pending.is_none()
             && session.resources.activations.is_empty()
-            && !session.resources.active.inputs.is_empty()
+            && !session.resources.active.inputs().is_empty()
         {
             match command.prepared_resource_revision {
                 Some(revision) if revision == session.resources.revision => true,

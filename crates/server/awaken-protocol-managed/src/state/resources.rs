@@ -57,16 +57,17 @@ impl ManagedState {
             binding,
             replaces: None,
         };
-        awaken_session_contract::SessionInputResolver::resolve_inputs(
+        let (mut inputs, _) = awaken_session_contract::SessionInputResolver::resolve_inputs(
             owner_scope,
             None,
             &[],
             &[attachment],
         )
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
-        .inputs
-        .pop()
-        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
+        .into_parts();
+        inputs
+            .pop()
+            .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
     }
 
     async fn lower_complete_resource_manifest(
@@ -135,7 +136,7 @@ impl ManagedState {
         for input in parsed {
             let normalized_mount = input.mount_path.trim_start_matches('/');
             let same_mount = current
-                .inputs
+                .inputs()
                 .iter()
                 .find(|existing| existing.mount_path.trim_start_matches('/') == normalized_mount);
             let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
@@ -226,25 +227,22 @@ impl ManagedState {
                 binding: input_binding(binding_id, &input, repository_id),
                 replaces: None,
             };
-            let mut resolved = self
+            let (mut resolved, _) = self
                 .application
                 .resolve_session_inputs(owner_scope, &[], &[attachment])
                 .map_err(StateError::Run)?
-                .inputs;
+                .into_parts();
             inputs.push(resolved.pop().ok_or_else(|| {
                 StateError::Run(RunError::internal(
                     "resolved resource manifest input is empty",
                 ))
             })?);
         }
-        let manifest = awaken_session_contract::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources::try_new(
             inputs,
-            skills: current.skills.clone(),
-        };
-        manifest
-            .validate()
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        Ok(manifest)
+            current.skills().to_vec(),
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))
     }
 
     pub async fn replace_resource_manifest(
@@ -323,7 +321,7 @@ impl ManagedState {
             resources: session
                 .resources
                 .desired()
-                .inputs
+                .inputs()
                 .iter()
                 .map(|input| resolved_resource_dto(&session.session_id, input))
                 .collect(),
@@ -384,7 +382,7 @@ impl ManagedState {
         Ok(record
             .resource_state
             .desired()
-            .inputs
+            .inputs()
             .iter()
             .map(|input| resolved_resource_dto(id, input))
             .collect())
@@ -405,7 +403,7 @@ impl ManagedState {
         let current = persisted.resources.desired().clone();
         let normalized_mount = parsed.mount_path.trim_start_matches('/');
         if let ParsedInputTarget::File(requested_file) = &parsed.target
-            && let Some(existing) = current.inputs.iter().find(|input| {
+            && let Some(existing) = current.inputs().iter().find(|input| {
                 input.mount_path.trim_start_matches('/') == normalized_mount
                     && matches!(
                         &input.source,
@@ -434,7 +432,7 @@ impl ManagedState {
                 .session
                 .resources
                 .desired()
-                .inputs
+                .inputs()
                 .iter()
                 .find(|input| input.binding_id == existing_binding)
                 .ok_or_else(|| {
@@ -446,7 +444,7 @@ impl ManagedState {
         }
         if matches!(parsed.target, ParsedInputTarget::File(_))
             && current
-                .inputs
+                .inputs()
                 .iter()
                 .filter(|input| {
                     matches!(
@@ -462,11 +460,11 @@ impl ManagedState {
                 super::resource::MAX_SESSION_FILE_RESOURCES
             ))));
         }
-        let mut suffix = current.inputs.len();
+        let mut suffix = current.inputs().len();
         let binding_id = loop {
             let candidate = format!("session:{id}:live:{suffix}");
             if current
-                .inputs
+                .inputs()
                 .iter()
                 .all(|input| input.binding_id.as_str() != candidate)
             {
@@ -508,7 +506,7 @@ impl ManagedState {
         record
             .resource_state
             .desired()
-            .inputs
+            .inputs()
             .iter()
             .find(|input| input.binding_id == binding_id)
             .map(|input| resolved_resource_dto(id, input))
@@ -537,7 +535,7 @@ impl ManagedState {
         let input = persisted
             .resources
             .desired()
-            .inputs
+            .inputs()
             .iter()
             .find(|input| input.binding_id == binding_id)
             .ok_or(StateError::NotFound)?;
@@ -555,7 +553,7 @@ impl ManagedState {
         let input = persisted
             .resources
             .desired()
-            .inputs
+            .inputs()
             .iter()
             .find(|input| input.binding_id == binding_id)
             .cloned()
@@ -584,15 +582,21 @@ impl ManagedState {
             .await?;
         if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
             removed.source
-            && outcome.session.resources.active.inputs.iter().all(|input| {
-                !matches!(
-                    &input.source,
-                    awaken_session_contract::ResolvedInputSource::Repository {
-                        repository_id: active,
-                        ..
-                    } if active == &repository_id
-                )
-            })
+            && outcome
+                .session
+                .resources
+                .active
+                .inputs()
+                .iter()
+                .all(|input| {
+                    !matches!(
+                        &input.source,
+                        awaken_session_contract::ResolvedInputSource::Repository {
+                            repository_id: active,
+                            ..
+                        } if active == &repository_id
+                    )
+                })
             && !self
                 .application
                 .retire_repository(&owner_scope, repository_id.as_str())

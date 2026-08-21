@@ -782,12 +782,15 @@ mod tests {
             .expect("M1 establish resident baseline");
         let mut remote = resident;
         remote.resource_revision = 1;
-        remote.resources.skills = vec![awaken_session_contract::ResolvedSkillBinding {
-            kind: awaken_agent_contract::AgentSkillKind::Custom,
-            skill_id: "design".into(),
-            version: 36,
-            bundle_sha256: "sha256-design-v36".into(),
-        }];
+        remote.resources = remote
+            .resources
+            .with_skills(vec![awaken_session_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "design".into(),
+                version: 36,
+                bundle_sha256: "sha256-design-v36".into(),
+            }])
+            .unwrap();
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),

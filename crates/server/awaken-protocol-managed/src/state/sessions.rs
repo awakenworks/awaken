@@ -646,11 +646,14 @@ impl ManagedState {
             )
             .map_err(StateError::Run)?;
         if let Some(skills) = &effective_skills {
-            resolved_resources.skills = self
-                .application
-                .resolve_session_skills(&owner_scope, skills)
-                .await
-                .map_err(StateError::Run)?;
+            resolved_resources = resolved_resources
+                .with_skills(
+                    self.application
+                        .resolve_session_skills(&owner_scope, skills)
+                        .await
+                        .map_err(StateError::Run)?,
+                )
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         }
         self.application
             .pin_repository_credentials(

@@ -333,8 +333,8 @@ fn effective_resources(
     };
     use awaken_session_contract::{ResolvedInput, ResolvedInputSource};
 
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: resources
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        resources
             .into_iter()
             .enumerate()
             .map(|(index, resource)| {
@@ -377,8 +377,9 @@ fn effective_resources(
                 }
             })
             .collect(),
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 fn effective_repository(
@@ -406,8 +407,8 @@ fn effective_repository(
             selected_plaintext_holder: holder,
         })
     });
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from(id),
@@ -426,8 +427,9 @@ fn effective_repository(
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 struct FixedRepositoryTransport(awaken_resource_contract::RepositoryTransport);
@@ -961,10 +963,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             agent_publication: None,
             environment: Default::default(),
             resource_revision: 7,
-            resources: awaken_session_contract::ResolvedSessionResources {
-                inputs: Vec::new(),
-                skills: Vec::new(),
-            },
+            resources: awaken_session_contract::ResolvedSessionResources::default(),
             mcp: Vec::new(),
             tools: Default::default(),
             request_context: Vec::new(),
@@ -4055,7 +4054,13 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
     );
 
     let mut read_only = bare("a");
-    read_only.resources.inputs[0].access = awaken_resource_contract::ResourceAccess::ReadOnly;
+    let binding_id = read_only.resources.inputs()[0].binding_id.clone();
+    read_only.resources = read_only
+        .resources
+        .update_input(&binding_id, |input| {
+            input.access = awaken_resource_contract::ResourceAccess::ReadOnly;
+        })
+        .unwrap();
     managed
         .prepare_session("t-read-only", read_only)
         .await
@@ -6010,29 +6015,34 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 #[tokio::test]
 async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
     fn platform_resources() -> awaken_session_contract::ResolvedSessionResources {
-        let mut resources = effective_repository(
+        let resources = effective_repository(
             "repo-platform",
             "https://github.com/awaken/example.git",
             "/workspace/repo",
             Some("credential-platform".into()),
         );
-        let awaken_session_contract::ResolvedInputSource::Repository {
-            credential: Some(credential),
-            ..
-        } = &mut resources.inputs[0].source
-        else {
-            unreachable!()
-        };
+        let binding_id = resources.inputs()[0].binding_id.clone();
         let holder = awaken_runtime_contract::PlaintextHolder::new(
             awaken_runtime_contract::PlaintextBoundary::Platform,
             "awaken.platform.egress-gateway",
         );
-        credential.selected_plaintext_holder = holder.clone();
-        credential.access.policy = awaken_runtime_contract::CredentialExecutionPolicy::exact(
-            holder,
-            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
-        );
         resources
+            .update_input(&binding_id, |input| {
+                let awaken_session_contract::ResolvedInputSource::Repository {
+                    credential: Some(credential),
+                    ..
+                } = &mut input.source
+                else {
+                    unreachable!()
+                };
+                credential.selected_plaintext_holder = holder.clone();
+                credential.access.policy =
+                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                        holder,
+                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                    );
+            })
+            .unwrap()
     }
 
     let claim = awaken_run_ingress::RunClaim {
@@ -6267,68 +6277,75 @@ async fn repository_credential_realization_follows_the_decision_table() {
         let managed =
             managed_with_resource_source(host.clone()).with_credentials(credentials, secrets);
         let binding = (!matches!(rule.case, Case::Anonymous)).then(|| source.id.0.clone());
-        let mut resources = effective_repository(
+        let resources = effective_repository(
             "repo-1",
             "https://github.com/awaken/example.git",
             "/workspace/repo",
             binding,
         );
-        let awaken_session_contract::ResolvedInputSource::Repository {
-            config, credential, ..
-        } = &mut resources.inputs[0].source
-        else {
-            unreachable!()
-        };
-        match rule.case {
-            Case::Anonymous | Case::Exact => {}
-            Case::MissingPin => *credential = None,
-            Case::PinWithoutBinding => config.credential_binding = None,
-            Case::WrongSource => {
-                credential.as_mut().unwrap().access.credential.id = "another-source".into();
-            }
-            Case::WrongUsage => {
-                credential.as_mut().unwrap().access.usage =
-                    awaken_runtime_contract::CredentialUsage::QueryParameter {
-                        name: "token".into(),
-                    };
-            }
-            Case::HolderNotAllowed => {
-                let workload = awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Workload,
-                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-                );
-                credential.as_mut().unwrap().access.policy =
-                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
-                        workload,
-                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
-                    );
-            }
-            Case::VirtualExposure => {
-                let credential = credential.as_mut().unwrap();
-                credential.access.policy =
-                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
-                        credential.selected_plaintext_holder.clone(),
-                        awaken_runtime_contract::ModelExposurePolicy::VirtualOnly,
-                    );
-            }
-            Case::UnsupportedHolder => {
-                let workload = awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Workload,
-                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-                );
-                let credential = credential.as_mut().unwrap();
-                credential.selected_plaintext_holder = workload.clone();
-                credential.access.policy =
-                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
-                        workload,
-                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
-                    );
-            }
-            Case::StaleRevision => {
-                credential.as_mut().unwrap().access.credential.revision = 2;
-            }
-            Case::InactiveSource | Case::CrossWorkspace | Case::WrongMaterial => {}
-        }
+        let binding_id = resources.inputs()[0].binding_id.clone();
+        let resources = resources
+            .update_input(&binding_id, |input| {
+                let awaken_session_contract::ResolvedInputSource::Repository {
+                    config,
+                    credential,
+                    ..
+                } = &mut input.source
+                else {
+                    unreachable!()
+                };
+                match rule.case {
+                    Case::Anonymous | Case::Exact => {}
+                    Case::MissingPin => *credential = None,
+                    Case::PinWithoutBinding => config.credential_binding = None,
+                    Case::WrongSource => {
+                        credential.as_mut().unwrap().access.credential.id = "another-source".into();
+                    }
+                    Case::WrongUsage => {
+                        credential.as_mut().unwrap().access.usage =
+                            awaken_runtime_contract::CredentialUsage::QueryParameter {
+                                name: "token".into(),
+                            };
+                    }
+                    Case::HolderNotAllowed => {
+                        let workload = awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Workload,
+                            awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                        );
+                        credential.as_mut().unwrap().access.policy =
+                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                                workload,
+                                awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                            );
+                    }
+                    Case::VirtualExposure => {
+                        let credential = credential.as_mut().unwrap();
+                        credential.access.policy =
+                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                                credential.selected_plaintext_holder.clone(),
+                                awaken_runtime_contract::ModelExposurePolicy::VirtualOnly,
+                            );
+                    }
+                    Case::UnsupportedHolder => {
+                        let workload = awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Workload,
+                            awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                        );
+                        let credential = credential.as_mut().unwrap();
+                        credential.selected_plaintext_holder = workload.clone();
+                        credential.access.policy =
+                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                                workload,
+                                awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                            );
+                    }
+                    Case::StaleRevision => {
+                        credential.as_mut().unwrap().access.credential.revision = 2;
+                    }
+                    Case::InactiveSource | Case::CrossWorkspace | Case::WrongMaterial => {}
+                }
+            })
+            .unwrap();
         let thread = format!("repository-decision-{}", rule.id);
         let result = managed
             .prepare_session(
@@ -6975,11 +6992,15 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         .await
         .expect("v1 remains valid after current advances to v2");
 
-    let mut missing = manifest;
-    let ResolvedInputSource::MemoryStore { config, .. } = &mut missing.inputs[0].source else {
-        panic!("expected MemoryStore input");
-    };
-    config.version = ConfigVersion(3);
+    let binding_id = manifest.inputs()[0].binding_id.clone();
+    let missing = manifest
+        .update_input(&binding_id, |input| {
+            let ResolvedInputSource::MemoryStore { config, .. } = &mut input.source else {
+                panic!("expected MemoryStore input");
+            };
+            config.version = ConfigVersion(3);
+        })
+        .unwrap();
     let mut invalid = bare_session("a", &workspace);
     invalid.resources = missing;
     let error = managed
@@ -7064,12 +7085,15 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("create Skill");
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", &workspace);
-    init.resources.skills = vec![awaken_session_contract::ResolvedSkillBinding {
-        kind: awaken_agent_contract::AgentSkillKind::Custom,
-        skill_id: "governed".into(),
-        version: 1,
-        bundle_sha256: hash,
-    }];
+    init.resources = init
+        .resources
+        .with_skills(vec![awaken_session_contract::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "governed".into(),
+            version: 1,
+            bundle_sha256: hash,
+        }])
+        .unwrap();
     managed
         .prepare_session("skill-revoke", init)
         .await
@@ -7094,10 +7118,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
             "skill-revoke",
             &workspace,
             1,
-            &awaken_session_contract::ResolvedSessionResources {
-                inputs: Vec::new(),
-                skills: Vec::new(),
-            },
+            &awaken_session_contract::ResolvedSessionResources::default(),
         )
         .await
         .expect("replace with explicit empty Skill selection");
@@ -7293,10 +7314,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         7,
-        awaken_session_contract::ResolvedSessionResources {
-            inputs: Vec::new(),
-            skills: Vec::new(),
-        },
+        awaken_session_contract::ResolvedSessionResources::default(),
     );
     host.register_thread_resource_manifest(thread, manifest.clone());
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")

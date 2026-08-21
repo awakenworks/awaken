@@ -240,13 +240,13 @@ pub fn remote_worker_placement(
     if let Some(resources) = resources {
         placement.sandbox.enforced_readonly |= resources
             .resources
-            .inputs
+            .inputs()
             .iter()
             .any(|input| input.access == awaken_resource_contract::ResourceAccess::ReadOnly);
         placement
             .required_capabilities
             .insert(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY.to_string());
-        let credentialed_repository = resources.resources.inputs.iter().any(|input| {
+        let credentialed_repository = resources.resources.inputs().iter().any(|input| {
             matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::Repository { config, .. }
@@ -1380,8 +1380,8 @@ mod completion_tests {
         // the following empty-manifest test owns the !C2/!C3 revocation row.
         let resources = SessionResourceManifest::new(
             "workspace-a",
-            ResolvedSessionResources {
-                inputs: vec![ResolvedInput {
+            ResolvedSessionResources::try_new(
+                vec![ResolvedInput {
                     binding_id: BindingId::new("repo-binding"),
                     source: ResolvedInputSource::Repository {
                         repository_id: RepositoryId::from("repo-a"),
@@ -1400,8 +1400,9 @@ mod completion_tests {
                     access: ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Vec::new(),
-            },
+                Vec::new(),
+            )
+            .unwrap(),
         );
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(
@@ -1421,10 +1422,7 @@ mod completion_tests {
     fn explicit_empty_manifest_still_requires_the_revocation_capability() {
         let resources = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_session_contract::ResolvedSessionResources {
-                inputs: Vec::new(),
-                skills: Vec::new(),
-            },
+            awaken_session_contract::ResolvedSessionResources::default(),
         );
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(

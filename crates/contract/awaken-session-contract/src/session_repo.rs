@@ -1154,7 +1154,7 @@ mod mutation_tests {
         assert_eq!(prepared.title.as_deref(), Some("title"), "C1/E1");
         assert_eq!(prepared.metadata, metadata, "C1/E1");
         assert!(prepared.mcp.attachments.is_empty(), "C1/E1");
-        assert!(prepared.resources.active.inputs.is_empty(), "C1/E1");
+        assert!(prepared.resources.active.inputs().is_empty(), "C1/E1");
         assert!(prepared.realization.is_none(), "C1/E1");
         assert!(
             matches!(
@@ -1428,8 +1428,8 @@ mod mutation_tests {
             let mut value = session("session-1", SessionRevision(1));
             value.execution = status.parse().expect("fixture execution state");
             value.disposition = disposition;
-            let desired = crate::ResolvedSessionResources {
-                inputs: vec![crate::ResolvedInput {
+            let desired = crate::ResolvedSessionResources::try_new(
+                vec![crate::ResolvedInput {
                     binding_id: awaken_resource_contract::BindingId::from("input-1"),
                     mount_path: "input.txt".into(),
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,
@@ -1438,8 +1438,9 @@ mod mutation_tests {
                     },
                     instructions: None,
                 }],
-                skills: Vec::new(),
-            };
+                Vec::new(),
+            )
+            .unwrap();
             if active {
                 value
                     .resources

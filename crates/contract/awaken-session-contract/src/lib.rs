@@ -102,7 +102,8 @@ pub use resource::{
     SessionResourceManifest, repository_transport_credential_usage,
 };
 pub use resource_activation::{
-    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceState,
+    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
+    SessionResourceState,
 };
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,

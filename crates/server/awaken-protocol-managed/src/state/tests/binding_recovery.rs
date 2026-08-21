@@ -271,8 +271,8 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
 }
 
 pub(in crate::state) fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("input-file"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("file-hash"),
@@ -281,8 +281,9 @@ pub(in crate::state) fn sample_inputs() -> awaken_session_contract::ResolvedSess
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 #[derive(Clone, Copy)]
