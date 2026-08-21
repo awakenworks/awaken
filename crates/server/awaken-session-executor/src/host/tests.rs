@@ -6392,7 +6392,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
         async fn adopt_environment(
             &self,
-            _handle: &awaken_provisioning_contract::SandboxHandle,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         ) -> Result<
             Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
@@ -9393,7 +9393,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let replacement = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
     let adopted = replacement
         .session_provider
-        .adopt(&handle)
+        .adopt(&replacement.sandbox_spec(thread), &handle)
         .await
         .expect("adopt durable handle");
     assert_eq!(
@@ -9428,7 +9428,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let same = host
         .session_provider
-        .adopt(&resident_handle)
+        .adopt(&host.sandbox_spec("t-resident-adoption"), &resident_handle)
         .await
         .expect("adopt resident sandbox");
     let reused = host
@@ -9498,7 +9498,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let same = host
         .session_provider
-        .adopt(&retained_handle)
+        .adopt(&host.sandbox_spec("t-retained-adoption"), &retained_handle)
         .await
         .expect("adopt retained sandbox");
     let rebuilt = host

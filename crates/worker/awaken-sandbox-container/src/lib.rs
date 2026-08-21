@@ -47,7 +47,10 @@ pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
-pub use provider_contract::{ContainerEnvironment, ContainerEnvironmentProvider, EnvironmentFile};
+pub use provider_contract::{
+    ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
+    EnvironmentFile,
+};
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
@@ -1501,9 +1504,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
 
     async fn adopt_environment(
         &self,
-        handle: &pc::SandboxHandle,
+        adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(self.adopt_container(handle).await?))
+        Ok(Arc::new(self.adopt_container(adoption.handle).await?))
     }
 }
 
