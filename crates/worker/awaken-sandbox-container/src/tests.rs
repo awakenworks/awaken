@@ -1590,8 +1590,8 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     // The host-facing seam: realize the container running the ACP agent and hand back
     // its channel + process handle (runtime chosen behind the `dyn` by worker config).
     let rt = Arc::new(FakeRuntime::default());
-    let provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
-    let session = provider.open_agent(&spec("run-oa")).await.unwrap();
+    let agent_provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
+    let session = agent_provider.open_agent(&spec("run-oa")).await.unwrap();
 
     // The one-shot compatibility seam also launches the agent through exec; it does
     // not return PID 1 as though the environment were the attempt process.
@@ -1607,6 +1607,25 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     assert_eq!(session.handle.provider_kind(), "container");
     let payload = session.handle.container_payload().unwrap();
     assert_eq!(payload.container_id, "cid-run-oa");
+    // Durable-handle decision rule H1: C1=a realized container has mounted
+    // inputs; C2=the provider is later adopted from only its typed handle.
+    // C1 => E1 every checkpoint exclusion is frozen without an opaque `extra`
+    // map; C1+C2 => E2 the durable wire round-trip preserves the exact paths.
+    // This prevents a replacement Worker from archiving independently owned
+    // mounts after the old untyped extension was removed.
+    assert_eq!(
+        payload.continuation_excluded_paths,
+        ["/data/in.txt", "/work"]
+    );
+    let durable = serde_json::to_vec(&session.handle).unwrap();
+    let adopted: pc::SandboxHandle = serde_json::from_slice(&durable).unwrap();
+    assert_eq!(
+        adopted
+            .container_payload()
+            .unwrap()
+            .continuation_excluded_paths,
+        ["/data/in.txt", "/work"]
+    );
     // A live duplex channel was opened (the ACP bridge would drive it).
     let _channel = session.channel;
     // The physical container is an environment keepalive, not the attempt agent.
