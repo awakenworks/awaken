@@ -478,9 +478,11 @@ async fn archive_disables_credential_and_bumps_version() {
 
 #[tokio::test]
 async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_versions() {
-    // | expected revision | material | effect |
-    // | current           | new      | revision advances; validation uses new material |
-    // | stale             | another  | 409; committed material remains unchanged |
+    // Cause/effect decision table: R1 current revision plus one scalar secret
+    // advances the revision and validation uses the replacement; R2 a stale
+    // revision conflicts without changing committed material; R3 current
+    // revision plus one typed material document advances without echoing any
+    // field; R4 zero or two material representations is rejected before write.
     let probe = RecordingProbe::new(ProbeStatus::Valid);
     let h = harness_with(Some(probe.clone()));
     author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
@@ -522,6 +524,44 @@ async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_v
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{problem}");
     assert_eq!(problem["code"], "credential_version_conflict");
+
+    let structured = enter_vault_cred(&h.app, Some("github.com"), "initial").await;
+    let http_password = ["github", "token"].join("-");
+    let (status, rotated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{structured}/rotate"),
+        Some(json!({
+            "expected_version": 1,
+            "material": {
+                "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                "fields": {
+                    "username": "x-access-token",
+                    "password": &http_password
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R3: {rotated}");
+    assert_eq!(rotated["version"], 2, "R3");
+    assert!(!rotated.to_string().contains(&http_password), "R3");
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{structured}/rotate"),
+        Some(json!({
+            "expected_version": 2,
+            "secret": "ambiguous",
+            "material": {
+                "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                "fields": {"username": "x-access-token", "password": "ambiguous"}
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "R4: {problem}");
 }
 
 // ---------------------------------------------------------------------------

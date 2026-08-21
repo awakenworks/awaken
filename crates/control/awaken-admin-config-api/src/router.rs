@@ -1422,12 +1422,16 @@ pub struct EnterCredentialRequest {
 }
 
 /// Rotate the primary material of one exact active Vault credential revision.
-/// The secret is write-only and the response remains a secret-free source view.
+/// Scalar or typed material is write-only and the response remains a
+/// secret-free source view.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RotateCredentialRequest {
     expected_version: i64,
-    secret: String,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    material: Option<CredentialMaterialInput>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1452,6 +1456,21 @@ impl CredentialMaterialInput {
                 .collect(),
         };
         awaken_credential_vault::encode_structured_material(material)
+    }
+}
+
+fn credential_material(
+    secret: Option<String>,
+    material: Option<CredentialMaterialInput>,
+) -> Result<Option<RedactedString>, CredentialError> {
+    let secret = secret.filter(|secret| !secret.is_empty());
+    match (secret, material) {
+        (Some(_), Some(_)) => Err(CredentialError::InvalidSource(
+            "secret and structured material are mutually exclusive".into(),
+        )),
+        (Some(secret), None) => Ok(Some(RedactedString::new(secret))),
+        (None, Some(material)) => material.encode().map(Some),
+        (None, None) => Ok(None),
     }
 }
 
@@ -1564,24 +1583,8 @@ async fn post_credential(
     {
         return Err(model_supply_managed(&rid));
     }
-    let legacy_secret = body.secret.filter(|secret| !secret.is_empty());
-    let secret = match (legacy_secret, body.material) {
-        (Some(_), Some(_)) => {
-            return Err(cred_problem(
-                &CredentialError::InvalidSource(
-                    "secret and structured material are mutually exclusive".into(),
-                ),
-                &rid,
-            ));
-        }
-        (Some(secret), None) => Some(RedactedString::new(secret)),
-        (None, Some(material)) => Some(
-            material
-                .encode()
-                .map_err(|error| cred_problem(&error, &rid))?,
-        ),
-        (None, None) => None,
-    };
+    let secret = credential_material(body.secret, body.material)
+        .map_err(|error| cred_problem(&error, &rid))?;
     let oauth_command = match (body.kind, body.oauth_helper) {
         (CredentialKind::Oauth, Some(helper)) => Some(helper.command()),
         (CredentialKind::Oauth, None) => {
@@ -1662,19 +1665,21 @@ async fn rotate_credential(
             &rid,
         ));
     }
-    if body.secret.trim().is_empty() {
-        return Err(cred_problem(
-            &CredentialError::InvalidSource("rotation secret is required".into()),
-            &rid,
-        ));
-    }
+    let replacement = credential_material(body.secret, body.material)
+        .map_err(|error| cred_problem(&error, &rid))?
+        .ok_or_else(|| {
+            cred_problem(
+                &CredentialError::InvalidSource("rotation material is required".into()),
+                &rid,
+            )
+        })?;
     let id = CredentialSourceId(id);
     credential_in_scope(&state, &id, scope.as_ref(), &rid).await?;
     let source = rotate_credential_materials_exact(
         &id,
         body.expected_version,
         CredentialMaterialPatch {
-            primary: Some(RedactedString::new(body.secret)),
+            primary: Some(replacement),
             auxiliary: Default::default(),
         },
         state.secrets.as_ref(),
