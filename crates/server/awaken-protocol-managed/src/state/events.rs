@@ -212,10 +212,11 @@ impl ManagedState {
         }
     }
 
-    /// Start a create-time event batch without inventing a second executor. The
-    /// create response is made `running` before this returns; the detached task
-    /// then uses the exact `send_events` command used by the public events route.
-    pub(crate) fn start_initial_events(
+    /// Commit a create-time event batch through the same command as the public
+    /// events route. Creation is acknowledged only after the batch succeeds. A
+    /// failed batch first commits the ordinary delete fence, so response loss or
+    /// retry cannot replay a partially initialized Session as successful.
+    pub(crate) async fn start_initial_events(
         self: &Arc<Self>,
         session_id: &str,
         events: Vec<InboundEvent>,
@@ -228,17 +229,23 @@ impl ManagedState {
             let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
             record.project_runtime_status(SessionStatus::Running);
         }
-        let state = Arc::clone(self);
-        let session_id = session_id.to_string();
-        tokio::spawn(async move {
-            if let Err(error) = state
-                .send_event_batch(&session_id, SendEventsRequest { events }, true, None)
-                .await
-            {
-                tracing::warn!(%session_id, %error, "create-time initial events failed");
+        match self
+            .send_event_batch(session_id, SendEventsRequest { events }, true, None)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(initial_error) => {
+                if let Err(cleanup_error) = self.delete_session(session_id).await {
+                    return Err(StateError::Run(RunError::unavailable_classified(
+                        "initial_event_compensation_failed",
+                        format!(
+                            "initial Event batch failed ({initial_error}); Session cleanup also failed ({cleanup_error})"
+                        ),
+                    )));
+                }
+                Err(initial_error)
             }
-        });
-        Ok(())
+        }
     }
 
     fn delegate_calls(delegations: &[DelegatedRun], events: &[Event]) -> Vec<DelegateCall> {
@@ -946,7 +953,9 @@ impl ManagedState {
             }
             InboundEvent::SystemMessage { content } => {
                 let text = content_text(content);
-                self.application.add_system(session_id, &text).await?;
+                self.application
+                    .add_system(agent_id, session_id, &text)
+                    .await?;
             }
             InboundEvent::UserInterrupt { session_thread_id } => {
                 for thread in self.interrupt_targets(session_id, session_thread_id.as_deref())? {
@@ -1569,7 +1578,12 @@ mod tests {
             Ok(self.pending.lock().unwrap().clone())
         }
 
-        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        async fn add_system(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _text: &str,
+        ) -> Result<(), RunError> {
             Ok(())
         }
 

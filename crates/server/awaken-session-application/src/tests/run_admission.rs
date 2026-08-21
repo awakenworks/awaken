@@ -57,6 +57,7 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
 
     async fn add_system(
         &self,
+        _agent: &str,
         _thread: &str,
         _text: &str,
     ) -> Result<(), awaken_session_contract::RunError> {

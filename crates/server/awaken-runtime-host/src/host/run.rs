@@ -314,8 +314,8 @@ impl SharedHost {
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
-    pub async fn add_system(&self, thread: &str, text: &str) -> Result<(), HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
+    pub async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), HostError> {
+        let ctx = self.ctx_for(thread, Some(agent)).await?;
         ctx.state.lock().await.pending_system.push(text.to_string());
         Ok(())
     }

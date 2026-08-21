@@ -310,7 +310,8 @@ impl ManagedState {
             .create_session_with_identity(req, workspace_id, explicit_id)
             .await?;
         if !initial_events.is_empty() {
-            self.start_initial_events(&session.id, initial_events)?;
+            self.start_initial_events(&session.id, initial_events)
+                .await?;
             session.status = SessionStatus::Running;
         }
         Ok(session)

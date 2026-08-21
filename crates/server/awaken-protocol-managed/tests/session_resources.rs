@@ -1053,7 +1053,7 @@ impl SessionRuntime for AcceptingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn resolve_session_skills(

@@ -16,7 +16,9 @@ use awaken_runtime_contract::{
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
 };
 use awaken_runtime_host::ManagedHost;
-use awaken_scenario_host::{EchoModel, build_router_and_host};
+use awaken_scenario_host::{
+    EchoModel, build_router_and_host, build_router_and_host_with_agent_publications,
+};
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -25,10 +27,11 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn published_assistant_catalog(
+async fn publish_assistant(
+    catalog: Arc<ExecutableAgentCatalog>,
     workspace_id: &str,
     model_ref: &str,
-) -> Arc<ExecutableAgentCatalog> {
+) {
     let fingerprint = "scenario-assistant-v1";
     let mut snapshot = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("scenario", model_ref, "default"))
@@ -43,8 +46,7 @@ async fn published_assistant_catalog(
         resolution: Default::default(),
         fingerprint: AgentSnapshotFingerprint(fingerprint.into()),
     };
-    let catalog = Arc::new(ExecutableAgentCatalog::new());
-    LocalExecutableAgentRegistrar::new(catalog.clone())
+    LocalExecutableAgentRegistrar::new(catalog)
         .register(ExecutableAgentRegistration {
             workspace_id: workspace_id.into(),
             agent_id: "assistant".into(),
@@ -60,7 +62,66 @@ async fn published_assistant_catalog(
         })
         .await
         .expect("register the Deployment's exact Agent publication");
-    catalog
+}
+
+#[tokio::test]
+async fn failed_initial_events_are_compensated_before_deployment_acknowledgement() {
+    // FMECA/cause-effect graph: C1 a valid frozen Agent creates a Session; C2
+    // its Runtime publication source is unavailable at the first system Event;
+    // C3 the same DeploymentRun is retried after response loss. Required
+    // effects: E1 the first launch is failed, E2 no partially initialized
+    // Session remains visible, E3 retry can never reinterpret that Session as a
+    // successful replay. Rules:
+    // D1 C1+C2 -> E1+E2; D2 C1+C2+C3 -> E3. This mutation-kills both the former
+    // detached executor and a synchronous implementation without compensation.
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
+    let workspace_id = host.local_workspace().to_string();
+    publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
+    let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_config_source(catalog));
+    let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
+    let request: DeploymentLaunch = serde_json::from_value(json!({
+        "deployment_id": "depl_failed_initial",
+        "deployment_run_id": "drun_failed_initial",
+        "workspace_id": workspace_id,
+        "agent": {"id": "assistant", "type": "agent", "version": 1},
+        "environment_id": "env_local",
+        "metadata": {},
+        "initial_events": [{
+            "type": "system.message",
+            "content": [{"type": "text", "text": "must initialize the frozen publication"}]
+        }],
+        "resources": [],
+        "vault_ids": []
+    }))
+    .unwrap();
+    let session_id = format!(
+        "sesn_{}",
+        awaken_session_contract::stable_fingerprint(&(
+            "deployment-run",
+            request.deployment_run_id.as_str()
+        ))
+    );
+
+    let first = launcher.launch(request.clone()).await;
+    assert!(
+        matches!(first, DeploymentLaunchOutcome::Failed { .. }),
+        "D1/E1: {first:?}"
+    );
+    assert!(
+        matches!(
+            managed.get_session(&session_id),
+            Err(awaken_protocol_managed::StateError::NotFound)
+        ),
+        "D1/E2"
+    );
+    assert!(
+        !matches!(
+            launcher.launch(request).await,
+            DeploymentLaunchOutcome::Created { .. }
+        ),
+        "D2/E3"
+    );
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -123,9 +184,14 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // R2 same run + byte-equivalent launch -> return that Session, enqueue no second
     // initial Event batch; R3 same run + changed payload -> fail closed and preserve
     // the R1 Session. This covers the response-loss retry before an HTTP adapter exists.
-    let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let (_, host) = build_router_and_host_with_agent_publications(
+        Arc::new(EchoModel),
+        "claude-sonnet-5",
+        catalog.clone(),
+    );
     let workspace_id = host.local_workspace().to_string();
-    let catalog = published_assistant_catalog(&workspace_id, "claude-sonnet-5").await;
+    publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed =
         Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
     // The public Session scope guard must observe the same trusted Workspace as
@@ -208,9 +274,14 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     // D2 manual run -> DeploymentRun XOR terminal branch with a Session id;
     // D3 C1+C2+C3 -> E2+E3; D4 C1+C2+C4 -> E4;
     // D5 C5 -> E5, then unpause advances the future-only cursor.
-    let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let (_, host) = build_router_and_host_with_agent_publications(
+        Arc::new(EchoModel),
+        "claude-sonnet-5",
+        catalog.clone(),
+    );
     let workspace_id = host.local_workspace().to_string();
-    let catalog = published_assistant_catalog(&workspace_id, "claude-sonnet-5").await;
+    publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed =
         Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
     let deployments = Arc::new(DeploymentApplication::new());
@@ -256,7 +327,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     )
     .await;
     assert_eq!(status, StatusCode::OK, "D2: {manual}");
-    assert!(manual["error"].is_null(), "D2 XOR");
+    assert!(manual["error"].is_null(), "D2 XOR: {manual}");
     let session_id = manual["session_id"].as_str().unwrap();
     let observed = wait_for_session_events(&app, session_id, |events| {
         let rendered = events.to_string();
