@@ -98,7 +98,7 @@ pub(crate) async fn perform_scheduled_action(
     let ticket = reader
         .resume_ticket(run_id)
         .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
-    if ticket.reason != AwaitReason::ScheduledAction {
+    if ticket.reason() != AwaitReason::ScheduledAction {
         return Err(Error::Execution(
             "run is not awaiting on a scheduled action".to_string(),
         ));
@@ -156,7 +156,7 @@ pub(crate) async fn resume_run(
     // An awaiting delegation resumes through its executor, not the tool registry: the
     // executor runs one more step with the user's input and the run continues or
     // re-awaits.
-    if ticket.reason == AwaitReason::Delegation {
+    if ticket.reason() == AwaitReason::Delegation {
         return resume_delegation(
             runtime,
             &ticket,

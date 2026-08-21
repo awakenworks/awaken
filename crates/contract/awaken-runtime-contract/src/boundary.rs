@@ -13,7 +13,7 @@
 //! no protocol or backend. It *consumes* the inbox (a deterministic boundary
 //! effect) but never commits or awaits — each executor owns its commit mechanism.
 
-use awaken_agent_contract::agent::awaiting::AwaitReason;
+use awaken_agent_contract::agent::awaiting::PauseReason;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message};
 use awaken_agent_contract::agent::run::Id as RunId;
 
@@ -28,7 +28,7 @@ pub enum BoundaryOutcome {
     /// Commit these messages, then await durably for this reason (no next Step).
     Await {
         fold: Vec<Message>,
-        reason: AwaitReason,
+        reason: PauseReason,
     },
     /// No queued input, no pause — the caller consults its run-end guard.
     Idle,
@@ -86,7 +86,7 @@ pub fn evaluate_boundary(
     if ctx.is_pause_requested() {
         return BoundaryOutcome::Await {
             fold,
-            reason: AwaitReason::ManualPause,
+            reason: PauseReason::Manual,
         };
     }
     if !fold.is_empty() {
@@ -161,7 +161,7 @@ mod tests {
             .with_pause(pause);
         match evaluate_boundary(&ctx, &run(), &[]) {
             BoundaryOutcome::Await { fold, reason } => {
-                assert_eq!(reason, AwaitReason::ManualPause);
+                assert_eq!(reason, PauseReason::Manual);
                 // The in-flight steer is not lost: it rides out to be committed.
                 assert_eq!(fold.len(), 1);
                 assert_eq!(fold[0].id.0, "r1-inbox-0");
@@ -178,7 +178,7 @@ mod tests {
         match evaluate_boundary(&ctx, &run(), &[]) {
             BoundaryOutcome::Await { fold, reason } => {
                 assert!(fold.is_empty());
-                assert_eq!(reason, AwaitReason::ManualPause);
+                assert_eq!(reason, PauseReason::Manual);
             }
             other => panic!("expected Await, got {other:?}"),
         }

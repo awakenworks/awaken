@@ -7,7 +7,7 @@
 //! core stays deterministic and replayable.
 
 pub use awaken_agent_contract::agent::awaiting::PermissionDecision;
-use awaken_agent_contract::agent::awaiting::ResumeTicket;
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket, ToolAwaitReason};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
@@ -124,17 +124,37 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
     {
         return Err(ResumeError::Expired);
     }
-    if matches!(
-        ticket.reason,
-        awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
-            | awaken_agent_contract::agent::awaiting::AwaitReason::ScheduledAction
-    ) && matches!(command.result, ResumeResult::Input(_))
-    {
+    let result_kind_matches = matches!(
+        (ticket.target(), &command.result),
+        (
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::Permission | ToolAwaitReason::ScheduledAction,
+                ..
+            },
+            ResumeResult::Permission(_)
+        ) | (
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::ClientExecution,
+                ..
+            },
+            ResumeResult::ToolResult(_)
+        ) | (
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::Delegation,
+                ..
+            },
+            ResumeResult::Input(_) | ResumeResult::ToolResult(_)
+        ) | (
+            AwaitTarget::RemoteInput { .. } | AwaitTarget::Pause(_),
+            ResumeResult::Input(_)
+        )
+    );
+    if !result_kind_matches {
         return Err(ResumeError::ResultKindMismatch);
     }
-    if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::Delegation
-        && let ResumeResult::ToolResult(output) = &command.result
-        && ticket.call_id.as_deref() != Some(output.call_id.as_str())
+    if let (AwaitTarget::ToolCall { call_id, .. }, ResumeResult::ToolResult(output)) =
+        (ticket.target(), &command.result)
+        && call_id != &output.call_id
     {
         return Err(ResumeError::ToolCallMismatch);
     }
@@ -144,22 +164,35 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_agent_contract::agent::awaiting::AwaitReason;
+    use awaken_agent_contract::agent::awaiting::{
+        PauseReason, PendingTool, RemoteInputReason, ToolAwaitReason,
+    };
+
+    fn ticket_for(target: AwaitTarget) -> ResumeTicket {
+        ResumeTicket::new(
+            "c1",
+            RunId("run-1".to_string()),
+            ThreadId("thread-1".to_string()),
+            "snap-1",
+            "fp-1",
+            target,
+        )
+        .with_deadline(Some(100))
+    }
+
+    fn tool_target(reason: ToolAwaitReason) -> AwaitTarget {
+        AwaitTarget::ToolCall {
+            reason,
+            call_id: "call-1".into(),
+            tool: PendingTool {
+                tool_id: "tool-1".into(),
+                arguments: serde_json::json!({}),
+            },
+        }
+    }
 
     fn ticket() -> ResumeTicket {
-        ResumeTicket {
-            correlation_id: "c1".to_string(),
-            run_id: RunId("run-1".to_string()),
-            thread_id: ThreadId("thread-1".to_string()),
-            snapshot_id: "snap-1".to_string(),
-            catalog_fingerprint: "fp-1".to_string(),
-            delegation_origin: None,
-            data_subject_id: None,
-            reason: AwaitReason::ToolPermission,
-            call_id: Some("call-1".to_string()),
-            pending_tool: None,
-            deadline_ms: Some(100),
-        }
+        ticket_for(tool_target(ToolAwaitReason::Permission))
     }
 
     fn command() -> ResumeCommand {
@@ -201,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_wait_rejects_chat_input_and_mismatched_tool_results() {
+    fn result_kind_and_tool_identity_follow_the_closed_target() {
         let input = ResumeCommand {
             result: ResumeResult::Input("not an approval".into()),
             ..command()
@@ -211,14 +244,46 @@ mod tests {
             Err(ResumeError::ResultKindMismatch)
         );
 
-        let wrong_call = ResumeCommand {
-            result: ResumeResult::ToolResult(ToolOutput::ok("other-call", "done")),
-            ..command()
-        };
+        let client = ticket_for(tool_target(ToolAwaitReason::ClientExecution));
+        let wrong_call = ResumeCommand::from_ticket(
+            &client,
+            ResumeResult::ToolResult(ToolOutput::ok("other-call", "done")),
+            50,
+        );
         assert_eq!(
-            validate_resume(&ticket(), &wrong_call),
+            validate_resume(&client, &wrong_call),
             Err(ResumeError::ToolCallMismatch)
         );
+
+        let legal = [
+            (
+                ticket_for(tool_target(ToolAwaitReason::ScheduledAction)),
+                ResumeResult::allow(),
+            ),
+            (
+                client,
+                ResumeResult::ToolResult(ToolOutput::ok("call-1", "done")),
+            ),
+            (
+                ticket_for(tool_target(ToolAwaitReason::Delegation)),
+                ResumeResult::Input("answer".into()),
+            ),
+            (
+                ticket_for(AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::UserInput,
+                    call_id: "remote".into(),
+                }),
+                ResumeResult::Input("answer".into()),
+            ),
+            (
+                ticket_for(AwaitTarget::Pause(PauseReason::Manual)),
+                ResumeResult::Input("continue".into()),
+            ),
+        ];
+        for (ticket, result) in legal {
+            let command = ResumeCommand::from_ticket(&ticket, result, 50);
+            assert_eq!(validate_resume(&ticket, &command), Ok(()));
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! overwrite/idempotency contract. Cross-backend Run history semantics belong
 //! to the shared store-conformance suite.
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
@@ -69,19 +69,14 @@ fn one_event(kind: EventKind) -> Vec<Draft> {
 }
 
 fn ticket(correlation: &str, run: &str, thread: &str) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: correlation.to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(thread.to_string()),
-        snapshot_id: "snap".to_string(),
-        catalog_fingerprint: "fp".to_string(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::ToolPermission,
-        call_id: None,
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    ResumeTicket::new(
+        correlation,
+        RunId(run.to_string()),
+        ThreadId(thread.to_string()),
+        "snap",
+        "fp",
+        AwaitTarget::Pause(PauseReason::Manual),
+    )
 }
 
 #[tokio::test]

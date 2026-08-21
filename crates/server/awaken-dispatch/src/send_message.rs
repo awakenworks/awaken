@@ -74,7 +74,7 @@ impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<
         {
             Some(ticket)
                 if matches!(
-                    ticket.reason,
+                    ticket.reason(),
                     AwaitReason::UserInput
                         | AwaitReason::ExternalEvent
                         | AwaitReason::ManualPause

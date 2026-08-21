@@ -7,7 +7,7 @@
 //! after `commit()` returns `Ok`; no partial state observable during in-flight
 //! or failed commits.
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
@@ -21,19 +21,14 @@ fn ended(run: &str) -> RunDisposition {
 }
 
 fn ticket(run: &str, thread: &str) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: "corr-1".to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(thread.to_string()),
-        snapshot_id: "snap-1".to_string(),
-        catalog_fingerprint: "fp-1".to_string(),
-        delegation_origin: None,
-        data_subject_id: None,
-        reason: AwaitReason::ToolPermission,
-        call_id: Some("call-1".to_string()),
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    ResumeTicket::new(
+        "corr-1",
+        RunId(run.to_string()),
+        ThreadId(thread.to_string()),
+        "snap-1",
+        "fp-1",
+        AwaitTarget::Pause(PauseReason::Manual),
+    )
 }
 
 // G13: before any commit the projection has no truth — no partial state is
