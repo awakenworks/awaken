@@ -117,7 +117,7 @@ impl SessionRuntime for RehydrateFake {
         unreachable!()
     }
 
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
 

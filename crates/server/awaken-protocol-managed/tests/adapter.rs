@@ -268,7 +268,7 @@ impl SessionRuntime for EchoFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no awaiting run"))
     }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn define_outcome(
@@ -336,7 +336,7 @@ impl SessionRuntime for FailingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
-    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn define_outcome(
@@ -679,7 +679,7 @@ impl SessionRuntime for CapableFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn define_outcome(
@@ -869,7 +869,7 @@ impl SessionRuntime for AwaitingFake {
             Message::text(Id("a2".into()), Role::Assistant, "done"),
         ]))
     }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
@@ -927,7 +927,7 @@ impl SessionRuntime for OutcomeFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn define_outcome(
@@ -1315,7 +1315,7 @@ impl SessionRuntime for CustomToolFake {
             Message::text(Id("a2".into()), Role::Assistant, format!("got: {text}")),
         ]))
     }
-    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
@@ -1604,7 +1604,7 @@ impl SessionRuntime for RecordingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _thread: &str, text: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _thread: &str, text: &str) -> Result<(), RunError> {
         self.systems.lock().unwrap().push(text.to_string());
         Ok(())
     }
@@ -1860,7 +1860,7 @@ impl SessionRuntime for InterruptRedirectFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
     async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {
