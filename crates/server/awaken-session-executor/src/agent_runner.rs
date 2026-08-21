@@ -1305,15 +1305,16 @@ mod tests {
 
         let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_session_contract::ResolvedSessionResources {
-                inputs: Vec::new(),
-                skills: vec![awaken_session_contract::ResolvedSkillBinding {
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                Vec::new(),
+                vec![awaken_session_contract::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "skill-a".into(),
                     version: 3,
                     bundle_sha256: "sha256:skill-a-v3".into(),
                 }],
-            },
+            )
+            .unwrap(),
         );
         let request = child_dispatch_request(
             activation,

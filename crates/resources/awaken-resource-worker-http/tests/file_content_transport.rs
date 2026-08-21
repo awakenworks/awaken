@@ -18,8 +18,8 @@ use awaken_session_contract::ManagedSessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::new("file-binding"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(file_id),
@@ -28,8 +28,9 @@ fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 async fn claimed_dispatch(

@@ -9,8 +9,8 @@ use awaken_resource_contract::{
 use awaken_session_contract::{
     ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
     ResolvedInputSource, ResolvedSessionResources, RunError, SessionExecutionState,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRevision,
-    SessionTombstone, stable_fingerprint,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionResourceReferences,
+    SessionRevision, SessionTombstone, stable_fingerprint,
 };
 
 use super::{
@@ -83,10 +83,10 @@ impl SessionResourceManifestError {
 async fn resource_targets(
     files: &dyn FileCatalog,
     workspace: &str,
-    resources: &awaken_session_contract::ResolvedSessionResources,
+    resources: &SessionResourceReferences,
 ) -> Result<std::collections::BTreeSet<ResourceTarget>, ResourcePurgeError> {
     let mut targets = std::collections::BTreeSet::new();
-    for input in &resources.inputs {
+    for input in resources.inputs() {
         let target = match &input.source {
             ResolvedInputSource::File { file_id } => ResourceTarget::new(
                 workspace,
@@ -117,7 +117,7 @@ async fn resource_targets(
     }
     targets.extend(
         resources
-            .skills
+            .skills()
             .iter()
             .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
             .map(|skill| ResourceTarget::new(workspace, ResourceKind::Skill, &skill.skill_id)),
@@ -165,12 +165,8 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
         for scoped in sessions.sessions {
             let workspace = scoped.workspace_id;
             let session = scoped.session;
-            let candidates = resource_targets(
-                self.files.as_ref(),
-                &workspace,
-                &session.resources.reference_manifest(),
-            )
-            .await?;
+            let references = session.resources.resource_references();
+            let candidates = resource_targets(self.files.as_ref(), &workspace, &references).await?;
             let matches = candidates.iter().any(|candidate| {
                 if target.kind == ResourceKind::File {
                     candidate.kind == ResourceKind::File
@@ -232,13 +228,10 @@ impl SessionApplication {
         else {
             return Ok(());
         };
-        let targets = resource_targets(
-            files.as_ref(),
-            owner_scope,
-            &session.resources.reference_manifest(),
-        )
-        .await
-        .map_err(internal)?;
+        let resource_pins = session.resources.resource_references();
+        let targets = resource_targets(files.as_ref(), owner_scope, &resource_pins)
+            .await
+            .map_err(internal)?;
         let records = targets
             .into_iter()
             .map(|target| ResourceReferenceRecord {
@@ -411,9 +404,6 @@ impl SessionApplication {
         session_id: &str,
         command: ReplaceSessionResourceManifest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        command.resources.validate().map_err(|error| {
-            SessionResourceManifestError::Rejected(RunError::bad_request(error.to_string()))
-        })?;
         let command_record = command.idempotency_key.as_ref().map(|key| {
             Self::resource_manifest_idempotency_record(
                 session_id,
@@ -608,7 +598,7 @@ impl SessionApplication {
         let credential_source = persisted
             .resources
             .active
-            .inputs
+            .inputs()
             .iter()
             .find(|input| input.binding_id == *binding_id)
             .and_then(|input| match &input.source {
@@ -635,19 +625,25 @@ impl SessionApplication {
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let holder = self.resource_plaintext_holder(&persisted)?;
-            let input = persisted
+            let mut input = persisted
                 .resources
                 .active
-                .inputs
-                .iter_mut()
+                .inputs()
+                .iter()
                 .find(|input| input.binding_id == *binding_id)
+                .cloned()
                 .ok_or(SessionPreparationError::NotFound)?;
             let ResolvedInputSource::Repository { credential, .. } = &mut input.source else {
                 return Err(SessionPreparationError::NotFound);
             };
             *credential = None;
-            self.pin_repository_credential(owner_scope, &holder, input)
+            self.pin_repository_credential(owner_scope, &holder, &mut input)
                 .await?;
+            persisted.resources.active = persisted
+                .resources
+                .active
+                .replace(input)
+                .map_err(internal)?;
             match self
                 .commit_session_snapshot(
                     owner_scope,
@@ -954,7 +950,7 @@ impl SessionApplication {
                     "resource activation has Releasing records without a pending manifest",
                 ));
             }
-            if session.resources.active.inputs.is_empty()
+            if session.resources.active.inputs().is_empty()
                 && session.resources.activations.is_empty()
             {
                 return Ok(session);
@@ -1180,7 +1176,7 @@ impl SessionApplication {
         let prefix = format!("managed:{session_id}:repository:");
         let mut ids = std::collections::BTreeSet::new();
         for manifest in std::iter::once(&resources.active).chain(resources.pending.iter()) {
-            for input in &manifest.inputs {
+            for input in manifest.inputs() {
                 if let ResolvedInputSource::Repository { repository_id, .. } = &input.source
                     && repository_id.as_str().starts_with(&prefix)
                 {

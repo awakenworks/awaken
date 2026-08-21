@@ -212,7 +212,7 @@ async fn verify_repository_binding(
         .filter(|envelope| envelope.workspace_id == request.workspace_id)
         .and_then(|envelope| envelope.decode_manifest().ok());
     let frozen_input = manifest.as_ref().and_then(|manifest| {
-        manifest.resources.inputs.iter().find(|input| {
+        manifest.resources.inputs().iter().find(|input| {
             matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::Repository {

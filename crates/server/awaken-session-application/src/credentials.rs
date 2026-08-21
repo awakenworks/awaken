@@ -126,12 +126,17 @@ impl SessionApplication {
         selected_holder: &PlaintextHolder,
         resources: &mut ResolvedSessionResources,
     ) -> Result<bool, SessionPreparationError> {
-        let before = resources.clone();
-        for input in &mut resources.inputs {
+        let (mut inputs, skills) = resources.clone().into_parts();
+        for input in &mut inputs {
             self.pin_repository_credential(owner_scope, selected_holder, input)
                 .await?;
         }
-        Ok(*resources != before)
+        let next = ResolvedSessionResources::try_new(inputs, skills).map_err(|error| {
+            SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+        })?;
+        let changed = next != *resources;
+        *resources = next;
+        Ok(changed)
     }
 
     /// Root-CAS migration for retained Session rows written before exact

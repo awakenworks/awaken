@@ -1322,7 +1322,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         durable
             .resources
             .active
-            .skills
+            .skills()
             .first()
             .map(|skill| skill.skill_id.as_str()),
         Some("skill_release"),
@@ -1506,7 +1506,7 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
     );
     let runtime_paths = prepared.lock().unwrap()[0]
         .resources
-        .inputs
+        .inputs()
         .iter()
         .map(|input| input.mount_path.clone())
         .collect::<Vec<_>>();
@@ -1778,18 +1778,18 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     let calls = prepared.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace_id, "default");
-    assert_eq!(calls[0].resources.inputs.len(), 2);
+    assert_eq!(calls[0].resources.inputs().len(), 2);
     assert_eq!(
-        calls[0].resources.inputs[0].binding_id.as_str(),
+        calls[0].resources.inputs()[0].binding_id.as_str(),
         "agent-memory",
         "a replacement retains the published logical binding identity"
     );
     assert_eq!(
-        calls[0].resources.inputs[0].access,
+        calls[0].resources.inputs()[0].access,
         ResourceAccess::ReadOnly
     );
     assert!(
-        calls[0].resources.inputs.iter().all(|resource| !matches!(
+        calls[0].resources.inputs().iter().all(|resource| !matches!(
             &resource.source,
                 awaken_session_contract::ResolvedInputSource::MemoryStore {
                 memory_store_id,
@@ -1798,7 +1798,7 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
         )),
         "the replaced Agent default must not cross the runtime boundary"
     );
-    assert!(calls[0].resources.inputs.iter().any(|resource| matches!(
+    assert!(calls[0].resources.inputs().iter().any(|resource| matches!(
         &resource.source,
         awaken_session_contract::ResolvedInputSource::File { file_id }
             if file_id.as_str() == "agent-file"
@@ -1847,7 +1847,7 @@ async fn resource_config_publication_only_affects_later_sessions() {
     );
 
     let calls = prepared.lock().unwrap();
-    let version = |call: &SessionInit| match &call.resources.inputs[0].source {
+    let version = |call: &SessionInit| match &call.resources.inputs()[0].source {
         awaken_session_contract::ResolvedInputSource::MemoryStore { config, .. } => config.version,
         other => panic!("expected memory input, got {other:?}"),
     };
@@ -2017,7 +2017,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     let id = state.create_session(request, None).await.unwrap().id;
     let persisted = repo.get(&id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
-        &persisted.resources.active.inputs[0].source
+        &persisted.resources.active.inputs()[0].source
     else {
         panic!("expected compatibility Repository")
     };
@@ -2170,11 +2170,11 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
             2,
             "failed desired apply plus prior-manifest rollback"
         );
-        assert_eq!(calls[0].inputs.len(), 1);
-        assert!(calls[1].inputs.is_empty());
+        assert_eq!(calls[0].inputs().len(), 1);
+        assert!(calls[1].inputs().is_empty());
     }
     let durable = repo.get(&id).await.unwrap();
-    assert!(durable.resources.active.inputs.is_empty());
+    assert!(durable.resources.active.inputs().is_empty());
     assert!(durable.resources.pending.is_none());
     assert_eq!(
         durable.resources.activations[0].state,
@@ -2263,7 +2263,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     assert_eq!(settled.resources.revision, revision, "same generation");
     assert!(settled.resources.pending.is_none(), "retry settled pending");
     assert_eq!(
-        settled.resources.active.inputs.len(),
+        settled.resources.active.inputs().len(),
         1,
         "no duplicate binding"
     );
@@ -2369,7 +2369,7 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
                 assert!(result.is_ok(), "C{}: {result:?}", index + 1);
                 assert_eq!(apply_count, 1, "C{}", index + 1);
                 assert!(durable.resources.pending.is_none(), "C{}", index + 1);
-                assert_eq!(durable.resources.active.inputs.len(), 1, "C{}", index + 1);
+                assert_eq!(durable.resources.active.inputs().len(), 1, "C{}", index + 1);
             }
             ResourceCasRule::AttemptConflictsExhausted => {
                 assert!(
@@ -2407,7 +2407,7 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
                 assert_eq!(apply_count, 1, "C8");
                 assert!(durable.resources.pending.is_none(), "C8");
                 assert_eq!(durable.resources.revision, 2, "C8 same generation");
-                assert_eq!(durable.resources.active.inputs.len(), 1, "C8");
+                assert_eq!(durable.resources.active.inputs().len(), 1, "C8");
             }
         }
     }
@@ -2603,7 +2603,7 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "F2: {error}");
     let durable = repo.get(id).await.unwrap();
-    assert!(durable.resources.active.inputs.is_empty(), "F2 active");
+    assert!(durable.resources.active.inputs().is_empty(), "F2 active");
     assert!(durable.resources.pending.is_some(), "F2 desired");
 
     let (status, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
@@ -2655,7 +2655,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     .await;
     let id = session["id"].as_str().unwrap();
     let before = repo.get(id).await.unwrap();
-    let old = before.resources.desired().inputs[0].clone();
+    let old = before.resources.desired().inputs()[0].clone();
     let (status, response) = call(
         &app,
         "PUT",
@@ -2670,7 +2670,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     .await;
     assert_eq!(status, StatusCode::OK, "K1: {response}");
     let after = repo.get(id).await.unwrap();
-    let retained = &after.resources.desired().inputs[0];
+    let retained = &after.resources.desired().inputs()[0];
     assert_eq!(retained.binding_id, old.binding_id, "K1/E1");
     assert_eq!(retained.source, old.source, "K1/E1 credential pin");
     let wire = response.to_string();
@@ -2830,7 +2830,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     let durable = sessions.get(session_id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository {
         config, credential, ..
-    } = &durable.resources.active.inputs[0].source
+    } = &durable.resources.active.inputs()[0].source
     else {
         panic!("B2 must persist one Repository input")
     };
@@ -2863,7 +2863,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     );
     let durable = sessions.get(session_id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
-        &durable.resources.active.inputs[0].source
+        &durable.resources.active.inputs()[0].source
     else {
         panic!("B3 must retain one Repository input")
     };

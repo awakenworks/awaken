@@ -297,7 +297,7 @@ fn manifest_allows(
         .filter(|envelope| envelope.workspace_id == reference.workspace_id)
         .and_then(|envelope| envelope.decode_manifest().ok())
         .is_some_and(|manifest| {
-            manifest.resources.inputs.iter().any(|input| {
+            manifest.resources.inputs().iter().any(|input| {
                 matches!(
                     &input.source,
                     awaken_session_contract::ResolvedInputSource::MemoryStore {

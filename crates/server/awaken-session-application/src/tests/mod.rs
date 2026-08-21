@@ -777,20 +777,21 @@ fn application_with_configuration(
 }
 
 fn skill_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: Vec::new(),
-        skills: vec![awaken_session_contract::ResolvedSkillBinding {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        Vec::new(),
+        vec![awaken_session_contract::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: id.into(),
             version: 1,
             bundle_sha256: format!("sha-{id}"),
         }],
-    }
+    )
+    .unwrap()
 }
 
 fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources {
-        inputs: vec![awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("input"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(id),
@@ -799,8 +800,9 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: Vec::new(),
-    }
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 /// Local-restart ownership FMECA and cause/effect decision table. C1 the

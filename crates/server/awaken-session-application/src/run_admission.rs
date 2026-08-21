@@ -455,7 +455,9 @@ impl SessionApplication {
         let mut resources =
             self.resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)?;
         if !skills.is_empty() {
-            resources.skills = self.resolve_session_skills(&owner_scope, &skills).await?;
+            resources = resources
+                .with_skills(self.resolve_session_skills(&owner_scope, &skills).await?)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
         }
         self.pin_repository_credentials(
             &owner_scope,
@@ -464,7 +466,7 @@ impl SessionApplication {
         )
         .await
         .map_err(preparation_error)?;
-        for input in &resources.inputs {
+        for input in resources.inputs() {
             let awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id,
                 credential,
