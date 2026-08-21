@@ -58,7 +58,7 @@ pub(super) fn test_environment_components() -> (
 }
 
 /// Scenario equivalent of the production service wiring: one secret-free
-/// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
+/// Resource Registry is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
 pub(super) fn mount(platform: ScenarioPlatform) -> Router {
     let (host, resources) = platform.into_parts();
@@ -69,9 +69,10 @@ pub(super) fn mount_parts(
     host: Arc<SharedHost>,
     resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
-    let catalog = resources.authorities().resource_catalog();
+    let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
-    awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(host, managed, catalog).0
+    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(host, managed, catalog)
+        .0
 }
 
 pub(super) fn mount_parts_with_model_publication_resolver(
@@ -79,13 +80,13 @@ pub(super) fn mount_parts_with_model_publication_resolver(
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
 ) -> Router {
-    let catalog = resources.authorities().resource_catalog();
+    let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
         host.clone(),
         catalog.clone(),
         resolver.clone(),
     );
-    let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(
+    let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
         host, managed, catalog,
     );
     dreams.bind_model_readiness(Arc::new(ScenarioDreamModelReadiness { resolver }));
@@ -125,16 +126,16 @@ pub(super) fn mount_with_agent_source(
 ) -> Router {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
-    let catalog = resources.authorities().resource_catalog();
+    let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host.clone(),
         catalog.clone(),
         agent_source,
     );
-    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
 }
 
-/// Scenario platform with the Environment API and the same Resource Catalog,
+/// Scenario platform with the Environment API and the same Resource Registry,
 /// credential plane, and Session repository used by [`mount`].
 pub(super) fn mount_with_environments(platform: ScenarioPlatform) -> Router {
     mount_with_environments_and_agent_source(platform, None)
@@ -146,7 +147,7 @@ pub(super) fn mount_with_environments_and_agent_source(
 ) -> Router {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
-    let catalog = resources.authorities().resource_catalog();
+    let catalog = resources.authorities().resource_registry();
     let (environment_authoring, environment_execution) = test_environment_components();
     let managed = match agent_source {
         Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
@@ -161,7 +162,7 @@ pub(super) fn mount_with_environments_and_agent_source(
             environment_execution.clone(),
         ),
     };
-    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
         .merge(awaken_protocol_managed::environment_authoring_router(
             environment_authoring.clone(),
         ))

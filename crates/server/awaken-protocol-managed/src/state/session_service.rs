@@ -247,15 +247,15 @@ impl ManagedState {
         self
     }
 
-    /// Wire the platform Resource Catalog used to resolve Memory/Repository
+    /// Wire the platform Resource Registry used to resolve Memory/Repository
     /// configuration once at Session creation.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_resource_catalog(
+    pub fn with_resource_registry(
         mut self,
-        catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+        catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ) -> Self {
-        self.application_mut().set_resource_catalog(catalog);
+        self.application_mut().set_resource_registry(catalog);
         self
     }
 }

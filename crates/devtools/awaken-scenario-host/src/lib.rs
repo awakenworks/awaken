@@ -258,7 +258,7 @@ pub fn build_worker_router() -> Router {
 }
 
 /// Echo-model Scenario platform with the official Environment API, exact sandbox-policy
-/// store, Resource Catalog, Managed Sessions, and all protocol adapters. It exists
+/// store, Resource Registry, Managed Sessions, and all protocol adapters. It exists
 /// solely to drive the orthogonal configuration matrix without application-auth
 /// concerns obscuring the baseline/provisioning behavior under test.
 pub fn build_environment_matrix_router() -> Router {

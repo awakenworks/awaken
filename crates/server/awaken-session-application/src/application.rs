@@ -132,7 +132,7 @@ pub struct SessionApplication {
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
         Option<Arc<dyn awaken_session_contract::SessionModelPublicationResolver>>,
-    resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
+    resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
@@ -197,7 +197,7 @@ impl SessionApplication {
             environments,
             config_source: None,
             model_publication_resolver: None,
-            resource_catalog: None,
+            resource_registry: None,
             resource_purge_scheduler: None,
             resource_references: None,
             resource_files: None,
@@ -264,10 +264,10 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub(crate) fn resource_catalog(
+    pub(crate) fn resource_registry(
         &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourceCatalog> {
-        self.resource_catalog.as_deref()
+    ) -> Option<&dyn awaken_resource_contract::ResourceRegistry> {
+        self.resource_registry.as_deref()
     }
 
     #[must_use]
@@ -584,11 +584,11 @@ impl SessionApplication {
         Ok(models.into_iter().collect())
     }
 
-    pub fn set_resource_catalog(
+    pub fn set_resource_registry(
         &mut self,
-        catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+        catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ) {
-        self.resource_catalog = Some(catalog);
+        self.resource_registry = Some(catalog);
     }
 }
 

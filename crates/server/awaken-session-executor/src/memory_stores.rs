@@ -5,7 +5,7 @@
 //! repository; the local opener exists only for tests and scenario fixtures.
 //!
 //! Resource definition/configuration/lifecycle lives in the platform
-//! `ResourceCatalog`, injected at the server process startup. The runtime host owns
+//! `ResourceRegistry`, injected at the server process startup. The runtime host owns
 //! only content backends; it does not own an authorization policy or a second identity
 //! registry.
 

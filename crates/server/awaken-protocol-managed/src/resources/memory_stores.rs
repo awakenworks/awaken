@@ -17,7 +17,7 @@ use std::sync::Arc;
 use awaken_resource_contract::{
     CreateMemoryStoreCommand, MemErr, Memory, MemoryRepository, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreDefinition, MemoryVersion, MemoryVersionOperation,
-    ResourceCatalogError, ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
+    ResourceRegistryError, ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
 };
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -325,7 +325,7 @@ struct MemoryStoreApi {
     stores: Arc<dyn MemoryStoreApplicationService>,
 }
 
-/// Mount the Memory API over the same Resource Catalog used by Session
+/// Mount the Memory API over the same Resource Registry used by Session
 /// resolution. Processes that manage Resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
 pub fn memory_stores_router(
@@ -375,24 +375,26 @@ fn not_found(what: &str) -> axum::response::Response {
     err(StatusCode::NOT_FOUND, format!("{what} not found"))
 }
 
-fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
+fn registry_error(error: ResourceRegistryError) -> axum::response::Response {
     let status = match error {
-        ResourceCatalogError::AlreadyExists(_) | ResourceCatalogError::ConfigConflict { .. } => {
-            StatusCode::CONFLICT
-        }
-        ResourceCatalogError::NotFound(_) | ResourceCatalogError::ConfigNotFound { .. } => {
+        ResourceRegistryError::AlreadyRegistered(_)
+        | ResourceRegistryError::ConfigConflict { .. }
+        | ResourceRegistryError::ConcurrentModification(_) => StatusCode::CONFLICT,
+        ResourceRegistryError::NotFound(_) | ResourceRegistryError::ConfigNotFound { .. } => {
             StatusCode::NOT_FOUND
         }
-        ResourceCatalogError::NotActive { .. } => StatusCode::CONFLICT,
-        ResourceCatalogError::Invalid(_) => StatusCode::BAD_REQUEST,
-        ResourceCatalogError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ResourceRegistryError::NotActive { .. } => StatusCode::CONFLICT,
+        ResourceRegistryError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ResourceRegistryError::CorruptData(_) | ResourceRegistryError::Unavailable(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     err(status, error.to_string())
 }
 
 fn application_error(error: MemoryStoreApplicationError) -> axum::response::Response {
     match error {
-        MemoryStoreApplicationError::Catalog(error) => catalog_error(error),
+        MemoryStoreApplicationError::Registry(error) => registry_error(error),
         MemoryStoreApplicationError::Purge(error) => {
             err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
@@ -411,7 +413,7 @@ async fn active_store_exists(
 
 // ---- Store routes ----------------------------------------------------------
 
-/// `POST /v1/memory_stores` — create a store. The Resource Catalog owns
+/// `POST /v1/memory_stores` — create a store. The Resource Registry owns
 /// identity/existence while MemoryRepository owns only path-addressed content.
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
@@ -830,7 +832,7 @@ fn collect_versions(log: &[MemoryVersion]) -> Vec<MemoryVersion> {
     versions
 }
 
-/// Whether the resource catalog contains this store in the trusted Workspace.
+/// Whether the resource registry contains this store in the trusted Workspace.
 async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,

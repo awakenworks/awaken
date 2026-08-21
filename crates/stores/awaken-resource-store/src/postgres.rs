@@ -17,7 +17,7 @@ use sqlx::postgres::PgPool;
 use sqlx::{Postgres, Row, Transaction};
 use tokio::runtime::Handle;
 
-use crate::schema::{CATALOG_NS, NS, resource_catalog_bundle, resource_reclamation_bundle};
+use crate::schema::{NS, REGISTRY_NS, resource_reclamation_bundle, resource_registry_bundle};
 use crate::{
     decode_intent, encode_intent, kind_name, parse_reference_kind, prepare_replacement,
     reference_kind_name, status_name, storage, to_i64, validate_fence_request, validate_reference,
@@ -57,10 +57,10 @@ impl PostgresResourceStore {
             .verify_bundle(&lifecycle)
             .await
             .map_err(|error| storage(error.to_string()))?;
-        let catalog = resource_catalog_bundle().map_err(|error| storage(error.to_string()))?;
+        let catalog = resource_registry_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
-            CATALOG_NS,
+            REGISTRY_NS,
         )
         .map_err(|error| storage(error.to_string()))?
         .verify_bundle(&catalog)
@@ -90,10 +90,10 @@ impl PostgresResourceStore {
         .run_bundle(&lifecycle)
         .await
         .map_err(|error| storage(error.to_string()))?;
-        let catalog = resource_catalog_bundle().map_err(|error| storage(error.to_string()))?;
+        let catalog = resource_registry_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             self.pool.clone(),
-            CATALOG_NS,
+            REGISTRY_NS,
         )
         .map_err(|error| storage(error.to_string()))?
         .run_bundle(&catalog)

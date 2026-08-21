@@ -10,23 +10,26 @@ mod authorities;
 mod execution_sources;
 mod files;
 mod reclamation;
+mod registry;
 mod skill_ingest;
 pub use authorities::ResourceAuthorities;
 mod skill_lifecycle;
 use awaken_resource_contract::{
-    ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
-    MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    PutResourcePurgeOutcome, ResourceCatalog, ResourceKind, ResourcePurgeError,
-    ResourcePurgeIntent, ResourcePurgeScheduler, ResourceReclamationRepository, ResourceState,
-    ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
+    ChangeMemoryStoreState, ConfigVersion, CreateMemoryStoreCommand, FileApplicationService,
+    MemoryStoreApplicationError, MemoryStoreApplicationService, MemoryStoreConfigVersion,
+    MemoryStoreDefinition, PutResourcePurgeOutcome, RegisterMemoryStore, ResourceKind,
+    ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler, ResourceReclamationRepository,
+    ResourceRegistry, ResourceState, ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
+    UpdateMemoryStoreProfile,
 };
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
 pub use execution_sources::{
-    ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
+    ApplicationArtifactPublisher, ApplicationFileContentSource, RegistryRepositoryBindingVerifier,
     StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
 pub use files::{CreateFileCommand, FileApplication};
 pub use reclamation::{ResourceLifecycleGuard, ResourcePhysicalCleanup};
+pub use registry::{RegistryApplication, RegistryClock, SystemRegistryClock};
 pub use skill_ingest::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
     MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
@@ -54,10 +57,10 @@ impl ResourcesApplication {
                 reclamation.clone(),
             )),
             memories: Arc::new(MemoryStoreApplication::new(
-                authorities.resource_catalog(),
+                authorities.resource_registry(),
                 purge.clone(),
             )),
-            lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_catalog())),
+            lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_registry())),
             physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(
                 authorities.file_store(),
                 authorities.memory_repository(),
@@ -138,14 +141,17 @@ impl ResourcesApplication {
 /// The sole MemoryStore identity/reclamation command path. Content mutations stay
 /// in the independent path-addressed MemoryRepository aggregate.
 pub struct MemoryStoreApplication {
-    catalog: Arc<dyn ResourceCatalog>,
+    registry: Arc<dyn ResourceRegistry>,
     purge: Arc<dyn ResourcePurgeScheduler>,
 }
 
 impl MemoryStoreApplication {
     #[must_use]
-    pub fn new(catalog: Arc<dyn ResourceCatalog>, purge: Arc<dyn ResourcePurgeScheduler>) -> Self {
-        Self { catalog, purge }
+    pub fn new(
+        registry: Arc<dyn ResourceRegistry>,
+        purge: Arc<dyn ResourcePurgeScheduler>,
+    ) -> Self {
+        Self { registry, purge }
     }
 }
 
@@ -167,7 +173,7 @@ fn required_store(
     id: &str,
 ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
     value.ok_or_else(|| {
-        awaken_resource_contract::ResourceCatalogError::NotFound(id.to_string()).into()
+        awaken_resource_contract::ResourceRegistryError::NotFound(id.to_string()).into()
     })
 }
 
@@ -188,14 +194,14 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
             current_config_version: ConfigVersion::INITIAL,
             timestamps: ResourceTimestamps::created(now_nanos()),
         };
-        self.catalog.create_memory_store(
-            definition.clone(),
-            MemoryStoreConfigVersion {
+        self.registry.register_memory_store(RegisterMemoryStore {
+            definition: definition.clone(),
+            initial_config: MemoryStoreConfigVersion {
                 memory_store_id: id,
                 version: ConfigVersion::INITIAL,
                 retention_policy: command.retention_policy,
             },
-        )?;
+        })?;
         Ok(definition)
     }
 
@@ -204,14 +210,14 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<MemoryStoreDefinition>, MemoryStoreApplicationError> {
-        Ok(self.catalog.memory_store(workspace_id, id)?)
+        Ok(self.registry.find_memory_store(workspace_id, id)?)
     }
 
     async fn list(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, MemoryStoreApplicationError> {
-        Ok(self.catalog.list_memory_stores(workspace_id)?)
+        Ok(self.registry.list_memory_stores(workspace_id)?)
     }
 
     async fn update(
@@ -219,8 +225,8 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         command: UpdateMemoryStoreCommand,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
         let mut definition = required_store(
-            self.catalog
-                .memory_store(&command.workspace_id, command.id.as_ref())?,
+            self.registry
+                .find_memory_store(&command.workspace_id, command.id.as_ref())?,
             command.id.as_ref(),
         )?;
         if let Some(name) = command.name {
@@ -239,9 +245,19 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
                 }
             }
         }
-        definition.timestamps.touch(now_nanos());
-        self.catalog.update_memory_store(definition.clone())?;
-        Ok(definition)
+        self.registry
+            .update_memory_store_profile(UpdateMemoryStoreProfile {
+                workspace_id: command.workspace_id,
+                id: definition.id.clone(),
+                name: definition.name,
+                description: definition.description,
+                metadata: definition.metadata,
+            })?;
+        required_store(
+            self.registry
+                .find_memory_store(&definition.workspace_id, definition.id.as_ref())?,
+            definition.id.as_ref(),
+        )
     }
 
     async fn set_state(
@@ -250,8 +266,13 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         id: &str,
         state: ResourceState,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
-        self.catalog.set_memory_state(workspace_id, id, state)?;
-        required_store(self.catalog.memory_store(workspace_id, id)?, id)
+        self.registry
+            .change_memory_store_state(ChangeMemoryStoreState {
+                workspace_id: workspace_id.into(),
+                id: id.into(),
+                state,
+            })?;
+        required_store(self.registry.find_memory_store(workspace_id, id)?, id)
     }
 
     async fn delete(
@@ -260,12 +281,12 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         id: &str,
         requested_at_unix_ms: u64,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
-        let definition = required_store(self.catalog.memory_store(workspace_id, id)?, id)?;
+        let definition = required_store(self.registry.find_memory_store(workspace_id, id)?, id)?;
         let config = self
-            .catalog
-            .memory_config(workspace_id, id, definition.current_config_version)?
+            .registry
+            .find_memory_store_config(workspace_id, id, definition.current_config_version)?
             .ok_or_else(
-                || awaken_resource_contract::ResourceCatalogError::ConfigNotFound {
+                || awaken_resource_contract::ResourceRegistryError::ConfigNotFound {
                     id: id.to_string(),
                     version: definition.current_config_version,
                 },
@@ -337,8 +358,9 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
+        let registry = Arc::new(RegistryApplication::new(resources.clone()));
         ResourcesApplication::new(ResourceAuthorities::new(
-            resources.clone(),
+            registry,
             files.clone(),
             files,
             Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),

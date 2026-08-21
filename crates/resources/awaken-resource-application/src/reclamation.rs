@@ -4,19 +4,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
-    FileStore, MemoryRepository, ResourceCatalog, ResourceKind, ResourcePhysicalReclaimer,
-    ResourcePurgeError, ResourcePurgeEvidence, ResourcePurgeGuard, ResourceReference,
-    ResourceReferenceKind, ResourceState, ResourceTarget, SkillStore,
+    FileStore, MemoryRepository, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
+    ResourcePurgeEvidence, ResourcePurgeGuard, ResourceReference, ResourceReferenceKind,
+    ResourceRegistry, ResourceState, ResourceTarget, SkillStore,
 };
 
 pub struct ResourceLifecycleGuard {
-    catalog: Arc<dyn ResourceCatalog>,
+    registry: Arc<dyn ResourceRegistry>,
 }
 
 impl ResourceLifecycleGuard {
     #[must_use]
-    pub fn new(catalog: Arc<dyn ResourceCatalog>) -> Self {
-        Self { catalog }
+    pub fn new(registry: Arc<dyn ResourceRegistry>) -> Self {
+        Self { registry }
     }
 }
 
@@ -31,8 +31,8 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
         let reference_id = match target.kind {
             ResourceKind::File => None,
             ResourceKind::MemoryStore => match self
-                .catalog
-                .memory_store(&target.workspace_id, &target.resource_id)
+                .registry
+                .find_memory_store(&target.workspace_id, &target.resource_id)
                 .map_err(storage)?
             {
                 Some(definition)
@@ -48,8 +48,8 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
                 None => None,
             },
             ResourceKind::Repository => self
-                .catalog
-                .repository(&target.workspace_id, &target.resource_id)
+                .registry
+                .find_repository(&target.workspace_id, &target.resource_id)
                 .map_err(storage)?
                 .filter(|definition| definition.state != ResourceState::Deleted)
                 .map(|definition| format!("repository:{:?}", definition.state)),

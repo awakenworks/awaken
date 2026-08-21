@@ -6,8 +6,11 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 // stable even though the Rust-facing responsibility is named "reclamation".
 pub const BUNDLE_ID: &str = "awaken.resource_lifecycle";
 pub const NS: &str = "resource_lifecycle";
-pub const CATALOG_BUNDLE_ID: &str = "awaken.resource_catalog";
-pub const CATALOG_NS: &str = "resource_catalog";
+// The public responsibility is now named Registry, but these values identify
+// an already-published migration stream and its tables. Renaming either would
+// silently create a second empty store instead of upgrading existing data.
+pub const REGISTRY_BUNDLE_ID: &str = "awaken.resource_catalog";
+pub const REGISTRY_NS: &str = "resource_catalog";
 
 const FILES: &[(&str, &str)] = &[(
     "V0001__resource_lifecycle.sql",
@@ -45,16 +48,24 @@ pub fn resource_reclamation_bundle() -> Result<MigrationBundle, MigrationError> 
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
-/// Resources-owned catalog aggregate, independently versioned from lifecycle
+/// Resources-owned Registry aggregate, independently versioned from lifecycle
 /// fencing because the two aggregates have no table-level dependency.
-pub fn resource_catalog_bundle() -> Result<MigrationBundle, MigrationError> {
+pub fn resource_registry_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
-        CATALOG_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "create resource catalog aggregate",
-            include_str!("migrations/V0001__resource_catalog.sql").trim(),
-        )?],
+        REGISTRY_BUNDLE_ID,
+        vec![
+            Migration::new(
+                1,
+                // V1 metadata is part of the published migration identity.
+                "create resource catalog aggregate",
+                include_str!("migrations/V0001__resource_catalog.sql").trim(),
+            )?,
+            Migration::new(
+                2,
+                "add Resource Registry aggregate revision",
+                include_str!("migrations/V0002__resource_registry_revision.sql").trim(),
+            )?,
+        ],
     )
 }
 
@@ -69,7 +80,7 @@ mod tests {
         // tables; lint success is the static ownership proof.
         let bundles = [
             resource_reclamation_bundle().expect("lifecycle bundle builds"),
-            resource_catalog_bundle().expect("catalog bundle builds"),
+            resource_registry_bundle().expect("Registry bundle builds"),
         ];
         awaken_scoped_migration::lint(&bundles).expect("resource bundles lint");
     }

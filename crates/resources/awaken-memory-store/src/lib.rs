@@ -3,7 +3,7 @@
 //! The [`MemoryRepository`] port with durable SQLite and Postgres backends plus an
 //! explicit `test-support` volatile backend. A store is addressed only by an opaque,
 //! globally unique id; workspace ownership and authorization deliberately remain
-//! outside this storage adapter in the resource catalog and authorization edge.
+//! outside this storage adapter in the resource registry and authorization edge.
 //!
 //! Recall, extraction, API history, and mounts all use this same store-scoped
 //! aggregate; there is no Host-global extraction directory.

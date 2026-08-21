@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Worker can install a frozen Workspace-scoped Session resource manifest over
-/// shared File/Memory/Skill/lifecycle and Resource Catalog ports.
+/// shared File/Memory/Skill/lifecycle and Resource Registry ports.
 pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
 
 /// Worker has an explicitly installed in-process executor for a published Host

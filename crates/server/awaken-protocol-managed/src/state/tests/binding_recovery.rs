@@ -1023,10 +1023,10 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
     // | R1 | add | success | revision +1, one Active | exact id/path restored |
     // | R2 | delete | success | revision +1, no Active | resource absent |
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
-    let catalog = Arc::new(ephemeral_resource_catalog());
+    let catalog = Arc::new(ephemeral_resource_registry());
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_session_repo(repo.clone())
-        .with_resource_catalog(catalog.clone());
+        .with_resource_registry(catalog.clone());
     let id = state
         .create_session(bare_create_params(), None)
         .await
@@ -1074,7 +1074,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
 
     let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_session_repo(repo.clone())
-        .with_resource_catalog(catalog.clone());
+        .with_resource_registry(catalog.clone());
     restarted.ensure_session(&id).await.expect("rehydrate");
     let restored = restarted.list_resources(&id).expect("list restored");
     assert_eq!(restored.len(), 1);
@@ -1113,7 +1113,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
         .expect("expire the second crashed Runtime owner");
     let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_session_repo(repo)
-        .with_resource_catalog(catalog);
+        .with_resource_registry(catalog);
     second_restart
         .ensure_session(&id)
         .await
