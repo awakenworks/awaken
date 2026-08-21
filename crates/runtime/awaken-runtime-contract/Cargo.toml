@@ -21,11 +21,11 @@ sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-schemars = { version = "1", optional = true }
+schemars = "1"
 
 [features]
 default = []
-schema = ["dep:schemars"]
+schema = []
 
 [dev-dependencies]
 tokio.workspace = true

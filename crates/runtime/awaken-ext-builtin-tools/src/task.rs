@@ -64,10 +64,14 @@ impl SendMessageTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SendMessageArgs {
+    /// ID of the thread to message.
     pub target_thread: String,
+    /// Message body.
     pub content: String,
+    /// Optional caller key scoped to the sending Run.
     #[serde(default)]
     pub idempotency_key: Option<String>,
 }
@@ -76,9 +80,9 @@ pub struct SendMessageArgs {
 impl Tool for SendMessageTool {
     type Args = SendMessageArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "send_message"
-    }
+    const ID: &'static str = "send_message";
+    const DESCRIPTION: &'static str = "Send a message to another thread";
+
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::DurableRequest
     }
@@ -117,8 +121,10 @@ impl CancelTaskTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CancelTaskArgs {
+    /// Task identifier.
     pub task_id: String,
 }
 
@@ -126,9 +132,9 @@ pub struct CancelTaskArgs {
 impl Tool for CancelTaskTool {
     type Args = CancelTaskArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "cancel_task"
-    }
+    const ID: &'static str = "cancel_task";
+    const DESCRIPTION: &'static str = "Cancel a background task";
+
     async fn call(&self, args: CancelTaskArgs) -> Result<String, ToolError> {
         self.0.cancel(&args.task_id).await?;
         Ok(format!("cancelled {}", args.task_id))
@@ -145,16 +151,17 @@ impl RecoverFailedMessagesTool {
 }
 
 /// `recover_failed_messages` takes no arguments.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RecoverFailedMessagesArgs {}
 
 #[async_trait]
 impl Tool for RecoverFailedMessagesTool {
     type Args = RecoverFailedMessagesArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "recover_failed_messages"
-    }
+    const ID: &'static str = "recover_failed_messages";
+    const DESCRIPTION: &'static str = "Recover failed messages (operator-scoped)";
+
     async fn call(&self, _args: RecoverFailedMessagesArgs) -> Result<String, ToolError> {
         self.0.recover().await
     }

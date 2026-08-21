@@ -10,10 +10,10 @@
 //! a store or bypass permission (G9).
 //!
 //! The mechanism is split by concern, and every public item is re-exported here so
-//! `plugin::X` paths stay stable: [`phase`] (hook points and the `PhaseHook`
-//! trait), [`capability`] (bounds and their fail-closed enforcement), [`guard`]
-//! (run-end continuation), [`contributions`] (the `Plugin` factory and its
-//! registrar), and [`env`] (the merged per-run execution environment).
+//! `plugin::X` paths stay stable: `phase` (hook points and the `PhaseHook`
+//! trait), `capability` (bounds and their fail-closed enforcement), `guard`
+//! (run-end continuation), `contributions` (the `Plugin` factory and its
+//! registrar), and `env` (the merged per-run execution environment).
 
 mod capability;
 mod contributions;

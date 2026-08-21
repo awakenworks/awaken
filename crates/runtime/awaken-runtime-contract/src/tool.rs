@@ -417,13 +417,22 @@ pub async fn invoke_raw_tool(
 }
 
 /// Preferred typed tool API. Authors implement this with concrete argument and
-/// output types; an adapter erases it into a `RawTool` for execution.
+/// output types; the argument type is also the sole source of the model-visible
+/// JSON Schema. An adapter erases the implementation into a `RawTool` for
+/// execution.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    type Args: serde::de::DeserializeOwned + Send;
+    type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send;
     type Output: Serialize + Send;
 
-    fn id(&self) -> &str;
+    /// Stable model-visible identity. Keeping this on the implementation makes
+    /// registration and execution share one authority instead of repeating a
+    /// string in a catalog.
+    const ID: &'static str;
+    /// Model-visible purpose paired with [`Self::Args`] when the descriptor is
+    /// generated.
+    const DESCRIPTION: &'static str;
+
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
     }
@@ -449,7 +458,7 @@ pub fn parse_tool_args<A: serde::de::DeserializeOwned>(
 /// Parse arguments for a legacy [`RawTool`] that intentionally reports invalid
 /// model input as a model-visible tool result instead of aborting the Run.
 /// This preserves that explicit policy while sharing the same parser and error
-/// wording as [`Erased`].
+/// wording as the typed-tool erasure adapter.
 pub fn parse_tool_args_or_error_output<A: serde::de::DeserializeOwned>(
     call_id: &str,
     arguments: serde_json::Value,

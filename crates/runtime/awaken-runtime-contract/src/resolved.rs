@@ -735,6 +735,26 @@ fn is_default_tool_recovery(policy: &crate::tool::ToolRecoveryPolicy) -> bool {
 }
 
 impl ToolDescriptor {
+    /// Generate the descriptor of a compiled typed tool. `Tool::Args` is the
+    /// only input-schema authority: callers provide neither JSON nor a repeated
+    /// id/description, so the executable and advertised contracts cannot drift.
+    pub fn for_tool<T: crate::tool::Tool>(prefix: &str) -> Self {
+        let parameters = model_tool_schema::<T::Args>();
+        Self::pinned(prefix, T::ID, T::DESCRIPTION, parameters)
+    }
+
+    /// Generate a descriptor for a typed model-visible capability that is not
+    /// executed as a [`Tool`](crate::tool::Tool), such as Agent delegation.
+    /// The capability still cannot supply a hand-written parameter schema.
+    pub fn for_args<A: schemars::JsonSchema>(
+        prefix: &str,
+        id: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        let parameters = model_tool_schema::<A>();
+        Self::pinned(prefix, id, description, parameters)
+    }
+
     /// Build a descriptor whose `content_hash` is derived from the id,
     /// description, and parameter schema, so any of those changing changes the
     /// hash. `prefix` namespaces the owner (e.g. `builtin:hand`).
@@ -816,6 +836,23 @@ impl ToolDescriptor {
         self.recovery_policy = recovery;
         self
     }
+}
+
+/// Generate the conservative JSON Schema dialect shared by model-provider tool
+/// APIs. Definitions are inlined and the meta-schema/type-name annotations are
+/// omitted: they do not describe model input, can make an internal Rust rename
+/// alter a content hash, and are rejected by some compatible endpoints.
+fn model_tool_schema<A: schemars::JsonSchema>() -> serde_json::Value {
+    let settings = schemars::generate::SchemaSettings::draft07().with(|settings| {
+        settings.meta_schema = None;
+        settings.inline_subschemas = true;
+    });
+    let mut schema = serde_json::to_value(settings.into_generator().into_root_schema_for::<A>())
+        .expect("a derived JSON Schema must serialize");
+    if let Some(object) = schema.as_object_mut() {
+        object.remove("title");
+    }
+    schema
 }
 
 /// Why a model-visible tool parameter schema cannot be projected safely.

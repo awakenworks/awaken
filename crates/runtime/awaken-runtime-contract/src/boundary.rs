@@ -8,7 +8,8 @@
 //! native engine and the ACP/external-CLI executor both call [`evaluate_boundary`]
 //! and act on its verdict, so steer and operator-pause reach every run.
 //!
-//! The decision is over neutral [`Message`]s and a neutral [`LiveInbox`]; it names
+//! The decision is over neutral [`Message`]s and a neutral
+//! [`LiveInbox`](crate::live_inbox::LiveInbox); it names
 //! no protocol or backend. It *consumes* the inbox (a deterministic boundary
 //! effect) but never commits or awaits — each executor owns its commit mechanism.
 

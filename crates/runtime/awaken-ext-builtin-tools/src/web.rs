@@ -39,8 +39,10 @@ where
 /// HTTP GET a URL and return the response body as text (UTF-8 lossy, capped).
 pub struct WebFetchTool;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebFetchArgs {
+    /// URL to fetch.
     pub url: String,
 }
 
@@ -48,10 +50,8 @@ pub struct WebFetchArgs {
 impl Tool for WebFetchTool {
     type Args = WebFetchArgs;
     type Output = String;
-
-    fn id(&self) -> &str {
-        "web_fetch"
-    }
+    const ID: &'static str = "web_fetch";
+    const DESCRIPTION: &'static str = "Fetch a URL";
 
     async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
         blocking(move || {
@@ -291,10 +291,14 @@ pub struct WebSearchConfig {
     pub options: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebSearchArgs {
+    /// Search query.
     pub query: String,
+    /// Maximum number of results.
     #[serde(default)]
+    #[schemars(range(min = 1, max = 20))]
     pub count: Option<usize>,
 }
 
@@ -352,10 +356,8 @@ fn render_results(results: &[WebSearchResult]) -> String {
 impl Tool for WebSearchTool {
     type Args = WebSearchArgs;
     type Output = String;
-
-    fn id(&self) -> &str {
-        WEB_SEARCH_TOOL_ID
-    }
+    const ID: &'static str = WEB_SEARCH_TOOL_ID;
+    const DESCRIPTION: &'static str = "Search the web through the configured platform provider";
 
     async fn call(&self, args: WebSearchArgs) -> Result<String, ToolError> {
         let credential = match &self.descriptor.credential {
@@ -514,20 +516,7 @@ impl Plugin for WebSearchPlugin {
 }
 
 pub fn web_search_descriptor() -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "builtin",
-        WEB_SEARCH_TOOL_ID,
-        "Search the web through the configured platform provider",
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "search query" },
-                "count": { "type": "integer", "minimum": 1, "maximum": 20 },
-            },
-            "required": ["query"],
-            "additionalProperties": false,
-        }),
-    )
+    ToolDescriptor::for_tool::<WebSearchTool>("builtin")
 }
 
 /// The static network-tool bundle owns only `web_fetch`. Search is exposed

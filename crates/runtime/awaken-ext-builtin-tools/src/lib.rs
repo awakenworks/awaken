@@ -2,7 +2,7 @@
 //!
 //! Concrete model-callable tool ids live here, not in `awaken-runtime`. The
 //! extension owns both the descriptors and their in-process implementations
-//! (ADR-0007): typed [`Tool`](awaken_runtime_contract::tool::Tool)s erased into
+//! (ADR-0007): typed [`Tool`]s erased into
 //! the runtime's `RawTool` registry.
 
 mod agent;
@@ -48,7 +48,7 @@ pub fn all_hand_tools_in(
 }
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
-use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+use awaken_runtime_contract::tool::{Tool, ToolRecoveryMode, ToolRecoveryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
@@ -91,50 +91,24 @@ pub fn selected_hand_recovery_modes(
 
 pub fn builtin_tools() -> Vec<BuiltinTool> {
     vec![
-        hand_tool("bash", "Run a shell command", bash_args()),
-        hand_tool("read", "Read a file", read_args()),
-        hand_tool("write", "Write a file", write_args()),
-        hand_tool("edit", "Edit a file by replacing text", edit_args()),
-        hand_tool("move", "Move or rename a file", move_args()),
-        hand_tool(
-            "delete",
-            "Delete one file",
-            path_arg("path", "absolute file path to delete"),
-        ),
-        hand_tool("glob", "Find files matching a glob", glob_args()),
-        hand_tool("grep", "Search file contents", grep_args()),
-        hand_tool("web_fetch", "Fetch a URL", path_arg("url", "URL to fetch")),
-        task_tool_with_recovery(
-            "send_message",
-            "Send a message to another thread",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "target_thread": { "type": "string", "description": "id of the thread to message" },
-                    "content": { "type": "string", "description": "message body" },
-                    "idempotency_key": { "type": "string", "description": "optional caller key, scoped to the sending run" },
-                },
-                "required": ["target_thread", "content"],
-            }),
-            ToolRecoveryPolicy::durable_request(),
-        ),
-        task_tool(
-            "cancel_task",
-            "Cancel a background task",
-            path_arg("task_id", "task identifier"),
-        ),
-        task_tool(
-            "recover_failed_messages",
-            "Recover failed messages (operator-scoped)",
-            no_args(),
-        ),
+        hand_tool::<BashTool>(),
+        hand_tool::<ReadTool>(),
+        hand_tool::<WriteTool>(),
+        hand_tool::<EditTool>(),
+        hand_tool::<MoveTool>(),
+        hand_tool::<DeleteTool>(),
+        hand_tool::<GlobTool>(),
+        hand_tool::<GrepTool>(),
+        hand_tool::<WebFetchTool>(),
+        task_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
+        task_tool::<CancelTaskTool>(),
+        task_tool::<RecoverFailedMessagesTool>(),
         BuiltinTool {
             toolset: Toolset::Delegation,
-            descriptor: ToolDescriptor::pinned(
+            descriptor: ToolDescriptor::for_args::<AgentRunArgs>(
                 "builtin:delegation",
                 AGENT_RUN,
                 "Delegate a Run to another Agent",
-                agent_run_args(),
             )
             .with_kind(ToolKind::AgentDelegation)
             .with_recovery(ToolRecoveryPolicy::durable_request()),
@@ -142,137 +116,33 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
     ]
 }
 
-fn hand_tool(id: &str, description: &str, parameters: serde_json::Value) -> BuiltinTool {
+fn hand_tool<T: Tool>() -> BuiltinTool {
     BuiltinTool {
         toolset: Toolset::Hand,
-        descriptor: ToolDescriptor::pinned("builtin:hand", id, description, parameters),
+        descriptor: ToolDescriptor::for_tool::<T>("builtin:hand"),
     }
 }
 
-fn task_tool(id: &str, description: &str, parameters: serde_json::Value) -> BuiltinTool {
+fn task_tool<T: Tool>() -> BuiltinTool {
     BuiltinTool {
         toolset: Toolset::Task,
-        descriptor: ToolDescriptor::pinned("builtin:task", id, description, parameters),
+        descriptor: ToolDescriptor::for_tool::<T>("builtin:task"),
     }
 }
 
-fn task_tool_with_recovery(
-    id: &str,
-    description: &str,
-    parameters: serde_json::Value,
-    recovery: ToolRecoveryPolicy,
-) -> BuiltinTool {
-    let mut tool = task_tool(id, description, parameters);
+fn task_tool_with_recovery<T: Tool>(recovery: ToolRecoveryPolicy) -> BuiltinTool {
+    let mut tool = task_tool::<T>();
     tool.descriptor = tool.descriptor.with_recovery(recovery);
     tool
 }
 
-/// A one-required-string-parameter JSON Schema.
-fn path_arg(name: &str, description: &str) -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": { name: { "type": "string", "description": description } },
-        "required": [name],
-    })
-}
-
-fn no_args() -> serde_json::Value {
-    serde_json::json!({ "type": "object", "properties": {} })
-}
-
-fn write_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "file_path": { "type": "string", "description": "path of the file to write" },
-            "content": { "type": "string", "description": "file content" },
-        },
-        "required": ["file_path", "content"],
-    })
-}
-
-fn edit_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "file_path": { "type": "string" },
-            "old_string": { "type": "string" },
-            "new_string": { "type": "string" },
-            "replace_all": { "type": "boolean" },
-        },
-        "required": ["file_path", "old_string", "new_string"],
-    })
-}
-
-fn grep_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "pattern": { "type": "string", "description": "regular expression" },
-            "path": { "type": "string", "description": "optional directory root to search under" },
-        },
-        "required": ["pattern"],
-    })
-}
-
-fn bash_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "command": { "type": "string", "description": "shell command to execute" },
-            "restart": { "type": "boolean", "description": "restart the runner-side bash session" },
-            "timeout_ms": { "type": "integer", "minimum": 0 },
-        },
-    })
-}
-
-fn read_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "file_path": { "type": "string", "description": "path of the file to read" },
-            "view_range": {
-                "type": "array",
-                "items": { "type": "integer" },
-                "minItems": 2,
-                "maxItems": 2
-            },
-        },
-        "required": ["file_path"],
-    })
-}
-
-fn glob_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "pattern": { "type": "string", "description": "doublestar glob pattern" },
-            "path": { "type": "string", "description": "optional directory root" },
-        },
-        "required": ["pattern"],
-    })
-}
-
-fn move_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "source": { "type": "string", "description": "absolute source file path" },
-            "destination": { "type": "string", "description": "absolute destination file path" },
-        },
-        "required": ["source", "destination"],
-    })
-}
-
-fn agent_run_args() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "agent_id": { "type": "string", "description": "target agent id from the roster" },
-            "input": { "type": "string", "description": "task for the target Agent" },
-        },
-        "required": ["agent_id", "input"],
-    })
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRunArgs {
+    /// Target Agent ID from the roster.
+    pub agent_id: String,
+    /// Task for the target Agent.
+    pub input: String,
 }
 
 pub use agent::{AuxiliaryAgentInput, invoke_auxiliary_agent};
@@ -301,6 +171,18 @@ mod tests {
             assert_eq!(
                 d.parameters["type"], "object",
                 "{} needs an object schema",
+                d.id
+            );
+            assert_eq!(
+                d.parameters["additionalProperties"], false,
+                "{} must reject undeclared arguments",
+                d.id
+            );
+            assert!(
+                d.parameters.get("$schema").is_none()
+                    && d.parameters.get("$defs").is_none()
+                    && d.parameters.get("definitions").is_none(),
+                "{} must use the portable, inline model-tool dialect",
                 d.id
             );
             // The hash is derived from the schema surface, so it ends in a hex digest.

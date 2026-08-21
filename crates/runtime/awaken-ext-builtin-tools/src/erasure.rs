@@ -25,7 +25,7 @@ pub fn erase_for<T: Tool + 'static>(tool: T, target: ToolExecutionTarget) -> Arc
 #[async_trait]
 impl<T: Tool> RawTool for Erased<T> {
     fn id(&self) -> &str {
-        self.tool.id()
+        T::ID
     }
 
     fn execution_target(&self) -> ToolExecutionTarget {

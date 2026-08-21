@@ -297,21 +297,24 @@ impl ReadTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadArgs {
+    /// Path of the file to read.
     #[serde(rename = "file_path", alias = "path")]
     pub path: String,
+    /// Inclusive one-based start and end line; a non-positive end reads to EOF.
     #[serde(default)]
-    pub view_range: Option<Vec<i64>>,
+    pub view_range: Option<[i64; 2]>,
 }
 
 #[async_trait]
 impl Tool for ReadTool {
     type Args = ReadArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "read"
-    }
+    const ID: &'static str = "read";
+    const DESCRIPTION: &'static str = "Read a file";
+
     async fn call(&self, args: ReadArgs) -> Result<String, ToolError> {
         if args.path.is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -325,11 +328,6 @@ impl Tool for ReadTool {
         let Some(range) = args.view_range else {
             return Ok(content);
         };
-        if range.len() != 2 {
-            return Err(ToolError::InvalidArguments(
-                "read: view_range must be [start_line, end_line]".into(),
-            ));
-        }
         let lines = content.split('\n').collect::<Vec<_>>();
         let start = usize::try_from((range[0] - 1).max(0)).unwrap_or(usize::MAX);
         let end = if range[1] > 0 {
@@ -353,9 +351,12 @@ impl GlobTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GlobArgs {
+    /// Doublestar glob pattern relative to the selected root.
     pub pattern: String,
+    /// Optional directory root to search under.
     #[serde(default)]
     pub path: Option<String>,
 }
@@ -364,9 +365,9 @@ pub struct GlobArgs {
 impl Tool for GlobTool {
     type Args = GlobArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "glob"
-    }
+    const ID: &'static str = "glob";
+    const DESCRIPTION: &'static str = "Find files matching a glob";
+
     async fn call(&self, args: GlobArgs) -> Result<String, ToolError> {
         if args.pattern.is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -520,9 +521,12 @@ impl GrepTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GrepArgs {
+    /// Regular expression to search for.
     pub pattern: String,
+    /// Optional directory root to search under.
     #[serde(default)]
     pub path: String,
 }
@@ -531,9 +535,9 @@ pub struct GrepArgs {
 impl Tool for GrepTool {
     type Args = GrepArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "grep"
-    }
+    const ID: &'static str = "grep";
+    const DESCRIPTION: &'static str = "Search file contents";
+
     async fn call(&self, args: GrepArgs) -> Result<String, ToolError> {
         if args.pattern.is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -708,10 +712,13 @@ impl WriteTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WriteArgs {
+    /// Path of the file to write.
     #[serde(rename = "file_path", alias = "path")]
     pub path: String,
+    /// Complete replacement content.
     pub content: String,
 }
 
@@ -719,9 +726,9 @@ pub struct WriteArgs {
 impl Tool for WriteTool {
     type Args = WriteArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "write"
-    }
+    const ID: &'static str = "write";
+    const DESCRIPTION: &'static str = "Write a file";
+
     async fn call(&self, args: WriteArgs) -> Result<String, ToolError> {
         if args.path.is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -750,14 +757,19 @@ impl EditTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EditArgs {
+    /// Path of the file to edit.
     #[serde(rename = "file_path", alias = "path")]
     pub path: String,
+    /// Exact text to replace.
     #[serde(rename = "old_string", alias = "old")]
     pub old: String,
+    /// Replacement text.
     #[serde(rename = "new_string", alias = "new")]
     pub new: String,
+    /// Replace every occurrence instead of requiring a unique match.
     #[serde(default)]
     pub replace_all: bool,
 }
@@ -766,9 +778,9 @@ pub struct EditArgs {
 impl Tool for EditTool {
     type Args = EditArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "edit"
-    }
+    const ID: &'static str = "edit";
+    const DESCRIPTION: &'static str = "Edit a file by replacing text";
+
     async fn call(&self, args: EditArgs) -> Result<String, ToolError> {
         // An empty `old` is a degenerate anchor: `"".matches("")` is 1, so on an
         // empty file the "exactly one occurrence" arm would silently *insert*
@@ -818,9 +830,12 @@ impl Tool for EditTool {
 /// callers cannot turn a narrowly-scoped file operation into a recursive move.
 pub struct MoveTool;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MoveArgs {
+    /// Absolute source file path.
     pub source: String,
+    /// Absolute destination file path.
     pub destination: String,
 }
 
@@ -828,9 +843,9 @@ pub struct MoveArgs {
 impl Tool for MoveTool {
     type Args = MoveArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "move"
-    }
+    const ID: &'static str = "move";
+    const DESCRIPTION: &'static str = "Move or rename a file";
+
     async fn call(&self, args: MoveArgs) -> Result<String, ToolError> {
         if !std::path::Path::new(&args.source).is_file() {
             return Err(ToolError::Execution(format!(
@@ -859,8 +874,10 @@ impl Tool for MoveTool {
 /// remains outside the model-callable capability surface.
 pub struct DeleteTool;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeleteArgs {
+    /// Absolute file path to delete.
     pub path: String,
 }
 
@@ -868,9 +885,9 @@ pub struct DeleteArgs {
 impl Tool for DeleteTool {
     type Args = DeleteArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "delete"
-    }
+    const ID: &'static str = "delete";
+    const DESCRIPTION: &'static str = "Delete one file";
+
     async fn call(&self, args: DeleteArgs) -> Result<String, ToolError> {
         if !std::path::Path::new(&args.path).is_file() {
             return Err(ToolError::Execution(format!(
@@ -899,12 +916,16 @@ impl BashTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BashArgs {
+    /// Shell command to execute.
     #[serde(default)]
     pub command: String,
+    /// Restart the runner-side Bash session before executing the command.
     #[serde(default)]
     pub restart: bool,
+    /// Invocation timeout in milliseconds; zero selects the default timeout.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -913,9 +934,9 @@ pub struct BashArgs {
 impl Tool for BashTool {
     type Args = BashArgs;
     type Output = String;
-    fn id(&self) -> &str {
-        "bash"
-    }
+    const ID: &'static str = "bash";
+    const DESCRIPTION: &'static str = "Run a shell command";
+
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
         let mut session = self.session.lock().await;
         if args.restart {

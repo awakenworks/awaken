@@ -8,6 +8,16 @@ use awaken_runtime_contract::tool::{Tool, ToolError};
 use crate::localfs::{MemoryDir, MemoryStoreHandle};
 use std::sync::Arc;
 
+/// Strong input contract shared by schema generation and execution.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WriteMemoryArgs {
+    /// Short slug naming the memory.
+    pub name: String,
+    /// Durable memory text.
+    pub content: String,
+}
+
 /// Writes one memory to a stable store. Constructed with the store so the write
 /// lands in the persistent memory directory, not the sub-run's sandbox.
 pub struct WriteMemoryTool {
@@ -28,35 +38,25 @@ impl WriteMemoryTool {
 
 #[async_trait]
 impl Tool for WriteMemoryTool {
-    // A JSON value rather than a derived struct keeps the arg shape flexible and
-    // matches how other in-tree tools read loosely-typed input.
-    type Args = serde_json::Value;
+    type Args = WriteMemoryArgs;
     type Output = String;
+    const ID: &'static str = "write_memory";
+    const DESCRIPTION: &'static str = "Save one durable memory. `name` is a short slug; \
+        `content` is the memory text. Call once per distinct memory.";
 
-    fn id(&self) -> &str {
-        "write_memory"
-    }
-
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("write_memory needs a `name`".into()))?;
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("write_memory needs `content`".into()))?;
+    async fn call(&self, args: WriteMemoryArgs) -> Result<String, ToolError> {
+        let WriteMemoryArgs { name, content } = args;
         // Model-independent backstop for the extractor's "what NOT to save" gate.
         // Skip an implementation note here — NOT an error, so the extractor's
         // other valid writes still land.
-        if !accepts_memory_content(content) {
+        if !accepts_memory_content(&content) {
             return Ok(format!(
                 "skipped `{name}`: implementation detail (code / a fix) belongs in the repo, not memory"
             ));
         }
         let path = self
             .store
-            .write(name, content)
+            .write(&name, &content)
             .await
             .map_err(|e| ToolError::Execution(format!("write memory: {e}")))?;
         Ok(format!("saved memory {path}"))
@@ -115,20 +115,7 @@ pub fn accepts_memory_content(content: &str) -> bool {
 
 /// The model-visible descriptor for [`WriteMemoryTool`].
 pub fn write_memory_descriptor() -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "ext-memory",
-        "write_memory",
-        "Save one durable memory. `name` is a short slug; `content` is the memory text. \
-         Call once per distinct memory.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string", "description": "short slug naming the memory" },
-                "content": { "type": "string", "description": "the memory text" }
-            },
-            "required": ["name", "content"]
-        }),
-    )
+    ToolDescriptor::for_tool::<WriteMemoryTool>("ext-memory")
 }
 
 #[cfg(test)]
@@ -144,7 +131,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("awaken-writetool-{stamp}"));
         let tool = WriteMemoryTool::new(MemoryDir::new(&root));
         let out = tool
-            .call(serde_json::json!({ "name": "pref", "content": "likes tea" }))
+            .call(WriteMemoryArgs {
+                name: "pref".into(),
+                content: "likes tea".into(),
+            })
             .await
             .unwrap();
         assert!(out.contains("saved memory"));
@@ -191,10 +181,10 @@ mod tests {
         let tool = WriteMemoryTool::new(MemoryDir::new(&root));
         // The exact over-extraction the weak model produces — a second memory about the file.
         let out = tool
-            .call(serde_json::json!({
-                "name": "queue-rs-refactor",
-                "content": "The queue.rs module was refactored to use a pg table."
-            }))
+            .call(WriteMemoryArgs {
+                name: "queue-rs-refactor".into(),
+                content: "The queue.rs module was refactored to use a pg table.".into(),
+            })
             .await
             .unwrap();
         assert!(out.contains("skipped"), "{out}");
@@ -204,32 +194,27 @@ mod tests {
         );
         // A durable decision alongside it still lands.
         let ok = tool
-            .call(serde_json::json!({
-                "name": "queue-to-postgres",
-                "content": "Migrated the job queue from Redis to Postgres."
-            }))
+            .call(WriteMemoryArgs {
+                name: "queue-to-postgres".into(),
+                content: "Migrated the job queue from Redis to Postgres.".into(),
+            })
             .await
             .unwrap();
         assert!(ok.contains("saved memory"), "{ok}");
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn missing_fields_are_rejected() {
-        let tool = WriteMemoryTool::new(MemoryDir::new(std::env::temp_dir().join("x")));
-        assert!(tool.call(serde_json::json!({ "name": "a" })).await.is_err());
-        assert!(
-            tool.call(serde_json::json!({ "content": "b" }))
-                .await
-                .is_err()
-        );
+    #[test]
+    fn missing_fields_are_rejected_at_the_single_erasure_boundary() {
+        use awaken_runtime_contract::tool::parse_tool_args;
+
+        assert!(parse_tool_args::<WriteMemoryArgs>(serde_json::json!({ "name": "a" })).is_err());
+        assert!(parse_tool_args::<WriteMemoryArgs>(serde_json::json!({ "content": "b" })).is_err());
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn non_string_name_or_content_is_rejected() {
-        // `as_str()` yields None for any non-string JSON, so the tool rejects it as
-        // invalid arguments rather than coercing (numbers, bools, arrays, objects,
-        // and explicit null all fail the same way).
-        let tool = WriteMemoryTool::new(MemoryDir::new(std::env::temp_dir().join("nonstring")));
+    #[test]
+    fn non_string_name_or_content_is_rejected_at_the_single_erasure_boundary() {
+        use awaken_runtime_contract::tool::parse_tool_args;
+
         for name in [
             serde_json::json!(42),
             serde_json::json!(true),
@@ -237,9 +222,9 @@ mod tests {
             serde_json::json!({ "k": "v" }),
             serde_json::Value::Null,
         ] {
-            let err = tool
-                .call(serde_json::json!({ "name": name, "content": "ok" }))
-                .await;
+            let err = parse_tool_args::<WriteMemoryArgs>(
+                serde_json::json!({ "name": name, "content": "ok" }),
+            );
             assert!(
                 matches!(err, Err(ToolError::InvalidArguments(_))),
                 "name {err:?}"
@@ -251,9 +236,9 @@ mod tests {
             serde_json::json!([]),
             serde_json::Value::Null,
         ] {
-            let err = tool
-                .call(serde_json::json!({ "name": "ok", "content": content }))
-                .await;
+            let err = parse_tool_args::<WriteMemoryArgs>(
+                serde_json::json!({ "name": "ok", "content": content }),
+            );
             assert!(
                 matches!(err, Err(ToolError::InvalidArguments(_))),
                 "content {err:?}"
@@ -276,7 +261,10 @@ mod tests {
         // truncated to a single safe stem, so the write still lands under root.
         let long_name = "n".repeat(500);
         let out = tool
-            .call(serde_json::json!({ "name": long_name, "content": big }))
+            .call(WriteMemoryArgs {
+                name: long_name,
+                content: big,
+            })
             .await
             .unwrap();
         assert!(out.contains("saved memory"));

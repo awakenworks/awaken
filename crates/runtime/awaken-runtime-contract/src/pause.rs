@@ -1,7 +1,8 @@
 //! Cooperative pause signal — the input-side mirror of cancellation (ADR-0054).
 //!
 //! An operator asks an in-flight run to pause via `LiveCommand::Pause`; the
-//! runtime sets this shared flag on the active attempt's [`RuntimeRunContext`].
+//! runtime sets this shared flag on the active attempt's
+//! [`RuntimeRunContext`](crate::runtime_context::RuntimeRunContext).
 //! The engine observes it **only at safe loop boundaries** (never mid-step), so a
 //! pause is always a clean commit-then-await, never a torn state. Modelled on
 //! `tokio_util::CancellationToken`: a cheap clonable handle over a shared flag.
