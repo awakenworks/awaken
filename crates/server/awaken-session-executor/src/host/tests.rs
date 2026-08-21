@@ -6075,6 +6075,13 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         Some("repository-capability"),
         "P1"
     );
+    assert!(
+        activation
+            .credential
+            .as_ref()
+            .is_some_and(|credential| credential.is_gateway_capability()),
+        "P1 preserves the admitted Gateway transport at the target boundary"
+    );
 
     let direct_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let _direct_runtime = crate::ManagedHost::new(direct_host.clone())

@@ -262,8 +262,7 @@ impl crate::ManagedHost {
                                     capability,
                                 } => (
                                     remote_url,
-                                    Some(awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
-                                        "git".to_owned(),
+                                    Some(awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(
                                         capability.expose().to_owned(),
                                     )),
                                 ),

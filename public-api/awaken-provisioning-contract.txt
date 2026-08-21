@@ -268,6 +268,8 @@ pub struct awaken_provisioning_contract::RepositoryHttpBasicCredential
 impl awaken_provisioning_contract::RepositoryHttpBasicCredential
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::expose_password(&self) -> &str
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::expose_username(&self) -> &str
+pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(impl core::convert::Into<awaken_agent_contract::secret::RedactedString>) -> Self
+pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::is_gateway_capability(&self) -> bool
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::new(impl core::convert::Into<awaken_agent_contract::secret::RedactedString>, impl core::convert::Into<awaken_agent_contract::secret::RedactedString>) -> Self
 pub struct awaken_provisioning_contract::RepositoryRealizationPlan
 pub awaken_provisioning_contract::RepositoryRealizationPlan::access: awaken_provisioning_contract::MountAccess
