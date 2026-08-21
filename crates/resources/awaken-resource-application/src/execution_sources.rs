@@ -118,10 +118,11 @@ impl<C: Sync> RepositoryBindingVerifier<C> for CatalogRepositoryBindingVerifier 
         repository_id: &str,
         config_version: awaken_resource_contract::ConfigVersion,
         _fence: Option<&C>,
-    ) -> Result<(), RepositoryBindingVerifierError> {
+    ) -> Result<awaken_resource_contract::RepositoryTransport, RepositoryBindingVerifierError> {
         self.validator
             .validate_repository_binding(workspace_id, repository_id, config_version)
-            .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))
+            .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
+        Ok(awaken_resource_contract::RepositoryTransport::Direct)
     }
 }
 

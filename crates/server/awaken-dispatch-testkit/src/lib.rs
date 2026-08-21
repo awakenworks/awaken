@@ -1458,10 +1458,13 @@ async fn current_claim_guard_is_exact(
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
-    // Cause/effect rules C1-C5: exact incarnation + live lease returns the
-    // authoritative RunClaim (C1); stale incarnation, expired lease, requested
-    // cancellation, or settled row returns None (C2-C5). The query never accepts
-    // a caller epoch and therefore cannot bless a stale claim.
+    // Cause/effect and state-machine rules C1-C6: exact incarnation + live
+    // lease returns the authoritative RunClaim (C1); stale incarnation,
+    // expired lease, requested cancellation, or settled row returns None
+    // (C2-C5). Claimed(e) --cancel--> cancellation-pending revokes e; only the
+    // subsequent cancellation claim e+1 may acquire a guard, and that guard
+    // exposes cancellation_requested=true (C6). The ownership query never
+    // accepts a caller epoch and therefore cannot bless a stale claim.
     if !capabilities.local_commit_guard {
         return;
     }
@@ -1562,7 +1565,7 @@ async fn current_claim_guard_is_exact(
         .enqueue(dispatch(ns, "guard-cancel", "guard-cancel-thread"))
         .await
         .expect("enqueue cancellation guard run");
-    store
+    let cancel_claimed = store
         .claim_run(
             &cancel_run,
             &identity.lease_owner(),
@@ -1573,6 +1576,7 @@ async fn current_claim_guard_is_exact(
         .await
         .expect("claim cancellation guard run")
         .expect("cancellation guard run is runnable");
+    let cancel_claim = RunClaim::from(&cancel_claimed.lease);
     assert!(
         store
             .cancel(&cancel_run)
@@ -1588,6 +1592,34 @@ async fn current_claim_guard_is_exact(
             .expect("cancelled Worker ownership query")
             .is_none(),
         "cancellation removes capability-issuance authority"
+    );
+    assert!(
+        store
+            .lock_commit_epoch(&cancel_claim)
+            .await
+            .expect("revoked cancellation guard lookup")
+            .is_none(),
+        "the revoked claim epoch is fenced immediately"
+    );
+    let cancellation_claim = store
+        .claim_run(
+            &cancel_run,
+            &identity.lease_owner(),
+            LEASE_MS,
+            20_000,
+            &Default::default(),
+        )
+        .await
+        .expect("claim durable cancellation")
+        .expect("the cancellation intent is runnable");
+    let cancellation_claim = RunClaim::from(&cancellation_claim.lease);
+    assert!(
+        store
+            .lock_commit_epoch(&cancellation_claim)
+            .await
+            .expect("cancelled guard lookup")
+            .is_some_and(|guard| guard.cancellation_requested()),
+        "the locked authority row exposes cancellation to capability issuers"
     );
 }
 

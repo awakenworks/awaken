@@ -208,7 +208,7 @@ impl crate::ManagedHost {
                         "repository resources require a configured binding verifier",
                     )
                 })?;
-                verifier
+                let transport = verifier
                     .verify(workspace, repository_id.as_str(), config.version, claim)
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
@@ -219,47 +219,85 @@ impl crate::ManagedHost {
                         config_version: config.version,
                         claim: claim.cloned(),
                     });
-                let credential = match (&config.credential_binding, credential_pin) {
+                let (remote_url, credential) = match (&config.credential_binding, credential_pin) {
                     (Some(binding), Some(pin)) => {
                         pin.validate_for_binding(binding).map_err(|error| {
                             RunError::bad_request(format!(
                                 "repository `{repository_id}` credential: {error}"
                             ))
                         })?;
-                        if pin.selected_plaintext_holder.boundary
-                            != awaken_runtime_contract::PlaintextBoundary::Worker
-                        {
+                        match pin.selected_plaintext_holder.boundary {
+                            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                                if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
+                                    return Err(RunError::bad_request(format!(
+                                        "repository `{repository_id}` Worker credential cannot use a mediated transport"
+                                    )));
+                                }
+                                let credentials = self.credentials.as_ref().ok_or_else(|| {
+                                    RunError::bad_request(
+                                        "repository credential requires a configured credential vault",
+                                    )
+                                })?;
+                                let material = credentials
+                                    .resolve_for_workspace(
+                                        &pin.access,
+                                        &pin.selected_plaintext_holder,
+                                        awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                                        workspace,
+                                        &(repository_id, config.version),
+                                    )
+                                    .await
+                                    .map_err(|error| {
+                                        RunError::bad_request(format!(
+                                            "repository `{repository_id}` credential: {error}"
+                                        ))
+                                    })?
+                                    .material;
+                                let credential = repository_http_basic_credential(material).map_err(|error| {
+                                    RunError::bad_request(format!(
+                                        "repository `{repository_id}` credential: {error}"
+                                    ))
+                                })?;
+                                (config.remote_url.clone(), Some(credential))
+                            }
+                            awaken_runtime_contract::PlaintextBoundary::Platform => match transport {
+                                awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                                    remote_url,
+                                    capability,
+                                } => (
+                                    remote_url,
+                                    Some(awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
+                                        "git".to_owned(),
+                                        capability.expose().to_owned(),
+                                    )),
+                                ),
+                                awaken_resource_contract::RepositoryTransport::Direct
+                                    if claim.is_none() => (config.remote_url.clone(), None),
+                                awaken_resource_contract::RepositoryTransport::Direct => {
+                                    return Err(RunError::bad_request(format!(
+                                        "repository `{repository_id}` Platform credential requires Gateway mediation"
+                                    )));
+                                }
+                            },
+                            awaken_runtime_contract::PlaintextBoundary::Workload => {
+                                return Err(RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential requires an unsupported plaintext holder"
+                                )));
+                            }
+                        }
+                    }
+                    (None, None) => match transport {
+                        awaken_resource_contract::RepositoryTransport::Direct => {
+                            (config.remote_url.clone(), None)
+                        }
+                        awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                            ..
+                        } => {
                             return Err(RunError::bad_request(format!(
-                                "repository `{repository_id}` credential requires an unsupported plaintext holder"
+                                "repository `{repository_id}` has a mediated transport without a credential pin"
                             )));
                         }
-                        let credentials = self.credentials.as_ref().ok_or_else(|| {
-                            RunError::bad_request(
-                                "repository credential requires a configured credential vault",
-                            )
-                        })?;
-                        let material = credentials
-                            .resolve_for_workspace(
-                                &pin.access,
-                                &pin.selected_plaintext_holder,
-                                awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
-                                workspace,
-                                &(repository_id, config.version),
-                            )
-                            .await
-                            .map_err(|error| {
-                                RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential: {error}"
-                                ))
-                            })?
-                            .material;
-                        Some(repository_http_basic_credential(material).map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository `{repository_id}` credential: {error}"
-                            ))
-                        })?)
-                    }
-                    (None, None) => None,
+                    },
                     (Some(_), None) => {
                         return Err(RunError::bad_request(format!(
                             "repository `{repository_id}` credential binding has no exact Session pin"
@@ -277,7 +315,7 @@ impl crate::ManagedHost {
                         plan: awaken_provisioning_contract::RepositoryRealizationPlan {
                             repository_id: repository_id.to_string(),
                             mount_path: logical,
-                            remote_url: config.remote_url.clone(),
+                            remote_url,
                             initial_branch: config.initial_branch.clone(),
                             initial_commit: config.initial_commit.clone(),
                             access: mount_access,
