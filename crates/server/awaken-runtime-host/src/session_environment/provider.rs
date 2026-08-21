@@ -325,6 +325,7 @@ impl SessionEnvironmentProvider {
 
     pub(crate) async fn adopt(
         &self,
+        spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         match self {
@@ -354,7 +355,11 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
-                let environment = provider.adopt_environment(handle).await?;
+                let environment = provider
+                    .adopt_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
+                        spec, handle,
+                    ))
+                    .await?;
                 environment.renew_lease().await?;
                 SessionEnvironment::container(
                     environment,

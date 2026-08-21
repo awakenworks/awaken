@@ -161,7 +161,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
 
     async fn adopt_environment(
         &self,
-        _handle: &pc::SandboxHandle,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         Err(pc::SandboxError::new(
             "resource proof does not recover a Session",

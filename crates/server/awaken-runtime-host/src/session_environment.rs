@@ -421,7 +421,7 @@ mod tests {
 
         async fn adopt_environment(
             &self,
-            _handle: &pc::SandboxHandle,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
         {
             Ok(Arc::new(FakeContainer {
@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
 
         original.stop_bound_processes().await;
-        let adopted = environments.adopt(&handle).await.unwrap();
+        let adopted = environments.adopt(&spec(), &handle).await.unwrap();
         assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
         assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
         assert_eq!(provider.renews.load(Ordering::SeqCst), 1);
@@ -1696,7 +1696,10 @@ mod tests {
             "/usr/local/bin/awaken-sandbox",
         );
         let adopted = environments
-            .adopt(&pc::SandboxHandle::new("container", "session-container"))
+            .adopt(
+                &spec(),
+                &pc::SandboxHandle::new("container", "session-container"),
+            )
             .await
             .expect("adopt environment");
         assert_eq!(
@@ -1814,7 +1817,7 @@ mod tests {
         let created = namespace.create(&namespace_spec).await.unwrap();
         let handle = created.handle();
         drop(created);
-        let adopted = namespace.adopt(&handle).await.unwrap();
+        let adopted = namespace.adopt(&namespace_spec, &handle).await.unwrap();
         assert_eq!(adopted.handle(), handle);
         adopted.dispose().await.unwrap();
 

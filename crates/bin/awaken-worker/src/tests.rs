@@ -39,7 +39,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContai
 
     async fn adopt_environment(
         &self,
-        _handle: &awaken_provisioning_contract::SandboxHandle,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
@@ -92,7 +92,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
 
     async fn adopt_environment(
         &self,
-        _handle: &awaken_provisioning_contract::SandboxHandle,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,

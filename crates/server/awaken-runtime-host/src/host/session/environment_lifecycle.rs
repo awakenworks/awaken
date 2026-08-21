@@ -82,9 +82,10 @@ impl SharedHost {
             }
         }
         let provider = self.session_environment_provider(provisioning)?;
+        let spec = self.sandbox_spec(thread);
         let adoption = async {
             let sandbox = provider
-                .adopt(&handle)
+                .adopt(&spec, &handle)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
             if sandbox
@@ -192,7 +193,7 @@ impl SharedHost {
             }
             let adopted = self
                 .session_provider
-                .adopt(&handle)
+                .adopt(&self.sandbox_spec(thread), &handle)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
             adopted_for_cleanup = true;

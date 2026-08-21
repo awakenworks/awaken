@@ -1230,8 +1230,9 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
     let provider_a = ContainerProvider::new(Arc::new(runtime_a), image.clone()).with_resident_hand(
         ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
     );
+    let sandbox_spec = spec(&scope, image);
     let sandbox = provider_a
-        .create_container(&spec(&scope, image))
+        .create_container(&sandbox_spec)
         .await
         .expect("Worker A creates resident Session Pod");
     let pod = pod_of(&sandbox);
@@ -1295,7 +1296,10 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );
     let adopted = provider_b
-        .adopt_environment(&handle)
+        .adopt_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
+            &sandbox_spec,
+            &handle,
+        ))
         .await
         .expect("Worker B adopts the same Pod");
     assert_eq!(adopted.handle(), handle, "H2/E4");
