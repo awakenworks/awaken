@@ -650,10 +650,23 @@ pub(crate) mod resource_prompt_tests {
         async fn get_config(&self, _id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
+        async fn get_config_revision(
+            &self,
+            _id: &str,
+        ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
         async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
         async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn put_publication_if_config_revision(
+            &self,
+            _publication: &StoredPublication,
+            _expected_revision: u64,
+        ) -> Result<ConfigWrite, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
         async fn get_publication(
@@ -675,10 +688,28 @@ pub(crate) mod resource_prompt_tests {
         async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
             Ok(Some(agent_config(id)))
         }
+        async fn get_config_revision(
+            &self,
+            id: &str,
+        ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+            Ok(Some(AgentConfigRevision {
+                config: agent_config(id),
+                revision: 1,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+            }))
+        }
         async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
             Ok(vec![])
         }
         async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("publication store down".into()))
+        }
+        async fn put_publication_if_config_revision(
+            &self,
+            _publication: &StoredPublication,
+            _expected_revision: u64,
+        ) -> Result<ConfigWrite, ConfigStoreError> {
             Err(ConfigStoreError("publication store down".into()))
         }
         async fn get_publication(
@@ -765,6 +796,13 @@ pub(crate) mod resource_prompt_tests {
         ) -> Result<Option<AgentConfig>, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
+        async fn get_config_revision_scoped(
+            &self,
+            _scope: &ScopeId,
+            _id: &str,
+        ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
         async fn list_configs_scoped(
             &self,
             _s: &ScopeId,
@@ -776,6 +814,14 @@ pub(crate) mod resource_prompt_tests {
             _s: &ScopeId,
             _p: &StoredPublication,
         ) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn put_publication_if_config_revision_scoped(
+            &self,
+            _scope: &ScopeId,
+            _publication: &StoredPublication,
+            _expected_revision: u64,
+        ) -> Result<ConfigWrite, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
         async fn get_publication_scoped(

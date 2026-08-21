@@ -1322,7 +1322,7 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     drop(node_a);
 
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
-    assert_eq!(recovered.provider_kind, "container");
+    assert_eq!(recovered.provider_kind(), "container");
     let node_b = provider(rt.clone());
     let sandbox_b = node_b
         .adopt(&recovered)
@@ -1374,7 +1374,7 @@ async fn handle_round_trips_and_adopt_reconnects() {
     let p = provider(rt.clone());
     let sandbox = p.create(&spec("run-2")).await.unwrap();
     let handle = sandbox.handle();
-    assert_eq!(handle.provider_kind, "container");
+    assert_eq!(handle.provider_kind(), "container");
 
     let wire = serde_json::to_string(&handle).unwrap();
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
@@ -1604,7 +1604,7 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
         })
     );
     // The durable handle carries the container id for reattach.
-    assert_eq!(session.handle.provider_kind, "container");
+    assert_eq!(session.handle.provider_kind(), "container");
     let payload = session.handle.container_payload().unwrap();
     assert_eq!(payload.container_id, "cid-run-oa");
     // A live duplex channel was opened (the ACP bridge would drive it).

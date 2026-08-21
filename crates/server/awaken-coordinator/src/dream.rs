@@ -11,8 +11,8 @@ use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, FileApplicationService, Memory, MemoryRepository,
-    MemoryStoreApplicationService, MemoryStoreId, ResourceRegistry, ResourceState,
+    CreateMemoryStoreCommand, ExecutionResourceResolver, FileApplicationService, Memory,
+    MemoryRepository, MemoryStoreApplicationService, MemoryStoreId, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
@@ -84,7 +84,7 @@ impl ExclusiveMemoryStoreWriterLease {
 pub(crate) struct BuiltInDreamAgent {
     sessions: Arc<SessionApplication>,
     memory: Arc<dyn MemoryRepository>,
-    catalog: Arc<dyn ResourceRegistry>,
+    catalog: Arc<dyn ExecutionResourceResolver>,
     stores: Arc<dyn MemoryStoreApplicationService>,
     files: Arc<dyn FileApplicationService>,
 }
@@ -93,7 +93,7 @@ impl BuiltInDreamAgent {
     pub(crate) fn new(
         sessions: Arc<SessionApplication>,
         memory: Arc<dyn MemoryRepository>,
-        catalog: Arc<dyn ResourceRegistry>,
+        catalog: Arc<dyn ExecutionResourceResolver>,
         stores: Arc<dyn MemoryStoreApplicationService>,
         files: Arc<dyn FileApplicationService>,
     ) -> Self {

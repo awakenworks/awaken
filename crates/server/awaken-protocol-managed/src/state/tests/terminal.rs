@@ -903,7 +903,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         budget: Default::default(),
         environment: Default::default(),
         mcp,
-        resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
+        resources: awaken_session_contract::SessionResourceState::from_active(sample_inputs()),
         realization: None,
         realization_progress: Default::default(),
         execution: SessionExecutionState::Idle,

@@ -70,7 +70,7 @@ fn resources() -> awaken_session_contract::ResolvedSessionResources {
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
-        skills: Some(Vec::new()),
+        skills: Vec::new(),
     }
 }
 

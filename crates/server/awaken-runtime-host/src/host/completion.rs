@@ -1400,7 +1400,7 @@ mod completion_tests {
                     access: ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         );
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
@@ -1423,7 +1423,7 @@ mod completion_tests {
             "workspace-a",
             awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         );
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);

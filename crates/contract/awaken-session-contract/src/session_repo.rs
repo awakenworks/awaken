@@ -1438,7 +1438,7 @@ mod mutation_tests {
                     },
                     instructions: None,
                 }],
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             };
             if active {
                 value

@@ -377,7 +377,7 @@ fn effective_resources(
                 }
             })
             .collect(),
-        skills: None,
+        skills: Vec::new(),
     }
 }
 
@@ -426,7 +426,7 @@ fn effective_repository(
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
-        skills: None,
+        skills: Vec::new(),
     }
 }
 
@@ -963,7 +963,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             resource_revision: 7,
             resources: awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
             mcp: Vec::new(),
             tools: Default::default(),
@@ -7067,12 +7067,12 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("create Skill");
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", &workspace);
-    init.resources.skills = Some(vec![awaken_session_contract::ResolvedSkillBinding {
+    init.resources.skills = vec![awaken_session_contract::ResolvedSkillBinding {
         kind: awaken_agent_contract::AgentSkillKind::Custom,
         skill_id: "governed".into(),
         version: 1,
         bundle_sha256: hash,
-    }]);
+    }];
     managed
         .prepare_session("skill-revoke", init)
         .await
@@ -7099,7 +7099,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
             1,
             &awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         )
         .await
@@ -7298,7 +7298,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
         7,
         awaken_session_contract::ResolvedSessionResources {
             inputs: Vec::new(),
-            skills: Some(Vec::new()),
+            skills: Vec::new(),
         },
     );
     host.register_thread_resource_manifest(thread, manifest.clone());

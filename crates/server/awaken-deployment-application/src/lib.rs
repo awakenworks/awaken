@@ -1176,8 +1176,6 @@ mod tests {
             schedule: schedule.then(|| DeploymentSchedule::Cron {
                 expression: "*/15 * * * *".into(),
                 timezone: "UTC".into(),
-                last_run_at: None,
-                upcoming_runs_at: Vec::new(),
             }),
             vault_ids: Vec::new(),
             budget_max_list_cost_minor: None,
@@ -1484,8 +1482,6 @@ mod tests {
         create.schedule = Some(DeploymentSchedule::Cron {
             expression: "*/15 * * * *".into(),
             timezone: "UTC".into(),
-            last_run_at: None,
-            upcoming_runs_at: Vec::new(),
         });
         let deployment = application.create(create).await.unwrap();
         {

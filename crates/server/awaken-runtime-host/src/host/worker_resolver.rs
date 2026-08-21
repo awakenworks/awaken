@@ -985,7 +985,7 @@ mod tests {
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         );
 
@@ -1028,7 +1028,7 @@ mod tests {
             2,
             awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         );
         host.install_dispatched_resources("thread-cold-resource", &cleared, None)
@@ -1096,7 +1096,12 @@ mod tests {
                 4,
                 awaken_session_contract::ResolvedSessionResources {
                     inputs: Vec::new(),
-                    skills: Some(Vec::new()),
+                    skills: vec![awaken_session_contract::ResolvedSkillBinding {
+                        kind: awaken_agent_contract::AgentSkillKind::Custom,
+                        skill_id: "different-same-generation".into(),
+                        version: 1,
+                        bundle_sha256: "sha256-different".into(),
+                    }],
                 },
             ),
             awaken_session_contract::SessionResourceManifest::at_revision(
@@ -1192,7 +1197,7 @@ mod tests {
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
-                skills: Some(Vec::new()),
+                skills: Vec::new(),
             },
         );
         let claim = awaken_run_ingress::RunClaim {
@@ -1294,7 +1299,7 @@ mod tests {
 
         let missing_thread = "thread-missing";
         let missing = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
-            handle.provider_kind,
+            handle.provider_kind(),
             missing_thread,
         ))
         .unwrap();
@@ -1474,7 +1479,7 @@ mod tests {
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
         let resident = ctx.env.as_ref().expect("eager environment").handle();
         let stale = awaken_provisioning_contract::SandboxHandle::new(
-            resident.provider_kind.clone(),
+            resident.provider_kind(),
             resident.sandbox_id.clone(),
         );
         let encoded = serde_json::to_string(&stale).unwrap();

@@ -114,24 +114,23 @@ fn application_schedule(schedule: Schedule) -> DeploymentSchedule {
         Schedule::Cron {
             expression,
             timezone,
-            last_run_at,
-            upcoming_runs_at,
+            ..
         } => DeploymentSchedule::Cron {
             expression,
             timezone,
-            last_run_at,
-            upcoming_runs_at,
         },
     }
 }
 
-fn wire_schedule(schedule: DeploymentSchedule) -> Schedule {
+fn wire_schedule(
+    schedule: DeploymentSchedule,
+    last_run_at: Option<String>,
+    upcoming_runs_at: Vec<String>,
+) -> Schedule {
     match schedule {
         DeploymentSchedule::Cron {
             expression,
             timezone,
-            last_run_at,
-            upcoming_runs_at,
         } => Schedule::Cron {
             expression,
             timezone,
@@ -463,13 +462,15 @@ fn now_ms() -> u64 {
 
 fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
     let record = view.record;
+    let archived = record.archived_at.is_some();
+    let last_run_at = record.last_run_at;
     let schedule = record.schedule.map(|schedule| {
-        let upcoming = if record.archived_at.is_some() {
+        let upcoming = if archived {
             Vec::new()
         } else {
             upcoming_occurrences(&schedule, now_ms())
         };
-        wire_schedule(schedule.with_runtime(record.last_run_at.clone(), upcoming))
+        wire_schedule(schedule, last_run_at, upcoming)
     });
     let paused_reason = record.paused_reason.map(wire_pause_reason);
     Ok(Deployment {

@@ -1323,8 +1323,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
             .resources
             .active
             .skills
-            .as_ref()
-            .and_then(|skills| skills.first())
+            .first()
             .map(|skill| skill.skill_id.as_str()),
         Some("skill_release"),
         "ADR-0063 Resource manifest is the durable Skill-pin authority"

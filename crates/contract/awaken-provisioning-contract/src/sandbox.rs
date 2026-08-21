@@ -208,7 +208,6 @@ pub trait RepositoryRealizer: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxHandle {
-    pub provider_kind: String,
     pub sandbox_id: String,
     payload: SandboxHandlePayload,
 }
@@ -216,9 +215,10 @@ pub struct SandboxHandle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "schema", rename_all = "snake_case", deny_unknown_fields)]
 enum SandboxHandlePayload {
-    Unmanaged,
+    Unmanaged { provider_kind: String },
     LocalV1(LocalSandboxHandleV1),
-    NamespaceV1(NamespaceSandboxHandleV1),
+    BubblewrapV1(NamespaceSandboxHandleV1),
+    SeatbeltV1(NamespaceSandboxHandleV1),
     ContainerV1(ContainerSandboxHandleV1),
 }
 
@@ -244,6 +244,16 @@ pub enum NamespaceProviderKind {
     Seatbelt,
 }
 
+impl NamespaceProviderKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bubblewrap => "bwrap",
+            Self::Seatbelt => "seatbelt",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerSandboxHandleV1 {
@@ -266,16 +276,16 @@ impl SandboxHandle {
     /// test doubles. Durable built-in providers use one of the typed constructors.
     pub fn new(provider_kind: impl Into<String>, sandbox_id: impl Into<String>) -> Self {
         Self {
-            provider_kind: provider_kind.into(),
             sandbox_id: sandbox_id.into(),
-            payload: SandboxHandlePayload::Unmanaged,
+            payload: SandboxHandlePayload::Unmanaged {
+                provider_kind: provider_kind.into(),
+            },
         }
     }
 
     #[must_use]
     pub fn local(sandbox_id: impl Into<String>, payload: LocalSandboxHandleV1) -> Self {
         Self {
-            provider_kind: "local".into(),
             sandbox_id: sandbox_id.into(),
             payload: SandboxHandlePayload::LocalV1(payload),
         }
@@ -288,57 +298,64 @@ impl SandboxHandle {
         payload: NamespaceSandboxHandleV1,
     ) -> Self {
         Self {
-            provider_kind: match provider {
-                NamespaceProviderKind::Bubblewrap => "bwrap",
-                NamespaceProviderKind::Seatbelt => "seatbelt",
-            }
-            .into(),
             sandbox_id: sandbox_id.into(),
-            payload: SandboxHandlePayload::NamespaceV1(payload),
+            payload: match provider {
+                NamespaceProviderKind::Bubblewrap => SandboxHandlePayload::BubblewrapV1(payload),
+                NamespaceProviderKind::Seatbelt => SandboxHandlePayload::SeatbeltV1(payload),
+            },
         }
     }
 
     #[must_use]
     pub fn container(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV1) -> Self {
         Self {
-            provider_kind: "container".into(),
             sandbox_id: sandbox_id.into(),
             payload: SandboxHandlePayload::ContainerV1(payload),
         }
     }
 
     pub fn local_payload(&self) -> Result<&LocalSandboxHandleV1, SandboxError> {
-        match (&*self.provider_kind, &self.payload) {
-            ("local", SandboxHandlePayload::LocalV1(payload)) => Ok(payload),
+        match &self.payload {
+            SandboxHandlePayload::LocalV1(payload) => Ok(payload),
             _ => Err(self.payload_mismatch("local")),
         }
     }
 
     pub fn namespace_payload(
         &self,
-        expected_provider: &str,
+        expected_provider: NamespaceProviderKind,
     ) -> Result<&NamespaceSandboxHandleV1, SandboxError> {
-        match (&*self.provider_kind, &self.payload) {
-            (provider, SandboxHandlePayload::NamespaceV1(payload))
-                if provider == expected_provider =>
-            {
+        match (expected_provider, &self.payload) {
+            (NamespaceProviderKind::Bubblewrap, SandboxHandlePayload::BubblewrapV1(payload))
+            | (NamespaceProviderKind::Seatbelt, SandboxHandlePayload::SeatbeltV1(payload)) => {
                 Ok(payload)
             }
-            _ => Err(self.payload_mismatch(expected_provider)),
+            _ => Err(self.payload_mismatch(expected_provider.as_str())),
         }
     }
 
     pub fn container_payload(&self) -> Result<&ContainerSandboxHandleV1, SandboxError> {
-        match (&*self.provider_kind, &self.payload) {
-            ("container", SandboxHandlePayload::ContainerV1(payload)) => Ok(payload),
+        match &self.payload {
+            SandboxHandlePayload::ContainerV1(payload) => Ok(payload),
             _ => Err(self.payload_mismatch("container")),
+        }
+    }
+
+    #[must_use]
+    pub fn provider_kind(&self) -> &str {
+        match &self.payload {
+            SandboxHandlePayload::Unmanaged { provider_kind } => provider_kind,
+            SandboxHandlePayload::LocalV1(_) => "local",
+            SandboxHandlePayload::BubblewrapV1(_) => "bwrap",
+            SandboxHandlePayload::SeatbeltV1(_) => "seatbelt",
+            SandboxHandlePayload::ContainerV1(_) => "container",
         }
     }
 
     fn payload_mismatch(&self, expected_provider: &str) -> SandboxError {
         SandboxError::new(format!(
             "{expected_provider} provider cannot adopt {:?} handle payload",
-            self.provider_kind
+            self.provider_kind()
         ))
     }
 }

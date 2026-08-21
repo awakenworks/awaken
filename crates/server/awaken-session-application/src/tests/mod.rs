@@ -779,12 +779,12 @@ fn application_with_configuration(
 fn skill_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources {
         inputs: Vec::new(),
-        skills: Some(vec![awaken_session_contract::ResolvedSkillBinding {
+        skills: vec![awaken_session_contract::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: id.into(),
             version: 1,
             bundle_sha256: format!("sha-{id}"),
-        }]),
+        }],
     }
 }
 
@@ -799,7 +799,7 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: Some(Vec::new()),
+        skills: Vec::new(),
     }
 }
 

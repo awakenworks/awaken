@@ -131,7 +131,7 @@ async fn read_skill_bundle(
         .and_then(|envelope| envelope.decode_manifest().ok());
     let skill_is_frozen = manifest
         .as_ref()
-        .and_then(|manifest| manifest.resources.skills.as_ref())
+        .map(|manifest| manifest.resources.skills.as_slice())
         .is_some_and(|bindings| bindings.contains(&request.binding));
     if !scope_matches || !skill_is_frozen {
         return StatusCode::FORBIDDEN.into_response();

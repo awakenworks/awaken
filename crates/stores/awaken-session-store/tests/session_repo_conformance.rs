@@ -106,7 +106,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
             Some(holder),
         )
         .unwrap(),
-        resources: awaken_session_contract::SessionResourceState::from_legacy(
+        resources: awaken_session_contract::SessionResourceState::from_active(
             serde_json::from_value(json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -835,8 +835,6 @@ fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView
             schedule: scheduled.then(|| DeploymentSchedule::Cron {
                 expression: "0 * * * *".into(),
                 timezone: "UTC".into(),
-                last_run_at: None,
-                upcoming_runs_at: Vec::new(),
             }),
             vault_ids: Vec::new(),
             budget_max_list_cost_minor: None,

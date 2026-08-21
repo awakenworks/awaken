@@ -26,6 +26,7 @@ async fn make(r: &InMemoryEnvRegistry, name: &str) -> String {
         EnvironmentConfig::SelfHosted,
     )
     .await
+    .expect("create Environment")
     .id
 }
 
@@ -42,7 +43,7 @@ proptest! {
         });
         let unique: std::collections::BTreeSet<_> = ids.iter().collect();
         prop_assert_eq!(unique.len(), n, "ids collided");
-        prop_assert!(ids.iter().all(|id| block(r.exists(id))), "a created id is missing");
+        prop_assert!(ids.iter().all(|id| block(r.exists(id)).expect("read Environment")), "a created id is missing");
     }
 
     /// TERMINAL ARCHIVE: the record remains retrievable for exact interpretation,
@@ -57,14 +58,14 @@ proptest! {
         });
         // Archive the first: soft — get still Some, dropped from active.
         let a = &ids[0];
-        prop_assert!(block(r.archive(a)).is_some());
-        prop_assert!(block(r.get(a)).is_some(), "archive must keep the record retrievable");
-        let active_ids: Vec<String> = block(r.list_active()).into_iter().map(|e| e.id).collect();
+        prop_assert!(block(r.archive(a)).expect("archive Environment").is_some());
+        prop_assert!(block(r.get(a)).expect("read Environment").is_some(), "archive must keep the record retrievable");
+        let active_ids: Vec<String> = block(r.list_active()).expect("list Environments").into_iter().map(|e| e.id).collect();
         prop_assert!(!active_ids.contains(a), "archived record must leave list_active");
         prop_assert!(block(r.get_revision(
             a,
             awaken_environment_contract::EnvironmentRevision(1),
-        )).is_some(), "authored history must remain exact-readable");
+        )).expect("read Environment revision").is_some(), "authored history must remain exact-readable");
     }
 
     /// ABSORBING ARCHIVE: for every generated number of valid pre-terminal
@@ -85,9 +86,9 @@ proptest! {
                     ..Default::default()
                 },
             ));
-            prop_assert!(updated.is_some());
+            prop_assert!(updated.expect("update Environment").is_some());
         }
-        let archived = block(r.archive(&id)).expect("archive existing definition");
+        let archived = block(r.archive(&id)).expect("archive Environment store operation").expect("archive existing definition");
         for index in 0..updates_after {
             let updated = block(r.update(
                 &id,
@@ -96,9 +97,9 @@ proptest! {
                     ..Default::default()
                 },
             ));
-            prop_assert!(updated.is_none());
+            prop_assert!(updated.expect("update archived Environment").is_none());
         }
-        let terminal = block(r.get(&id)).expect("terminal definition retained");
+        let terminal = block(r.get(&id)).expect("read terminal Environment").expect("terminal definition retained");
         prop_assert_eq!(terminal.revision, archived.revision);
         prop_assert_eq!(terminal.name, archived.name);
         prop_assert_eq!(terminal.archived_at, archived.archived_at);
@@ -109,8 +110,8 @@ proptest! {
     fn operations_on_a_missing_id_fail_closed(missing in "[a-z0-9_-]{1,16}") {
         let r = reg();
         // (No creates, so any id is missing.)
-        prop_assert!(block(r.archive(&missing)).is_none());
-        prop_assert!(block(r.update(&missing, Default::default())).is_none());
-        prop_assert!(!block(r.exists(&missing)));
+        prop_assert!(block(r.archive(&missing)).expect("archive missing Environment").is_none());
+        prop_assert!(block(r.update(&missing, Default::default())).expect("update missing Environment").is_none());
+        prop_assert!(!block(r.exists(&missing)).expect("find missing Environment"));
     }
 }

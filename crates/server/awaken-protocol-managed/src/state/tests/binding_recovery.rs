@@ -281,7 +281,7 @@ pub(in crate::state) fn sample_inputs() -> awaken_session_contract::ResolvedSess
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: None,
+        skills: Vec::new(),
     }
 }
 

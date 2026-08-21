@@ -91,7 +91,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
             memory_input("rw", "memory-rw", ResourceAccess::ReadWrite),
             memory_input("ro", "memory-ro", ResourceAccess::ReadOnly),
         ],
-        skills: Some(Vec::new()),
+        skills: Vec::new(),
     };
     let dispatch = Arc::new(MemoryDispatchStore::new());
     dispatch

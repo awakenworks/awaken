@@ -115,14 +115,13 @@ async fn resource_targets(
         };
         targets.insert(target);
     }
-    if let Some(skills) = &resources.skills {
-        targets.extend(
-            skills
-                .iter()
-                .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
-                .map(|skill| ResourceTarget::new(workspace, ResourceKind::Skill, &skill.skill_id)),
-        );
-    }
+    targets.extend(
+        resources
+            .skills
+            .iter()
+            .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
+            .map(|skill| ResourceTarget::new(workspace, ResourceKind::Skill, &skill.skill_id)),
+    );
     Ok(targets)
 }
 

@@ -152,7 +152,7 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             awaken_environment_contract::CreateEnvironmentError::Store(_),
         )
         | EnvironmentApplicationError::Registration(_)
-        | EnvironmentApplicationError::RegistrationOutbox(_)
+        | EnvironmentApplicationError::Store(_)
         | EnvironmentApplicationError::RegistrationInvariant(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", message)),
@@ -233,6 +233,7 @@ async fn retrieve_env(
         .application
         .get(&id)
         .await
+        .map_err(map_environment_application_error)?
         .ok_or_else(|| not_found("environment"))?;
     Ok(Json(crate::env_registry::project_env(&item)))
 }
@@ -240,15 +241,16 @@ async fn retrieve_env(
 async fn list_envs(
     State(state): State<Arc<EnvironmentAuthoringState>>,
     Query(page): Query<PageQuery>,
-) -> Json<PageCursor<Environment>> {
+) -> Result<Json<PageCursor<Environment>>, WireError> {
     let data: Vec<Environment> = state
         .application
         .list_active()
         .await
+        .map_err(map_environment_application_error)?
         .iter()
         .map(crate::env_registry::project_env)
         .collect();
-    Json(paginate(data, &page, |e| e.id.as_str()))
+    Ok(Json(paginate(data, &page, |e| e.id.as_str())))
 }
 
 async fn update_env(
@@ -477,7 +479,9 @@ mod tests {
             ),
             (
                 "P5a",
-                EnvironmentApplicationError::RegistrationOutbox("x".into()),
+                EnvironmentApplicationError::Store(
+                    awaken_environment_contract::EnvironmentStoreError("x".into()),
+                ),
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
