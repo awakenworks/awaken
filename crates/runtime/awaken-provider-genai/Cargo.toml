@@ -23,6 +23,8 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+awaken-ext-builtin-tools.workspace = true
+schemars = "1"
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",

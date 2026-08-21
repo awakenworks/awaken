@@ -71,7 +71,8 @@ impl McpExportedTool {
 
 impl From<DynamicTool> for McpExportedTool {
     fn from(dynamic: DynamicTool) -> Self {
-        Self::plain(dynamic.descriptor, dynamic.tool)
+        let (descriptor, tool) = dynamic.into_parts();
+        Self::plain(descriptor, tool)
     }
 }
 
@@ -194,10 +195,11 @@ mod tests {
 
     #[test]
     fn dynamic_tool_converts_to_a_plain_export() {
-        let dynamic = DynamicTool {
-            descriptor: ToolDescriptor::pinned("test", "noop", "a tool", json!({})),
-            tool: Arc::new(NoopTool),
-        };
+        let dynamic = DynamicTool::try_new(
+            ToolDescriptor::pinned("test", "noop", "a tool", json!({})),
+            Arc::new(NoopTool),
+        )
+        .expect("matching dynamic tool identity");
         let export: McpExportedTool = dynamic.into();
         assert_eq!(export.descriptor.id, "noop");
         assert!(matches!(export.exec, ToolExec::Plain(_)));

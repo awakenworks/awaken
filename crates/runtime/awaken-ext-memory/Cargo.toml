@@ -16,6 +16,7 @@ async-trait.workspace = true
 tokio.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
+schemars = "1"
 
 [lints]
 workspace = true

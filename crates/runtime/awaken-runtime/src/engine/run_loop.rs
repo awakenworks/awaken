@@ -393,7 +393,7 @@ pub(super) async fn drive(
     // for another Step. Terminal calls are reused, never re-entered.
     if let Some(batch) = ActiveToolBatch::load(&store)
         .map_err(|error| Error::Execution(error.to_string()))?
-        .filter(|batch| batch.run_id == *run_id && batch.phase != ToolBatchPhase::Finalized)
+        .filter(|batch| batch.run_id() == run_id && batch.phase() != ToolBatchPhase::Finalized)
     {
         match dispatch::recover_tool_batch(
             runtime,

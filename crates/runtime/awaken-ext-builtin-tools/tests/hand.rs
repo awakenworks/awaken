@@ -588,10 +588,31 @@ fn failing_shell_command() -> &'static str {
 
 #[tokio::test]
 async fn unknown_argument_shape_is_an_invalid_arguments_error() {
-    // `read` requires `path`; a wrong shape is a typed arg error from erasure.
+    // Decision table for the strong erasure boundary: R1 missing required field,
+    // R2 a valid object with an undeclared field, and R3 a tuple with the wrong
+    // cardinality all fail before filesystem execution. The same Rust type
+    // generates the schema that declares these three constraints.
     let err = tool("read")
         .invoke(call("read", serde_json::json!({ "wrong": 1 })))
         .await
         .expect_err("bad args");
+    assert!(matches!(err, ToolError::InvalidArguments(_)));
+
+    let err = tool("read")
+        .invoke(call(
+            "read",
+            serde_json::json!({ "file_path": "fixture", "unexpected": true }),
+        ))
+        .await
+        .expect_err("undeclared args fail closed");
+    assert!(matches!(err, ToolError::InvalidArguments(_)));
+
+    let err = tool("read")
+        .invoke(call(
+            "read",
+            serde_json::json!({ "file_path": "fixture", "view_range": [1] }),
+        ))
+        .await
+        .expect_err("fixed-size view range is enforced by deserialization");
     assert!(matches!(err, ToolError::InvalidArguments(_)));
 }
