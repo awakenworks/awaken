@@ -238,17 +238,7 @@ pub trait ConfigRegistry: Send + Sync {
     async fn get_config_revision(
         &self,
         id: &str,
-    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
-        Ok(self
-            .get_config(id)
-            .await?
-            .map(|config| AgentConfigRevision {
-                config,
-                revision: 0,
-                created_at_unix_ms: None,
-                updated_at_unix_ms: None,
-            }))
-    }
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError>;
 
     /// Immutable authoring revisions, oldest first.
     async fn list_config_revisions(
@@ -273,19 +263,7 @@ pub trait ConfigRegistry: Send + Sync {
         &self,
         publication: &StoredPublication,
         expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        let current_revision = self
-            .get_config_revision(&publication.agent_id)
-            .await?
-            .map(|versioned| versioned.revision);
-        if current_revision != Some(expected_revision) {
-            return Ok(ConfigWrite::Conflict { current_revision });
-        }
-        self.put_publication(publication).await?;
-        Ok(ConfigWrite::Applied {
-            revision: expected_revision,
-        })
-    }
+    ) -> Result<ConfigWrite, ConfigStoreError>;
 
     /// Load a publication by its fingerprint.
     async fn get_publication(
@@ -427,17 +405,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
         &self,
         scope: &ScopeId,
         id: &str,
-    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
-        Ok(self
-            .get_config_scoped(scope, id)
-            .await?
-            .map(|config| AgentConfigRevision {
-                config,
-                revision: 0,
-                created_at_unix_ms: None,
-                updated_at_unix_ms: None,
-            }))
-    }
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError>;
 
     /// Immutable authoring revisions for `id` within `scope`, oldest first.
     async fn list_config_revisions_scoped(
@@ -471,38 +439,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         publication: &StoredPublication,
         expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        let current_revision = self
-            .get_config_revision_scoped(scope, &publication.agent_id)
-            .await?
-            .map(|versioned| versioned.revision);
-        if current_revision != Some(expected_revision) {
-            return Ok(ConfigWrite::Conflict { current_revision });
-        }
-        let existing = self.list_published_scoped(scope).await?;
-        let decision = publication_revision_decision(
-            publication.execution_workspace.as_str(),
-            publication.source_revision,
-            publication.fingerprint.as_str(),
-            existing
-                .iter()
-                .filter(|existing| existing.agent_id == publication.agent_id)
-                .map(|existing| {
-                    (
-                        existing.execution_workspace.as_str(),
-                        existing.source_revision,
-                        existing.fingerprint.as_str(),
-                    )
-                }),
-        );
-        if decision == PublicationRevisionDecision::Conflict {
-            return Ok(ConfigWrite::Conflict { current_revision });
-        }
-        self.put_publication_scoped(scope, publication).await?;
-        Ok(ConfigWrite::Applied {
-            revision: expected_revision,
-        })
-    }
+    ) -> Result<ConfigWrite, ConfigStoreError>;
 
     /// Load a publication by fingerprint **within `scope`**.
     async fn get_publication_scoped(
@@ -532,7 +469,6 @@ pub trait ScopedConfigRegistry: Send + Sync {
 #[cfg(kani)]
 #[kani::proof]
 fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
-    let scope: u8 = kani::any();
     let proposed_target: u8 = kani::any();
     let other_target: u8 = kani::any();
     let proposed_fingerprint: u8 = kani::any();
@@ -542,11 +478,10 @@ fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
     kani::assume(other_target != proposed_target);
     assert_ne!(
         publication_revision_decision(
-            &scope,
-            Some(&proposed_target),
+            &proposed_target,
             revision,
             &proposed_fingerprint,
-            [(Some(&other_target), revision, &other_fingerprint)],
+            [(&other_target, revision, &other_fingerprint)],
         ),
         PublicationRevisionDecision::Conflict
     );
@@ -554,24 +489,22 @@ fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
     kani::assume(other_fingerprint != proposed_fingerprint);
     assert_eq!(
         publication_revision_decision(
-            &scope,
-            Some(&proposed_target),
+            &proposed_target,
             revision,
             &proposed_fingerprint,
-            [(Some(&proposed_target), revision, &other_fingerprint)],
+            [(&proposed_target, revision, &other_fingerprint)],
         ),
         PublicationRevisionDecision::Conflict
     );
 
     assert_eq!(
         publication_revision_decision(
-            &scope,
-            None,
+            &proposed_target,
             revision,
             &proposed_fingerprint,
             [
-                (None, revision, &other_fingerprint),
-                (Some(&scope), revision, &proposed_fingerprint),
+                (&proposed_target, revision, &other_fingerprint),
+                (&proposed_target, revision, &proposed_fingerprint),
             ],
         ),
         PublicationRevisionDecision::ExactReplay

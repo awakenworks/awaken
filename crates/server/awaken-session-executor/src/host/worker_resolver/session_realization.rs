@@ -782,12 +782,12 @@ mod tests {
             .expect("M1 establish resident baseline");
         let mut remote = resident;
         remote.resource_revision = 1;
-        remote.resources.skills = Some(vec![awaken_session_contract::ResolvedSkillBinding {
+        remote.resources.skills = vec![awaken_session_contract::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "design".into(),
             version: 36,
             bundle_sha256: "sha256-design-v36".into(),
-        }]);
+        }];
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -1393,8 +1393,10 @@ mod tests {
 
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
-        let missing =
-            awaken_provisioning_contract::SandboxHandle::new(handle.provider_kind, rebuild_thread);
+        let missing = awaken_provisioning_contract::SandboxHandle::new(
+            handle.provider_kind(),
+            rebuild_thread,
+        );
         let mut rebuild_frozen = frozen_projection();
         rebuild_frozen
             .environment
@@ -1441,7 +1443,7 @@ mod tests {
         let mut continuity_frozen = frozen_projection();
         continuity_frozen.environment.set_resident(
             serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
-                missing.provider_kind,
+                missing.provider_kind(),
                 continuity_thread,
             ))
             .expect("R6 missing durable binding"),

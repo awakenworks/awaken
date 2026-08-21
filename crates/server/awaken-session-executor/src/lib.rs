@@ -430,31 +430,15 @@ impl ManagedHost {
         {
             return Ok(());
         }
-        match &resources.skills {
-            Some(bindings) => {
-                let versions = self
-                    .host
-                    .skills
-                    .load_pinned(workspace, bindings, claim)
-                    .await
-                    .map_err(skill_store_run_error)?;
-                self.host
-                    .session_slots
-                    .update(thread, |slot| slot.skills = Some(versions));
-            }
-            None => {
-                // Legacy records retain the historical global-catalog behavior;
-                // modern `Some` manifests always install only their exact pins.
-                self.host
-                    .skills
-                    .reload_cache_in(workspace)
-                    .await
-                    .map_err(skill_store_run_error)?;
-                self.host
-                    .session_slots
-                    .update(thread, |slot| slot.skills = None);
-            }
-        }
+        let versions = self
+            .host
+            .skills
+            .load_pinned(workspace, &resources.skills, claim)
+            .await
+            .map_err(skill_store_run_error)?;
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.skills = Some(versions));
         self.stage_effective_inputs(thread, workspace, desired.revision, resources, claim)
             .await
     }
@@ -656,16 +640,13 @@ impl ManagedHost {
                 "memory_store inputs are create-time only for a live Session",
             ));
         }
-        let skill_versions = match &inputs.skills {
-            Some(bindings) => Some(
-                self.host
-                    .skills
-                    .load_pinned(workspace_id, bindings, claim)
-                    .await
-                    .map_err(skill_store_run_error)?,
-            ),
-            None => None,
-        };
+        let skill_versions = Some(
+            self.host
+                .skills
+                .load_pinned(workspace_id, &inputs.skills, claim)
+                .await
+                .map_err(skill_store_run_error)?,
+        );
         let compiled = self
             .compile_effective_inputs(thread, workspace_id, inputs, claim)
             .await?;

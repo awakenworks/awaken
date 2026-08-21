@@ -263,7 +263,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
             None,
         )
         .unwrap(),
-        resources: awaken_session_contract::SessionResourceState::from_legacy(
+        resources: awaken_session_contract::SessionResourceState::from_active(
             serde_json::from_value(serde_json::json!({
                 "inputs": [{
                     "binding_id": "input-file",

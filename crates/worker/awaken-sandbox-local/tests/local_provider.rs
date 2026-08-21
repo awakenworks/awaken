@@ -355,7 +355,7 @@ async fn handle_serializes_and_adopt_reconnects() {
     let sandbox = provider.create(&spec("t-adopt")).await.unwrap();
 
     let handle = sandbox.handle();
-    assert_eq!(handle.provider_kind, "local");
+    assert_eq!(handle.provider_kind(), "local");
     assert_eq!(handle.sandbox_id, "t-adopt");
 
     // Persist → (simulated restart) → adopt from the wire.

@@ -1525,6 +1525,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-env-store",
  "awaken-environment-application",
+ "awaken-environment-contract",
  "awaken-executable-environment-catalog",
  "awaken-provisioning-contract",
  "awaken-sandbox-policy-store",

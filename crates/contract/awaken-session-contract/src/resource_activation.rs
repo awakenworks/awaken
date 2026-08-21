@@ -86,11 +86,7 @@ impl SessionResourceState {
         let mut referenced = self.active.clone();
         if let Some(pending) = &self.pending {
             referenced.inputs.extend(pending.inputs.clone());
-            match (&mut referenced.skills, &pending.skills) {
-                (Some(current), Some(desired)) => current.extend(desired.clone()),
-                (None, Some(desired)) => referenced.skills = Some(desired.clone()),
-                _ => {}
-            }
+            referenced.skills.extend(pending.skills.clone());
         }
         referenced
     }
@@ -99,17 +95,12 @@ impl SessionResourceState {
     #[must_use]
     pub fn has_references(&self) -> bool {
         let referenced = self.reference_manifest();
-        !referenced.inputs.is_empty()
-            || referenced
-                .skills
-                .as_ref()
-                .is_some_and(|skills| !skills.is_empty())
+        !referenced.inputs.is_empty() || !referenced.skills.is_empty()
     }
 
-    /// Convert a pre-activation persisted manifest into the new durable state.
-    /// The coordinator adopts activation records on first recovery.
+    /// Initialize activation state from the currently installed manifest.
     #[must_use]
-    pub fn from_legacy(active: ResolvedSessionResources) -> Self {
+    pub fn from_active(active: ResolvedSessionResources) -> Self {
         Self {
             revision: u64::from(!active.inputs.is_empty()),
             active,
@@ -402,7 +393,7 @@ mod tests {
                 access: ResourceAccess::ReadOnly,
                 instructions: None,
             }],
-            skills: Some(Vec::new()),
+            skills: Vec::new(),
         }
     }
 
@@ -445,7 +436,7 @@ mod tests {
     /// | V3 | yes | yes | Active/Releasing activation revision |
     #[test]
     fn active_revision_tracks_the_visible_manifest_during_replacement() {
-        let mut legacy = SessionResourceState::from_legacy(manifest("legacy"));
+        let mut legacy = SessionResourceState::from_active(manifest("legacy"));
         assert_eq!(legacy.active_revision(), 1, "V1");
         legacy.prepare("session-legacy", manifest("next")).unwrap();
         assert_eq!(legacy.active_revision(), 1, "V2");

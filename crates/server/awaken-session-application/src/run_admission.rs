@@ -453,7 +453,7 @@ impl SessionApplication {
         let mut resources =
             self.resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)?;
         if !skills.is_empty() {
-            resources.skills = Some(self.resolve_session_skills(&owner_scope, &skills).await?);
+            resources.skills = self.resolve_session_skills(&owner_scope, &skills).await?;
         }
         self.pin_repository_credentials(
             &owner_scope,

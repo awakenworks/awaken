@@ -716,9 +716,9 @@ mod tests {
             std::time::Duration::ZERO,
         );
         #[cfg(target_os = "macos")]
-        assert_eq!(environment.handle().provider_kind, "seatbelt");
+        assert_eq!(environment.handle().provider_kind(), "seatbelt");
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(environment.handle().provider_kind, "bwrap");
+        assert_eq!(environment.handle().provider_kind(), "bwrap");
 
         let mut native_command =
             pc::Command::new(["/bin/sh", "-c", "printf namespace-state > marker"]);
@@ -764,7 +764,7 @@ mod tests {
             provider.creates.load(std::sync::atomic::Ordering::SeqCst),
             1
         );
-        assert_eq!(environment.handle().provider_kind, "container");
+        assert_eq!(environment.handle().provider_kind(), "container");
         assert!(AgentSandbox::is_container(&environment));
         // Config-home placement decision table:
         // C1=environment already exists; C2=root may be read-only; C3=workspace
