@@ -506,6 +506,7 @@ impl ManagedHost {
                     })?
                     .verify(&workspace, &repository_id, config_version, claim.as_ref())
                     .await
+                    .map(|_| ())
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             }
         }

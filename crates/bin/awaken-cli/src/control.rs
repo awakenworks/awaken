@@ -302,6 +302,7 @@ async fn prepare_control_process_with_model_supply(
             worker_authenticator: None,
             worker_placement_policy: None,
             cloud_native_credential_realization: None,
+            repository_transport_authorizer: None,
             worker_directory: None,
             runtime_authority: None,
             worker_observations: Some(worker_observations),

@@ -619,7 +619,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let state = lock(&self.state)?;
         Ok(state.rows.get(run_id).and_then(|row| {
             (row.state == RowState::Leased && !row.cancellation_requested)
-                .then(|| row.lease.as_ref())
+                .then_some(row.lease.as_ref())
                 .flatten()
                 .filter(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
                 .map(|_| RunClaim {
@@ -649,11 +649,16 @@ impl DispatchQueue for MemoryDispatchStore {
                         .as_ref()
                         .expect("matched claim has a lease")
                         .expires_ms,
+                    row.cancellation_requested,
                 )
             })
         });
         drop(state);
-        Ok(guarded.map(|(request, expires_ms)| CommitEpochGuard::new(guard, request, expires_ms)))
+        Ok(
+            guarded.map(|(request, expires_ms, cancellation_requested)| {
+                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
+            }),
+        )
     }
 
     async fn enqueue_with(

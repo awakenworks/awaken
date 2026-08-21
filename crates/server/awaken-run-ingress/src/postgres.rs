@@ -446,9 +446,9 @@ impl DispatchQueue for PostgresDispatchStore {
         // claim/reclaim/settle/cancel from changing or removing the authority row
         // until the real ThreadCommit on its own connection has completed.
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current: Option<(i64, Option<String>, Option<i64>, Json<RunDispatch>)> =
+        let current: Option<(i64, Option<String>, Option<i64>, i64, Json<RunDispatch>)> =
             sqlx::query_as(&format!(
-                "SELECT lease_epoch, lease_owner, lease_until, request \
+                "SELECT lease_epoch, lease_owner, lease_until, cancel_requested, request \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
             ))
             .bind(&claim.run_id.0)
@@ -456,20 +456,24 @@ impl DispatchQueue for PostgresDispatchStore {
             .await
             .map_err(reject)?;
         let request = match current {
-            Some((epoch, owner, expires_ms, Json(request)))
+            Some((epoch, owner, expires_ms, cancellation_requested, Json(request)))
                 if durable_u64("dispatch lease epoch", epoch)? == claim.epoch
                     && owner.as_deref() == Some(&claim.owner) =>
             {
                 expires_ms
                     .map(|expires_ms| {
                         durable_u64("dispatch lease expiry", expires_ms)
-                            .map(|expires_ms| (request, expires_ms))
+                            .map(|expires_ms| (request, expires_ms, cancellation_requested != 0))
                     })
                     .transpose()?
             }
             Some(_) | None => None,
         };
-        Ok(request.map(|(request, expires_ms)| CommitEpochGuard::new(tx, request, expires_ms)))
+        Ok(
+            request.map(|(request, expires_ms, cancellation_requested)| {
+                CommitEpochGuard::new(tx, request, expires_ms, cancellation_requested)
+            }),
+        )
     }
 
     async fn claim(

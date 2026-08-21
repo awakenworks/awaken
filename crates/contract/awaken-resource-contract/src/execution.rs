@@ -79,6 +79,71 @@ impl RepositoryBindingVerifierError {
     }
 }
 
+/// Deployment-selected transport for one already-authorized Repository.
+///
+/// `Direct` preserves the self-hosted Worker injection path. `GatewayMediated`
+/// carries only a short platform capability; it never carries the upstream PAT.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RepositoryTransport {
+    Direct,
+    GatewayMediated {
+        remote_url: String,
+        capability: RepositoryGatewayCapability,
+    },
+}
+
+impl std::fmt::Debug for RepositoryTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct => formatter.write_str("Direct"),
+            Self::GatewayMediated { remote_url, .. } => formatter
+                .debug_struct("GatewayMediated")
+                .field("remote_url", remote_url)
+                .field("capability", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
+/// Short-lived Gateway capability. Debug output is always redacted.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct RepositoryGatewayCapability(String);
+
+impl RepositoryGatewayCapability {
+    pub fn new(value: impl Into<String>) -> Result<Self, RepositoryBindingVerifierError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(RepositoryBindingVerifierError::new(
+                "Gateway capability must not be empty",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RepositoryGatewayCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RepositoryGatewayCapability([redacted])")
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RepositoryGatewayCapability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[async_trait]
 pub trait RepositoryBindingVerifier<C: Sync = ()>: Send + Sync {
     async fn verify(
@@ -87,7 +152,7 @@ pub trait RepositoryBindingVerifier<C: Sync = ()>: Send + Sync {
         repository_id: &str,
         config_version: ConfigVersion,
         fence: Option<&C>,
-    ) -> Result<(), RepositoryBindingVerifierError>;
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError>;
 }
 
 #[derive(Debug, Clone)]
@@ -209,4 +274,26 @@ pub trait MemoryMaterializationReferenceEncoder<C>: Send + Sync {
         access: ResourceAccess,
         fence: &C,
     ) -> Result<String, MemoryMaterializationReferenceError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_gateway_capability_is_nonempty_and_redacted() {
+        // Cause/effect decision table: R1 nonempty wire value -> strong
+        // capability with redacted Debug; R2 empty/blank value -> reject at
+        // decode so no Worker or Gateway caller can acquire a weak token.
+        let capability: RepositoryGatewayCapability =
+            serde_json::from_str("\"short-lived-capability\"").expect("R1");
+        assert_eq!(capability.expose(), "short-lived-capability");
+        assert!(!format!("{capability:?}").contains("short-lived-capability"));
+        for invalid in ["\"\"", "\"   \""] {
+            assert!(
+                serde_json::from_str::<RepositoryGatewayCapability>(invalid).is_err(),
+                "R2"
+            );
+        }
+    }
 }

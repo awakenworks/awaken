@@ -94,8 +94,10 @@ pub awaken_run_ingress_contract::dispatch::ClaimedCommitCommand::claim: awaken_r
 pub awaken_run_ingress_contract::dispatch::ClaimedCommitCommand::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
 pub struct awaken_run_ingress_contract::dispatch::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
-pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_run_ingress_contract::run_dispatch::RunDispatch, u64) -> Self
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_run_ingress_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub struct awaken_run_ingress_contract::dispatch::DispatchCompletion
 pub awaken_run_ingress_contract::dispatch::DispatchCompletion::request_fingerprint: core::option::Option<alloc::string::String>
@@ -390,8 +392,10 @@ impl core::convert::From<awaken_session_contract::session_realization::SessionRe
 pub fn awaken_run_ingress_contract::ClaimedSessionControlError::from(awaken_session_contract::session_realization::SessionRealizationControlFailure) -> Self
 pub struct awaken_run_ingress_contract::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
-pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_run_ingress_contract::run_dispatch::RunDispatch, u64) -> Self
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_run_ingress_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub struct awaken_run_ingress_contract::CredentialRealizationRequest
 pub awaken_run_ingress_contract::CredentialRealizationRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim

@@ -48,6 +48,13 @@ pub awaken_resource_contract::MemoryVersionOperation::Modified
 pub enum awaken_resource_contract::PutResourcePurgeOutcome
 pub awaken_resource_contract::PutResourcePurgeOutcome::Existing
 pub awaken_resource_contract::PutResourcePurgeOutcome::Inserted
+pub enum awaken_resource_contract::RepositoryTransport
+pub awaken_resource_contract::RepositoryTransport::Direct
+pub awaken_resource_contract::RepositoryTransport::GatewayMediated
+pub awaken_resource_contract::RepositoryTransport::GatewayMediated::capability: awaken_resource_contract::RepositoryGatewayCapability
+pub awaken_resource_contract::RepositoryTransport::GatewayMediated::remote_url: alloc::string::String
+impl core::fmt::Debug for awaken_resource_contract::RepositoryTransport
+pub fn awaken_resource_contract::RepositoryTransport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_resource_contract::ResourceAccess
 pub awaken_resource_contract::ResourceAccess::ReadOnly
 pub awaken_resource_contract::ResourceAccess::ReadWrite
@@ -287,6 +294,14 @@ pub awaken_resource_contract::RepositoryDefinition::name: alloc::string::String
 pub awaken_resource_contract::RepositoryDefinition::state: awaken_resource_contract::ResourceState
 pub awaken_resource_contract::RepositoryDefinition::timestamps: awaken_resource_contract::ResourceTimestamps
 pub awaken_resource_contract::RepositoryDefinition::workspace_id: alloc::string::String
+pub struct awaken_resource_contract::RepositoryGatewayCapability(_)
+impl awaken_resource_contract::RepositoryGatewayCapability
+pub fn awaken_resource_contract::RepositoryGatewayCapability::expose(&self) -> &str
+pub fn awaken_resource_contract::RepositoryGatewayCapability::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_resource_contract::RepositoryBindingVerifierError>
+impl core::fmt::Debug for awaken_resource_contract::RepositoryGatewayCapability
+pub fn awaken_resource_contract::RepositoryGatewayCapability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for awaken_resource_contract::RepositoryGatewayCapability
+pub fn awaken_resource_contract::RepositoryGatewayCapability::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_resource_contract::RepositoryId(_)
 impl awaken_resource_contract::RepositoryId
 pub fn awaken_resource_contract::RepositoryId::as_str(&self) -> &str
@@ -480,7 +495,7 @@ pub fn awaken_resource_contract::MemoryStoreApplicationService::list<'life0, 'li
 pub fn awaken_resource_contract::MemoryStoreApplicationService::set_state<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::ResourceState) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::MemoryStoreDefinition, awaken_resource_contract::MemoryStoreApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::MemoryStoreApplicationService::update<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::UpdateMemoryStoreCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::MemoryStoreDefinition, awaken_resource_contract::MemoryStoreApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_resource_contract::RepositoryBindingVerifier<C: core::marker::Sync>: core::marker::Send + core::marker::Sync
-pub fn awaken_resource_contract::RepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::ConfigVersion, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_resource_contract::RepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::ConfigVersion, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::RepositoryTransport, awaken_resource_contract::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_resource_contract::ResourceBindingValidator: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::ResourceBindingValidator::validate_memory_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
 pub fn awaken_resource_contract::ResourceBindingValidator::validate_repository_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>

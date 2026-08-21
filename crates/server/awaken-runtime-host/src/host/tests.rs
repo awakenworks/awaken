@@ -425,6 +425,24 @@ fn effective_repository(
     }
 }
 
+struct FixedRepositoryTransport(awaken_resource_contract::RepositoryTransport);
+
+#[async_trait::async_trait]
+impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim> for FixedRepositoryTransport {
+    async fn verify(
+        &self,
+        _workspace_id: &str,
+        _repository_id: &str,
+        _config_version: awaken_resource_contract::ConfigVersion,
+        _claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        Ok(self.0.clone())
+    }
+}
+
 fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -> Vec<u8> {
     let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = &mount.source
     else {
@@ -965,9 +983,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
             claim: Option<&awaken_run_ingress::RunClaim>,
-        ) -> Result<(), awaken_resource_contract::RepositoryBindingVerifierError> {
+        ) -> Result<
+            awaken_resource_contract::RepositoryTransport,
+            awaken_resource_contract::RepositoryBindingVerifierError,
+        > {
             self.0.lock().unwrap().push(claim.cloned());
-            Ok(())
+            Ok(awaken_resource_contract::RepositoryTransport::Direct)
         }
     }
 
@@ -5988,6 +6009,113 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             );
         }
     }
+}
+
+/// Platform-held Repository injection decision table:
+///
+/// | Rule | dispatch claim | verifier transport | local materializer | Effect |
+/// |---|---|---|---|---|
+/// | P1 | exact | Gateway mediated | absent | stage rewritten URL + short capability |
+/// | P2 | exact | Direct | any | reject; never fall back to Worker plaintext |
+/// | P3 | absent Coordinator staging | Direct | absent | stage secret-free plan without opening material |
+#[tokio::test]
+async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
+    fn platform_resources() -> awaken_session_contract::ResolvedSessionResources {
+        let mut resources = effective_repository(
+            "repo-platform",
+            "https://github.com/awaken/example.git",
+            "/workspace/repo",
+            Some("credential-platform".into()),
+        );
+        let awaken_session_contract::ResolvedInputSource::Repository {
+            credential: Some(credential),
+            ..
+        } = &mut resources.inputs[0].source
+        else {
+            unreachable!()
+        };
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Platform,
+            "awaken.platform.egress-gateway",
+        );
+        credential.selected_plaintext_holder = holder.clone();
+        credential.access.policy = awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            holder,
+            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+        );
+        resources
+    }
+
+    let claim = awaken_run_ingress::RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("run-platform-repository".into()),
+        owner: "worker-platform".into(),
+        epoch: 7,
+    };
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let _runtime = crate::ManagedHost::new(host.clone())
+        .with_repository_binding_verifier(Arc::new(FixedRepositoryTransport(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.internal/git/repo-platform".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                    "repository-capability",
+                )
+                .unwrap(),
+            },
+        )))
+        .install_dispatch_session_runtime();
+    let manifest = awaken_session_contract::SessionResourceManifest::new(
+        host.local_workspace(),
+        platform_resources(),
+    );
+    host.install_dispatched_resources("platform-mediated", &manifest, Some(&claim))
+        .await
+        .expect("P1 Gateway mediation needs no Worker materializer");
+    let activation = &host.thread_repository_activations("platform-mediated")[0];
+    assert_eq!(
+        activation.plan.remote_url, "https://gateway.internal/git/repo-platform",
+        "P1"
+    );
+    assert_eq!(
+        activation
+            .credential
+            .as_ref()
+            .map(|credential| credential.expose_password()),
+        Some("repository-capability"),
+        "P1"
+    );
+
+    let direct_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let _direct_runtime = crate::ManagedHost::new(direct_host.clone())
+        .with_repository_binding_verifier(Arc::new(FixedRepositoryTransport(
+            awaken_resource_contract::RepositoryTransport::Direct,
+        )))
+        .install_dispatch_session_runtime();
+    let direct_manifest = awaken_session_contract::SessionResourceManifest::new(
+        direct_host.local_workspace(),
+        platform_resources(),
+    );
+    let denied = direct_host
+        .install_dispatched_resources("platform-direct-denied", &direct_manifest, Some(&claim))
+        .await
+        .expect_err("P2 direct transport cannot receive Platform-held material");
+    assert!(denied.message.contains("requires Gateway mediation"), "P2");
+    assert!(
+        direct_host
+            .thread_repository_activations("platform-direct-denied")
+            .is_empty(),
+        "P2"
+    );
+
+    direct_host
+        .install_dispatched_resources("platform-coordinator-stage", &direct_manifest, None)
+        .await
+        .expect("P3 Coordinator staging remains secret-free");
+    assert!(
+        direct_host.thread_repository_activations("platform-coordinator-stage")[0]
+            .credential
+            .is_none(),
+        "P3"
+    );
 }
 
 /// Repository realization cause graph:

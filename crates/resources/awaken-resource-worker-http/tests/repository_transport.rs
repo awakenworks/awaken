@@ -2,13 +2,14 @@
 
 use awaken_run_ingress_testkit::worker_http as support;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_resource_contract::RepositoryBindingVerifier as _;
 use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
 use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
 use awaken_resource_worker_http::{
+    RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
 use awaken_run_ingress::{
@@ -89,6 +90,71 @@ async fn claimed_dispatch(dispatch: &Arc<MemoryDispatchStore>, owner: &str) -> R
         .unwrap()
         .unwrap();
     RunClaim::from(&claimed.lease)
+}
+
+#[derive(Default)]
+struct GatewayAuthorizer(Mutex<Vec<RepositoryTransportAuthorization>>);
+
+#[async_trait::async_trait]
+impl RepositoryTransportAuthorizer for GatewayAuthorizer {
+    async fn authorize(
+        &self,
+        request: RepositoryTransportAuthorization,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        self.0.lock().unwrap().push(request);
+        Ok(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.invalid/git/repository-exact".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                    "repository-capability",
+                )?,
+            },
+        )
+    }
+}
+
+struct DeniedAuthorizer;
+
+#[async_trait::async_trait]
+impl RepositoryTransportAuthorizer for DeniedAuthorizer {
+    async fn authorize(
+        &self,
+        _request: RepositoryTransportAuthorization,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        Err(awaken_resource_contract::RepositoryBindingVerifierError::new("gateway denied"))
+    }
+}
+
+struct CancellingAuthorizer {
+    dispatch: Arc<MemoryDispatchStore>,
+    run_id: RunId,
+}
+
+#[async_trait::async_trait]
+impl RepositoryTransportAuthorizer for CancellingAuthorizer {
+    async fn authorize(
+        &self,
+        _request: RepositoryTransportAuthorization,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        self.dispatch.cancel(&self.run_id).await.unwrap();
+        Ok(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.invalid/git/repository-exact".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                    "repository-capability",
+                )?,
+            },
+        )
+    }
 }
 
 /// Cause/effect decision table:
@@ -219,6 +285,123 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         .await
         .expect_err("R5 stale claim must be rejected");
     assert!(stale_claim.to_string().contains("409"), "R5");
+}
+
+/// Repository transport decision table:
+///
+/// | Rule | common Worker/claim/manifest checks | deployment authorizer | Effect |
+/// |---|---|---|---|
+/// | T1 | pass | absent | return `Direct` for the self-hosted composition |
+/// | T2 | pass | returns exact mediated transport | pass the exact claim expiry and return only its rewritten URL and short capability |
+/// | T3 | pass | denies or is unavailable | reject; never return `Direct` as a fallback |
+/// | T4 | claim is cancelled while authorizer awaits | returns transport | final locked recheck rejects it |
+///
+/// State-machine coverage: `Claimed -> Authorizing -> Revalidated -> Mediated`
+/// is the only Cloud success path. `Claimed -> CancelRequested` during
+/// `Authorizing` transitions to `Rejected`; the authorizer result cannot revive
+/// the claim. The exact claim expiry travels with the authorization so the
+/// resulting capability cannot outlive `Claimed`.
+///
+/// T1 is covered by `repository_verification_is_scope_claim_manifest_and_incarnation_fenced`.
+#[tokio::test]
+async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
+    let (directory, identity) = support::ready_worker("worker-repository-gateway").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
+    let authorizer = Arc::new(GatewayAuthorizer::default());
+    let service = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryCatalog { active: true }),
+            dispatch.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_transport_authorizer(authorizer.clone()),
+    );
+    let address = support::serve(worker_repository_binding_router(service)).await;
+    let verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
+    );
+
+    let transport = verifier
+        .verify(
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&claim),
+        )
+        .await
+        .expect("T2 exact Gateway transport");
+    assert!(
+        matches!(
+            transport,
+            awaken_resource_contract::RepositoryTransport::GatewayMediated { ref remote_url, .. }
+                if remote_url == "https://gateway.invalid/git/repository-exact"
+        ),
+        "T2"
+    );
+    {
+        let calls = authorizer.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "T2");
+        assert_eq!(calls[0].worker, identity, "T2");
+        assert_eq!(calls[0].claim, claim, "T2");
+        assert!(calls[0].claim_expires_ms >= support::unix_now_ms(), "T2");
+        assert_eq!(calls[0].workspace_id, "workspace-repository", "T2");
+    }
+
+    let denied = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryCatalog { active: true }),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory)
+        .with_transport_authorizer(Arc::new(DeniedAuthorizer)),
+    );
+    let denied_address = support::serve(worker_repository_binding_router(denied)).await;
+    let denied_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{denied_address}")).with_worker_identity(identity),
+    );
+    let error = denied_verifier
+        .verify(
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&claim),
+        )
+        .await
+        .expect_err("T3 denial must not fall back to direct transport");
+    assert!(error.to_string().contains("403"), "T3: {error}");
+
+    let (directory, identity) = support::ready_worker("worker-repository-cancel").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
+    let cancelling = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryCatalog { active: true }),
+            dispatch.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory)
+        .with_transport_authorizer(Arc::new(CancellingAuthorizer {
+            dispatch,
+            run_id: claim.run_id.clone(),
+        })),
+    );
+    let address = support::serve(worker_repository_binding_router(cancelling)).await;
+    let verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+    let error = verifier
+        .verify(
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&claim),
+        )
+        .await
+        .expect_err("T4 cancellation during authorization must be rejected");
+    assert!(error.to_string().contains("409"), "T4: {error}");
 }
 
 /// Cause/effect rationale: a remote verifier without the exact dispatch claim

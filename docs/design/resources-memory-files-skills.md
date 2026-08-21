@@ -292,9 +292,9 @@ process-local handle.
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
-| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding before Git realization/use | configuration selection, Git transport, credential material, generic Resource dispatch |
+| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding and select direct or deployment-mediated Git transport before realization/use | configuration selection, upstream credential material, generic Resource dispatch |
 | `CatalogRepositoryBindingVerifier` | Implemented local adapter | Resource Catalog | delegate the exact live check to the existing `ResourceBindingValidator` | claim or HTTP policy, a second catalog |
-| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker, prove the exact binding belongs to the frozen dispatch manifest, and hold the claim guard through catalog validation | Git bytes, clone/publish behavior, plaintext credential, Worker database access |
+| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker, prove the exact binding belongs to the frozen dispatch manifest, hold the claim guard through catalog validation, and optionally return a short Gateway capability | upstream Git bytes, upstream plaintext credential, Worker database access |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
 | `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
@@ -882,6 +882,10 @@ internal config version remains an awaken governance detail.
   over typed `awaken.http-basic/v1` Vault material. Runtime translates it at the
   target boundary into a non-serializable `RepositoryHttpBasicCredential`; no
   scalar token or preformatted Authorization header remains as a second path;
+- the same Repository realizer consumes either direct self-hosted Basic
+  material or a short-lived Gateway capability selected by the exact
+  `resource_holder`; Platform mediation rewrites only the remote endpoint and
+  never falls back to Worker plaintext;
 - Repository Vault bindings are compiled before Session persistence into one
   exact secret-free `ResolvedRepositoryCredential`; Model, MCP, and Repository
   now share `CredentialMaterialResolver`, and the bare-source Runtime

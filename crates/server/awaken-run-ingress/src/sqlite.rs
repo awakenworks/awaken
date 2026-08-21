@@ -38,6 +38,7 @@ use awaken_run_ingress_contract::RunDispatch;
 mod claim;
 use claim::{
     claim_exact_transaction, claim_exact_transaction_with_mode, claim_retry_exhausted_transaction,
+    read_commit_epoch,
 };
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -477,40 +478,34 @@ impl DispatchQueue for SqliteDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let run = claim.run_id.0.clone();
-        let current: Option<(i64, Option<String>, Option<i64>, String)> = self
-            .with_conn_unlocked(move |conn, p| {
-                conn.query_row(
-                    &format!(
-                        "SELECT lease_epoch, lease_owner, lease_until, request \
-                         FROM {p}_dispatch WHERE run_id = ?1"
-                    ),
-                    params![run],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .optional()
-                .map_err(reject)
-            })
+        let current = self
+            .with_conn_unlocked(move |conn, p| read_commit_epoch(conn, p, &run))
             .await?;
         let request = current
-            .map(|(epoch, owner, expires_ms, request)| {
-                let epoch = durable_u64("dispatch lease epoch", epoch)?;
-                if epoch != claim.epoch || owner.as_deref() != Some(&claim.owner) {
+            .map(|row| {
+                let epoch = durable_u64("dispatch lease epoch", row.epoch)?;
+                if epoch != claim.epoch || row.owner.as_deref() != Some(&claim.owner) {
                     return Ok(None);
                 }
-                let expires_ms = expires_ms.ok_or_else(|| {
+                let expires_ms = row.expires_ms.ok_or_else(|| {
                     DispatchError::Rejected(
                         "current dispatch claim has no lease expiry".to_string(),
                     )
                 })?;
-                let request = serde_json::from_str(&request).map_err(json_err)?;
+                let request = serde_json::from_str(&row.request).map_err(json_err)?;
                 Ok(Some((
                     request,
                     durable_u64("dispatch lease expiry", expires_ms)?,
+                    row.cancellation_requested,
                 )))
             })
             .transpose()?
             .flatten();
-        Ok(request.map(|(request, expires_ms)| CommitEpochGuard::new(guard, request, expires_ms)))
+        Ok(
+            request.map(|(request, expires_ms, cancellation_requested)| {
+                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
+            }),
+        )
     }
 
     async fn claim(

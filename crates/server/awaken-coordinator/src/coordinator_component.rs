@@ -49,6 +49,8 @@ pub struct CoordinatorDependencies {
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
+    pub repository_transport_authorizer:
+        Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     /// Coordinator-owned Worker identity/incarnation authority. The process
     /// startup opens one durable adapter and injects that exact instance.
     pub worker_directory: Arc<dyn crate::WorkerDirectory>,
@@ -145,6 +147,7 @@ pub async fn build_coordinator_component(
         dream_process_store,
         worker_authenticator,
         worker_placement_policy,
+        repository_transport_authorizer,
         worker_directory,
         deployment_application,
         deployment_session_launcher,
@@ -187,6 +190,7 @@ pub async fn build_coordinator_component(
                 worker_skill_bundles,
                 worker_authenticator,
                 worker_placement_policy,
+                repository_transport_authorizer,
                 worker_directory,
             },
         )?;

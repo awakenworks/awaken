@@ -546,6 +546,36 @@ purpose before Session persistence and dispatch.
 An unsupported matrix cell fails admission with a stable error. It never falls
 through to another row.
 
+### Amendment: Repository Gateway mediation (2026-08-21)
+
+Repository, Model, MCP, and Connector credentials continue to share the same
+`CredentialAccess` admission kernel and the same deployment-selected plaintext
+holder. They do not acquire a second credential hierarchy or a generic secret
+transport DTO. The target adapter remains responsible for its final injection:
+provider headers for Model, the selected delivery channel for MCP, exact effect
+placements for Connector, and HTTP Basic transport for Repository.
+
+For a Worker-held Repository credential, the existing direct
+`CredentialMaterialResolver` and `WorkerRelay` path remains the self-hosted
+implementation. For a Platform-held Repository credential, the existing
+claim-fenced Repository verification boundary returns a short-lived mediated
+Git endpoint and capability. The Worker gives that capability to its unchanged
+Repository realizer as ephemeral HTTP Basic transport; the Gateway validates
+the exact Session, Run claim, Workspace, Repository config, and credential
+revision, opens the canonical credential store, and substitutes the upstream
+material in-process. Coordinator staging without a Run claim remains
+secret-free and performs no materialization.
+
+The mediated capability is bounded by the exact dispatch claim expiry read by
+the existing commit-epoch guard. It may be shorter than the configured Gateway
+TTL, but it must never remain valid after the claim that authorized it.
+
+The selected holder is authoritative. A Platform-held Repository cannot fall
+back to Worker plaintext when the Gateway, authorization, credential store, or
+upstream is unavailable. Conversely, an open self-hosted composition that does
+not install the deployment authorizer retains direct Worker injection. This is
+one holder-selected realization path, not runtime discovery or fallback.
+
 The stable admission failures are:
 
 ```rust

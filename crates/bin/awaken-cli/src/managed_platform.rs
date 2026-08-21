@@ -105,6 +105,8 @@ pub struct CoordinatorServiceAdapters {
     pub worker_placement_policy: Option<Arc<dyn awaken_run_ingress::PlacementPolicy>>,
     pub cloud_native_credential_realization:
         Option<awaken_runtime_contract::CredentialRealizationProfile>,
+    pub repository_transport_authorizer:
+        Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
 }
 
 impl CoordinatorServiceAdapters {
@@ -134,6 +136,15 @@ impl CoordinatorServiceAdapters {
         profile: awaken_runtime_contract::CredentialRealizationProfile,
     ) -> Self {
         self.cloud_native_credential_realization = Some(profile);
+        self
+    }
+
+    #[must_use]
+    pub fn with_repository_transport_authorizer(
+        mut self,
+        authorizer: Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>,
+    ) -> Self {
+        self.repository_transport_authorizer = Some(authorizer);
         self
     }
 }

@@ -613,6 +613,7 @@ pub fn mount_with_managed_and_application_access_and_models(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
             worker_placement_policy: None,
+            repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
         },
     )
@@ -634,6 +635,8 @@ pub struct ManagedRoutingExtensions {
         Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
+    pub repository_transport_authorizer:
+        Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
 
@@ -815,6 +818,7 @@ fn mount_with_managed_over(
                     awaken_worker_transport_security::HeaderWorkerAuthenticator,
                 ),
                 worker_placement_policy: None,
+                repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
             },
         )
@@ -859,6 +863,7 @@ fn mount_with_managed_over_and_models(
         worker_skill_bundles,
         worker_authenticator,
         worker_placement_policy,
+        repository_transport_authorizer,
         worker_directory,
     } = routing;
     // This is the sole Coordinator-owned installation point. It runs after the
@@ -1034,14 +1039,18 @@ fn mount_with_managed_over_and_models(
             worker_directory.clone(),
         ),
     ));
-    let repositories = awaken_resource_worker_http::worker_repository_binding_router(Arc::new(
-        awaken_resource_worker_http::WorkerRepositoryBindingService::new(
-            resource_catalog,
-            dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
-            worker_authenticator.clone(),
-        )
-        .with_worker_directory(worker_directory.clone()),
-    ));
+    let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
+        resource_catalog,
+        dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+        worker_authenticator.clone(),
+    )
+    .with_worker_directory(worker_directory.clone());
+    let repository_service = match repository_transport_authorizer {
+        Some(authorizer) => repository_service.with_transport_authorizer(authorizer),
+        None => repository_service,
+    };
+    let repositories =
+        awaken_resource_worker_http::worker_repository_binding_router(Arc::new(repository_service));
     let resource_worker = file_content
         .merge(artifact_publication)
         .merge(memory)

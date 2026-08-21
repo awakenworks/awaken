@@ -561,7 +561,9 @@ impl VaultState {
             usage,
             policy,
         );
-        if let Some(issuer) = &self.envelope_issuer {
+        if selected_holder.boundary != awaken_credential_contract::PlaintextBoundary::Platform
+            && let Some(issuer) = &self.envelope_issuer
+        {
             let material =
                 awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
             let envelope = issuer

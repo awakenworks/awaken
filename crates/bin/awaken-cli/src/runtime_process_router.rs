@@ -662,6 +662,7 @@ pub(super) async fn prepare_runtime_routers(
             dream_process_store,
             worker_authenticator,
             worker_placement_policy,
+            repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
             deployment_application,
             deployment_session_launcher,

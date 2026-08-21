@@ -149,6 +149,7 @@ pub awaken_coordinator::CoordinatorDependencies::managed_state: alloc::sync::Arc
 pub awaken_coordinator::CoordinatorDependencies::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_coordinator::CoordinatorDependencies::model_inventory: alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>
 pub awaken_coordinator::CoordinatorDependencies::private_router: axum::routing::Router
+pub awaken_coordinator::CoordinatorDependencies::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_coordinator::CoordinatorDependencies::resource_catalog: alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
 pub awaken_coordinator::CoordinatorDependencies::resource_management_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorDependencies::service_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>
@@ -174,6 +175,7 @@ pub awaken_coordinator::ManagedApplicationServices::resource_catalog: alloc::syn
 pub awaken_coordinator::ManagedApplicationServices::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub struct awaken_coordinator::ManagedRoutingExtensions
 pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
+pub awaken_coordinator::ManagedRoutingExtensions::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>

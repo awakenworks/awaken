@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ConfigVersion, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    ConfigVersion, RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryTransport,
     ResourceBindingValidator,
 };
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
@@ -37,6 +37,29 @@ pub struct WorkerRepositoryBindingService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
+}
+
+/// Exact frozen facts supplied to the deployment adapter after the common
+/// Worker identity, claim, Session manifest, and Resource checks have passed.
+#[derive(Debug, Clone)]
+pub struct RepositoryTransportAuthorization {
+    pub worker: WorkerIdentity,
+    pub claim: RunClaim,
+    pub claim_expires_ms: u64,
+    pub session_id: String,
+    pub workspace_id: String,
+    pub input: awaken_session_contract::ResolvedInput,
+}
+
+/// Deployment adapter for the last credential hop. Self-hosted compositions
+/// omit it and retain `Direct`; Cloud installs Gateway mediation.
+#[async_trait::async_trait]
+pub trait RepositoryTransportAuthorizer: Send + Sync {
+    async fn authorize(
+        &self,
+        request: RepositoryTransportAuthorization,
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError>;
 }
 
 /// Registered-Worker client for exact Repository binding verification.
@@ -60,7 +83,7 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
         repository_id: &str,
         config_version: ConfigVersion,
         claim: Option<&RunClaim>,
-    ) -> Result<(), RepositoryBindingVerifierError> {
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         let claim = claim.ok_or_else(|| {
             RepositoryBindingVerifierError::new(
                 "remote Repository verification requires a dispatch claim",
@@ -93,13 +116,20 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
             .send()
             .await
             .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
-        if response.status() != reqwest::StatusCode::NO_CONTENT {
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(RepositoryTransport::Direct);
+        }
+        if response.status() != reqwest::StatusCode::OK {
             return Err(RepositoryBindingVerifierError::new(format!(
                 "Repository binding authority returned HTTP {}",
                 response.status()
             )));
         }
-        Ok(())
+        response.json::<RepositoryTransport>().await.map_err(|_| {
+            RepositoryBindingVerifierError::new(
+                "Repository binding authority returned an invalid transport",
+            )
+        })
     }
 }
 
@@ -115,12 +145,22 @@ impl WorkerRepositoryBindingService {
             dispatch,
             authenticator,
             directory: None,
+            transport_authorizer: None,
         }
     }
 
     #[must_use]
     pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
         self.directory = Some(directory);
+        self
+    }
+
+    #[must_use]
+    pub fn with_transport_authorizer(
+        mut self,
+        authorizer: Arc<dyn RepositoryTransportAuthorizer>,
+    ) -> Self {
+        self.transport_authorizer = Some(authorizer);
         self
     }
 }
@@ -155,7 +195,9 @@ async fn verify_repository_binding(
         return StatusCode::FORBIDDEN.into_response();
     }
     let guard = match service.dispatch.lock_commit_epoch(&request.claim).await {
-        Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
+        Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) && !guard.cancellation_requested() => {
+            guard
+        }
         Ok(_) => return StatusCode::CONFLICT.into_response(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
@@ -169,8 +211,8 @@ async fn verify_repository_binding(
         .as_ref()
         .filter(|envelope| envelope.workspace_id == request.workspace_id)
         .and_then(|envelope| envelope.decode_manifest().ok());
-    let binding_is_frozen = manifest.as_ref().is_some_and(|manifest| {
-        manifest.resources.inputs.iter().any(|input| {
+    let frozen_input = manifest.as_ref().and_then(|manifest| {
+        manifest.resources.inputs.iter().find(|input| {
             matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::Repository {
@@ -182,16 +224,62 @@ async fn verify_repository_binding(
             )
         })
     });
-    if !scope_matches || !binding_is_frozen {
+    if !scope_matches || frozen_input.is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match service.validator.validate_repository_binding(
-        &request.workspace_id,
-        &request.repository_id,
-        request.config_version,
-    ) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => StatusCode::FORBIDDEN.into_response(),
+    if service
+        .validator
+        .validate_repository_binding(
+            &request.workspace_id,
+            &request.repository_id,
+            request.config_version,
+        )
+        .is_err()
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(authorizer) = &service.transport_authorizer else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(worker) = request.identity else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let dispatch_fingerprint = dispatch.canonical_fingerprint();
+    let claim_expires_ms = guard.expires_ms();
+    let session_id = dispatch.session_thread_id().0.clone();
+    let frozen_input = frozen_input.expect("checked").clone();
+    drop(guard);
+    let transport = match authorizer
+        .authorize(RepositoryTransportAuthorization {
+            worker,
+            claim: request.claim.clone(),
+            claim_expires_ms,
+            session_id,
+            workspace_id: request.workspace_id,
+            input: frozen_input,
+        })
+        .await
+    {
+        Ok(transport) => transport,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let revalidated = service
+        .dispatch
+        .lock_commit_epoch(&request.claim)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|guard| {
+            guard.is_live_at(unix_now_ms())
+                && !guard.cancellation_requested()
+                && guard.request().canonical_fingerprint() == dispatch_fingerprint
+        });
+    if !revalidated {
+        return StatusCode::CONFLICT.into_response();
+    }
+    match transport {
+        RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
+        transport => (StatusCode::OK, Json(transport)).into_response(),
     }
 }
 
