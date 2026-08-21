@@ -7454,14 +7454,16 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
 #[test]
 fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
-    // C4=mixed boundaries; C5=publication freezes one common holder. The same
-    // decision feeds direct and dispatch paths.
-    // | Rule | C1 | C2 | C3 | C4 | C5 | result                    |
-    // | R1   | F  | -  | -  | F  | F  | no holder                 |
-    // | R2   | T  | T  | F  | F  | F  | Worker holder             |
-    // | R3   | T  | F  | T  | F  | F  | Workload holder           |
-    // | R4   | T  | T  | T  | T  | F  | reject                    |
-    // | R5   | T  | -  | -  | -  | T  | exact publication holder  |
+    // C4=mixed boundaries; C5=publication freezes one common holder;
+    // C6=prepared Environment requests a different holder. The same immutable
+    // publication decision feeds root, child, direct, and dispatch paths.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | result                   |
+    // | R1   | F  | -  | -  | F  | F  | -  | no holder                |
+    // | R2   | T  | T  | F  | F  | F  | F  | Worker holder            |
+    // | R3   | T  | F  | T  | F  | F  | F  | Workload holder          |
+    // | R4   | T  | T  | T  | T  | F  | -  | reject                   |
+    // | R5   | T  | -  | -  | -  | T  | F  | exact publication holder |
+    // | R6   | T  | -  | -  | -  | T  | T  | exact publication holder |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
@@ -7580,10 +7582,25 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             awaken_runtime_contract::ModelExposurePolicy::Forbidden,
         ),
     );
+    let platform_activation = activation(platform_candidate, Vec::new());
     assert_eq!(
-        super::self_hosted_inference_holder(&activation(platform_candidate, Vec::new())).unwrap(),
-        Some(platform_holder),
+        super::self_hosted_inference_holder(&platform_activation).unwrap(),
+        Some(platform_holder.clone()),
         "R5"
+    );
+    host.install_environment_projection(
+        &platform_activation.thread_id.0,
+        &session_environment(
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
+    )
+    .expect("install conflicting self-hosted Environment holder");
+    assert_eq!(
+        host.inference_plaintext_holder(&platform_activation)
+            .unwrap(),
+        Some(platform_holder),
+        "R6"
     );
 }
 

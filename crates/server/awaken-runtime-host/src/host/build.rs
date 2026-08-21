@@ -1360,19 +1360,6 @@ impl SharedHost {
             .update(thread, |slot| slot.delegates = delegates);
     }
 
-    pub(crate) fn thread_credential_realization(
-        &self,
-        thread: &str,
-    ) -> Option<awaken_runtime_contract::CredentialRealizationProfile> {
-        self.session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|environment| environment.credential_realization.clone())
-            })
-            .flatten()
-    }
-
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
             .read(thread, |slot| slot.delegates.clone())
