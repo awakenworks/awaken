@@ -7,25 +7,211 @@
 use std::sync::Arc;
 
 use super::{DEFAULT_SCOPE, ManagedState, StateError};
-use crate::types::{Session, SessionCreateParams};
+use crate::types::resource::ResourceInput;
+use crate::types::{AgentRef, AgentRefObject, ModelEffortInput, Session, SessionCreateParams};
+
+pub(crate) const SESSION_CREATE_REQUEST_FINGERPRINT: &str =
+    "awaken.managed_session_create_request_fingerprint";
+
+fn agent_fingerprint(agent: &AgentRef) -> String {
+    match agent {
+        AgentRef::Id(id) => awaken_session_contract::stable_fingerprint(&("id", id)),
+        AgentRef::Object(object) => match object.as_ref() {
+            AgentRefObject::Agent { id, version } => {
+                awaken_session_contract::stable_fingerprint(&("agent", id, version))
+            }
+            AgentRefObject::AgentWithOverrides {
+                id,
+                mcp_servers,
+                model,
+                skills,
+                system,
+                tools,
+                version,
+            } => {
+                let model = model.as_ref().map(|model| match model {
+                    crate::types::agent::ModelInput::Id(id) => {
+                        awaken_session_contract::stable_fingerprint(&("id", id))
+                    }
+                    crate::types::agent::ModelInput::Config(config) => {
+                        awaken_session_contract::stable_fingerprint(&(
+                            "config",
+                            &config.id,
+                            config.speed,
+                            config.effort.map(ModelEffortInput::resolved),
+                            config.inference_geo,
+                        ))
+                    }
+                });
+                awaken_session_contract::stable_fingerprint(&(
+                    "agent_with_overrides",
+                    id,
+                    version,
+                    mcp_servers,
+                    model,
+                    skills,
+                    system,
+                    tools,
+                ))
+            }
+        },
+    }
+}
+
+fn request_fingerprint(request: &SessionCreateParams) -> String {
+    let resources = request
+        .resources
+        .iter()
+        .map(ResourceInput::idempotency_fingerprint)
+        .collect::<Vec<_>>();
+    awaken_session_contract::stable_fingerprint(&(
+        agent_fingerprint(&request.agent),
+        &request.budget,
+        &request.environment_id,
+        &request.title,
+        &request.metadata,
+        &request.vault_ids,
+        resources,
+    ))
+}
 
 impl ManagedState {
     pub async fn create_session_with_initial_events_idempotent(
         self: &Arc<Self>,
-        req: SessionCreateParams,
+        mut req: SessionCreateParams,
         workspace_id: Option<String>,
         idempotency_key: &str,
     ) -> Result<Session, StateError> {
-        let owner_scope = workspace_id.as_deref().unwrap_or(DEFAULT_SCOPE);
+        let owner_scope = workspace_id.as_deref().unwrap_or(DEFAULT_SCOPE).to_owned();
+        if req
+            .metadata
+            .contains_key(SESSION_CREATE_REQUEST_FINGERPRINT)
+        {
+            return Err(StateError::Run(super::RunError::bad_request(
+                "Session create request contains reserved metadata",
+            )));
+        }
+        let request_fingerprint = request_fingerprint(&req);
         let session_id = format!(
             "sesn_{}",
             awaken_session_contract::stable_fingerprint(&(
                 "managed-session-create-idempotency",
-                owner_scope,
+                &owner_scope,
                 idempotency_key,
             ))
         );
-        self.create_session_with_initial_events_and_identity(req, workspace_id, Some(session_id))
+        if let Some(session) = self
+            .replay_session_with_metadata(
+                &session_id,
+                &owner_scope,
+                &[(SESSION_CREATE_REQUEST_FINGERPRINT, &request_fingerprint)],
+            )
+            .await?
+        {
+            return Ok(session);
+        }
+        req.metadata.insert(
+            SESSION_CREATE_REQUEST_FINGERPRINT.into(),
+            request_fingerprint.clone(),
+        );
+        let created = self
+            .create_session_with_initial_events_and_identity(
+                req,
+                workspace_id,
+                Some(session_id.clone()),
+            )
+            .await;
+        match created {
+            Ok(session) => Ok(session),
+            Err(error) => {
+                if let Some(session) = self
+                    .replay_session_with_metadata(
+                        &session_id,
+                        &owner_scope,
+                        &[(SESSION_CREATE_REQUEST_FINGERPRINT, &request_fingerprint)],
+                    )
+                    .await?
+                {
+                    return Ok(session);
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
+    use awaken_session_contract::ManagedSessionRepository;
+
+    fn request(title: &str) -> SessionCreateParams {
+        let mut request = SessionCreateParams::new(
+            "coder",
+            awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        );
+        request.title = Some(title.into());
+        request
+    }
+
+    #[tokio::test]
+    async fn idempotent_create_rehydrates_durable_session_after_restart() {
+        // Cause/effect graph: C1 the owner-scoped key is new or already durable;
+        // C2 the canonical request fingerprint matches or differs; C3 the
+        // process cache is warm or cold. Effects are E1 one new Session, E2 the
+        // exact durable Session is rehydrated without another create, and E3 an
+        // idempotency mismatch with no replacement. Decision rules covered:
+        // R1 new+matching -> E1; R2 durable+matching+cold -> E2; R3
+        // durable+different+cold -> E3. Same-process and owner isolation rules
+        // remain covered by the protocol adapter matrix.
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let original =
+            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        let created = original
+            .create_session_with_initial_events_idempotent(
+                request("Project A"),
+                Some("workspace-a".into()),
+                "issue-a",
+            )
             .await
+            .expect("R1 creates the canonical Session");
+        drop(original);
+
+        let restarted =
+            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
+        let replayed = restarted
+            .create_session_with_initial_events_idempotent(
+                request("Project A"),
+                Some("workspace-a".into()),
+                "issue-a",
+            )
+            .await
+            .expect("R2 rehydrates durable truth");
+        assert_eq!(replayed.id, created.id, "R2 preserves identity");
+        assert_eq!(restarted.list_sessions().len(), 1, "R2 projects once");
+
+        let mismatch = restarted
+            .create_session_with_initial_events_idempotent(
+                request("Changed"),
+                Some("workspace-a".into()),
+                "issue-a",
+            )
+            .await;
+        assert!(
+            matches!(mismatch, Err(StateError::IdempotencyMismatch)),
+            "R3 rejects changed input"
+        );
+        assert_eq!(restarted.list_sessions().len(), 1, "R3 does not replace");
+        assert_eq!(
+            repo.get(&created.id)
+                .await
+                .expect("durable Session remains")
+                .title
+                .as_deref(),
+            Some("Project A"),
+            "R3 leaves durable truth unchanged"
+        );
     }
 }

@@ -1343,24 +1343,17 @@ pub async fn create_profiled_session(
     }
     let request_fingerprint = awaken_session_contract::stable_fingerprint(&body);
     if let Some(existing) = state
-        .session_application()
-        .read_session_projection(&body.session_id, Some(&owner_scope))
+        .replay_session_with_metadata(
+            &body.session_id,
+            &owner_scope,
+            &[(PROFILED_SESSION_REQUEST_FINGERPRINT, &request_fingerprint)],
+        )
         .await
-        .map_err(|error| {
-            error_response(StateError::Run(RunError::unavailable(error.to_string())))
-        })?
+        .map_err(error_response)?
     {
-        if existing
-            .session
-            .metadata
-            .get(PROFILED_SESSION_REQUEST_FINGERPRINT)
-            != Some(&request_fingerprint)
-        {
-            return Err(error_response(StateError::Conflict));
-        }
         return Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
-            id: existing.session.session_id,
-            metadata: existing.session.metadata,
+            id: existing.id,
+            metadata: existing.metadata,
         }));
     }
     body.metadata.insert(

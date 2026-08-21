@@ -3,6 +3,39 @@
 use super::*;
 
 impl ManagedState {
+    /// Rehydrate one deterministic Session only when durable owner and command
+    /// metadata match. Deployment, profiled, and public idempotent creation all
+    /// use this single replay decision instead of consulting the process cache.
+    pub(crate) async fn replay_session_with_metadata(
+        &self,
+        session_id: &str,
+        workspace_id: &str,
+        expected_metadata: &[(&str, &str)],
+    ) -> Result<Option<Session>, StateError> {
+        let persisted = match self.application.session(session_id).await {
+            Ok(persisted) => persisted,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+            Err(error) => return Err(StateError::from(error)),
+        };
+        let owner = self
+            .application
+            .owner(session_id)
+            .await
+            .map_err(Self::map_application_mutation_error)?;
+        if owner != workspace_id
+            || expected_metadata.iter().any(|(key, value)| {
+                persisted
+                    .metadata
+                    .get(*key)
+                    .is_none_or(|stored| stored != value)
+            })
+        {
+            return Err(StateError::IdempotencyMismatch);
+        }
+        self.ensure_session(session_id).await?;
+        self.get_session(session_id).map(Some)
+    }
+
     /// Recover a session whose in-memory record was lost from durable truth (a
     /// process restart, ADR-0039). If the store holds a committed transcript for
     /// `id`, rebuild the record — the projected history plus a reconstructed
