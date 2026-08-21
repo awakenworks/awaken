@@ -114,9 +114,15 @@ pub(crate) fn requires_local_environment(
 /// Resolve the canonical cold-start inference holder from immutable candidate
 /// backends. Embedded applications that author their own `RunDispatch` use this
 /// same decision instead of duplicating the self-hosted boundary mapping.
-pub fn self_hosted_inference_holder(
+enum InferencePlaintextHolderDecision {
+    NotRequired,
+    Exact(awaken_runtime_contract::PlaintextHolder),
+    Boundary(awaken_runtime_contract::PlaintextBoundary),
+}
+
+fn inference_plaintext_holder_decision(
     activation: &RunActivation,
-) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+) -> Result<InferencePlaintextHolderDecision, HostError> {
     let mut boundary = None;
     let mut common_holders = None;
     for candidate in activation
@@ -172,10 +178,21 @@ pub fn self_hosted_inference_holder(
             ));
         }
         if common_holders.len() == 1 {
-            return Ok(common_holders.into_iter().next());
+            if let Some(holder) = common_holders.into_iter().next() {
+                return Ok(InferencePlaintextHolderDecision::Exact(holder));
+            }
         }
     }
-    Ok(boundary.map(|boundary| match boundary {
+    Ok(boundary.map_or(
+        InferencePlaintextHolderDecision::NotRequired,
+        InferencePlaintextHolderDecision::Boundary,
+    ))
+}
+
+fn self_hosted_holder_for_boundary(
+    boundary: awaken_runtime_contract::PlaintextBoundary,
+) -> awaken_runtime_contract::PlaintextHolder {
+    match boundary {
         awaken_runtime_contract::PlaintextBoundary::Workload => {
             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
                 .inference_holder
@@ -185,7 +202,19 @@ pub fn self_hosted_inference_holder(
             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
                 .inference_holder
         }
-    }))
+    }
+}
+
+pub fn self_hosted_inference_holder(
+    activation: &RunActivation,
+) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+    Ok(match inference_plaintext_holder_decision(activation)? {
+        InferencePlaintextHolderDecision::NotRequired => None,
+        InferencePlaintextHolderDecision::Exact(holder) => Some(holder),
+        InferencePlaintextHolderDecision::Boundary(boundary) => {
+            Some(self_hosted_holder_for_boundary(boundary))
+        }
+    })
 }
 
 /// Compile the complete immutable Worker claim requirements for one resolved
@@ -283,7 +312,24 @@ impl SharedHost {
         &self,
         activation: &RunActivation,
     ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
-        self_hosted_inference_holder(activation)
+        Ok(match inference_plaintext_holder_decision(activation)? {
+            InferencePlaintextHolderDecision::NotRequired => None,
+            InferencePlaintextHolderDecision::Exact(holder) => Some(holder),
+            InferencePlaintextHolderDecision::Boundary(boundary) => {
+                let holder = self
+                    .thread_credential_realization(&activation.thread_id.0)
+                    .map_or_else(
+                        || self_hosted_holder_for_boundary(boundary),
+                        |profile| profile.inference_holder,
+                    );
+                if holder.boundary != boundary {
+                    return Err(HostError::bad_request(
+                        "the Session Environment credential holder conflicts with the selected model backend",
+                    ));
+                }
+                Some(holder)
+            }
+        })
     }
 
     pub(crate) fn resolved_dispatch(

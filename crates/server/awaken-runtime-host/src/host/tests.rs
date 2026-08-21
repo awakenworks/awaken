@@ -9143,19 +9143,20 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // C4=mixed boundaries; C5=publication freezes one common holder;
     // C6=prepared Environment requests a different holder; C7=closed Remote
     // coordinate (exact A2A backend with no local model reference); C8=the
-    // candidates' allowed-holder intersection is empty. The same
-    // immutable publication decision feeds root, child, direct, and dispatch paths.
-    // Remote authentication uses the Worker boundary, while every candidate in
-    // one attempt set must admit one common holder.
-    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | result                   |
-    // | R1   | F  | -  | -  | F  | F  | -  | F  | no holder                |
-    // | R2   | T  | T  | F  | F  | F  | F  | F  | Worker holder            |
-    // | R3   | T  | F  | T  | F  | F  | F  | F  | Workload holder          |
-    // | R4   | T  | T  | T  | T  | F  | -  | F  | reject                   |
-    // | R5   | T  | -  | -  | -  | T  | F  | F  | exact publication holder |
-    // | R6   | T  | -  | -  | -  | T  | T  | F  | exact publication holder |
-    // | R7   | T  | F  | F  | F  | F  | F  | T  | Worker holder            |
-    // | R8   | T  | -  | -  | -  | F  | -  | F  | reject empty intersection |
+    // candidate policies have no common holder. The immutable publication
+    // decision feeds root, child, direct, and dispatch paths. An exact
+    // publication holder dominates the Environment fallback; a boundary-only
+    // decision must agree with that Environment.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | result                   |
+    // | R1   | F  | -  | -  | F  | F  | -  | F  | F  | no holder                |
+    // | R2   | T  | T  | F  | F  | F  | F  | F  | F  | Worker holder            |
+    // | R3   | T  | F  | T  | F  | F  | F  | F  | F  | Workload holder          |
+    // | R4   | T  | T  | T  | T  | F  | -  | F  | F  | reject                   |
+    // | R5   | T  | -  | -  | -  | T  | F  | F  | F  | exact publication holder |
+    // | R6   | T  | -  | -  | -  | T  | T  | F  | F  | exact publication holder |
+    // | R7   | T  | T  | F  | F  | F  | T  | F  | F  | reject                   |
+    // | R8   | T  | F  | F  | F  | F  | F  | T  | F  | Worker holder            |
+    // | R9   | T  | T  | F  | F  | F  | F  | F  | T  | reject                   |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
@@ -9282,7 +9283,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             .unwrap()
             .boundary,
         awaken_runtime_contract::PlaintextBoundary::Worker,
-        "R7"
+        "R8"
     );
     assert!(
         host.inference_plaintext_holder(&activation(
@@ -9317,13 +9318,30 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             serde_json::json!({}),
         ),
     )
-    .expect("install conflicting self-hosted Environment holder");
+    .expect("install a prepared self-hosted Environment profile");
     assert_eq!(
         host.inference_plaintext_holder(&platform_activation)
             .unwrap(),
         Some(platform_holder),
         "R6"
     );
+    let mut conflicting_environment = session_environment(
+        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        serde_json::json!({}),
+    );
+    conflicting_environment.credential_realization =
+        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp();
+    let conflicting_host = SharedHost::new(Arc::new(OkModel), "host-default");
+    conflicting_host
+        .install_environment_projection("cold-thread", &conflicting_environment)
+        .expect("replace the prepared Environment profile");
+    assert!(
+        conflicting_host
+            .inference_plaintext_holder(&native_activation)
+            .is_err(),
+        "R7"
+    );
+
     let worker_candidate = candidate_with_policy(
         "worker-exact",
         "native",
@@ -9351,7 +9369,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
         error
             .to_string()
             .contains("no common credential plaintext holder"),
-        "R8 exact rejection reason: {error}"
+        "R9 exact rejection reason: {error}"
     );
 }
 
