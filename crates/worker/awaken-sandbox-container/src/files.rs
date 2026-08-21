@@ -252,6 +252,7 @@ mod tests {
             file_store: None,
             live_input_projection: false,
             runtime_handle: None,
+            continuation_excluded_paths: Vec::new(),
             realized: Vec::new(),
             recovered: false,
             lifecycle: Arc::new(crate::ContainerCleanupState::completed(None)),
