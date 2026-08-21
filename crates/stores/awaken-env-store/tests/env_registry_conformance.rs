@@ -32,6 +32,7 @@ async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {
         EnvironmentConfig::SelfHosted,
     )
     .await
+    .expect("create Environment")
     .id
 }
 
@@ -46,19 +47,28 @@ async fn unique_ids<R: EnvRegistry>(r: &R) {
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), 5, "ids collided");
     for id in &ids {
-        assert!(r.exists(id).await, "a created id is missing");
+        assert!(
+            r.exists(id).await.expect("read Environment"),
+            "a created id is missing"
+        );
     }
 }
 
 /// Terminal denial is an archive: history and exact lookup remain available.
 async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
     let a = make(r, "a").await;
-    assert!(r.archive(&a).await.is_some());
+    assert!(r.archive(&a).await.expect("archive Environment").is_some());
     assert!(
-        r.get(&a).await.is_some(),
+        r.get(&a).await.expect("read Environment").is_some(),
         "archive must keep the record retrievable"
     );
-    let active: Vec<String> = r.list_active().await.into_iter().map(|e| e.id).collect();
+    let active: Vec<String> = r
+        .list_active()
+        .await
+        .expect("list Environments")
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
     assert!(
         !active.contains(&a),
         "archived record must leave list_active"
@@ -66,6 +76,7 @@ async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
     assert!(
         r.get_revision(&a, awaken_environment_contract::EnvironmentRevision(1))
             .await
+            .expect("read Environment revision")
             .is_some(),
         "the authored revision remains exact-readable"
     );
@@ -73,9 +84,23 @@ async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
 
 /// Fail-closed: archive/update on a never-created id → None.
 async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
-    assert!(r.archive("env_missing").await.is_none());
-    assert!(r.update("env_missing", Default::default()).await.is_none());
-    assert!(!r.exists("env_missing").await);
+    assert!(
+        r.archive("env_missing")
+            .await
+            .expect("archive missing Environment")
+            .is_none()
+    );
+    assert!(
+        r.update("env_missing", Default::default())
+            .await
+            .expect("update missing Environment")
+            .is_none()
+    );
+    assert!(
+        !r.exists("env_missing")
+            .await
+            .expect("find missing Environment")
+    );
 }
 
 async fn revision_decision_table<R: EnvRegistry>(r: &R) {
@@ -100,10 +125,13 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
             Default::default(),
             EnvironmentConfig::SelfHosted,
         )
-        .await;
+        .await
+        .expect("V1 create");
     assert_eq!(item.revision, EnvironmentRevision(1), "V1");
     assert_eq!(
-        r.get_revision(&item.id, EnvironmentRevision(1)).await,
+        r.get_revision(&item.id, EnvironmentRevision(1))
+            .await
+            .expect("V1 read"),
         Some(item.clone()),
         "V1 immutable history"
     );
@@ -116,28 +144,39 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
             },
         )
         .await
+        .expect("V2 update store operation")
         .expect("V2 update");
     assert_eq!(item.revision, EnvironmentRevision(2), "V2");
     assert_eq!(
         r.get_revision(&item.id, EnvironmentRevision(1))
             .await
+            .expect("V2 history read")
             .unwrap()
             .name,
         "versioned",
         "V2 does not rewrite V1"
     );
-    let item = r.archive(&item.id).await.expect("V3 archive");
+    let item = r
+        .archive(&item.id)
+        .await
+        .expect("V3 archive store operation")
+        .expect("V3 archive");
     assert_eq!(item.revision, EnvironmentRevision(3), "V3");
     assert!(
         r.get_revision(&item.id, EnvironmentRevision(2))
             .await
+            .expect("V3 history read")
             .unwrap()
             .archived_at
             .is_none(),
         "V3 archive does not rewrite V2"
     );
     assert_eq!(
-        r.archive(&item.id).await.unwrap().revision,
+        r.archive(&item.id)
+            .await
+            .expect("V4 archive store operation")
+            .unwrap()
+            .revision,
         EnvironmentRevision(3),
         "V4"
     );
@@ -150,15 +189,21 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
             }
         )
         .await
+        .expect("V5 update store operation")
         .is_none(),
         "V5"
     );
-    let terminal = r.get(&item.id).await.expect("V5 terminal row retained");
+    let terminal = r
+        .get(&item.id)
+        .await
+        .expect("V5 terminal read")
+        .expect("V5 terminal row retained");
     assert_eq!(terminal.revision, EnvironmentRevision(3), "V5");
     assert_eq!(terminal.name, item.name, "V5");
     assert!(
         r.update("env_missing", EnvUpdate::default())
             .await
+            .expect("V6 update store operation")
             .is_none(),
         "V6"
     );
@@ -177,7 +222,8 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
             Default::default(),
             EnvironmentConfig::SelfHosted,
         )
-        .await;
+        .await
+        .expect("B1 create");
     let reference = EnvironmentSandboxPolicyRef {
         policy_id: "p".into(),
         version: 3,
@@ -191,12 +237,14 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
             },
         )
         .await
+        .expect("B1 update store operation")
         .expect("B1");
     assert_eq!(bound.revision, EnvironmentRevision(2), "B1");
     assert_eq!(bound.sandbox_policy, Some(reference), "B1");
     assert_eq!(
         r.get_revision(&item.id, EnvironmentRevision(1))
             .await
+            .expect("B2 history read")
             .unwrap()
             .sandbox_policy,
         None,
@@ -211,6 +259,7 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
             }
         )
         .await
+        .expect("B3 update store operation")
         .is_none(),
         "B3"
     );
@@ -225,9 +274,15 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
             Some("organization".into()),
             EnvironmentConfig::SelfHosted,
         )
-        .await;
+        .await
+        .expect("create scoped Environment");
     assert_eq!(
-        r.get(&item.id).await.unwrap().scope.as_deref(),
+        r.get(&item.id)
+            .await
+            .expect("read scoped Environment")
+            .unwrap()
+            .scope
+            .as_deref(),
         Some("organization")
     );
     let updated = r
@@ -239,6 +294,7 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
             },
         )
         .await
+        .expect("update scoped Environment store operation")
         .unwrap();
     assert_eq!(updated.scope.as_deref(), Some("account"));
     assert_eq!(updated.revision, EnvironmentRevision(2));
@@ -267,7 +323,8 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
                 },
             },
         )
-        .await;
+        .await
+        .expect("create patch Environment");
     r.update(
         &item.id,
         EnvUpdate {
@@ -286,8 +343,13 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
         },
     )
     .await
+    .expect("atomic patch store operation")
     .expect("atomic patch");
-    let reread = r.get(&item.id).await.expect("durable reread");
+    let reread = r
+        .get(&item.id)
+        .await
+        .expect("durable read store operation")
+        .expect("durable reread");
     let EnvironmentConfig::Cloud {
         networking:
             EnvironmentNetworking::Limited {
@@ -332,7 +394,14 @@ async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
         CreateEnvironmentError::IdempotencyConflict,
         "R3 conflicting reuse"
     );
-    assert_eq!(r.list_active().await.len(), 1, "R1-R3 one effect");
+    assert_eq!(
+        r.list_active()
+            .await
+            .expect("list active Environments")
+            .len(),
+        1,
+        "R1-R3 one effect"
+    );
 }
 
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {

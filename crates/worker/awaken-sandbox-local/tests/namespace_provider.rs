@@ -540,7 +540,7 @@ async fn create_realizes_env_and_lifecycle_without_executing() {
     assert_eq!(sandbox.id(), "t-nx");
     let handle = sandbox.handle();
     assert_eq!(
-        handle.provider_kind,
+        handle.provider_kind(),
         if cfg!(target_os = "macos") {
             "seatbelt"
         } else {

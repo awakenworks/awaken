@@ -68,6 +68,13 @@ impl CreateEnvironmentOutcome {
             Self::Created(item) | Self::Replayed(item) => item,
         }
     }
+
+    #[must_use]
+    pub fn into_item(self) -> EnvItem {
+        match self {
+            Self::Created(item) | Self::Replayed(item) => item,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -77,6 +84,10 @@ pub enum CreateEnvironmentError {
     #[error("Environment store failed: {0}")]
     Store(String),
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Environment store failed: {0}")]
+pub struct EnvironmentStoreError(pub String);
 
 /// The frozen presence timestamp stamped on a record (parity with the work queue).
 /// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
@@ -546,7 +557,7 @@ pub trait EnvRegistry: Send + Sync {
         description: String,
         metadata: BTreeMap<String, String>,
         config: EnvironmentConfig,
-    ) -> EnvItem {
+    ) -> Result<EnvItem, CreateEnvironmentError> {
         self.create_scoped(name, description, metadata, None, config)
             .await
     }
@@ -558,7 +569,7 @@ pub trait EnvRegistry: Send + Sync {
         metadata: BTreeMap<String, String>,
         scope: Option<String>,
         config: EnvironmentConfig,
-    ) -> EnvItem {
+    ) -> Result<EnvItem, CreateEnvironmentError> {
         static NEXT_COMMAND: AtomicU64 = AtomicU64::new(0);
         self.create_once(CreateEnvironmentCommand {
             command_id: format!(
@@ -573,46 +584,52 @@ pub trait EnvRegistry: Send + Sync {
             config,
         })
         .await
-        .expect("unkeyed Environment create")
-        .item()
-        .clone()
+        .map(CreateEnvironmentOutcome::into_item)
     }
     /// All non-archived environments, ascending by id.
-    async fn list_active(&self) -> Vec<EnvItem>;
+    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
     /// Every current Environment projection, including archived definitions.
     /// This is a query surface only; executable delivery consumes the outbox.
-    async fn list_all(&self) -> Vec<EnvItem>;
+    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
     /// The environment under `id` (archived or not).
-    async fn get(&self, id: &str) -> Option<EnvItem>;
+    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// One immutable authored revision. Implementations append this record in
     /// the same transaction that advances the current row; they never reconstruct
     /// history from the mutable current projection.
-    async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem>;
+    async fn get_revision(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// Whether `id` exists (archived or not).
-    async fn exists(&self, id: &str) -> bool;
+    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError>;
     /// Apply an update patch to an active definition; `None` when `id` does not
     /// exist or the definition is already archived. Archive is terminal.
-    async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem>;
+    async fn update(
+        &self,
+        id: &str,
+        patch: EnvUpdate,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
-    async fn archive(&self, id: &str) -> Option<EnvItem>;
+    async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// Read one exact outbox fact. Every authored revision has exactly one.
     async fn registration_intent(
         &self,
         id: &str,
         revision: EnvironmentRevision,
-    ) -> Result<Option<EnvironmentRegistrationIntent>, String>;
+    ) -> Result<Option<EnvironmentRegistrationIntent>, EnvironmentStoreError>;
     /// Read the authoritative outbox in deterministic per-Environment revision
     /// order. `All` is used only to rebuild an empty projection at startup.
     async fn registration_intents(
         &self,
         filter: EnvironmentRegistrationIntentFilter,
-    ) -> Result<Vec<EnvironmentRegistrationIntent>, String>;
+    ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError>;
     /// Acknowledge successful idempotent projection delivery. Returning false
     /// means the exact intent did not exist and is an invariant violation.
     async fn mark_registration_intent_delivered(
         &self,
         intent: &EnvironmentRegistrationIntent,
-    ) -> Result<bool, String>;
+    ) -> Result<bool, EnvironmentStoreError>;
 }
 
 #[cfg(test)]

@@ -747,9 +747,9 @@ impl NamespaceProvider {
         handle: &pc::SandboxHandle,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
         let provider_kind = if cfg!(target_os = "macos") {
-            "seatbelt"
+            pc::NamespaceProviderKind::Seatbelt
         } else {
-            "bwrap"
+            pc::NamespaceProviderKind::Bubblewrap
         };
         let payload = handle.namespace_payload(provider_kind)?;
         let outputs_path = payload.outputs_path.clone();

@@ -223,7 +223,7 @@ pub struct AdoptionPlan {
 /// The identity of a sandbox for reconciliation: `(provider_kind, sandbox_id)`.
 /// `extra` carries provider locators, not identity, so it is excluded.
 fn key(h: &SandboxHandle) -> (&str, &str) {
-    (h.provider_kind.as_str(), h.sandbox_id.as_str())
+    (h.provider_kind(), h.sandbox_id.as_str())
 }
 
 /// Reconcile live sandboxes against those still referenced by a live run.

@@ -199,6 +199,7 @@ async fn get_environment_sandbox_policy(
         .application
         .get(&environment_id)
         .await
+        .map_err(map_application_error)?
         .and_then(|item| item.sandbox_policy)
         .map(|reference| SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId(reference.policy_id),
@@ -220,7 +221,7 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(_)
         | EnvironmentApplicationError::Registration(_)
-        | EnvironmentApplicationError::RegistrationOutbox(_)
+        | EnvironmentApplicationError::Store(_)
         | EnvironmentApplicationError::RegistrationInvariant(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -283,7 +284,9 @@ mod tests {
         // C6 outbox unavailable or structurally inconsistent -> E6 503; callers
         // must not observe authoring success before executable acknowledgement.
         assert_eq!(
-            map_application_error(EnvironmentApplicationError::RegistrationOutbox("x".into())),
+            map_application_error(EnvironmentApplicationError::Store(
+                awaken_environment_contract::EnvironmentStoreError("x".into()),
+            )),
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(

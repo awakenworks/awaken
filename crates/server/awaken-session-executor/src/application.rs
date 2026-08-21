@@ -781,10 +781,7 @@ impl crate::SharedHost {
             // manifest on every claimed replay so Repository checks never retain
             // a prior lease epoch. `install_dispatched_resources` owns generation
             // equality/fencing and does not realize an existing environment.
-            if synchronize_resources
-                && projection.resources
-                    != awaken_session_contract::ResolvedSessionResources::default()
-            {
+            if synchronize_resources && projection.resource_revision > 0 {
                 let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                     projection.workspace_id.clone(),
                     projection.resource_revision,
@@ -819,16 +816,12 @@ impl crate::SharedHost {
         self.install_expected_environment_binding(thread, expected_environment_binding)?;
         self.project_session_init(thread, &init)?;
         self.install_session_request_context(thread, projection.request_context.clone());
-        if !synchronize_resources
-            && projection.resources != awaken_session_contract::ResolvedSessionResources::default()
-        {
+        if !synchronize_resources && projection.resource_revision > 0 {
             return Err(crate::HostError::internal(format!(
                 "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
             )));
         }
-        if synchronize_resources
-            && projection.resources != awaken_session_contract::ResolvedSessionResources::default()
-        {
+        if synchronize_resources && projection.resource_revision > 0 {
             let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
                 projection.resource_revision,

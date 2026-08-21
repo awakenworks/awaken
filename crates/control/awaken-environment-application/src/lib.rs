@@ -11,6 +11,7 @@ use awaken_environment_contract::{
     EnvRegistry, EnvUpdate, EnvironmentAuthor, EnvironmentConfig, EnvironmentFieldUpdate,
     EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
     EnvironmentRegistrationOperation, EnvironmentRevision, EnvironmentSandboxPolicyRef,
+    EnvironmentStoreError,
 };
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
@@ -27,6 +28,8 @@ pub enum EnvironmentApplicationError {
     Create(#[from] CreateEnvironmentError),
     #[error(transparent)]
     Registration(#[from] ExecutableEnvironmentRegistrationError),
+    #[error(transparent)]
+    Store(#[from] EnvironmentStoreError),
     #[error("Environment was not found")]
     NotFound,
     #[error("Archived Environment definitions are immutable")]
@@ -37,8 +40,6 @@ pub enum EnvironmentApplicationError {
     Policy(#[from] SandboxExecutionPolicyError),
     #[error("Sandbox execution policy store is unavailable")]
     PolicyStoreUnavailable,
-    #[error("Environment registration outbox failed: {0}")]
-    RegistrationOutbox(String),
     #[error("Environment registration outbox invariant failed: {0}")]
     RegistrationInvariant(String),
 }
@@ -111,7 +112,7 @@ impl EnvironmentApplication {
                 let item = self
                     .envs
                     .get_revision(&intent.environment_id, intent.revision)
-                    .await
+                    .await?
                     .ok_or_else(|| {
                         EnvironmentApplicationError::RegistrationInvariant(format!(
                             "missing revision {}@{}",
@@ -134,8 +135,7 @@ impl EnvironmentApplication {
         if !self
             .envs
             .mark_registration_intent_delivered(&intent)
-            .await
-            .map_err(EnvironmentApplicationError::RegistrationOutbox)?
+            .await?
         {
             return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
                 "missing intent {}@{}",
@@ -153,8 +153,7 @@ impl EnvironmentApplication {
         let intent = self
             .envs
             .registration_intent(&item.id, item.revision)
-            .await
-            .map_err(EnvironmentApplicationError::RegistrationOutbox)?
+            .await?
             .ok_or_else(|| {
                 EnvironmentApplicationError::RegistrationInvariant(format!(
                     "missing intent {}@{}",
@@ -164,26 +163,28 @@ impl EnvironmentApplication {
         self.deliver_intent(intent, replay_delivered).await
     }
 
-    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+    pub async fn get(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, EnvironmentApplicationError> {
         if environment_id == BUILTIN_LOCAL_ENVIRONMENT_ID {
-            return Some(builtin_local_environment());
+            return Ok(Some(builtin_local_environment()));
         }
-        self.envs.get(environment_id).await
+        Ok(self.envs.get(environment_id).await?)
     }
 
-    pub async fn list_active(&self) -> Vec<EnvItem> {
-        let mut items = self.envs.list_active().await;
+    pub async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentApplicationError> {
+        let mut items = self.envs.list_active().await?;
         items.push(builtin_local_environment());
         items.sort_by(|left, right| left.id.cmp(&right.id));
-        items
+        Ok(items)
     }
 
     pub async fn create(
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
-        let outcome = self.envs.create_once(command).await?;
-        let item = outcome.item().clone();
+        let item = self.envs.create_once(command).await?.into_item();
         self.deliver_revision(&item, false).await?;
         Ok(item)
     }
@@ -205,7 +206,7 @@ impl EnvironmentApplication {
                 .await?;
             return Ok(Some(builtin_local_environment()));
         }
-        let Some(current) = self.envs.get(environment_id).await else {
+        let Some(current) = self.envs.get(environment_id).await? else {
             return Ok(None);
         };
         self.deliver_revision(&current, true).await?;
@@ -217,11 +218,7 @@ impl EnvironmentApplication {
         filter: EnvironmentRegistrationIntentFilter,
         replay_delivered: bool,
     ) -> Result<u64, EnvironmentApplicationError> {
-        let intents = self
-            .envs
-            .registration_intents(filter)
-            .await
-            .map_err(EnvironmentApplicationError::RegistrationOutbox)?;
+        let intents = self.envs.registration_intents(filter).await?;
         let mut delivered = 0_u64;
         let mut first_error = None;
         for intent in intents {
@@ -274,7 +271,7 @@ impl EnvironmentApplication {
         let item = self
             .envs
             .archive(environment_id)
-            .await
+            .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
         self.deliver_revision(&item, false).await?;
         Ok(item)
@@ -325,9 +322,9 @@ impl EnvironmentApplication {
         patch: EnvUpdate,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
-        match self.envs.update(environment_id, patch).await {
+        match self.envs.update(environment_id, patch).await? {
             Some(item) => Ok(item),
-            None => match self.envs.get(environment_id).await {
+            None => match self.envs.get(environment_id).await? {
                 Some(item) if item.archived_at.is_some() => {
                     Err(EnvironmentApplicationError::Archived)
                 }
@@ -338,7 +335,7 @@ impl EnvironmentApplication {
 
     async fn ensure_active(&self, environment_id: &str) -> Result<(), EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
-        match self.envs.get(environment_id).await {
+        match self.envs.get(environment_id).await? {
             Some(item) if item.archived_at.is_some() => Err(EnvironmentApplicationError::Archived),
             Some(_) => Ok(()),
             None => Err(EnvironmentApplicationError::NotFound),
@@ -534,6 +531,7 @@ mod tests {
         assert!(
             envs.get_revision(&created.id, EnvironmentRevision(1))
                 .await
+                .expect("read Environment revision")
                 .is_some(),
             "R3"
         );
@@ -580,7 +578,11 @@ mod tests {
             matches!(result, Err(EnvironmentApplicationError::Registration(_))),
             "R1"
         );
-        assert_eq!(envs.list_all().await.len(), 1, "R1 authority retained");
+        assert_eq!(
+            envs.list_all().await.expect("list Environments").len(),
+            1,
+            "R1 authority retained"
+        );
         assert!(registrar.registrations.lock().unwrap().is_empty(), "R1/E2");
         assert_eq!(
             envs.registration_intents(EnvironmentRegistrationIntentFilter::Pending)
@@ -648,7 +650,7 @@ mod tests {
         assert!(
             matches!(
                 application.create(create_command("ambiguous", "v1")).await,
-                Err(EnvironmentApplicationError::RegistrationOutbox(_))
+                Err(EnvironmentApplicationError::Store(_))
             ),
             "A1"
         );
@@ -694,7 +696,7 @@ mod tests {
         assert!(
             matches!(
                 application.archive(&created.id).await,
-                Err(EnvironmentApplicationError::RegistrationOutbox(_))
+                Err(EnvironmentApplicationError::Store(_))
             ),
             "A4 first terminal delivery succeeded but ack failed"
         );
@@ -832,7 +834,11 @@ mod tests {
             ),
             "A2"
         );
-        let terminal = envs.get(&created.id).await.unwrap();
+        let terminal = envs
+            .get(&created.id)
+            .await
+            .expect("read terminal Environment")
+            .unwrap();
         assert_eq!(terminal.revision, EnvironmentRevision(2), "A2");
         let pending = envs
             .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
@@ -1004,7 +1010,11 @@ mod tests {
             ),
             "T4"
         );
-        let terminal = envs.get(&created.id).await.expect("terminal row");
+        let terminal = envs
+            .get(&created.id)
+            .await
+            .expect("read terminal Environment")
+            .expect("terminal row");
         assert_eq!(terminal.revision, EnvironmentRevision(2), "T3/T4");
         assert_eq!(terminal.name, "terminal", "T3");
         assert!(terminal.sandbox_policy.is_none(), "T4");

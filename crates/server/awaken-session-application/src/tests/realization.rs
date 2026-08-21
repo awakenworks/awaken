@@ -286,7 +286,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
 
     let mut original = persisted("reference-fence", false, "idle");
     original.resources =
-        awaken_session_contract::SessionResourceState::from_legacy(skill_resources("old"));
+        awaken_session_contract::SessionResourceState::from_active(skill_resources("old"));
     create(repo.as_ref(), original).await;
 
     let mut rejected = repo.get("reference-fence").await.unwrap();
@@ -385,7 +385,7 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
     for id in ["legacy-exact", "legacy-stale"] {
         let mut session = persisted(id, false, "preparing");
         session.resources =
-            awaken_session_contract::SessionResourceState::from_legacy(file_resources(id));
+            awaken_session_contract::SessionResourceState::from_active(file_resources(id));
         session.realization = Some(lease.clone());
         create(repo.as_ref(), session).await;
     }
@@ -480,7 +480,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
 
     let mut terminal = worker_baseline("worker-terminal", "terminated");
     terminal.resources =
-        awaken_session_contract::SessionResourceState::from_legacy(file_resources("terminal"));
+        awaken_session_contract::SessionResourceState::from_active(file_resources("terminal"));
     terminal.resources.adopt_legacy_active("worker-terminal");
     terminal
         .resources

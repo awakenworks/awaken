@@ -4,8 +4,14 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_resource_contract::ResourceAccess;
 use serde::{Deserialize, Serialize};
 
-fn agent_kind() -> String {
-    "agent".to_string()
+fn agent_kind() -> DeploymentAgentKind {
+    DeploymentAgentKind::Agent
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeploymentAgentKind {
+    Agent,
 }
 
 /// Immutable executable Agent coordinate frozen when a Deployment is written.
@@ -13,7 +19,7 @@ fn agent_kind() -> String {
 pub struct DeploymentAgent {
     pub id: String,
     #[serde(rename = "type", default = "agent_kind")]
-    kind: String,
+    kind: DeploymentAgentKind,
     pub version: u64,
 }
 
@@ -41,10 +47,6 @@ pub enum DeploymentSchedule {
     Cron {
         expression: String,
         timezone: String,
-        #[serde(default)]
-        last_run_at: Option<String>,
-        #[serde(default)]
-        upcoming_runs_at: Vec<String>,
     },
 }
 
@@ -60,22 +62,6 @@ impl DeploymentSchedule {
     pub fn timezone(&self) -> &str {
         match self {
             Self::Cron { timezone, .. } => timezone,
-        }
-    }
-
-    #[must_use]
-    pub fn with_runtime(&self, last_run_at: Option<String>, upcoming_runs_at: Vec<String>) -> Self {
-        match self {
-            Self::Cron {
-                expression,
-                timezone,
-                ..
-            } => Self::Cron {
-                expression: expression.clone(),
-                timezone: timezone.clone(),
-                last_run_at,
-                upcoming_runs_at,
-            },
         }
     }
 }

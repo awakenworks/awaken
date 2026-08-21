@@ -28,7 +28,7 @@ fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        skills: Some(Vec::new()),
+        skills: Vec::new(),
     }
 }
 

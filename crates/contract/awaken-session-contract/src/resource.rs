@@ -121,14 +121,13 @@ pub struct ResolvedSkillBinding {
 
 /// Durable, secret-free result of the Session control plane's one resolution.
 /// Inputs and Skill capabilities remain distinct collections because Skills are
-/// executable capabilities, not mounted user inputs. `skills = None` means a
-/// legacy record whose selection was not frozen; `Some([])` explicitly selects no
-/// Skills.
+/// executable capabilities, not mounted user inputs. An empty list is the one
+/// canonical representation of a Session that selected no Skills.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedSessionResources {
     pub inputs: Vec<ResolvedInput>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skills: Option<Vec<ResolvedSkillBinding>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<ResolvedSkillBinding>,
 }
 
 /// Frozen, secret-free resource input installed before a Session execution
@@ -417,7 +416,7 @@ impl SessionInputResolver {
             .collect::<Result<Vec<_>, SessionInputError>>()?;
         Ok(ResolvedSessionResources {
             inputs,
-            skills: None,
+            skills: Vec::new(),
         })
     }
 }
