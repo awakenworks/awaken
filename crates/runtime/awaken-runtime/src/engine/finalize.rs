@@ -90,7 +90,7 @@ pub(super) async fn finish(
         }
         if let Some(mut batch) = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
-            .filter(|batch| batch.run_id == run_id && batch.phase != ToolBatchPhase::Finalized)
+            .filter(|batch| batch.run_id() == &run_id && batch.phase() != ToolBatchPhase::Finalized)
         {
             batch.seal_on_run_end("owning run ended before every tool call settled");
             let command = ActiveToolBatch::write(&Some(batch));

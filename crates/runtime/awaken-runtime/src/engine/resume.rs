@@ -72,7 +72,7 @@ pub(super) async fn drive_resumed(
         && let Some(call_id) = ticket.call_id.as_deref()
         && let Some(mut batch) = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
-            .filter(|batch| batch.run_id == *run_id && batch.phase == ToolBatchPhase::Open)
+            .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
     {
         let wait_kind = match ticket.reason {
             AwaitReason::ToolPermission => ToolWaitKind::ToolPermission,
@@ -249,10 +249,10 @@ pub(super) async fn drive_resumed(
     // original model order. A no-tool pause/input keeps the historic direct path.
     let resumed_new_messages = if let Some(mut batch) = ActiveToolBatch::load(&store)
         .map_err(|error| Error::Execution(error.to_string()))?
-        .filter(|batch| batch.run_id == *run_id && batch.phase == ToolBatchPhase::Open)
+        .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
         && let Some(call_id) = ticket.call_id.as_deref()
         && batch
-            .calls
+            .calls()
             .iter()
             .any(|entry| entry.call.call_id == call_id)
     {

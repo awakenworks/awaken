@@ -197,7 +197,7 @@ pub(super) fn store_from_commands(commands: Vec<StateCommand>, run_id: &RunId) -
                     serde_json::from_value::<Option<ToolBatch>>(value.clone())
                         .ok()
                         .flatten()
-                        .is_some_and(|batch| batch.run_id == *run_id)
+                        .is_some_and(|batch| batch.run_id() == run_id)
                 }
                 StateAction::Remove => false,
             }

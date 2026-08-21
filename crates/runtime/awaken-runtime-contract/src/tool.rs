@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -215,16 +216,31 @@ impl ToolRecoveryMode {
 }
 
 /// Per-tool operational recovery settings pinned into the resolved snapshot.
+///
+/// Fields are deliberately private: callers cannot bypass the non-zero attempt
+/// budget enforced by the constructors and by Serde's `NonZeroU16` decoding.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+///
+/// let _ = ToolRecoveryPolicy {
+///     mode: ToolRecoveryMode::NeverReplay,
+///     max_attempts: 0,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRecoveryPolicy {
     #[serde(default)]
-    pub mode: ToolRecoveryMode,
+    mode: ToolRecoveryMode,
     #[serde(default = "default_max_attempts")]
-    pub max_attempts: u16,
+    max_attempts: NonZeroU16,
 }
 
-const fn default_max_attempts() -> u16 {
-    3
+const fn default_max_attempts() -> NonZeroU16 {
+    match NonZeroU16::new(3) {
+        Some(value) => value,
+        None => unreachable!(),
+    }
 }
 
 impl Default for ToolRecoveryPolicy {
@@ -237,6 +253,18 @@ impl Default for ToolRecoveryPolicy {
 }
 
 impl ToolRecoveryPolicy {
+    #[must_use]
+    pub const fn new(mode: ToolRecoveryMode, max_attempts: NonZeroU16) -> Self {
+        Self { mode, max_attempts }
+    }
+
+    /// Construct a recovery policy while making a zero attempt budget
+    /// unrepresentable in the resulting domain value.
+    pub fn try_new(mode: ToolRecoveryMode, max_attempts: u16) -> Result<Self, ToolRecoveryError> {
+        let max_attempts = NonZeroU16::new(max_attempts).ok_or(ToolRecoveryError::ZeroAttempts)?;
+        Ok(Self::new(mode, max_attempts))
+    }
+
     #[must_use]
     pub const fn replay_safe() -> Self {
         Self {
@@ -253,10 +281,17 @@ impl ToolRecoveryPolicy {
         }
     }
 
+    #[must_use]
+    pub const fn mode(&self) -> ToolRecoveryMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub const fn max_attempts(&self) -> NonZeroU16 {
+        self.max_attempts
+    }
+
     pub fn validate(&self, capability: ToolRecoveryCapability) -> Result<(), ToolRecoveryError> {
-        if self.max_attempts == 0 {
-            return Err(ToolRecoveryError::ZeroAttempts);
-        }
         if !self.mode.is_supported_by(capability) {
             return Err(ToolRecoveryError::Unsupported {
                 mode: self.mode,
@@ -723,13 +758,17 @@ mod recovery_tests {
 
     #[test]
     fn zero_attempt_budget_fails_closed() {
-        let policy = ToolRecoveryPolicy {
-            max_attempts: 0,
-            ..ToolRecoveryPolicy::default()
-        };
         assert_eq!(
-            policy.validate(ToolRecoveryCapability::NonRecoverable),
+            ToolRecoveryPolicy::try_new(ToolRecoveryMode::NeverReplay, 0),
             Err(ToolRecoveryError::ZeroAttempts)
+        );
+        assert!(
+            serde_json::from_value::<ToolRecoveryPolicy>(serde_json::json!({
+                "mode": "never_replay",
+                "max_attempts": 0
+            }))
+            .is_err(),
+            "persisted/wire zero attempt budgets never construct a policy"
         );
     }
 }

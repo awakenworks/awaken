@@ -85,7 +85,7 @@ pub fn selected_hand_recovery_modes(
     descriptors
         .iter()
         .filter(|tool| hand_ids.contains(&tool.id))
-        .map(|tool| tool.recovery_policy.mode)
+        .map(|tool| tool.recovery_policy.mode())
         .collect()
 }
 

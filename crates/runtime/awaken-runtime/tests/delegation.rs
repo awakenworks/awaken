@@ -674,8 +674,8 @@ async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent()
     let batch = ActiveToolBatch::load(&store)
         .expect("valid committed tool-batch state")
         .expect("the cancelled batch remains durable");
-    assert_eq!(batch.phase, ToolBatchPhase::Finalized);
-    assert!(batch.calls.iter().all(|call| matches!(
+    assert_eq!(batch.phase(), ToolBatchPhase::Finalized);
+    assert!(batch.calls().iter().all(|call| matches!(
         call.phase,
         ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. }
     )));
@@ -778,7 +778,7 @@ async fn retryable_child_crash_recovers_under_the_same_child_run_identity() {
         ActiveToolBatch::load(&store)
             .expect("valid batch")
             .expect("durable batch")
-            .calls[0]
+            .calls()[0]
             .phase,
         ToolCallPhase::Executing { .. }
     ));

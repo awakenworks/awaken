@@ -250,12 +250,6 @@ fn compile_with_models(
     // not trusted here: only the executor can attest it, so runtime resolution/
     // recovery performs the fail-closed capability check.
     for (target, policy) in &config.recovery_policies {
-        if policy.max_attempts == 0 {
-            return Err(CompileError::InvalidToolRecovery {
-                agent: config.id.clone(),
-                reason: format!("tool {target:?} has max_attempts = 0"),
-            });
-        }
         let Some(index) = descriptors.iter().position(|d| &d.id == target) else {
             return Err(CompileError::InvalidToolRecovery {
                 agent: config.id.clone(),
@@ -950,10 +944,8 @@ mod tests {
         let mut cfg = config(&["echo"]);
         cfg.recovery_policies.insert(
             "echo".into(),
-            ToolRecoveryPolicy {
-                mode: ToolRecoveryMode::Idempotent,
-                max_attempts: 5,
-            },
+            ToolRecoveryPolicy::try_new(ToolRecoveryMode::Idempotent, 5)
+                .expect("non-zero recovery attempt budget"),
         );
         let compiled = compile(&cfg, &tools).unwrap();
         assert_eq!(
@@ -967,12 +959,8 @@ mod tests {
         assert!(matches!(error, CompileError::InvalidToolRecovery { .. }));
         assert_eq!(error.field_path(), "recovery_policies");
 
-        cfg.recovery_policies.remove("ghost");
-        cfg.recovery_policies.get_mut("echo").unwrap().max_attempts = 0;
-        assert!(matches!(
-            compile(&cfg, &tools),
-            Err(CompileError::InvalidToolRecovery { .. })
-        ));
+        let invalid = serde_json::json!({ "mode": "idempotent", "max_attempts": 0 });
+        assert!(serde_json::from_value::<ToolRecoveryPolicy>(invalid).is_err());
     }
 
     #[test]

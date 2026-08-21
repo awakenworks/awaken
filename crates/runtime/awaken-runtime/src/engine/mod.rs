@@ -58,7 +58,7 @@ use awaken_runtime_contract::tool::{
 };
 use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
 use awaken_runtime_contract::tool_batch::{
-    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
+    ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
 };
 
 use crate::runtime::Runtime;
