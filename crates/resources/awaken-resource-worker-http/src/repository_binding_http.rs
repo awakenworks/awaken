@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ConfigVersion, RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryTransport,
-    ResourceBindingValidator,
+    ConfigVersion, LiveResourceBindingVerifier, RepositoryBindingVerifier,
+    RepositoryBindingVerifierError, RepositoryTransport,
 };
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -33,7 +33,7 @@ struct RepositoryBindingRequest {
 }
 
 pub struct WorkerRepositoryBindingService {
-    validator: Arc<dyn ResourceBindingValidator>,
+    validator: Arc<dyn LiveResourceBindingVerifier>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
@@ -136,7 +136,7 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
 impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn new(
-        validator: Arc<dyn ResourceBindingValidator>,
+        validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
     ) -> Self {
@@ -229,7 +229,7 @@ async fn verify_repository_binding(
     }
     if service
         .validator
-        .validate_repository_binding(
+        .verify_repository_binding(
             &request.workspace_id,
             &request.repository_id,
             request.config_version,

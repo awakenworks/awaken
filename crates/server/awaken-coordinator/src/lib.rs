@@ -278,9 +278,9 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // store and their secret is sealed in the vault, so a webhook needs the config
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).
-    let catalog = ephemeral_resource_catalog();
+    let catalog = ephemeral_resource_registry();
     let state = local_managed_state(host.clone(), catalog.clone());
-    mount_with_managed_and_resource_catalog_and_dreams(host, state, catalog).0
+    mount_with_managed_and_resource_registry_and_dreams(host, state, catalog).0
 }
 
 /// Assemble the local/single-process Managed adapter with one shared ephemeral
@@ -291,7 +291,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
 #[cfg(feature = "test-support")]
 pub fn local_managed_state(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, None, None)
 }
@@ -302,7 +302,7 @@ pub fn local_managed_state(
 #[cfg(feature = "test-support")]
 pub fn local_managed_state_with_model_publication_resolver(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, None, Some(resolver))
@@ -314,7 +314,7 @@ pub fn local_managed_state_with_model_publication_resolver(
 #[cfg(feature = "test-support")]
 pub fn local_managed_state_with_agent_source_and_model_publication_resolver(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
@@ -327,7 +327,7 @@ pub fn local_managed_state_with_agent_source_and_model_publication_resolver(
 #[cfg(feature = "test-support")]
 pub fn local_managed_state_with_agent_source(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, Some(agent_source), None)
@@ -340,7 +340,7 @@ pub fn local_managed_state_with_agent_source(
 #[cfg(feature = "test-support")]
 pub fn local_managed_state_with_environments(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), None, None)
@@ -351,7 +351,7 @@ pub fn local_managed_state_with_environments(
 #[cfg(feature = "test-support")]
 pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
@@ -361,7 +361,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
 #[cfg(feature = "test-support")]
 fn local_managed_state_over(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Option<
         Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     >,
@@ -415,7 +415,7 @@ fn local_managed_state_over(
     let runtime = ManagedHost::new(host)
         .with_resource_validator(catalog.clone())
         .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::CatalogRepositoryBindingVerifier::new(catalog.clone()),
+            awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
         ))
         .with_credentials(credentials, secrets);
     let runtime = runtime.install_dispatch_session_runtime();
@@ -433,7 +433,7 @@ fn local_managed_state_over(
     );
     application.set_credential_source(vaults.clone());
     application.set_repository_credential_ingress(vaults);
-    application.set_resource_catalog(catalog);
+    application.set_resource_registry(catalog);
     if let Some(source) = agent_source {
         application.set_config_source(source);
     }
@@ -457,15 +457,15 @@ fn local_managed_state_over(
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None).0
+    mount_with_managed_over(host, managed_state, ephemeral_resource_registry(), None).0
 }
 
 #[cfg(feature = "test-support")]
-fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
+fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
     awaken_resource_persistence::ephemeral()
         .expect("open ephemeral Resources application")
         .authorities()
-        .resource_catalog()
+        .resource_registry()
 }
 
 #[cfg(feature = "test-support")]
@@ -517,16 +517,16 @@ fn with_scenario_worker_transport(
     }
 }
 
-/// Assemble the data plane with the same secret-free Resource Catalog used by
+/// Assemble the data plane with the same secret-free Resource Registry used by
 /// the Managed Session ACL. Authorization remains an outer middleware concern;
 /// this only shares resource identity/configuration/lifecycle truth.
 #[cfg(feature = "test-support")]
-pub fn mount_with_managed_and_resource_catalog(
+pub fn mount_with_managed_and_resource_registry(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> Router {
-    mount_with_managed_and_resource_catalog_and_dreams(host, managed_state, resource_catalog).0
+    mount_with_managed_and_resource_registry_and_dreams(host, managed_state, resource_registry).0
 }
 
 /// Scenario/embedder variant that returns the exact Dream aggregate mounted in
@@ -540,13 +540,13 @@ pub fn mount_with_managed_and_resource_catalog(
 /// gates are exercised by no-feature product builds and test-support scenario
 /// builds rather than by a second runtime implementation.
 #[cfg(feature = "test-support")]
-pub fn mount_with_managed_and_resource_catalog_and_dreams(
+pub fn mount_with_managed_and_resource_registry_and_dreams(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let local_workspace = host.local_workspace().to_string();
-    let (data, dreams) = mount_with_managed_over(host, managed_state, resource_catalog, None);
+    let (data, dreams) = mount_with_managed_over(host, managed_state, resource_registry, None);
     // The bare scenario/test mount has no separate management edge. Keep the
     // Awaken policy authoring projection reachable here so deterministic SDK and
     // Console E2E can exercise it. Production startup mounts this exact
@@ -561,13 +561,13 @@ pub fn mount_with_managed_and_resource_catalog_and_dreams(
 pub fn mount_with_managed_and_application_access(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
 ) -> Router {
     mount_with_managed_over(
         host,
         managed_state,
-        resource_catalog,
+        resource_registry,
         Some(application_access),
     )
     .0
@@ -578,14 +578,14 @@ pub fn mount_with_managed_and_application_access(
 pub fn mount_with_managed_and_application_access_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
 ) -> Router {
     let remote_worker_required = !host.runs_local_dispatch_pool();
     let dream_process_store = scenario_dream_process_store(host.as_ref());
     let (resources, memory_stores) =
-        resource_management_router_from_host(&host, resource_catalog.clone());
+        resource_management_router_from_host(&host, resource_registry.clone());
     let session_application = managed_state.session_application();
     let supervised_sessions = session_application.clone();
     let worker_file_application = host
@@ -599,7 +599,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         managed_state,
         ManagedApplicationServices {
             session_application,
-            resource_catalog,
+            resource_registry,
             application_access: Some(application_access),
             model_inventory: Some(model_inventory),
             dream_process_store,
@@ -645,7 +645,7 @@ pub struct ManagedRoutingExtensions {
 /// and deterministic hosts from growing parallel assembly signatures.
 pub struct ManagedApplicationServices {
     pub session_application: Arc<awaken_session_application::SessionApplication>,
-    pub resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    pub resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     pub application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     pub model_inventory:
         Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
@@ -779,7 +779,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let remote_worker_required = !host.runs_local_dispatch_pool();
@@ -791,7 +791,7 @@ fn mount_with_managed_over(
     let session_application = managed_state.session_application();
     let supervised_sessions = session_application.clone();
     let (resources, memory_stores) =
-        resource_management_router_from_host(&host, resource_catalog.clone());
+        resource_management_router_from_host(&host, resource_registry.clone());
     let worker_file_application = host
         .file_application()
         .expect("test-support File application");
@@ -804,7 +804,7 @@ fn mount_with_managed_over(
             managed_state,
             ManagedApplicationServices {
                 session_application,
-                resource_catalog,
+                resource_registry,
                 application_access,
                 model_inventory: None,
                 dream_process_store,
@@ -851,7 +851,7 @@ fn mount_with_managed_over_and_models(
 > {
     let ManagedApplicationServices {
         session_application,
-        resource_catalog,
+        resource_registry,
         application_access,
         model_inventory,
         dream_process_store,
@@ -884,7 +884,7 @@ fn mount_with_managed_over_and_models(
     let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
         session_application.clone(),
         host.memory_repository(),
-        resource_catalog.clone(),
+        resource_registry.clone(),
         memory_stores,
         worker_file_application.clone(),
     ));
@@ -1033,14 +1033,14 @@ fn mount_with_managed_over_and_models(
     let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
         awaken_resource_worker_http::WorkerMemoryService::new(
             host.memory_repository(),
-            resource_catalog.clone(),
+            resource_registry.clone(),
             dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
             worker_authenticator.clone(),
             worker_directory.clone(),
         ),
     ));
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
-        resource_catalog,
+        resource_registry,
         dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
         worker_authenticator.clone(),
     )
@@ -1169,7 +1169,7 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
 #[cfg(feature = "test-support")]
 fn resource_management_router_from_host(
     host: &Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> (
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,

@@ -26,8 +26,9 @@ RESOURCE_PLANE_CRATES = {
 # crate may have broader dependencies for sibling modules, so scan these files
 # directly in addition to the dedicated resource crates above.
 RESOURCE_APPLICATION_SOURCES = (
-    "crates/stores/awaken-resource-store/src/postgres_catalog.rs",
-    "crates/stores/awaken-resource-store/src/sqlite_catalog.rs",
+    "crates/resources/awaken-resource-application/src/registry.rs",
+    "crates/stores/awaken-resource-store/src/postgres_registry.rs",
+    "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
     "crates/server/awaken-protocol-managed/src/resources/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",
@@ -53,7 +54,7 @@ RESOURCE_RECOVERY_SOURCES = (
 )
 
 # Driving adapters may read MemoryStore identity through the application port,
-# but cannot recreate Catalog mutation coordination. The Resources application
+# but cannot recreate Registry mutation coordination. The Resources application
 # is the single owner of these calls.
 MEMORY_STORE_DRIVING_ADAPTERS = (
     "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
@@ -197,10 +198,14 @@ def selftest() -> None:
     assert not _has_unversioned_ddl(
         Path("schema.rs"), 'const V1: &str = "CREATE TABLE {prefix}_row (id TEXT)";'
     )
-    # Cause/effect rule: a driving adapter that calls a Catalog mutation creates
+    # Cause/effect rule: a driving adapter that calls a Registry mutation creates
     # a second lifecycle owner and is rejected; application-port calls are clean.
-    assert re.search(r"\.create_memory_store\s*\(", "catalog.create_memory_store(x)")
-    assert not re.search(r"\.create_memory_store\s*\(", "stores.create(command)")
+    assert re.search(
+        r"\.register_memory_store\s*\(", "registry.register_memory_store(command)"
+    )
+    assert not re.search(
+        r"\.register_memory_store\s*\(", "memory_stores.create(command)"
+    )
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
@@ -332,14 +337,14 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
         code = _without_rust_comments_and_strings(production)
         for mutation in (
-            "create_memory_store",
-            "update_memory_store",
-            "publish_memory_config",
-            "set_memory_state",
+            "register_memory_store",
+            "update_memory_store_profile",
+            "publish_memory_store_config",
+            "change_memory_store_state",
         ):
             if re.search(rf"\.{mutation}\s*\(", code):
                 errors.append(
-                    f"{relative}: calls ResourceCatalog.{mutation} directly; drive the "
+                    f"{relative}: calls ResourceRegistry.{mutation} directly; drive the "
                     "canonical MemoryStoreApplicationService instead"
                 )
     return errors

@@ -6,8 +6,8 @@ use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     FileApplicationService, FileContentSource, FileContentSourceError, FileReadPurpose,
-    RepositoryBindingVerifier, RepositoryBindingVerifierError, ResolvedFileContent,
-    ResourceBindingValidator, SkillStore, SkillVersion, content_id,
+    LiveResourceBindingVerifier, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    ResolvedFileContent, SkillStore, SkillVersion, content_id,
 };
 use awaken_session_contract::{
     ResolvedSkillBinding, SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication,
@@ -99,19 +99,19 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
     }
 }
 
-pub struct CatalogRepositoryBindingVerifier {
-    validator: Arc<dyn ResourceBindingValidator>,
+pub struct RegistryRepositoryBindingVerifier {
+    verifier: Arc<dyn LiveResourceBindingVerifier>,
 }
 
-impl CatalogRepositoryBindingVerifier {
+impl RegistryRepositoryBindingVerifier {
     #[must_use]
-    pub fn new(validator: Arc<dyn ResourceBindingValidator>) -> Self {
-        Self { validator }
+    pub fn new(verifier: Arc<dyn LiveResourceBindingVerifier>) -> Self {
+        Self { verifier }
     }
 }
 
 #[async_trait::async_trait]
-impl<C: Sync> RepositoryBindingVerifier<C> for CatalogRepositoryBindingVerifier {
+impl<C: Sync> RepositoryBindingVerifier<C> for RegistryRepositoryBindingVerifier {
     async fn verify(
         &self,
         workspace_id: &str,
@@ -119,8 +119,8 @@ impl<C: Sync> RepositoryBindingVerifier<C> for CatalogRepositoryBindingVerifier 
         config_version: awaken_resource_contract::ConfigVersion,
         _fence: Option<&C>,
     ) -> Result<awaken_resource_contract::RepositoryTransport, RepositoryBindingVerifierError> {
-        self.validator
-            .validate_repository_binding(workspace_id, repository_id, config_version)
+        self.verifier
+            .verify_repository_binding(workspace_id, repository_id, config_version)
             .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
         Ok(awaken_resource_contract::RepositoryTransport::Direct)
     }

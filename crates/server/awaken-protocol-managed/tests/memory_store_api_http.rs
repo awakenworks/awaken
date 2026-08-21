@@ -206,7 +206,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
     let router = router();
     let missing = "memstore_does_not_exist";
 
-    // GET on a store with no Resource Catalog identity → 404.
+    // GET on a store with no Resource Registry identity → 404.
     let (status, v) = call(
         &router,
         "GET",

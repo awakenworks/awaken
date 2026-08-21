@@ -190,7 +190,7 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
-    resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
@@ -259,14 +259,14 @@ impl ManagedHost {
     #[must_use]
     pub fn with_resource_validator(
         mut self,
-        validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+        validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     ) -> Self {
         self.resource_validator = Some(validator);
         self
     }
 
     /// Install the Repository-specific live binding guard used by a distributed
-    /// Worker without granting it Resource Catalog database access.
+    /// Worker without granting it Resource Registry database access.
     #[must_use]
     pub fn with_repository_binding_verifier(
         mut self,
@@ -490,7 +490,7 @@ impl ManagedHost {
                             "memory resources require a configured resource binding validator",
                         )
                     })?
-                    .validate_memory_binding(&workspace, &memory_store_id, config_version)
+                    .verify_memory_binding(&workspace, &memory_store_id, config_version)
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
                 ResourceBindingCheck::Repository {
                     repository_id,

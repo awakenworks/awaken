@@ -14,7 +14,7 @@ use awaken_executable_agent_contract::{
     ExecutableAgentInventorySource, ExecutableAgentRegistrationSource,
 };
 use awaken_protocol_managed::ManagedState;
-use awaken_resource_contract::ResourceCatalog;
+use awaken_resource_contract::ResourceRegistry;
 use awaken_session_application::SessionApplication;
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;
@@ -36,7 +36,7 @@ pub struct CoordinatorDependencies {
     /// projections. ManagedState may observe it but never owns its construction.
     pub session_application: Arc<SessionApplication>,
     pub managed_state: Arc<ManagedState>,
-    pub resource_catalog: Arc<dyn ResourceCatalog>,
+    pub resource_registry: Arc<dyn ResourceRegistry>,
     /// Resources-owned public API served by its application.
     pub resource_management_router: Router,
     /// Exact Resources MemoryStore service shared by HTTP and Dream.
@@ -137,7 +137,7 @@ pub async fn build_coordinator_component(
         host,
         session_application,
         managed_state,
-        resource_catalog,
+        resource_registry,
         resource_management_router,
         memory_stores,
         worker_file_application,
@@ -178,7 +178,7 @@ pub async fn build_coordinator_component(
             managed_state.clone(),
             crate::ManagedApplicationServices {
                 session_application,
-                resource_catalog,
+                resource_registry,
                 application_access: Some(application_access.clone()),
                 model_inventory: Some(model_inventory),
                 dream_process_store,

@@ -149,7 +149,7 @@ pub fn build_model_route_router() -> Router {
         .map_host(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
-    let catalog = resources.authorities().resource_catalog();
+    let catalog = resources.authorities().resource_registry();
     let managed =
         awaken_coordinator::local_managed_state_with_agent_source_and_model_publication_resolver(
             host.clone(),
@@ -157,5 +157,5 @@ pub fn build_model_route_router() -> Router {
             publication,
             Arc::new(RoutePublicationResolver),
         );
-    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
 }

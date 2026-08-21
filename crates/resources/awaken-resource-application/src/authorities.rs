@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    FileCatalog, FileStore, MemoryRepository, ResourceCatalog, ResourceReclamationRepository,
+    FileCatalog, FileStore, MemoryRepository, ResourceReclamationRepository, ResourceRegistry,
     SkillStore,
 };
 
@@ -19,7 +19,7 @@ use awaken_resource_contract::{
 /// together exactly once.
 #[derive(Clone)]
 pub struct ResourceAuthorities {
-    resource_catalog: Arc<dyn ResourceCatalog>,
+    resource_registry: Arc<dyn ResourceRegistry>,
     file_store: Arc<dyn FileStore>,
     file_catalog: Arc<dyn FileCatalog>,
     memory_repository: Arc<dyn MemoryRepository>,
@@ -31,7 +31,7 @@ pub struct ResourceAuthorities {
 impl ResourceAuthorities {
     #[must_use]
     pub fn new(
-        resource_catalog: Arc<dyn ResourceCatalog>,
+        resource_registry: Arc<dyn ResourceRegistry>,
         file_store: Arc<dyn FileStore>,
         file_catalog: Arc<dyn FileCatalog>,
         memory_repository: Arc<dyn MemoryRepository>,
@@ -43,7 +43,7 @@ impl ResourceAuthorities {
             reclamation.clone(),
         ));
         Self {
-            resource_catalog,
+            resource_registry,
             file_store,
             file_catalog,
             memory_repository,
@@ -54,8 +54,8 @@ impl ResourceAuthorities {
     }
 
     #[must_use]
-    pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog> {
-        self.resource_catalog.clone()
+    pub fn resource_registry(&self) -> Arc<dyn ResourceRegistry> {
+        self.resource_registry.clone()
     }
 
     #[must_use]

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_resource_contract::RepositoryBindingVerifier as _;
-use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
+use awaken_resource_contract::{ConfigVersion, LiveResourceBindingVerifier, ResourceRegistryError};
 use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
 use awaken_resource_worker_http::{
     RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
@@ -17,26 +17,26 @@ use awaken_run_ingress::{
 };
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
-struct ExactRepositoryCatalog {
+struct ExactRepositoryRegistry {
     active: bool,
 }
 
-impl ResourceBindingValidator for ExactRepositoryCatalog {
-    fn validate_memory_binding(
+impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
+    fn verify_memory_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
         _version: ConfigVersion,
-    ) -> Result<(), ResourceCatalogError> {
-        Err(ResourceCatalogError::NotFound("memory".into()))
+    ) -> Result<(), ResourceRegistryError> {
+        Err(ResourceRegistryError::NotFound("memory".into()))
     }
 
-    fn validate_repository_binding(
+    fn verify_repository_binding(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Result<(), ResourceCatalogError> {
+    ) -> Result<(), ResourceRegistryError> {
         if self.active
             && workspace_id == "workspace-repository"
             && id == "repository-exact"
@@ -44,7 +44,7 @@ impl ResourceBindingValidator for ExactRepositoryCatalog {
         {
             Ok(())
         } else {
-            Err(ResourceCatalogError::NotFound(id.into()))
+            Err(ResourceRegistryError::NotFound(id.into()))
         }
     }
 }
@@ -173,7 +173,7 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
     let service = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryCatalog { active: true }),
+            Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
         )
@@ -244,7 +244,7 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
 
     let denied_service = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryCatalog { active: false }),
+            Arc::new(ExactRepositoryRegistry { active: false }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
         )

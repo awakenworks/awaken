@@ -21,8 +21,8 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_coordinator::SharedHost;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_resource_contract::{
-    ConfigVersion, MemoryStoreConfigVersion, ResourceAccess, ResourceBindingValidator,
-    ResourceCatalogError,
+    ConfigVersion, LiveResourceBindingVerifier, MemoryStoreConfigVersion, ResourceAccess,
+    ResourceRegistryError,
 };
 use awaken_runtime_host::HostOutcomeDrive;
 
@@ -41,22 +41,22 @@ fn user(text: &str) -> Vec<Message> {
 
 fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
     struct ActiveMemory;
-    impl ResourceBindingValidator for ActiveMemory {
-        fn validate_memory_binding(
+    impl LiveResourceBindingVerifier for ActiveMemory {
+        fn verify_memory_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
             _version: ConfigVersion,
-        ) -> Result<(), ResourceCatalogError> {
+        ) -> Result<(), ResourceRegistryError> {
             Ok(())
         }
 
-        fn validate_repository_binding(
+        fn verify_repository_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
             _version: ConfigVersion,
-        ) -> Result<(), ResourceCatalogError> {
+        ) -> Result<(), ResourceRegistryError> {
             Ok(())
         }
     }

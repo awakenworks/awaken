@@ -244,7 +244,7 @@ pub(super) async fn prepare_runtime_routers(
                     .clone()
                     .expect("AllInOne configures Control runtime capabilities"),
                 Some(Arc::new(awaken_control::HostResourceInventory::new(
-                    resource_authorities.resource_catalog(),
+                    resource_authorities.resource_registry(),
                     resource_authorities.skill_store(),
                 ))),
                 environment_authoring
@@ -319,7 +319,7 @@ pub(super) async fn prepare_runtime_routers(
         None => environment_execution,
     };
     let environment_execution = Arc::new(environment_execution);
-    let resource_catalog = resource_authorities.resource_catalog();
+    let resource_registry = resource_authorities.resource_registry();
     let indexed_memory_extractions =
         Arc::new(awaken_coordinator::ReferenceIndexedMemoryExtractions::new(
             memory_extractions,
@@ -429,7 +429,7 @@ pub(super) async fn prepare_runtime_routers(
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
     // reserved-scope assistant can call them. It shares the SAME skill store and
-    // Resource Catalog the capability inventory reads, so a skill or memory store the
+    // Resource Registry the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
     let mut host_builder = match deployment {
@@ -562,10 +562,10 @@ pub(super) async fn prepare_runtime_routers(
             Ok(())
         });
     let mut managed_host = ManagedHost::new(host.clone())
-        .with_resource_validator(resource_catalog.clone())
+        .with_resource_validator(resource_registry.clone())
         .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::CatalogRepositoryBindingVerifier::new(
-                resource_catalog.clone(),
+            awaken_resource_application::RegistryRepositoryBindingVerifier::new(
+                resource_registry.clone(),
             ),
         ));
     if let Some(credentials) = credential_materializer {
@@ -597,7 +597,7 @@ pub(super) async fn prepare_runtime_routers(
         // create/update request at the product router.
         session_application.set_repository_credential_ingress(vault_state.clone());
     }
-    session_application.set_resource_catalog(resource_catalog.clone());
+    session_application.set_resource_registry(resource_registry.clone());
     session_application.set_resource_purge_scheduler(resource_application.purge_scheduler());
     session_application.set_resource_reference_authority(
         resource_authorities.reclamation(),
@@ -666,7 +666,7 @@ pub(super) async fn prepare_runtime_routers(
             host,
             session_application,
             managed_state,
-            resource_catalog,
+            resource_registry,
             resource_management_router,
             memory_stores: resource_application.memory_stores(),
             worker_file_application: resource_application.files(),

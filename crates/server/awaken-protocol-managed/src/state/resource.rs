@@ -49,7 +49,7 @@ pub(crate) struct ParsedSessionInput {
     pub access: awaken_resource_contract::ResourceAccess,
     pub instructions: Option<String>,
     /// Only Managed MemoryStore inputs have a server-derived mount path. Keep
-    /// that fact until the Resource Catalog definition is available so the
+    /// that fact until the Resource Registry definition is available so the
     /// Session freezes a display-name-derived path rather than a shared literal.
     pub implicit_memory_mount: bool,
 }
@@ -57,7 +57,7 @@ pub(crate) struct ParsedSessionInput {
 pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
 
 impl ManagedState {
-    /// Lower all create-time Managed resources through the sole Resource Catalog
+    /// Lower all create-time Managed resources through the sole Resource Registry
     /// and Vault ingress into the shared Session attachment language.
     pub(crate) async fn lower_session_input_attachments(
         &self,

@@ -40,7 +40,7 @@ MEMORY_SQLITE_SOURCE = "crates/resources/awaken-memory-store/src/sqlite.rs"
 SKILL_STORE_SOURCE = "crates/resources/awaken-skill-store/src/lib.rs"
 SKILL_SQLITE_SOURCE = "crates/resources/awaken-skill-store/src/sqlite.rs"
 RESOURCE_STORE_SOURCE = "crates/stores/awaken-resource-store/src/lib.rs"
-RESOURCE_POSTGRES_CATALOG = "crates/stores/awaken-resource-store/src/postgres_catalog.rs"
+RESOURCE_POSTGRES_REGISTRY = "crates/stores/awaken-resource-store/src/postgres_registry.rs"
 RUNTIME_MEMORY_STORES = "crates/server/awaken-runtime-host/src/memory_stores.rs"
 ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
@@ -787,8 +787,8 @@ def coordinator_resource_access_violations(
     return errors
 
 
-def resource_catalog_authority_violations(source: str) -> list[str]:
-    """The Resources catalog must never discover or import a Control table."""
+def resource_registry_authority_violations(source: str) -> list[str]:
+    """The Resources Registry must never discover or import a Control table."""
 
     forbidden = (
         "admin_memory_store",
@@ -796,7 +796,7 @@ def resource_catalog_authority_violations(source: str) -> list[str]:
         "migrate_legacy_memory_stores",
     )
     return [
-        f"Resources catalog retains Control compatibility path `{token}`"
+        f"Resources Registry retains Control compatibility path `{token}`"
         for token in forbidden
         if token in source
     ]
@@ -862,7 +862,7 @@ def process_store_ownership_violations(
         "MemoryExtractionRepository",
         "ResourceAuthorities",
         "ResourceComponent",
-        "ResourceCatalog",
+        "ResourceRegistry",
     ):
         if forbidden in control_body:
             errors.append(f"ControlStores acquires foreign authority `{forbidden}`")
@@ -885,8 +885,8 @@ def process_store_ownership_violations(
         if required not in cli_source:
             errors.append(f"role-aware store selection is missing `{required}`")
     for required in (
-        "resource_catalog: Arc<dyn ResourceCatalog>",
-        "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>",
+        "resource_registry: Arc<dyn ResourceRegistry>",
+        "pub fn resource_registry(&self) -> Arc<dyn ResourceRegistry>",
     ):
         if required not in resource_source:
             errors.append(f"Resources authorities do not own `{required}`")
@@ -1329,11 +1329,11 @@ def selftest() -> None:
         "embedded_resource_component awaken_resource_store::",
         "",
     )  # O11b R2/R3/R4/R5
-    # Resource-catalog authority causes/effects: R1 the adapter reads only its
-    # own catalog tables -> accept; R2 it probes/imports any legacy Control table
+    # Resource Registry authority causes/effects: R1 the adapter reads only its
+    # own physical tables -> accept; R2 it probes/imports any legacy Control table
     # -> reject the second source of truth and cross-database assumption.
-    assert resource_catalog_authority_violations("SELECT data FROM resource_catalog_entry") == []
-    assert resource_catalog_authority_violations(
+    assert resource_registry_authority_violations("SELECT data FROM resource_catalog_entry") == []
+    assert resource_registry_authority_violations(
         "LegacyMemoryStoreDefinition migrate_legacy_memory_stores admin_memory_store"
     )  # O11e R2
     # Worker listener causes/effects: R1 Worker router absent from public,
@@ -1373,8 +1373,8 @@ def selftest() -> None:
         "let resources = if manifest.contains(&MigrationComponent::Resources)"
     )
     resource_owner = (
-        "resource_catalog: Arc<dyn ResourceCatalog> "
-        "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>"
+        "resource_registry: Arc<dyn ResourceRegistry> "
+        "pub fn resource_registry(&self) -> Arc<dyn ResourceRegistry>"
     )
     assert process_store_ownership_violations(
         process_stores, role_aware, resource_owner
@@ -1819,8 +1819,8 @@ def check_all(repo_root: Path) -> list[str]:
         )
     )
     errors.extend(
-        resource_catalog_authority_violations(
-            (repo_root / RESOURCE_POSTGRES_CATALOG).read_text(encoding="utf-8")
+        resource_registry_authority_violations(
+            (repo_root / RESOURCE_POSTGRES_REGISTRY).read_text(encoding="utf-8")
         )
     )
     errors.extend(

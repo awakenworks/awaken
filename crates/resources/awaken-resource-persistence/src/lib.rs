@@ -1,7 +1,7 @@
 //! Resources-owned persistence selection.
 //!
 //! This is the only production factory that opens the File, Memory, Skill,
-//! Resource Catalog, and reclamation adapters as one application. Coordinator,
+//! Resource Registry, and reclamation adapters as one application. Coordinator,
 //! Runtime, and protocol crates consume the returned application and never
 //! select or reopen a Resources database.
 
@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub use awaken_file_store::object::{
     ObjectFileStoreConfig as ObjectBackingConfig, ObjectStoreProvider as ObjectBackingProvider,
 };
-use awaken_resource_application::{ResourceAuthorities, ResourcesApplication};
+use awaken_resource_application::{RegistryApplication, ResourceAuthorities, ResourcesApplication};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemaMode {
@@ -26,8 +26,8 @@ pub enum ResourcePersistenceError {
         path: std::path::PathBuf,
         error: std::io::Error,
     },
-    #[error("open Resource Catalog: {0}")]
-    Catalog(String),
+    #[error("open Resource Registry: {0}")]
+    Registry(String),
     #[error("open File store: {0}")]
     File(String),
     #[error("open Memory store: {0}")]
@@ -46,8 +46,9 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
     })?;
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
-            .map_err(|error| ResourcePersistenceError::Catalog(error.to_string()))?,
+            .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
+    let registry = Arc::new(RegistryApplication::new(resources.clone()));
     let memory_path = root.join("memory_fs.db");
     let memory_path = memory_path
         .to_str()
@@ -65,7 +66,7 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
     let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
         .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
     Ok(ResourcesApplication::new(ResourceAuthorities::new(
-        resources.clone(),
+        registry,
         files.clone(),
         files,
         Arc::new(memory),
@@ -96,8 +97,9 @@ pub async fn open_postgres_with_file_store(
                 awaken_resource_store::PostgresResourceStore::connect_existing(url).await
             }
         }
-        .map_err(|error| ResourcePersistenceError::Catalog(error.to_string()))?,
+        .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
+    let registry = Arc::new(RegistryApplication::new(resources.clone()));
     let file_catalog = Arc::new(
         match schema {
             SchemaMode::Migrate => awaken_file_store::postgres::PgFileStore::connect(url).await,
@@ -121,7 +123,7 @@ pub async fn open_postgres_with_file_store(
     }
     .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
     Ok(ResourcesApplication::new(ResourceAuthorities::new(
-        resources.clone(),
+        registry,
         file_store,
         file_catalog,
         Arc::new(memory),
@@ -146,10 +148,11 @@ pub fn ephemeral() -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
-            .map_err(|error| ResourcePersistenceError::Catalog(error.to_string()))?,
+            .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
+    let registry = Arc::new(RegistryApplication::new(resources.clone()));
     Ok(ResourcesApplication::new(ResourceAuthorities::new(
-        resources.clone(),
+        registry,
         files.clone(),
         files,
         Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
@@ -318,7 +321,7 @@ mod tests {
         let root = tempfile::tempdir().expect("R1 root");
         let app = open_embedded(root.path()).expect("R1 complete Resources application");
         let authorities = app.authorities();
-        let _ = authorities.resource_catalog();
+        let _ = authorities.resource_registry();
         let _ = authorities.file_store();
         let _ = authorities.file_catalog();
         let _ = authorities.memory_repository();

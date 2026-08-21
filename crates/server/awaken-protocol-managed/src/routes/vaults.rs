@@ -403,7 +403,7 @@ impl VaultState {
 
     /// Seal a write-only compatibility token and return only its neutral source
     /// id. Used when a Managed repository resource carries an inline token; the
-    /// Session manifest and Resource Catalog never receive the token value.
+    /// Session manifest and Resource Registry never receive the token value.
     pub async fn enter_session_bearer(
         &self,
         workspace_id: &str,

@@ -190,9 +190,9 @@ impl SessionApplication {
     ) -> Result<awaken_session_contract::ResolvedSessionResources, RunError> {
         awaken_session_contract::SessionInputResolver::resolve_inputs(
             workspace_id,
-            self.resource_catalog
+            self.resource_registry
                 .as_deref()
-                .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
+                .map(|catalog| catalog as &dyn awaken_resource_contract::ExecutionResourceResolver),
             agent_defaults,
             session_inputs,
         )
@@ -204,12 +204,12 @@ impl SessionApplication {
         workspace_id: &str,
         memory_store_id: &str,
     ) -> Result<awaken_resource_contract::MemoryStoreDefinition, RunError> {
-        self.resource_catalog
+        self.resource_registry
             .as_ref()
             .ok_or_else(|| {
-                RunError::bad_request("memory resources require a configured Resource Catalog")
+                RunError::bad_request("memory resources require a configured Resource Registry")
             })?
-            .memory_store(workspace_id, memory_store_id)
+            .find_memory_store(workspace_id, memory_store_id)
             .map_err(|error| RunError::bad_request(error.to_string()))?
             .ok_or_else(|| {
                 RunError::bad_request(format!(
@@ -222,8 +222,8 @@ impl SessionApplication {
         &self,
         input: SessionRepositoryResourceInput,
     ) -> Result<awaken_resource_contract::RepositoryId, RunError> {
-        let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
-            RunError::bad_request("repository resources require a configured Resource Catalog")
+        let catalog = self.resource_registry.as_ref().ok_or_else(|| {
+            RunError::bad_request("repository resources require a configured Resource Registry")
         })?;
         let credential_binding = match input.authorization_token {
             Some(token) => {
@@ -273,8 +273,8 @@ impl SessionApplication {
             (None, None) => None,
         };
         catalog
-            .create_repository(
-                awaken_resource_contract::RepositoryDefinition {
+            .register_repository(awaken_resource_contract::RegisterRepository {
+                definition: awaken_resource_contract::RepositoryDefinition {
                     id: input.id.clone().into(),
                     workspace_id: input.workspace_id,
                     name: input.name,
@@ -284,7 +284,7 @@ impl SessionApplication {
                     current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
                     timestamps: Default::default(),
                 },
-                awaken_resource_contract::RepositoryConfigVersion {
+                initial_config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: input.id.clone().into(),
                     version: awaken_resource_contract::ConfigVersion::INITIAL,
                     remote_url: input.remote_url,
@@ -293,7 +293,7 @@ impl SessionApplication {
                     initial_commit: input.initial_commit,
                     clone_policy: awaken_resource_contract::ClonePolicy::default(),
                 },
-            )
+            })
             .map_err(|error| {
                 RunError::bad_request(format!(
                     "repository resource could not be configured: {error}"

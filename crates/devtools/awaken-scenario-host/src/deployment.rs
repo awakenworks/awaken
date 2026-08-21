@@ -6,7 +6,7 @@ use awaken_runtime_host::SharedHost;
 /// One runnable Scenario platform instance.
 ///
 /// Keeping the Resources application beside the Host prevents route builders
-/// from reopening Resource Catalog, File, Memory, or Skill authorities after
+/// from reopening Resource Registry, File, Memory, or Skill authorities after
 /// the persistence owner has selected them once.
 pub(crate) struct ScenarioPlatform {
     host: SharedHost,
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn scenario_resource_authority_fmeca_decision_table() {
-        // FMECA failure modes: FM1 the router reopens a Resource Catalog, FM2
+        // FMECA failure modes: FM1 the router reopens a Resource Registry, FM2
         // Host and HTTP use different Memory repositories, FM3 Skill ingestion
         // and Runtime read different roots, FM4 File commands use different
         // applications. Each produces split identity, stale reads, or cleanup

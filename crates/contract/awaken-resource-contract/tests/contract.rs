@@ -23,8 +23,9 @@
 
 use awaken_resource_contract::{
     ConfigVersion, FileStoreError, MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES,
-    MemErr, Memory, MemoryEntry, MemoryStoreConfigVersion, RepositoryConfigVersion,
-    ResourceCatalogError, ResourceCatalogRules, ResourceState, SkillStoreError, validate_path_len,
+    MemErr, Memory, MemoryEntry, MemoryStoreAggregate, MemoryStoreConfigVersion,
+    MemoryStoreDefinition, RepositoryAggregate, RepositoryConfigVersion, RepositoryDefinition,
+    ResourceRegistryError, ResourceState, SkillStoreError, validate_path_len,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -41,58 +42,70 @@ fn sample_memory(content: Option<&str>) -> Memory {
 }
 
 #[test]
-fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
+fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
+    // Aggregate state/decision coverage: registration validates identity and
+    // V1 alignment; resolution requires Active; publication requires the exact
+    // current predecessor and direct successor; Repository checkout selection
+    // is unambiguous. Failures leave the original aggregate unchanged.
     let config = MemoryStoreConfigVersion {
         memory_store_id: "memory-1".into(),
         version: ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-
-    assert!(
-        ResourceCatalogRules::validate_initial(
-            "memory-1",
-            "workspace-a",
-            ConfigVersion::INITIAL,
-            config.memory_store_id.as_str(),
-            config.version,
-        )
-        .is_ok()
-    );
+    let definition = MemoryStoreDefinition {
+        id: "memory-1".into(),
+        workspace_id: "workspace-a".into(),
+        name: "Memory".into(),
+        description: String::new(),
+        metadata: Default::default(),
+        state: ResourceState::Active,
+        current_config_version: ConfigVersion::INITIAL,
+        timestamps: Default::default(),
+    };
+    let aggregate = MemoryStoreAggregate::register(definition.clone(), config.clone())
+        .expect("R1 aligned initial aggregate");
+    assert!(aggregate.resolve_for_execution("workspace-a").is_ok());
     assert!(matches!(
-        ResourceCatalogRules::validate_initial(
-            "memory-1",
-            "",
-            ConfigVersion::INITIAL,
-            config.memory_store_id.as_str(),
-            config.version,
+        MemoryStoreAggregate::register(
+            MemoryStoreDefinition {
+                workspace_id: String::new(),
+                ..definition.clone()
+            },
+            config.clone(),
         ),
-        Err(ResourceCatalogError::Invalid(_))
+        Err(ResourceRegistryError::Invalid(_))
     ));
     assert!(matches!(
-        ResourceCatalogRules::validate_initial(
-            "memory-1",
-            "workspace-a",
-            ConfigVersion(2),
-            config.memory_store_id.as_str(),
-            config.version,
+        MemoryStoreAggregate::register(
+            MemoryStoreDefinition {
+                current_config_version: ConfigVersion(2),
+                ..definition.clone()
+            },
+            config.clone(),
         ),
-        Err(ResourceCatalogError::Invalid(_))
+        Err(ResourceRegistryError::Invalid(_))
     ));
-
-    assert!(
-        ResourceCatalogRules::validate_live_definition("memory-1", ResourceState::Active).is_ok()
-    );
+    let suspended = MemoryStoreAggregate::rehydrate(
+        MemoryStoreDefinition {
+            state: ResourceState::Suspended,
+            ..definition.clone()
+        },
+        std::collections::BTreeMap::from([(ConfigVersion::INITIAL, config.clone())]),
+    )
+    .expect("R2 valid suspended aggregate");
     assert!(matches!(
-        ResourceCatalogRules::validate_live_definition("memory-1", ResourceState::Suspended),
-        Err(ResourceCatalogError::NotActive { .. })
+        suspended.resolve_for_execution("workspace-a"),
+        Err(ResourceRegistryError::NotActive { .. })
     ));
-    assert!(
-        ResourceCatalogRules::validate_memory_config("memory-1", ConfigVersion::INITIAL, &config,)
-            .is_ok()
-    );
     assert!(matches!(
-        ResourceCatalogRules::validate_memory_config("memory-2", ConfigVersion::INITIAL, &config),
-        Err(ResourceCatalogError::Storage(_))
+        MemoryStoreAggregate::register(
+            definition,
+            MemoryStoreConfigVersion {
+                memory_store_id: "memory-2".into(),
+                ..config.clone()
+            },
+        ),
+        Err(ResourceRegistryError::Invalid(_))
     ));
     let repository_config = RepositoryConfigVersion {
         repository_id: "repo-1".into(),
@@ -103,22 +116,18 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
         initial_commit: None,
         clone_policy: Default::default(),
     };
-    assert!(
-        ResourceCatalogRules::validate_repository_config(
-            "repo-1",
-            ConfigVersion::INITIAL,
-            &repository_config,
-        )
-        .is_ok()
-    );
-    assert!(matches!(
-        ResourceCatalogRules::validate_repository_config(
-            "repo-2",
-            ConfigVersion::INITIAL,
-            &repository_config,
-        ),
-        Err(ResourceCatalogError::Storage(_))
-    ));
+    let repository_definition = RepositoryDefinition {
+        id: "repo-1".into(),
+        workspace_id: "workspace-a".into(),
+        name: "Repository".into(),
+        description: String::new(),
+        metadata: Default::default(),
+        state: ResourceState::Active,
+        current_config_version: ConfigVersion::INITIAL,
+        timestamps: Default::default(),
+    };
+    RepositoryAggregate::register(repository_definition.clone(), repository_config.clone())
+        .expect("R3 valid Repository aggregate");
     // Checkout validation decision table:
     // | Branch | Commit | Result |
     // | none/non-empty | none | valid |
@@ -129,60 +138,38 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
     invalid_checkout.initial_branch = Some("main".into());
     invalid_checkout.initial_commit = Some("abc123".into());
     assert!(matches!(
-        ResourceCatalogRules::validate_repository_config(
-            "repo-1",
-            ConfigVersion::INITIAL,
-            &invalid_checkout,
-        ),
-        Err(ResourceCatalogError::Invalid(_))
+        RepositoryAggregate::register(repository_definition.clone(), invalid_checkout),
+        Err(ResourceRegistryError::Invalid(_))
     ));
+    let mut invalid_checkout = repository_config.clone();
     invalid_checkout.initial_commit = None;
     invalid_checkout.initial_branch = Some(" ".into());
     assert!(matches!(
-        ResourceCatalogRules::validate_repository_config(
-            "repo-1",
-            ConfigVersion::INITIAL,
-            &invalid_checkout,
-        ),
-        Err(ResourceCatalogError::Invalid(_))
+        RepositoryAggregate::register(repository_definition, invalid_checkout),
+        Err(ResourceRegistryError::Invalid(_))
     ));
 
-    assert!(
-        ResourceCatalogRules::validate_publish(
-            "memory-1",
-            ConfigVersion::INITIAL,
-            ConfigVersion::INITIAL,
-            ConfigVersion(2),
-        )
-        .is_ok()
-    );
+    let mut aggregate = aggregate;
+    let mut second = config.clone();
+    second.version = ConfigVersion(2);
+    aggregate
+        .publish_config("workspace-a", ConfigVersion::INITIAL, second, 2)
+        .expect("R4 direct successor");
+    let committed = aggregate.clone();
+    let mut stale = config.clone();
+    stale.version = ConfigVersion(3);
     assert!(matches!(
-        ResourceCatalogRules::validate_publish(
-            "memory-1",
-            ConfigVersion::INITIAL,
-            ConfigVersion(2),
-            ConfigVersion(2),
-        ),
-        Err(ResourceCatalogError::ConfigConflict { .. })
+        aggregate.publish_config("workspace-a", ConfigVersion::INITIAL, stale, 3),
+        Err(ResourceRegistryError::ConfigConflict { .. })
     ));
+    assert_eq!(aggregate, committed, "R5 failed publication is a no-op");
+    let mut skipped = config.clone();
+    skipped.version = ConfigVersion(4);
     assert!(matches!(
-        ResourceCatalogRules::validate_publish(
-            "memory-1",
-            ConfigVersion::INITIAL,
-            ConfigVersion::INITIAL,
-            ConfigVersion(3),
-        ),
-        Err(ResourceCatalogError::Invalid(_))
+        aggregate.publish_config("workspace-a", ConfigVersion(2), skipped, 3),
+        Err(ResourceRegistryError::Invalid(_))
     ));
-    assert!(matches!(
-        ResourceCatalogRules::validate_publish(
-            "memory-1",
-            ConfigVersion(u64::MAX),
-            ConfigVersion(u64::MAX),
-            ConfigVersion(u64::MAX),
-        ),
-        Err(ResourceCatalogError::Invalid(_))
-    ));
+    assert_eq!(aggregate, committed, "R6 skipped publication is a no-op");
 }
 
 // R1: content present → key present, and full round-trip is lossless.

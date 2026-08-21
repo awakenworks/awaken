@@ -63,7 +63,7 @@ mod tests {
         // an application after persistence selection.
         let assert_complete = |application: &awaken_resource_application::ResourcesApplication| {
             let authorities = application.authorities();
-            let _ = authorities.resource_catalog();
+            let _ = authorities.resource_registry();
             let _ = authorities.file_store();
             let _ = authorities.file_catalog();
             let _ = authorities.memory_repository();

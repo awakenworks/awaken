@@ -26,13 +26,11 @@ const SQLITE_RESOURCE_WRITE_WAIT: Duration = Duration::from_secs(30);
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "postgres")]
-mod postgres_catalog;
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-mod resource_catalog_codec;
+mod postgres_registry;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod schema;
 #[cfg(feature = "sqlite")]
-mod sqlite_catalog;
+mod sqlite_registry;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresResourceStore;
@@ -69,7 +67,7 @@ impl SqliteResourceStore {
         Ok(store)
     }
 
-    /// Apply every Resources-owned migration scope. Catalog and lifecycle keep
+    /// Apply every Resources-owned migration scope. Registry and lifecycle keep
     /// independent ledgers because neither aggregate depends on the other's
     /// tables.
     pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
@@ -80,11 +78,11 @@ impl SqliteResourceStore {
             .map_err(|error| storage(error.to_string()))?
             .run_bundle(&connection, &lifecycle)
             .map_err(|error| storage(error.to_string()))?;
-        let catalog =
-            schema::resource_catalog_bundle().map_err(|error| storage(error.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::CATALOG_NS)
+        let registry =
+            schema::resource_registry_bundle().map_err(|error| storage(error.to_string()))?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::REGISTRY_NS)
             .map_err(|error| storage(error.to_string()))?
-            .run_bundle(&connection, &catalog)
+            .run_bundle(&connection, &registry)
             .map(|_| ())
             .map_err(|error| storage(error.to_string()))
     }

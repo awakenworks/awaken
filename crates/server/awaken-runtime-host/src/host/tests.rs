@@ -52,11 +52,14 @@ fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     environment
 }
 
-fn resource_catalog() -> Arc<awaken_resource_store::SqliteResourceStore> {
-    Arc::new(
+fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
+    let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resource Catalog"),
-    )
+            .expect("open ephemeral Resource Registry"),
+    );
+    Arc::new(awaken_resource_application::RegistryApplication::new(
+        storage,
+    ))
 }
 
 #[derive(Default)]
@@ -264,41 +267,41 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
             thread,
             "default",
             handle,
-            Some(Arc::new(TestResourceBindingValidator)),
+            Some(Arc::new(TestLiveResourceBindingVerifier)),
             &config,
             writable,
         ))),
     );
 }
 
-struct TestResourceBindingValidator;
+struct TestLiveResourceBindingVerifier;
 
-impl awaken_resource_contract::ResourceBindingValidator for TestResourceBindingValidator {
-    fn validate_memory_binding(
+impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
+    fn verify_memory_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
         _version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
         Ok(())
     }
 
-    fn validate_repository_binding(
+    fn verify_repository_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
         _version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
         Ok(())
     }
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
-    let validator = Arc::new(TestResourceBindingValidator);
+    let validator = Arc::new(TestLiveResourceBindingVerifier);
     crate::ManagedHost::new(host)
         .with_resource_validator(validator.clone())
         .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::CatalogRepositoryBindingVerifier::new(validator),
+            awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator),
         ))
 }
 
@@ -4095,17 +4098,17 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 #[tokio::test]
 async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     use awaken_resource_contract::{
-        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
-        ResourceState,
+        ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
+        RegisterMemoryStore, ResourceAdministration as _, ResourceState,
     };
     use awaken_session_contract::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     catalog
-        .create_memory_store(
-            MemoryStoreDefinition {
+        .register_memory_store(RegisterMemoryStore {
+            definition: MemoryStoreDefinition {
                 id: store_id.clone().into(),
                 workspace_id: host.local_workspace().into(),
                 name: "memory".into(),
@@ -4115,13 +4118,13 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
                 current_config_version: ConfigVersion::INITIAL,
                 timestamps: Default::default(),
             },
-            MemoryStoreConfigVersion {
+            initial_config: MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 retention_policy: Default::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("register test MemoryStore");
     let manifest = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store_id.clone(),
@@ -4132,8 +4135,12 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         initial_commit: None,
     }]);
     catalog
-        .set_memory_state(host.local_workspace(), &store_id, ResourceState::Suspended)
-        .unwrap();
+        .change_memory_store_state(ChangeMemoryStoreState {
+            workspace_id: host.local_workspace().into(),
+            id: store_id.clone().into(),
+            state: ResourceState::Suspended,
+        })
+        .expect("suspend test MemoryStore");
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = manifest;
@@ -4150,17 +4157,17 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 #[tokio::test]
 async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic() {
     use awaken_resource_contract::{
-        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
-        ResourceState,
+        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RegisterMemoryStore,
+        ResourceAdministration as _, ResourceState,
     };
     use awaken_session_contract::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     catalog
-        .create_memory_store(
-            MemoryStoreDefinition {
+        .register_memory_store(RegisterMemoryStore {
+            definition: MemoryStoreDefinition {
                 id: store_id.clone().into(),
                 workspace_id: "workspace-a".into(),
                 name: "private-memory".into(),
@@ -4170,13 +4177,13 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
                 current_config_version: ConfigVersion::INITIAL,
                 timestamps: Default::default(),
             },
-            MemoryStoreConfigVersion {
+            initial_config: MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 retention_policy: Default::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("register workspace-fenced MemoryStore");
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog);
     let mut init = bare_session("agent", "workspace-b");
     init.resources = effective_resources(vec![TestInput {
@@ -6899,7 +6906,8 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
     use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(resource_catalog());
+    let managed =
+        crate::ManagedHost::new(host.clone()).with_resource_validator(resource_registry());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -6921,18 +6929,18 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
 #[tokio::test]
 async fn activation_validates_the_frozen_config_without_selecting_current_again() {
     use awaken_resource_contract::{
-        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
-        ResourceState,
+        ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
+        PublishMemoryStoreConfig, RegisterMemoryStore, ResourceAdministration as _, ResourceState,
     };
     use awaken_session_contract::{ResolvedInputSource, SessionRuntime};
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let workspace = host.local_workspace().to_string();
     let store_id = test_memory_store_id();
-    let catalog = resource_catalog();
+    let catalog = resource_registry();
     catalog
-        .create_memory_store(
-            MemoryStoreDefinition {
+        .register_memory_store(RegisterMemoryStore {
+            definition: MemoryStoreDefinition {
                 id: store_id.clone().into(),
                 workspace_id: workspace.clone(),
                 name: "memory".into(),
@@ -6942,24 +6950,24 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
                 current_config_version: ConfigVersion::INITIAL,
                 timestamps: Default::default(),
             },
-            MemoryStoreConfigVersion {
+            initial_config: MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 retention_policy: Default::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("register frozen-config MemoryStore");
     catalog
-        .publish_memory_config(
-            &workspace,
-            ConfigVersion::INITIAL,
-            MemoryStoreConfigVersion {
+        .publish_memory_store_config(PublishMemoryStoreConfig {
+            workspace_id: workspace.clone(),
+            expected_current: ConfigVersion::INITIAL,
+            config: MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion(2),
                 retention_policy: Default::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("publish MemoryStore config V2");
 
     let manifest = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -6993,8 +7001,12 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     assert!(host.sandbox_spec("missing-v3").mounts.is_empty());
 
     catalog
-        .set_memory_state(&workspace, &store_id, ResourceState::Archived)
-        .unwrap();
+        .change_memory_store_state(ChangeMemoryStoreState {
+            workspace_id: workspace.clone(),
+            id: store_id.clone().into(),
+            state: ResourceState::Archived,
+        })
+        .expect("archive frozen-config MemoryStore");
     let error = match managed
         .run(
             "a",

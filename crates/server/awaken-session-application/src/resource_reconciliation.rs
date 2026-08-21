@@ -1175,7 +1175,7 @@ impl SessionApplication {
         session_id: &str,
         resources: &awaken_session_contract::SessionResourceState,
     ) -> bool {
-        if self.resource_catalog().is_none() {
+        if self.resource_registry().is_none() {
             return true;
         }
         let prefix = format!("managed:{session_id}:repository:");
@@ -1197,10 +1197,10 @@ impl SessionApplication {
     }
 
     pub async fn retire_repository(&self, owner_scope: &str, repository_id: &str) -> bool {
-        let Some(catalog) = self.resource_catalog() else {
+        let Some(catalog) = self.resource_registry() else {
             return true;
         };
-        let definition = match catalog.repository(owner_scope, repository_id) {
+        let definition = match catalog.find_repository(owner_scope, repository_id) {
             Ok(Some(definition)) => definition,
             Ok(None) => return true,
             Err(_) => return false,
@@ -1227,11 +1227,11 @@ impl SessionApplication {
             return false;
         }
         catalog
-            .set_repository_state(
-                owner_scope,
-                repository_id,
-                awaken_resource_contract::ResourceState::Deleted,
-            )
+            .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
+                workspace_id: owner_scope.into(),
+                id: repository_id.into(),
+                state: awaken_resource_contract::ResourceState::Deleted,
+            })
             .is_ok()
     }
 }

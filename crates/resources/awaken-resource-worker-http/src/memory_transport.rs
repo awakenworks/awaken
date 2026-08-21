@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ConfigVersion, MemErr, Memory, MemoryMaterializationReferenceEncoder,
-    MemoryMaterializationReferenceError, MemoryRepository, ResourceAccess,
-    ResourceBindingValidator,
+    ConfigVersion, LiveResourceBindingVerifier, MemErr, Memory,
+    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError, MemoryRepository,
+    ResourceAccess,
 };
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -239,7 +239,7 @@ impl From<MemoryWireError> for MemErr {
 /// Exact Memory data-plane dependencies used by the Coordinator/Resource side.
 pub struct WorkerMemoryService {
     repository: Arc<dyn MemoryRepository>,
-    validator: Arc<dyn ResourceBindingValidator>,
+    validator: Arc<dyn LiveResourceBindingVerifier>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
@@ -249,7 +249,7 @@ impl WorkerMemoryService {
     #[must_use]
     pub fn new(
         repository: Arc<dyn MemoryRepository>,
-        validator: Arc<dyn ResourceBindingValidator>,
+        validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
@@ -341,7 +341,7 @@ async fn memory_operation(
     if !manifest_allows(guard.request(), &reference, request.operation.writes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if let Err(error) = service.validator.validate_memory_binding(
+    if let Err(error) = service.validator.verify_memory_binding(
         &reference.workspace_id,
         &reference.memory_store_id,
         reference.config_version,

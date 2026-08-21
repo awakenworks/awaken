@@ -75,6 +75,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-resource-application.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }

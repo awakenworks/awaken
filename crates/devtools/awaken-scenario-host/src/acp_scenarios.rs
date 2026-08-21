@@ -631,7 +631,7 @@ pub async fn build_acp_container_router() -> Router {
                 .await
         })
         .await;
-    // Use the same shared Resource Catalog + Managed ACL assembly as every other
+    // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(platform, Some(publication))
 }

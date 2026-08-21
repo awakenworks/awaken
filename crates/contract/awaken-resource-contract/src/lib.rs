@@ -21,19 +21,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-mod catalog;
 mod deployment_backing;
 mod execution;
 mod input;
 mod lifecycle;
 mod memory_application;
+mod registry;
 
-pub use catalog::{
-    ClonePolicy, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator, ResourceCatalog,
-    ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource, ResourceState,
-    ResourceTimestamps, RetentionPolicy,
-};
 pub use deployment_backing::{
     DeploymentBackingAllocationKind, DeploymentBackingRole, select_deployment_backing_role,
 };
@@ -60,6 +54,16 @@ pub use lifecycle::{
 pub use memory_application::{
     CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,
     UpdateMemoryStoreCommand,
+};
+pub use registry::{
+    AggregateRevision, ChangeMemoryStoreState, ChangeRepositoryState, ClonePolicy, ConfigVersion,
+    ExecutionResourceResolver, InsertOutcome, LiveResourceBindingVerifier, MemoryStoreAggregate,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, PublishMemoryStoreConfig,
+    PublishRepositoryConfig, RegisterMemoryStore, RegisterRepository, RegistryRepositoryError,
+    ReplaceOutcome, RepositoryAggregate, RepositoryConfigVersion, RepositoryDefinition,
+    ResourceAdministration, ResourceInventory, ResourceRegistry, ResourceRegistryError,
+    ResourceRegistryRepository, ResourceState, ResourceTimestamps, RetentionPolicy, Stored,
+    UpdateMemoryStoreProfile,
 };
 
 // ---------------------------------------------------------------------------

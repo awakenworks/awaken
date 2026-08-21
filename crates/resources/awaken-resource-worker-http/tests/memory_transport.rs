@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryRepository as _};
 use awaken_resource_contract::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceAccess,
-    ResourceCatalog as _, ResourceState,
+    ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
+    RegisterMemoryStore, ResourceAccess, ResourceAdministration as _, ResourceState,
 };
 use awaken_resource_worker_http::memory_materialization_reference;
 use awaken_resource_worker_http::{
@@ -37,10 +37,10 @@ fn memory_input(
     }
 }
 
-fn create_store(catalog: &awaken_resource_store::SqliteResourceStore, id: &str) {
+fn create_store(catalog: &awaken_resource_application::RegistryApplication, id: &str) {
     catalog
-        .create_memory_store(
-            MemoryStoreDefinition {
+        .register_memory_store(RegisterMemoryStore {
+            definition: MemoryStoreDefinition {
                 id: id.into(),
                 workspace_id: "workspace-memory".into(),
                 name: id.into(),
@@ -50,13 +50,13 @@ fn create_store(catalog: &awaken_resource_store::SqliteResourceStore, id: &str) 
                 current_config_version: ConfigVersion::INITIAL,
                 timestamps: Default::default(),
             },
-            MemoryStoreConfigVersion {
+            initial_config: MemoryStoreConfigVersion {
                 memory_store_id: id.into(),
                 version: ConfigVersion::INITIAL,
                 retention_policy: Default::default(),
             },
-        )
-        .unwrap();
+        })
+        .expect("register test MemoryStore");
 }
 
 /// Cause/effect decision table:
@@ -77,7 +77,13 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .create("memory-rw", "/seed.md", "seed")
         .await
         .unwrap();
-    let catalog = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let storage = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open test Resource Registry"),
+    );
+    let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
+        storage,
+    ));
     create_store(&catalog, "memory-rw");
     create_store(&catalog, "memory-ro");
     let resources = awaken_session_contract::ResolvedSessionResources {
@@ -193,8 +199,12 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     );
 
     catalog
-        .set_memory_state("workspace-memory", "memory-rw", ResourceState::Archived)
-        .unwrap();
+        .change_memory_store_state(ChangeMemoryStoreState {
+            workspace_id: "workspace-memory".into(),
+            id: "memory-rw".into(),
+            state: ResourceState::Archived,
+        })
+        .expect("archive test MemoryStore");
     let archived = client.snapshot_heads(&rw).await.expect_err("M8");
     assert!(
         archived.to_string().contains("not active"),

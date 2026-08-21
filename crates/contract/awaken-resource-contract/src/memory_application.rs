@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 
 use crate::{
-    MemoryStoreDefinition, MemoryStoreId, ResourceCatalogError, ResourcePurgeError, ResourceState,
+    MemoryStoreDefinition, MemoryStoreId, ResourcePurgeError, ResourceRegistryError, ResourceState,
     RetentionPolicy,
 };
 
@@ -41,7 +41,7 @@ pub struct UpdateMemoryStoreCommand {
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryStoreApplicationError {
     #[error(transparent)]
-    Catalog(#[from] ResourceCatalogError),
+    Registry(#[from] ResourceRegistryError),
     #[error(transparent)]
     Purge(#[from] ResourcePurgeError),
 }

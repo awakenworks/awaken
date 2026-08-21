@@ -303,11 +303,11 @@ impl CapabilityReader for CatalogCapabilityReader {
 /// The LIVE data-plane resource inventory (ADR-0038 memory stores + skills) behind the
 /// [`ResourceInventory`] port, so the [`CatalogCapabilityReader`] can report real memory
 /// store + skill ids without `awaken-control` depending on the runtime host. Memory-store
-/// definitions come from the durable [`awaken_resource_contract::ResourceCatalog`]
+/// definitions come from the durable [`awaken_resource_contract::ResourceRegistry`]
 /// shared by authoring and Session resolution, and skills from the
 /// [`awaken_resource_contract::SkillStore`]. Carries only ids — never a secret or policy.
 pub struct HostResourceInventory {
-    memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    memory: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     skills: Arc<dyn awaken_resource_contract::SkillStore>,
 }
 
@@ -315,7 +315,7 @@ impl HostResourceInventory {
     /// Build the inventory from the two live handles. Each read receives the
     /// request-resolved Workspace; the adapter stores no parallel tenant default.
     pub fn new(
-        memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+        memory: Arc<dyn awaken_resource_contract::ResourceRegistry>,
         skills: Arc<dyn awaken_resource_contract::SkillStore>,
     ) -> Self {
         Self { memory, skills }
@@ -1188,25 +1188,28 @@ mod tests {
         // can either leak inventory across tenants or hide valid capabilities;
         // removing that redundant coordinate leaves one request-owned boundary.
         use awaken_resource_contract::{
-            ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
-            ResourceState,
+            ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RegisterMemoryStore,
+            ResourceAdministration as _, ResourceState,
         };
         use awaken_skill_store::{
             InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore, SkillVersion,
             bundle_sha256,
         };
 
-        let registry = Arc::new(
+        let storage = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()
-                .expect("open ephemeral Resource Catalog"),
+                .expect("open ephemeral Resource Registry"),
         );
+        let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
+            storage,
+        ));
         for (id, state) in [
             ("mem-1", ResourceState::Active),
             ("mem-gone", ResourceState::Archived),
         ] {
             registry
-                .create_memory_store(
-                    MemoryStoreDefinition {
+                .register_memory_store(RegisterMemoryStore {
+                    definition: MemoryStoreDefinition {
                         id: id.into(),
                         workspace_id: DEFAULT_SCOPE.into(),
                         name: "Prefs".into(),
@@ -1216,13 +1219,13 @@ mod tests {
                         current_config_version: ConfigVersion::INITIAL,
                         timestamps: Default::default(),
                     },
-                    MemoryStoreConfigVersion {
+                    initial_config: MemoryStoreConfigVersion {
                         memory_store_id: id.into(),
                         version: ConfigVersion::INITIAL,
                         retention_policy: Default::default(),
                     },
-                )
-                .unwrap();
+                })
+                .expect("register inventory fixture");
         }
         let skills = Arc::new(InMemorySkillStore::new());
         let files = vec![SkillBundleFile {

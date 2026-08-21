@@ -23,7 +23,7 @@ pub(crate) struct DispatchSessionRuntime {
     pub(super) credentials: Option<PinnedCredentialMaterializer>,
     pub(super) credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
     pub(super) resource_validator:
-        Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+        Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(super) repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
     pub(super) mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,

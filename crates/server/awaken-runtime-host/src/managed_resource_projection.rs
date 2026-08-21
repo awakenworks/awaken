@@ -165,11 +165,7 @@ impl crate::ManagedHost {
                         )
                     })?;
                     validator
-                        .validate_memory_binding(
-                            workspace,
-                            memory_store_id.as_str(),
-                            config.version,
-                        )
+                        .verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
                         .map_err(|error| RunError::bad_request(error.to_string()))?;
                     staged.binding_checks.push(
                         crate::provisioning::ResourceBindingCheck::MemoryStore {
