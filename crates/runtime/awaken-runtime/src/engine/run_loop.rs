@@ -920,23 +920,22 @@ fn pause_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
     delegation_origin: Option<&DelegationOrigin>,
-    reason: AwaitReason,
+    reason: PauseReason,
 ) -> ResumeTicket {
-    ResumeTicket {
-        correlation_id: run_id.0.clone(),
-        run_id: run_id.clone(),
-        thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
-        snapshot_id: resolved.snapshot_id.0.clone(),
-        catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
-        delegation_origin: delegation_origin.cloned(),
-        data_subject_id: context
+    ResumeTicket::new(
+        &run_id.0,
+        run_id.clone(),
+        ThreadId(String::new()), // filled in finish via the commit thread id
+        &resolved.snapshot_id.0,
+        &resolved.spec.catalog_fingerprint.0,
+        AwaitTarget::Pause(reason),
+    )
+    .with_delegation_origin(delegation_origin.cloned())
+    .with_data_subject(
+        context
             .capture
             .subject
             .as_ref()
             .map(|subject| subject.0.clone()),
-        reason,
-        call_id: None,
-        pending_tool: None,
-        deadline_ms: None,
-    }
+    )
 }

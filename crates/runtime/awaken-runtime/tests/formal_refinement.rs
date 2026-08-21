@@ -702,7 +702,7 @@ fn classify_transition(
 }
 
 fn ticket_kind(commit: &ThreadCommit) -> String {
-    match commit.resume_ticket().map(|ticket| &ticket.reason) {
+    match commit.resume_ticket().map(|ticket| ticket.reason()) {
         None => "None",
         Some(AwaitReason::ToolPermission) => "ToolPermission",
         Some(AwaitReason::Delegation) => "Delegation",
@@ -839,7 +839,7 @@ fn project_trace(name: &str, commits: Vec<ThreadCommit>) -> TraceDocument {
             ticket_kind: ticket_kind(commit),
             ticket_call: commit
                 .resume_ticket()
-                .and_then(|ticket| ticket.call_id.clone())
+                .and_then(|ticket| ticket.call_id().map(str::to_owned))
                 .unwrap_or_else(|| "no_call".to_string()),
             call_state,
             attempts: attempts.clone(),

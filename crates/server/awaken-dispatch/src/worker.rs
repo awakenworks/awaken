@@ -867,7 +867,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled await (no pending input is expected).
-            Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
+            Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
                 match self
                     .perform_scheduled(&claim, now_ms, execution_context.clone())
                     .instrument(dispatch.clone())
@@ -1006,7 +1006,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // until it ends or awaits on a wait that needs external input.
         while state == RunState::Awaiting {
             match self.reader.resume_ticket(&run_id) {
-                Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
+                Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
                     state = match self
                         .perform_scheduled(&claim, now_ms, execution_context.clone())
                         .await

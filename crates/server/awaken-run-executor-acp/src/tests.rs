@@ -511,23 +511,29 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
     }))
 }
 
-async fn commit_ticket(coordinator: &Arc<RecordingCoordinator>, ticket: ResumeTicket) {
-    awaken_agent_contract::thread::commit::commit_run(
-        coordinator.as_ref(),
-        &ticket.thread_id.clone(),
-        awaken_agent_contract::thread::commit::RunDisposition::awaiting(ticket),
-        Vec::new(),
-        Vec::new(),
-    )
-    .await
-    .unwrap();
-}
-
 fn resume_command_for(ticket: &ResumeTicket) -> awaken_runtime_contract::resume::ResumeCommand {
     awaken_runtime_contract::resume::ResumeCommand::from_ticket(
         ticket,
         awaken_runtime_contract::resume::ResumeResult::allow(),
         0,
+    )
+}
+
+fn permission_ticket(activation: &RunActivation) -> ResumeTicket {
+    ResumeTicket::new(
+        "permission-correlation",
+        activation.run_id.clone(),
+        activation.thread_id.clone(),
+        &activation.snapshot.id.0,
+        &activation.snapshot.fingerprint.0,
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id: "call-7".into(),
+            tool: PendingTool {
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({}),
+            },
+        },
     )
 }
 
@@ -559,7 +565,7 @@ fn advertises_remote_abort_and_auth_wait() {
 #[tokio::test]
 async fn resume_requires_history_then_an_active_ticket() {
     let activation = activation();
-    let ticket = pause_ticket(&activation, &activation.run_id, AwaitReason::ToolPermission);
+    let ticket = permission_ticket(&activation);
     let command = resume_command_for(&ticket);
     assert!(
         exec(Vec::new())
@@ -583,38 +589,6 @@ async fn resume_requires_history_then_an_active_ticket() {
             .await
             .is_err()
     );
-}
-
-#[tokio::test]
-async fn permission_resume_requires_the_call_and_pending_tool_facts() {
-    let activation = activation();
-
-    let missing_call = Arc::new(RecordingCoordinator::default());
-    let ticket = pause_ticket(&activation, &activation.run_id, AwaitReason::ToolPermission);
-    commit_ticket(&missing_call, ticket.clone()).await;
-    let error = exec(Vec::new())
-        .resume(
-            activation.clone(),
-            resume_command_for(&ticket),
-            RuntimeRunContext::new().with_reader(missing_call),
-        )
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("tool call id"));
-
-    let missing_tool = Arc::new(RecordingCoordinator::default());
-    let mut ticket = ticket;
-    ticket.call_id = Some("call-7".into());
-    commit_ticket(&missing_tool, ticket.clone()).await;
-    let error = exec(Vec::new())
-        .resume(
-            activation,
-            resume_command_for(&ticket),
-            RuntimeRunContext::new().with_reader(missing_tool),
-        )
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("pending tool"));
 }
 
 #[test]
@@ -1188,11 +1162,11 @@ async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
     let ticket = commits[0]
         .resume_ticket()
         .expect("an awaiting run commits its awaiting ticket");
-    assert_eq!(ticket.reason, AwaitReason::ManualPause);
+    assert_eq!(ticket.reason(), AwaitReason::ManualPause);
     assert_eq!(ticket.run_id, RunId("run-1".into()));
     assert_eq!(ticket.thread_id, ThreadId("thread-1".into()));
     assert!(
-        ticket.call_id.is_none() && ticket.pending_tool.is_none(),
+        ticket.call_id().is_none() && ticket.pending_tool().is_none(),
         "an operator pause awaits on no tool"
     );
 }
@@ -1239,8 +1213,8 @@ async fn a_pause_commits_in_flight_steer_before_awaiting() {
         .expect("in-flight steer rides out with the await and commits");
     assert_eq!(steer.text_content(), "late steer");
     assert_eq!(
-        commits[0].resume_ticket().map(|t| &t.reason),
-        Some(&AwaitReason::ManualPause)
+        commits[0].resume_ticket().map(ResumeTicket::reason),
+        Some(AwaitReason::ManualPause)
     );
     assert!(
         inbox.list().is_empty(),
@@ -1847,14 +1821,11 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let ticket = committed
             .resume_ticket_for(&RunId("run-1".into()))
             .expect("permission ticket");
-        assert_eq!(ticket.reason, AwaitReason::ToolPermission);
+        assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
         assert_eq!(ticket.correlation_id, "approval-1");
-        assert_eq!(ticket.call_id.as_deref(), Some("tool-1"));
+        assert_eq!(ticket.call_id(), Some("tool-1"));
         assert_eq!(
-            ticket
-                .pending_tool
-                .as_ref()
-                .map(|tool| tool.tool_id.as_str()),
+            ticket.pending_tool().map(|tool| tool.tool_id.as_str()),
             Some("bash")
         );
         events.notified().await;

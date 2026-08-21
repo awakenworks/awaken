@@ -45,12 +45,7 @@ fn client_result_for_ticket(
     content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
     is_error: bool,
 ) -> ResumeResult {
-    if ticket.pending_tool.is_none()
-        && matches!(
-            ticket.reason,
-            AwaitReason::UserInput | AwaitReason::ExternalEvent
-        )
-    {
+    if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
         ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
             &content,
         ))
@@ -275,15 +270,10 @@ impl SharedHost {
                 )));
             }
         };
-        if ticket.pending_tool.is_none()
-            && matches!(
-                ticket.reason,
-                AwaitReason::UserInput | AwaitReason::ExternalEvent
-            )
-        {
+        if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
             return Ok(pending_from_ticket(&ticket));
         }
-        if ticket.reason == AwaitReason::Delegation {
+        if ticket.reason() == AwaitReason::Delegation {
             let snapshot = match commit
                 .recovery_snapshot(&ThreadId(thread.to_string()), &run_id)
                 .await
@@ -769,12 +759,8 @@ impl SharedHost {
             .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
         let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
 
-        if matches!(
-            ticket.reason,
-            AwaitReason::UserInput | AwaitReason::ExternalEvent
-        ) && ticket.pending_tool.is_none()
-        {
-            if ticket.call_id.as_deref() != Some(tool_use_id) {
+        if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
+            if ticket.call_id() != Some(tool_use_id) {
                 return Err(HostError::bad_request(format!(
                     "tool_use_id {tool_use_id:?} does not match the pending remote input"
                 )));
@@ -816,13 +802,13 @@ impl SharedHost {
         // A awaiting delegation resumes through the kernel resolver with the user's
         // typed answer; the kernel routes it through the parent relationship to the
         // child's own Run service. The user never resumes the child directly.
-        if ticket.reason == AwaitReason::Delegation {
+        if ticket.reason() == AwaitReason::Delegation {
             let registry = delegation_registry_from_snapshot(&awaiting_snapshot, &run_id)?;
             let child = self
                 .authoritative_child_ticket(
                     ctx.commit.as_ref(),
                     registry.as_ref(),
-                    ticket.call_id.as_deref(),
+                    ticket.call_id(),
                 )
                 .await?;
             let result = if let Some(child_ticket) = child {
@@ -837,7 +823,7 @@ impl SharedHost {
                 // Remote adapters may expose an opaque follow-up without a locally
                 // committed child ticket. Keep that adapter boundary as typed user
                 // input while still validating the parent call identity.
-                if ticket.call_id.as_deref() != Some(tool_use_id) {
+                if ticket.call_id() != Some(tool_use_id) {
                     return Err(HostError::bad_request(format!(
                         "tool_use_id {tool_use_id:?} does not match the pending delegate"
                     )));
@@ -877,10 +863,12 @@ impl SharedHost {
         }
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
+        let (call_id, _) = ticket
+            .tool_call()
+            .ok_or_else(|| HostError::internal("awaiting run has no pending tool call"))?;
         let result = match resume {
             HostResume::Permission(decision) => ResumeResult::Permission(decision),
             HostResume::ClientResult { content, is_error } => {
-                let call_id = ticket.call_id.clone().unwrap_or_default();
                 let output = if is_error {
                     ToolOutput::error_blocks(call_id, content)
                 } else {
@@ -987,16 +975,11 @@ impl SharedHost {
         ticket: &ResumeTicket,
         registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
     ) -> Result<Option<PendingTool>, HostError> {
-        if ticket.reason != AwaitReason::Delegation {
-            if ticket.reason == AwaitReason::ToolPermission && ticket.pending_tool.is_none() {
-                return Err(HostError::internal(
-                    "awaiting tool-permission run has no pending tool",
-                ));
-            }
+        if ticket.reason() != AwaitReason::Delegation {
             return Ok(pending_from_ticket(ticket));
         }
         let visible_child = self
-            .authoritative_child_ticket(commit, registry, ticket.call_id.as_deref())
+            .authoritative_child_ticket(commit, registry, ticket.call_id())
             .await?;
         Ok(match visible_child {
             Some(child) => pending_from_ticket(&child),
@@ -1237,28 +1220,25 @@ fn recovery_ticket(committed: &RunRecoverySnapshot, run_id: &RunId) -> Option<Re
 /// merely to rediscover that distinction would make a read perform Environment
 /// realization before Session admission.
 fn pending_from_ticket(ticket: &ResumeTicket) -> Option<PendingTool> {
-    let tool_use_id = ticket.call_id.clone()?;
-    let Some(tool) = ticket.pending_tool.clone() else {
-        if matches!(
-            ticket.reason,
-            AwaitReason::UserInput | AwaitReason::ExternalEvent
-        ) {
-            return Some(PendingTool {
-                tool_use_id,
-                name: "agent_input".to_string(),
-                input: serde_json::json!({ "reason": ticket.reason.as_stream_str() }),
-                client_executed: true,
-            });
-        }
-        return None;
-    };
-    let client_executed = ticket.reason == AwaitReason::ExternalEvent;
-    Some(PendingTool {
-        tool_use_id,
-        name: tool.tool_id,
-        input: tool.arguments,
-        client_executed,
-    })
+    match ticket.target() {
+        AwaitTarget::ToolCall {
+            reason,
+            call_id,
+            tool,
+        } => Some(PendingTool {
+            tool_use_id: call_id.clone(),
+            name: tool.tool_id.clone(),
+            input: tool.arguments.clone(),
+            client_executed: *reason == ToolAwaitReason::ClientExecution,
+        }),
+        AwaitTarget::RemoteInput { call_id, .. } => Some(PendingTool {
+            tool_use_id: call_id.clone(),
+            name: "agent_input".to_string(),
+            input: serde_json::json!({ "reason": ticket.reason().as_stream_str() }),
+            client_executed: true,
+        }),
+        AwaitTarget::Pause(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -1422,6 +1402,7 @@ mod committed_step_proof_tests {
 #[cfg(test)]
 mod ticket_projection_tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::RemoteInputReason;
 
     #[test]
     fn remote_input_wait_projects_as_a_client_executed_agent_input() {
@@ -1429,19 +1410,17 @@ mod ticket_projection_tests {
         // -> synthetic client-executed agent_input + ResumeResult::Input;
         // concrete pending_tool -> preserve ordinary client/built-in binding and
         // a client result becomes ToolResult. This test owns the remote row.
-        let ticket = ResumeTicket {
-            correlation_id: "a2a:remote-7:InputRequired".into(),
-            run_id: RunId("run-7".into()),
-            thread_id: ThreadId("thread-7".into()),
-            snapshot_id: "snapshot-7".into(),
-            catalog_fingerprint: "fingerprint-7".into(),
-            delegation_origin: None,
-            data_subject_id: None,
-            reason: AwaitReason::UserInput,
-            call_id: Some("remote-7".into()),
-            pending_tool: None,
-            deadline_ms: None,
-        };
+        let ticket = ResumeTicket::new(
+            "a2a:remote-7:InputRequired",
+            RunId("run-7".into()),
+            ThreadId("thread-7".into()),
+            "snapshot-7",
+            "fingerprint-7",
+            AwaitTarget::RemoteInput {
+                reason: RemoteInputReason::UserInput,
+                call_id: "remote-7".into(),
+            },
+        );
 
         let pending = pending_from_ticket(&ticket).expect("visible input");
         assert_eq!(pending.tool_use_id, "remote-7");
@@ -1468,19 +1447,33 @@ mod ticket_projection_tests {
         // | P1   | absent       | UserInput       | yes (agent_input) |
         // | P2   | present      | ExternalEvent   | yes              |
         // | P3   | present      | ToolPermission  | no               |
-        let mut concrete = ticket;
-        concrete.pending_tool = Some(awaken_agent_contract::agent::awaiting::PendingTool {
-            tool_id: "submit_answer".into(),
-            arguments: serde_json::json!({"answer": 42}),
-        });
-        concrete.reason = AwaitReason::ExternalEvent;
+        let concrete = |reason| {
+            ResumeTicket::new(
+                "tool-correlation",
+                RunId("run-7".into()),
+                ThreadId("thread-7".into()),
+                "snapshot-7",
+                "fingerprint-7",
+                AwaitTarget::ToolCall {
+                    reason,
+                    call_id: "remote-7".into(),
+                    tool: awaken_agent_contract::agent::awaiting::PendingTool {
+                        tool_id: "submit_answer".into(),
+                        arguments: serde_json::json!({"answer": 42}),
+                    },
+                },
+            )
+        };
         assert!(
-            pending_from_ticket(&concrete).unwrap().client_executed,
+            pending_from_ticket(&concrete(ToolAwaitReason::ClientExecution))
+                .unwrap()
+                .client_executed,
             "P2"
         );
-        concrete.reason = AwaitReason::ToolPermission;
         assert!(
-            !pending_from_ticket(&concrete).unwrap().client_executed,
+            !pending_from_ticket(&concrete(ToolAwaitReason::Permission))
+                .unwrap()
+                .client_executed,
             "P3"
         );
     }

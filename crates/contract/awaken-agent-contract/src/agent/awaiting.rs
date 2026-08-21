@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Why a run is awaiting. A client-executed tool is just one awaiting reason — the
 /// design keeps these neutral rather than naming an "external tool" concept.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AwaitReason {
     ToolPermission,
     UserInput,
@@ -24,6 +24,98 @@ pub enum AwaitReason {
     /// A delegated sub-agent needs more input. Its opaque execution reference
     /// is owned by the durable parent/child relationship, not duplicated here.
     Delegation,
+}
+
+/// A tool call held at a durable awaiting boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingTool {
+    pub tool_id: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Why a pending tool call is awaiting. Each variant necessarily carries both
+/// the correlation call id and the call itself through [`AwaitTarget::ToolCall`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolAwaitReason {
+    Permission,
+    ClientExecution,
+    ScheduledAction,
+    Delegation,
+}
+
+/// Why a remote agent is awaiting caller input without a local tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteInputReason {
+    UserInput,
+    ExternalEvent,
+}
+
+/// Why an operator/system pause has no pending call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PauseReason {
+    Manual,
+    RateLimit,
+}
+
+/// The closed payload of an awaiting ticket. Optional `call_id` and
+/// `pending_tool` fields are deliberately replaced by sum types: every variant
+/// contains exactly the facts its resume path requires.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AwaitTarget {
+    ToolCall {
+        reason: ToolAwaitReason,
+        call_id: String,
+        tool: PendingTool,
+    },
+    RemoteInput {
+        reason: RemoteInputReason,
+        call_id: String,
+    },
+    Pause(PauseReason),
+}
+
+impl AwaitTarget {
+    #[must_use]
+    pub const fn reason(&self) -> AwaitReason {
+        match self {
+            Self::ToolCall { reason, .. } => match reason {
+                ToolAwaitReason::Permission => AwaitReason::ToolPermission,
+                ToolAwaitReason::ClientExecution => AwaitReason::ExternalEvent,
+                ToolAwaitReason::ScheduledAction => AwaitReason::ScheduledAction,
+                ToolAwaitReason::Delegation => AwaitReason::Delegation,
+            },
+            Self::RemoteInput { reason, .. } => match reason {
+                RemoteInputReason::UserInput => AwaitReason::UserInput,
+                RemoteInputReason::ExternalEvent => AwaitReason::ExternalEvent,
+            },
+            Self::Pause(PauseReason::Manual) => AwaitReason::ManualPause,
+            Self::Pause(PauseReason::RateLimit) => AwaitReason::RateLimit,
+        }
+    }
+
+    #[must_use]
+    pub fn call_id(&self) -> Option<&str> {
+        match self {
+            Self::ToolCall { call_id, .. } | Self::RemoteInput { call_id, .. } => Some(call_id),
+            Self::Pause(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn pending_tool(&self) -> Option<&PendingTool> {
+        match self {
+            Self::ToolCall { tool, .. } => Some(tool),
+            Self::RemoteInput { .. } | Self::Pause(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call(&self) -> Option<(&str, &PendingTool)> {
+        match self {
+            Self::ToolCall { call_id, tool, .. } => Some((call_id, tool)),
+            Self::RemoteInput { .. } | Self::Pause(_) => None,
+        }
+    }
 }
 
 impl AwaitReason {
@@ -68,6 +160,29 @@ pub enum PermissionDecision {
 /// The committed correlation for one same-run pause. A resume is accepted only
 /// when its correlation, run/thread, executable snapshot, and catalog
 /// fingerprint all match, and the deadline (if any) has not passed.
+///
+/// The awaiting payload is private and can only be supplied as one closed
+/// [`AwaitTarget`], so the former independent optional call/tool fields cannot
+/// be assembled into contradictory states.
+///
+/// ```compile_fail
+/// use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+/// use awaken_agent_contract::agent::{run, thread};
+///
+/// let _ = ResumeTicket {
+///     correlation_id: "c".into(),
+///     run_id: run::Id("r".into()),
+///     thread_id: thread::Id("t".into()),
+///     snapshot_id: "s".into(),
+///     catalog_fingerprint: "f".into(),
+///     delegation_origin: None,
+///     data_subject_id: None,
+///     reason: AwaitReason::ToolPermission,
+///     call_id: None,
+///     pending_tool: None,
+///     deadline_ms: None,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResumeTicket {
     /// Idempotency/correlation key; deduplicates retries and duplicate wakes.
@@ -87,22 +202,82 @@ pub struct ResumeTicket {
     /// Kept as a plain id so the agent contract does not depend on runtime types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_subject_id: Option<String>,
-    pub reason: AwaitReason,
-    /// The tool call awaiting a result, when the wait is a tool decision.
-    pub call_id: Option<String>,
-    /// The pending tool call, kept so an `allow` decision can execute it on
-    /// resume. Held as id + JSON args (not a runtime-facing `ToolCall`).
-    #[serde(default)]
-    pub pending_tool: Option<PendingTool>,
+    target: AwaitTarget,
     /// Optional expiry (epoch millis). A resume after this is stale.
     pub deadline_ms: Option<u64>,
 }
 
-/// The tool call a wait is holding, in pure data form.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PendingTool {
-    pub tool_id: String,
-    pub arguments: serde_json::Value,
+impl ResumeTicket {
+    pub fn new(
+        correlation_id: impl Into<String>,
+        run_id: crate::agent::run::Id,
+        thread_id: crate::agent::thread::Id,
+        snapshot_id: impl Into<String>,
+        catalog_fingerprint: impl Into<String>,
+        target: AwaitTarget,
+    ) -> Self {
+        Self {
+            correlation_id: correlation_id.into(),
+            run_id,
+            thread_id,
+            snapshot_id: snapshot_id.into(),
+            catalog_fingerprint: catalog_fingerprint.into(),
+            delegation_origin: None,
+            data_subject_id: None,
+            target,
+            deadline_ms: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_delegation_origin(
+        mut self,
+        origin: Option<crate::agent::delegation::DelegationOrigin>,
+    ) -> Self {
+        self.delegation_origin = origin;
+        self
+    }
+
+    #[must_use]
+    pub fn with_data_subject(mut self, data_subject_id: Option<String>) -> Self {
+        self.data_subject_id = data_subject_id;
+        self
+    }
+
+    #[must_use]
+    pub fn with_deadline(mut self, deadline_ms: Option<u64>) -> Self {
+        self.deadline_ms = deadline_ms;
+        self
+    }
+
+    pub fn bind_thread(&mut self, thread_id: crate::agent::thread::Id) {
+        self.thread_id = thread_id;
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> AwaitReason {
+        self.target.reason()
+    }
+
+    #[must_use]
+    pub fn call_id(&self) -> Option<&str> {
+        self.target.call_id()
+    }
+
+    #[must_use]
+    pub fn pending_tool(&self) -> Option<&PendingTool> {
+        self.target.pending_tool()
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &AwaitTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub fn tool_call(&self) -> Option<(&str, &PendingTool)> {
+        self.target.tool_call()
+    }
 }
 
 #[cfg(test)]
@@ -131,27 +306,118 @@ mod tests {
     }
 
     #[test]
-    fn pending_tool_and_ticket_round_trip() {
+    fn every_closed_target_projects_and_round_trips() {
         let pt = PendingTool {
             tool_id: "t".into(),
             arguments: serde_json::json!({"a": 1}),
         };
-        // A ticket without a pending_tool round-trips (serde default fills None).
-        let ticket = ResumeTicket {
-            correlation_id: "c".into(),
-            run_id: crate::agent::run::Id("r".into()),
-            thread_id: crate::agent::thread::Id("th".into()),
-            snapshot_id: "s".into(),
-            catalog_fingerprint: "f".into(),
-            delegation_origin: None,
-            data_subject_id: None,
-            reason: AwaitReason::ToolPermission,
-            call_id: Some("call".into()),
-            pending_tool: Some(pt),
-            deadline_ms: Some(42),
-        };
-        let back: ResumeTicket =
-            serde_json::from_str(&serde_json::to_string(&ticket).unwrap()).unwrap();
-        assert_eq!(back, ticket);
+        let cases = [
+            (
+                AwaitTarget::ToolCall {
+                    reason: ToolAwaitReason::Permission,
+                    call_id: "tool-call".into(),
+                    tool: pt.clone(),
+                },
+                AwaitReason::ToolPermission,
+                Some("tool-call"),
+                true,
+            ),
+            (
+                AwaitTarget::ToolCall {
+                    reason: ToolAwaitReason::ClientExecution,
+                    call_id: "client-call".into(),
+                    tool: pt.clone(),
+                },
+                AwaitReason::ExternalEvent,
+                Some("client-call"),
+                true,
+            ),
+            (
+                AwaitTarget::ToolCall {
+                    reason: ToolAwaitReason::ScheduledAction,
+                    call_id: "scheduled-call".into(),
+                    tool: pt.clone(),
+                },
+                AwaitReason::ScheduledAction,
+                Some("scheduled-call"),
+                true,
+            ),
+            (
+                AwaitTarget::ToolCall {
+                    reason: ToolAwaitReason::Delegation,
+                    call_id: "delegated-call".into(),
+                    tool: pt,
+                },
+                AwaitReason::Delegation,
+                Some("delegated-call"),
+                true,
+            ),
+            (
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::UserInput,
+                    call_id: "remote-task".into(),
+                },
+                AwaitReason::UserInput,
+                Some("remote-task"),
+                false,
+            ),
+            (
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::ExternalEvent,
+                    call_id: "remote-auth".into(),
+                },
+                AwaitReason::ExternalEvent,
+                Some("remote-auth"),
+                false,
+            ),
+            (
+                AwaitTarget::Pause(PauseReason::Manual),
+                AwaitReason::ManualPause,
+                None,
+                false,
+            ),
+            (
+                AwaitTarget::Pause(PauseReason::RateLimit),
+                AwaitReason::RateLimit,
+                None,
+                false,
+            ),
+        ];
+
+        for (target, reason, call_id, has_tool) in cases {
+            let ticket = ResumeTicket::new(
+                "c",
+                crate::agent::run::Id("r".into()),
+                crate::agent::thread::Id("th".into()),
+                "s",
+                "f",
+                target,
+            )
+            .with_deadline(Some(42));
+            assert_eq!(ticket.reason(), reason);
+            assert_eq!(ticket.call_id(), call_id);
+            assert_eq!(ticket.pending_tool().is_some(), has_tool);
+            assert_eq!(ticket.tool_call().is_some(), has_tool);
+
+            let back: ResumeTicket =
+                serde_json::from_str(&serde_json::to_string(&ticket).unwrap()).unwrap();
+            assert_eq!(back, ticket);
+        }
+    }
+
+    #[test]
+    fn legacy_optional_payload_cannot_cross_the_serde_boundary() {
+        let legacy = serde_json::json!({
+            "correlation_id": "c",
+            "run_id": "r",
+            "thread_id": "th",
+            "snapshot_id": "s",
+            "catalog_fingerprint": "f",
+            "reason": "ToolPermission",
+            "call_id": null,
+            "pending_tool": null,
+            "deadline_ms": null
+        });
+        assert!(serde_json::from_value::<ResumeTicket>(legacy).is_err());
     }
 }

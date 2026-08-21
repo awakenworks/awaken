@@ -113,13 +113,13 @@ pub(super) async fn run_tool_calls(
                 delegation_origin,
                 &call.call_id,
                 &call,
-                AwaitReason::ExternalEvent,
+                ToolAwaitReason::ClientExecution,
             );
             emit(
                 context,
                 run_id,
                 AgentEvent::Fact(Fact::Awaiting {
-                    pending_tool_use_id: ticket.call_id.clone(),
+                    pending_tool_use_id: ticket.call_id().map(str::to_owned),
                 }),
             )
             .await;
@@ -216,13 +216,13 @@ pub(super) async fn run_tool_calls(
                                     delegation_origin,
                                     &call.call_id,
                                     &call,
-                                    AwaitReason::Delegation,
+                                    ToolAwaitReason::Delegation,
                                 );
                                 emit(
                                     context,
                                     run_id,
                                     AgentEvent::Fact(Fact::Awaiting {
-                                        pending_tool_use_id: ticket.call_id.clone(),
+                                        pending_tool_use_id: ticket.call_id().map(str::to_owned),
                                     }),
                                 )
                                 .await;
@@ -303,13 +303,13 @@ pub(super) async fn run_tool_calls(
                         delegation_origin,
                         &correlation_id,
                         &call,
-                        AwaitReason::ToolPermission,
+                        ToolAwaitReason::Permission,
                     );
                     emit(
                         context,
                         run_id,
                         AgentEvent::Fact(Fact::Awaiting {
-                            pending_tool_use_id: ticket.call_id.clone(),
+                            pending_tool_use_id: ticket.call_id().map(str::to_owned),
                         }),
                     )
                     .await;
@@ -347,13 +347,13 @@ pub(super) async fn run_tool_calls(
                         delegation_origin,
                         &correlation_id,
                         &call,
-                        AwaitReason::ScheduledAction,
+                        ToolAwaitReason::ScheduledAction,
                     );
                     emit(
                         context,
                         run_id,
                         AgentEvent::Fact(Fact::Awaiting {
-                            pending_tool_use_id: ticket.call_id.clone(),
+                            pending_tool_use_id: ticket.call_id().map(str::to_owned),
                         }),
                     )
                     .await;
@@ -729,7 +729,7 @@ pub(super) async fn recover_tool_batch(
                         delegation_origin,
                         &correlation_id,
                         &call,
-                        AwaitReason::ToolPermission,
+                        ToolAwaitReason::Permission,
                     );
                     batch
                         .mark_awaiting(
@@ -760,7 +760,7 @@ pub(super) async fn recover_tool_batch(
                         delegation_origin,
                         &correlation_id,
                         &call,
-                        AwaitReason::ScheduledAction,
+                        ToolAwaitReason::ScheduledAction,
                     );
                     batch
                         .mark_awaiting(
@@ -844,7 +844,7 @@ pub(super) async fn recover_tool_batch(
                         delegation_origin,
                         &call.call_id,
                         &call,
-                        AwaitReason::Delegation,
+                        ToolAwaitReason::Delegation,
                     );
                     batch
                         .mark_awaiting(

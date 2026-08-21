@@ -331,12 +331,11 @@ pub(super) async fn resume_delegation(
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
-    let call_id = ticket.call_id.clone().unwrap_or_default();
-    let pending = ticket.pending_tool.as_ref().ok_or_else(|| {
+    let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
         Error::Execution("awaiting delegation is missing its pending tool".to_string())
     })?;
     let call = ToolCall {
-        call_id: call_id.clone(),
+        call_id: call_id.to_string(),
         tool_id: pending.tool_id.clone(),
         arguments: pending.arguments.clone(),
     };
@@ -355,7 +354,7 @@ pub(super) async fn resume_delegation(
         ticket.delegation_origin.as_ref(),
         &resolved.agent_id.0,
         run_id,
-        &call_id,
+        call_id,
     ) {
         Ok(origin) => {
             let id = origin.delegation_id.clone();
@@ -432,7 +431,7 @@ pub(super) async fn resume_delegation(
 
     let synthetic = match step {
         Ok(DelegationStep::Ended { text, .. }) => {
-            ResumeResult::ToolResult(ToolOutput::ok(&call_id, text))
+            ResumeResult::ToolResult(ToolOutput::ok(call_id, text))
         }
         Ok(DelegationStep::Awaiting { continuation }) => {
             let mut staged_state = Vec::new();
@@ -459,7 +458,7 @@ pub(super) async fn resume_delegation(
             )
             .await;
         }
-        Err(error) => ResumeResult::ToolResult(delegation_error_output(&call_id, error)?),
+        Err(error) => ResumeResult::ToolResult(delegation_error_output(call_id, error)?),
     };
 
     drive_resumed(

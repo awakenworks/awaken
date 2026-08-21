@@ -359,20 +359,15 @@ mod assemble_tests {
     }
 
     fn ticket(run: &str, thread: &str) -> crate::agent::awaiting::ResumeTicket {
-        use crate::agent::awaiting::{AwaitReason, ResumeTicket};
-        ResumeTicket {
-            correlation_id: "corr".into(),
-            run_id: RunId(run.into()),
-            thread_id: ThreadId(thread.into()),
-            snapshot_id: "snap".into(),
-            catalog_fingerprint: "fp".into(),
-            delegation_origin: None,
-            data_subject_id: None,
-            reason: AwaitReason::UserInput,
-            call_id: None,
-            pending_tool: None,
-            deadline_ms: None,
-        }
+        use crate::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
+        ResumeTicket::new(
+            "corr",
+            RunId(run.into()),
+            ThreadId(thread.into()),
+            "snap",
+            "fp",
+            AwaitTarget::Pause(PauseReason::Manual),
+        )
     }
 
     #[test]

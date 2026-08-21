@@ -129,7 +129,7 @@ impl SharedHost {
             .await
             .map_err(HostError::internal)?
             .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to resume"))?;
-        if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause {
+        if ticket.reason() != awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause {
             return Err(HostError::bad_request(
                 "durable text resume requires a manual-pause ticket",
             ));
