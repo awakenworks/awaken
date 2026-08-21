@@ -158,6 +158,9 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
         (workspace_id == "workspace" && agent_id == "profiled" && source_revision == 7).then(|| {
             let mut snapshot =
                 awaken_runtime_contract::ExecutableAgentSnapshot::builder("profiled")
+                    .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                        "test", "model", "native",
+                    ))
                     .fingerprint("profiled-revision-7")
                     .build();
             snapshot.metadata.source.revision = 7;

@@ -562,6 +562,9 @@ mod test_support {
 
     pub(crate) fn registration(revision: u64, fingerprint: &str) -> ExecutableAgentRegistration {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
             .fingerprint(fingerprint)
             .build();
         snapshot.metadata = AgentSnapshotMetadata {

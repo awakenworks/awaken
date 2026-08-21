@@ -457,7 +457,7 @@ pub enum ContextPolicy {
     KeepLast { keep_last: usize },
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ModelBinding {
     /// The *provider identity* — the principal whose key and quota this attempt
     /// runs under. It is the cooldown / account-spread key: two candidates on the

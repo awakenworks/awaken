@@ -693,8 +693,16 @@ mod tests {
 
     fn binding_named(worker: &str, grader: &str) -> Binding {
         Binding {
-            worker: awaken_runtime_contract::ExecutableAgentSnapshot::builder(worker).build(),
-            grader: awaken_runtime_contract::ExecutableAgentSnapshot::builder(grader).build(),
+            worker: awaken_runtime_contract::ExecutableAgentSnapshot::builder(worker)
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model", "native",
+                ))
+                .build(),
+            grader: awaken_runtime_contract::ExecutableAgentSnapshot::builder(grader)
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model", "native",
+                ))
+                .build(),
         }
     }
 
