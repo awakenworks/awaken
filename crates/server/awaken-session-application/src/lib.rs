@@ -57,7 +57,8 @@ pub use run_admission::{
 pub use runtime_commands::SessionRepositoryResourceInput;
 mod update;
 pub use update::{
-    SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+    SessionFieldUpdate, SessionMetadataUpdate, SessionUpdateChanges, SessionUpdateCommand,
+    SessionUpdateError, SessionUpdateOutcome,
 };
 mod terminal;
 pub use terminal::{SessionDeleteCommand, SessionDispositionMutation};

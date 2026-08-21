@@ -59,6 +59,13 @@ fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "ip route 2>/dev/null | grep -q default".into(),
+        ],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -68,9 +75,6 @@ fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", "ip route 2>/dev/null | grep -q default"],
-        })),
     }
 }
 
@@ -129,6 +133,9 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["sh".into(), "-c".into(), command.into()],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "in".into(),
             source: pc::MountSource::CacheVolume {
@@ -150,7 +157,6 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": ["sh", "-c", command] })),
     }
 }
 
@@ -195,6 +201,13 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
     let spec = pc::SandboxSpec {
         scope: "pw-inline".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "grep -q hello-inline-content /data/config.toml".into(),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "cfg".into(),
             source: pc::MountSource::Inline {
@@ -213,9 +226,6 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", "grep -q hello-inline-content /data/config.toml"]
-        })),
     };
     let exit = run_to_exit(&provider, &rt, "pw-inline", &spec).await;
     assert_eq!(
@@ -240,6 +250,17 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
     let spec = pc::SandboxSpec {
         scope: "pw-native-credential".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "test -f /acp-config/auth.json || exit 11; test \"$(cat /acp-config/auth.json)\" = '{}' || exit 12; printf '%s' '{}' > /acp-config/auth.json || exit 13",
+                String::from_utf8_lossy(initial),
+                String::from_utf8_lossy(refreshed)
+            ),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "codex-auth".into(),
             source: pc::MountSource::Secret {
@@ -259,9 +280,6 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", format!("test -f /acp-config/auth.json || exit 11; test \"$(cat /acp-config/auth.json)\" = '{}' || exit 12; printf '%s' '{}' > /acp-config/auth.json || exit 13", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
-        })),
     };
 
     let exit = run_to_exit(&provider, &rt, "pw-native-credential", &spec).await;
@@ -283,6 +301,13 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
     let spec = pc::SandboxSpec {
         scope: "pw-file-blob".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "grep -q resolved-from-the-store /data/in.txt".into(),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "in".into(),
             source: pc::MountSource::File {
@@ -302,9 +327,6 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", "grep -q resolved-from-the-store /data/in.txt"]
-        })),
     };
     let exit = run_to_exit(&provider, &rt, "pw-file-blob", &spec).await;
     assert_eq!(
@@ -333,6 +355,13 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
     let spec = pc::SandboxSpec {
         scope: "pw-repodir".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "grep -q repo-dir-marker /workspace/repo/src/main.rs && test -f /workspace/repo/.git/HEAD".into(),
+        ],
+        deny_tool_egress: false,
         mounts: vec![pc::MountRequirement {
             mount_id: "repo".into(),
             source: pc::MountSource::CacheVolume {
@@ -352,10 +381,6 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c",
-                "grep -q repo-dir-marker /workspace/repo/src/main.rs && test -f /workspace/repo/.git/HEAD"]
-        })),
     };
     let exit = run_to_exit(&provider, &rt, "pw-repodir", &spec).await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -429,6 +454,15 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
     let hog = |scope: &str, limits: pc::ResourceLimits| pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "dd".into(),
+            "if=/dev/zero".into(),
+            "of=/dev/shm/x".into(),
+            "bs=1M".into(),
+            "count=32".into(),
+        ],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -438,9 +472,6 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
         limits,
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["dd", "if=/dev/zero", "of=/dev/shm/x", "bs=1M", "count=32"],
-        })),
     };
 
     // Capped at 16 MiB: the 32 MiB allocation blows the cgroup -> OOM-kill (137).
@@ -494,6 +525,9 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
     let spec = pc::SandboxSpec {
         scope: "pw-allowlist-proxy".into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["true".into()],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -505,9 +539,6 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["true"],
-        })),
     };
     assert!(provider.create(&spec).await.is_err());
     let no_proxy = ContainerProvider::new(rt.clone(), "busybox:latest");
@@ -522,6 +553,9 @@ fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["sleep".into(), "30".into()],
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -531,7 +565,6 @@ fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     }
 }
 

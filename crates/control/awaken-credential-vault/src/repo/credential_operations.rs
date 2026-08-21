@@ -465,7 +465,13 @@ async fn execute_managed_mutation(
     repo.begin_managed_mutation(pending.clone()).await?;
     for (reference, material) in materials {
         if let Err(error) = store.put(&reference, material).await {
-            let _ = abort_managed_mutation_before_cleanup(&pending, store, repo).await;
+            if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
+            {
+                return Err(ManagedCredentialMutationError::Compensation {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                });
+            }
             return Err(error.into());
         }
     }
@@ -476,7 +482,13 @@ async fn execute_managed_mutation(
         Ok(reclaiming) => reclaiming,
         Err(error @ ManagedCredentialMutationError::Store(_)) => return Err(error),
         Err(error) => {
-            let _ = abort_managed_mutation_before_cleanup(&pending, store, repo).await;
+            if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
+            {
+                return Err(ManagedCredentialMutationError::Compensation {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                });
+            }
             return Err(error);
         }
     };

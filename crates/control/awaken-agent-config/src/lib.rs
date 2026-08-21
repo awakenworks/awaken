@@ -6,10 +6,12 @@
 
 #![forbid(unsafe_code)]
 
+mod agent_inputs;
 mod compile;
 mod config;
 mod store;
 
+pub use agent_inputs::{AgentEnvironmentBinding, AgentInputConfig};
 pub use awaken_agent_contract::{AgentSkillBinding, ModelTarget};
 pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
 pub use awaken_tenancy::ScopeId;

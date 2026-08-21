@@ -754,7 +754,7 @@ async fn update_admission_uses_only_durable_session_status() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let command = |title: &str| SessionUpdateCommand {
-        title: Some(Some(title.into())),
+        title: Some(SessionFieldUpdate::Replace(title.into())),
         metadata: None,
         budget: None,
         tools: None,
@@ -821,10 +821,13 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let command = |budget| SessionUpdateCommand {
+    let command = |budget: Option<u64>| SessionUpdateCommand {
         title: None,
         metadata: None,
-        budget: Some(budget),
+        budget: Some(match budget {
+            Some(value) => SessionFieldUpdate::Replace(value),
+            None => SessionFieldUpdate::Clear,
+        }),
         tools: None,
         mcp_candidates: None,
         idempotency_key: None,

@@ -827,7 +827,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
                     },
                 )])),
                 external_id: None,
-                name: Some(Some("Alice".into())),
+                name: Some(UserProfileFieldUpdate::Replace("Alice".into())),
             },
         )
         .await
@@ -1009,7 +1009,7 @@ async fn stale_profile_writer_retries_without_losing_consent() {
             "org",
             &profile.id,
             UpdateUserProfileCommand {
-                name: Some(Some("preserved".into())),
+                name: Some(UserProfileFieldUpdate::Replace("preserved".into())),
                 ..Default::default()
             },
         )
@@ -1038,7 +1038,7 @@ async fn revision_exhaustion_fails_instead_of_saturating() {
                 "org",
                 "uprof_max",
                 UpdateUserProfileCommand {
-                    name: Some(Some("change".into())),
+                    name: Some(UserProfileFieldUpdate::Replace("change".into())),
                     ..Default::default()
                 }
             )

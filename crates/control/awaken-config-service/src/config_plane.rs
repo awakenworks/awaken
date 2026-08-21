@@ -320,10 +320,7 @@ impl ConfigPlane {
                 publications.into_iter().find(|publication| {
                     publication.agent_id == agent_id
                         && publication.source_revision == source_revision
-                        && publication.targets_execution_workspace(
-                            configuration_scope.as_str(),
-                            execution_workspace,
-                        )
+                        && publication.targets_execution_workspace(execution_workspace)
                 })
             })
             .map_err(|error| error.to_string())

@@ -262,7 +262,7 @@ mod tests {
     use async_trait::async_trait;
     use awaken_deployment_contract::DeploymentLifecycleFact;
     use awaken_deployment_contract::{
-        DeploymentRecord, DeploymentRepositoryError, DeploymentRunRecord, DeploymentWriteOutcome,
+        DeploymentRepositoryError, DeploymentRunView, DeploymentView, DeploymentWriteOutcome,
         ScheduledRunClaimOutcome,
     };
 
@@ -272,19 +272,19 @@ mod tests {
 
     #[async_trait]
     impl DeploymentRepository for FailingDeploymentRepository {
-        async fn deployments(&self) -> Result<Vec<DeploymentRecord>, DeploymentRepositoryError> {
+        async fn deployments(&self) -> Result<Vec<DeploymentView>, DeploymentRepositoryError> {
             Err(DeploymentRepositoryError::Storage("offline".into()))
         }
 
         async fn deployment_runs(
             &self,
-        ) -> Result<Vec<DeploymentRunRecord>, DeploymentRepositoryError> {
+        ) -> Result<Vec<DeploymentRunView>, DeploymentRepositoryError> {
             unreachable!("restore stops after the first failed authority read")
         }
 
         async fn write_deployment(
             &self,
-            _record: DeploymentRecord,
+            _record: DeploymentView,
             _expected_revision: Option<u64>,
             _scheduled_limit: usize,
             _lifecycle: Option<DeploymentLifecycleFact>,
@@ -294,7 +294,7 @@ mod tests {
 
         async fn upsert_deployment_run(
             &self,
-            _record: DeploymentRunRecord,
+            _record: DeploymentRunView,
             _lifecycle: Option<DeploymentLifecycleFact>,
         ) -> Result<(), DeploymentRepositoryError> {
             unreachable!("restore is read-only")
@@ -304,8 +304,8 @@ mod tests {
             &self,
             _claim_id: &str,
             _expected_deployment_revision: u64,
-            _deployment: DeploymentRecord,
-            _run: DeploymentRunRecord,
+            _deployment: DeploymentView,
+            _run: DeploymentRunView,
             _lifecycle: DeploymentLifecycleFact,
         ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError> {
             unreachable!("restore never claims scheduled work")

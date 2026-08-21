@@ -674,7 +674,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
         revision: awaken_environment_contract::EnvironmentRevision(7),
         self_hosted,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-7".into()),
-        sandbox: serde_json::json!({}),
+        sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),

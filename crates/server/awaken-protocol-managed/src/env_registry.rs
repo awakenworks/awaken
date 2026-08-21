@@ -5,8 +5,8 @@
 
 use awaken_environment_contract::OBJECT_AT;
 pub(crate) use awaken_environment_contract::{
-    EnvItem, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
-    EnvironmentPackagesMutation,
+    EnvItem, EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate,
+    EnvironmentNetworkingMutation, EnvironmentPackagesMutation,
 };
 
 use crate::types::environment::Environment;

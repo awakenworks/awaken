@@ -53,18 +53,20 @@ pub use prepare::{
     EnvironmentPlan, PrepareError, prepare_environment, validate_mount_requirements,
 };
 pub use sandbox::{
-    BlobSource, CheckpointObjectMetadata, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount,
-    MemoryMounter, OnUnmet, PolicySelection, ProcessHandle, RepositoryHttpBasicCredential,
-    RepositoryRealizationPlan, RepositoryRealizer, Sandbox, SandboxCapabilities,
-    SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore, SandboxError,
-    SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
+    BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
+    ExitStatus, IsolationClass, IsolationPolicy, LocalSandboxHandleV1, MemoryMount, MemoryMounter,
+    NamespaceProviderKind, NamespaceSandboxHandleV1, OnUnmet, PolicySelection, ProcessHandle,
+    RepositoryHttpBasicCredential, RepositoryRealizationPlan, RepositoryRealizer, Sandbox,
+    SandboxCapabilities, SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
+    SandboxError, SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
     SelectionError, Signal, StoredCheckpointObject, capability_requirements_satisfied,
     select_provider, select_provider_with_policy,
 };
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, MaterializedCommand, MaterializedEnvValue,
-    MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId, SandboxOverride, SandboxSpec, Stdio,
-    materialize_process_command,
+    MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId, SandboxCheckpointExpiryBehavior,
+    SandboxIdleRetentionMode, SandboxIdleRetentionPolicy, SandboxOverride, SandboxProvisioning,
+    SandboxSpec, Stdio, materialize_process_command,
 };
 pub use vocab::{
     Artifact, CacheVolumeLocation, EnvValue, EnvVar, EnvVisibility, MemoryWriteConsistency,

@@ -55,25 +55,20 @@ pub(crate) fn project_environment(
         },
         |_| pc::PackageRequirements::default(),
     );
-    let mut sandbox =
-        pc::SandboxOverride::from_config_value(&environment.sandbox).and_then(|mut sandbox| {
-            // EnvironmentSnapshot.network is the sole reachability authority. Old
-            // retained blobs may still contain sandbox.network; ignoring it prevents
-            // a late widening override.
-            sandbox.network = None;
-            (!sandbox.is_empty()).then_some(sandbox)
-        });
+    let mut sandbox = environment.sandbox.clone();
+    // EnvironmentSnapshot.network is the sole reachability authority. The
+    // authoring overlay cannot become a second, late widening decision.
+    sandbox.network = None;
     if let Some(image) = &environment.prepared_image {
-        sandbox.get_or_insert_with(Default::default).environment =
-            Some(pc::EnvironmentKind::Image {
-                reference: image.clone(),
-            });
+        sandbox.environment = Some(pc::EnvironmentKind::Image {
+            reference: image.clone(),
+        });
     }
     crate::session_slot::FrozenEnvironmentRuntimeProjection {
         fingerprint: environment.config_fingerprint.clone(),
         network,
         packages,
-        sandbox,
+        sandbox: (!sandbox.is_empty()).then_some(sandbox),
         provisioning: environment.sandbox_provisioning,
         credential_realization: environment.credential_realization.clone(),
     }
@@ -134,12 +129,13 @@ fn sandbox_spec_from_projection(
     } else {
         projected_network
     };
-    let extra = environment
-        .is_some_and(|projection| projection.network.is_restricted())
-        .then(|| serde_json::json!({ "deny_egress": true }));
+    let deny_tool_egress = environment.is_some_and(|projection| projection.network.is_restricted());
     let base = pc::SandboxSpec {
         scope: scope.to_owned(),
         isolation: pc::IsolationClass::Workdir,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress,
         mounts,
         env,
         packages: environment
@@ -151,7 +147,6 @@ fn sandbox_spec_from_projection(
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra,
     };
     environment
         .and_then(|projection| projection.sandbox.clone())
@@ -210,6 +205,9 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: thread.to_string(),
         isolation: pc::IsolationClass::Workdir,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
         mounts: Vec::new(),
         env: Vec::new(),
         packages: Default::default(),
@@ -219,7 +217,6 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
         lease_ttl_secs: None,
-        extra: None,
     }
 }
 
@@ -624,13 +621,9 @@ mod provisioning_registry_tests {
         m.mount_path.strip_prefix(".mnt/").unwrap_or(&m.mount_path)
     }
 
-    /// Whether a projected Workdir spec denies egress (carried on the opaque `extra`).
+    /// Whether a projected Workdir spec denies tool egress.
     fn denies(spec: &pc::SandboxSpec) -> bool {
-        spec.extra
-            .as_ref()
-            .and_then(|v| v.get("deny_egress"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+        spec.deny_tool_egress
     }
 
     struct NoLlm;
@@ -758,7 +751,7 @@ mod provisioning_registry_tests {
                 config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "environment-1".into(),
                 ),
-                sandbox: serde_json::json!({}),
+                sandbox: Default::default(),
                 sandbox_provisioning: Default::default(),
                 idle_retention: Default::default(),
                 packages: Default::default(),

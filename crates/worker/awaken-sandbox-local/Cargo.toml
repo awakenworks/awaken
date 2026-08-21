@@ -21,6 +21,7 @@ awaken-agent-channel.workspace = true
 blake3 = "1"
 awaken-ext-builtin-tools = { workspace = true }
 async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt", "sync", "io-util"] }

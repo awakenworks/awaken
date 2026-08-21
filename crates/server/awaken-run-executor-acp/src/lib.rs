@@ -27,7 +27,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 use awaken_agent_contract::agent::state::{
-    Action as StateAction, Command as StateCommand, MergePolicy, Scope,
+    Command as StateCommand, MergePolicy, Scope, StateCell, StateKey, Store,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
@@ -50,7 +50,7 @@ use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
 };
-use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
@@ -625,7 +625,8 @@ impl AcpRunExecutor {
         // turn reloads the CLI's own session (`session/load`) instead of starting
         // fresh — context survives the relaunch (the newline stand-in leaves it
         // `None`, so it always starts fresh, unchanged from before).
-        let mut acp_session_id = restored_session_id(&context, &activation.thread_id, &backend_ref);
+        let mut acp_session_id =
+            restored_session_id(&context, &activation.thread_id, &backend_ref)?;
         // The run's token usage, accumulated across turns and committed as thread
         // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
@@ -825,7 +826,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
-                        ),
+                        )?,
                     )
                     .await?;
                     return Ok(state);
@@ -858,7 +859,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
-                        ),
+                        )?,
                     )
                     .await?;
                     return Ok(state);
@@ -896,7 +897,7 @@ impl AcpRunExecutor {
                         &model_ref,
                         &backend_ref,
                         acp_session_id.as_deref(),
-                    ),
+                    )?,
                 )
                 .await?;
                 return Ok(state);
@@ -933,7 +934,7 @@ impl AcpRunExecutor {
                         &model_ref,
                         &backend_ref,
                         acp_session_id.as_deref(),
-                    ),
+                    )?,
                 )
                 .await?;
                 return Ok(state);
@@ -965,7 +966,7 @@ impl AcpRunExecutor {
                                     &model_ref,
                                     &backend_ref,
                                     acp_session_id.as_deref(),
-                                ),
+                                )?,
                             )
                             .await?;
                             return Ok(state);
@@ -992,7 +993,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
-                        ),
+                        )?,
                     )
                     .await?;
                     return Ok(state);
@@ -1011,7 +1012,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
-                        ),
+                        )?,
                     )
                     .await?;
                     return Ok(state);
@@ -1155,62 +1156,67 @@ fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
     }
     let mut tally = ThreadUsage::default();
     tally.record(model_ref, *usage);
-    vec![StateCommand::set(
-        Scope::Thread,
-        MergePolicy::Commutative,
-        THREAD_USAGE_STATE_KEY,
-        serde_json::to_value(tally).expect("thread usage serializes"),
-    )]
+    vec![ThreadUsageKey::write(&tally)]
 }
 
 const ACP_SESSION_ID_STATE_KEY: &str = "__acp_session_id";
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcpSessionReference {
+    backend_ref: String,
+    session_id: String,
+}
+
+fn acp_session_cell() -> StateCell<AcpSessionReference> {
+    StateCell::new(
+        Scope::Thread,
+        MergePolicy::Disjoint,
+        ACP_SESSION_ID_STATE_KEY,
+    )
+}
 
 fn run_state(
     usage: &TokenUsage,
     model_ref: &str,
     backend_ref: &str,
     session_id: Option<&str>,
-) -> Vec<StateCommand> {
+) -> Result<Vec<StateCommand>> {
     let mut state = usage_state(usage, model_ref);
     if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
-        state.push(StateCommand::set(
-            Scope::Thread,
-            MergePolicy::Disjoint,
-            ACP_SESSION_ID_STATE_KEY,
-            serde_json::json!({
-                "backend_ref": backend_ref,
-                "session_id": session_id,
-            }),
-        ));
+        state.push(
+            acp_session_cell()
+                .write(&AcpSessionReference {
+                    backend_ref: backend_ref.to_owned(),
+                    session_id: session_id.to_owned(),
+                })
+                .map_err(|error| Error::Execution(error.to_string()))?,
+        );
     }
-    state
+    Ok(state)
 }
 
 fn restored_session_id(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     backend_ref: &str,
-) -> Option<String> {
-    context
-        .reader
-        .as_ref()?
-        .committed_state(thread_id)
-        .into_iter()
-        .rev()
-        .find(|command| command.scope == Scope::Thread && command.key.0 == ACP_SESSION_ID_STATE_KEY)
-        .and_then(|command| match command.action {
-            StateAction::Set(value)
-                if value.get("backend_ref").and_then(serde_json::Value::as_str)
-                    == Some(backend_ref) =>
-            {
-                value
-                    .get("session_id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-            }
-            StateAction::Set(_) | StateAction::Remove => None,
-        })
+) -> Result<Option<String>> {
+    let Some(reader) = &context.reader else {
+        return Ok(None);
+    };
+    let state = Store::rebuild(&reader.committed_state(thread_id));
+    let Some(reference) = acp_session_cell()
+        .load(&state)
+        .map_err(|error| Error::Execution(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    if reference.backend_ref.is_empty() || reference.session_id.is_empty() {
+        return Err(Error::Execution(
+            "ACP session reference contains an empty durable identity".to_string(),
+        ));
+    }
+    Ok((reference.backend_ref == backend_ref).then_some(reference.session_id))
 }
 
 /// A no-tool awaiting ticket for an operator pause (ADR-0054): the ACP run awaits

@@ -54,10 +54,7 @@ pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError
 }
 
 fn declared_environment(spec: &pc::SandboxSpec) -> Option<pc::EnvironmentKind> {
-    spec.extra
-        .as_ref()
-        .and_then(|value| value.get("environment"))
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
+    spec.environment.clone()
 }
 
 pub(crate) fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {

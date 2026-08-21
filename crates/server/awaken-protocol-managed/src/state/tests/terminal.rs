@@ -844,7 +844,10 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         revision: awaken_environment_contract::EnvironmentRevision(1),
         self_hosted: false,
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
-        sandbox: serde_json::json!({"isolation": "namespace"}),
+        sandbox: awaken_provisioning_contract::SandboxOverride {
+            isolation: Some(awaken_provisioning_contract::IsolationClass::Namespace),
+            ..Default::default()
+        },
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),

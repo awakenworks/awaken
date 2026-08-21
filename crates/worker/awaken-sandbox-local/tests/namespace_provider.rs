@@ -25,7 +25,9 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
     }
 }
 
@@ -557,7 +559,12 @@ async fn create_realizes_env_and_lifecycle_without_executing() {
     // Runtime attach / process reattach are not offered by this local tier.
     let req = pc::MountRequirement {
         mount_id: "late".into(),
-        source: pc::MountSource::Other(serde_json::json!({ "content": "x" })),
+        source: pc::MountSource::CacheVolume {
+            location: pc::CacheVolumeLocation::HostPath {
+                path: "/unsupported/late-cache".into(),
+            },
+            key: "late-cache".into(),
+        },
         mount_path: "/data/late".into(),
         access: pc::MountAccess::ReadWrite,
         lifetime: pc::MountLifetime::PerRun,

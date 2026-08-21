@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope, StateKey, Store};
+use awaken_agent_contract::agent::state::{
+    Action, Command, MergePolicy, Scope, StateCell, StateKey, Store,
+};
 use awaken_runtime_contract::content_fingerprint;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, ContextWindow, Contributions, HookReaction, IdBound,
@@ -54,12 +56,12 @@ fn compaction_key(run_id: &str) -> String {
 /// `compaction/<run_id>`. The wire event `agent.thread_context_compacted` carries
 /// no payload (aligned to `@anthropic-ai/sdk`), so the marker is a bare `true`.
 fn compaction_marker(run_id: &str) -> Command {
-    Command::set(
+    StateCell::new(
         Scope::Thread,
         MergePolicy::Commutative,
         compaction_key(run_id),
-        serde_json::Value::Bool(true),
     )
+    .write_bool(true)
 }
 
 /// The number of distinct folds recorded in `state` — one `compaction/<run_id>`

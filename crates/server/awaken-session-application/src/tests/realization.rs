@@ -932,8 +932,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
 }
 
 /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
-/// placement is Local or Worker; C3 a retained pre-placement row is marked
-/// LegacyUnspecified; C4 the process startup is local or registered.
+/// placement is Local or Worker; C3 the process startup is local or registered.
 /// The realization lease is intentionally absent from the causes: it is an
 /// assignment fence, never placement policy. Effects are E1 local physical
 /// realization or E2 dispatch-only Coordinator projection.
@@ -1014,12 +1013,6 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
         ("P1", preparing, false, false),
         ("P2", frozen(SessionRuntimePlacement::Local), false, false),
         ("P3", frozen(SessionRuntimePlacement::Worker), true, true),
-        (
-            "P4/P5",
-            frozen(SessionRuntimePlacement::LegacyUnspecified),
-            false,
-            true,
-        ),
     ] {
         assert_eq!(
             local.requires_external_realization(&value),

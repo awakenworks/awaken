@@ -4,13 +4,13 @@
 //! crate. Repository adapters persist opaque encodings of these application
 //! records, so neither storage nor this owner depends on Axum or Managed DTOs.
 
-mod model;
-
-pub use model::{
+pub use awaken_deployment_contract::{
     AgentSelector, CreateDeploymentCommand, DeploymentAgent, DeploymentLaunch,
-    DeploymentLaunchOutcome, DeploymentPauseError, DeploymentPauseReason, DeploymentRecord,
-    DeploymentRunFailure, DeploymentRunRecord, DeploymentRunView, DeploymentSchedule,
-    DeploymentStatus, DeploymentTrigger, DeploymentView, UpdateDeploymentCommand,
+    DeploymentLaunchOutcome, DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
+    DeploymentRecord, DeploymentRepositoryCheckout, DeploymentResource, DeploymentRunFailure,
+    DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentSeedEvent,
+    DeploymentStatus, DeploymentTrigger, DeploymentView, FieldUpdate, MetadataUpdate,
+    UpdateDeploymentCommand,
 };
 
 use std::collections::BTreeMap;
@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_deployment_contract::{
-    AgentArchiveCascade, Cron, DeploymentLifecycleFact, DeploymentRecord as StoredDeployment,
-    DeploymentRepository, DeploymentRepositoryError, DeploymentRunRecord as StoredRun,
-    DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION, ScheduledRunClaimOutcome,
+    AgentArchiveCascade, Cron, DeploymentLifecycleFact, DeploymentRepository,
+    DeploymentRepositoryError, DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION,
+    ScheduledRunClaimOutcome,
 };
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
@@ -299,7 +299,7 @@ impl DeploymentApplication {
         command: UpdateDeploymentCommand,
     ) -> Result<DeploymentView, DeploymentApplicationError> {
         self.refresh().await?;
-        if let Some(Some(schedule)) = &command.schedule {
+        if let Some(FieldUpdate::Replace(schedule)) = &command.schedule {
             validate_schedule(Some(schedule))?;
         }
         let current = self.get_cached(workspace_id, id)?;
@@ -316,13 +316,16 @@ impl DeploymentApplication {
         if let Some(value) = command.name {
             candidate.name = value;
         }
-        if let Some(value) = command.description {
-            candidate.description = value;
+        if let Some(change) = command.description {
+            candidate.description = match change {
+                FieldUpdate::Clear => None,
+                FieldUpdate::Replace(value) => Some(value),
+            };
         }
-        if let Some(metadata) = command.metadata {
-            match metadata {
-                None => candidate.metadata.clear(),
-                Some(patch) => {
+        if let Some(change) = command.metadata {
+            match change {
+                MetadataUpdate::Clear => candidate.metadata.clear(),
+                MetadataUpdate::Patch(patch) => {
                     for (key, value) in patch {
                         if let Some(value) = value {
                             candidate.metadata.insert(key, value);
@@ -336,21 +339,33 @@ impl DeploymentApplication {
         if let Some(value) = command.initial_events {
             candidate.initial_events = value;
         }
-        if let Some(value) = command.resources {
-            candidate.resources = value.unwrap_or_default();
+        if let Some(change) = command.resources {
+            candidate.resources = match change {
+                FieldUpdate::Clear => Vec::new(),
+                FieldUpdate::Replace(value) => value,
+            };
         }
-        if let Some(value) = command.schedule {
-            candidate.schedule = value;
+        if let Some(change) = command.schedule {
+            candidate.schedule = match change {
+                FieldUpdate::Clear => None,
+                FieldUpdate::Replace(value) => Some(value),
+            };
             candidate.next_fire_ms = candidate
                 .schedule
                 .as_ref()
                 .and_then(|schedule| next_occurrence(schedule, now_ms()));
         }
-        if let Some(value) = command.vault_ids {
-            candidate.vault_ids = value.unwrap_or_default();
+        if let Some(change) = command.vault_ids {
+            candidate.vault_ids = match change {
+                FieldUpdate::Clear => Vec::new(),
+                FieldUpdate::Replace(value) => value,
+            };
         }
-        if let Some(value) = command.budget_max_list_cost_minor {
-            candidate.budget_max_list_cost_minor = value;
+        if let Some(change) = command.budget_max_list_cost_minor {
+            candidate.budget_max_list_cost_minor = match change {
+                FieldUpdate::Clear => None,
+                FieldUpdate::Replace(value) => Some(value),
+            };
         }
         validate_record(&candidate)?;
         let current_had_schedule = current.schedule.is_some();
@@ -978,60 +993,34 @@ async fn load_projection(
         .deployments()
         .await?
         .into_iter()
-        .map(|stored| {
-            let record: DeploymentRecord = serde_json::from_str(&stored.data)
-                .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?;
-            if record.workspace_id != stored.workspace_id || record.revision != stored.revision {
-                return Err(DeploymentApplicationError::Unavailable(
-                    "Deployment owner mismatch in durable row".into(),
-                ));
-            }
-            Ok((stored.deployment_id, record))
-        })
-        .collect::<Result<_, _>>()?;
+        .map(|stored| (stored.id, stored.record))
+        .collect();
     let runs = repository
         .deployment_runs()
         .await?
         .into_iter()
-        .map(|stored| {
-            let record: DeploymentRunRecord = serde_json::from_str(&stored.data)
-                .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?;
-            if record.deployment_id != stored.deployment_id
-                || record.workspace_id != stored.workspace_id
-            {
-                return Err(DeploymentApplicationError::Unavailable(
-                    "DeploymentRun identity mismatch in durable row".into(),
-                ));
-            }
-            Ok((stored.run_id, record))
-        })
-        .collect::<Result<_, _>>()?;
+        .map(|stored| (stored.id, stored.record))
+        .collect();
     Ok((deployments, runs))
 }
 
 fn stored_deployment(
     id: &str,
     record: &DeploymentRecord,
-) -> Result<StoredDeployment, DeploymentApplicationError> {
-    Ok(StoredDeployment {
-        deployment_id: id.to_string(),
-        workspace_id: record.workspace_id.clone(),
-        revision: record.revision,
-        data: serde_json::to_string(record)
-            .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?,
+) -> Result<DeploymentView, DeploymentApplicationError> {
+    Ok(DeploymentView {
+        id: id.to_string(),
+        record: record.clone(),
     })
 }
 
 fn stored_run(
     id: &str,
     record: &DeploymentRunRecord,
-) -> Result<StoredRun, DeploymentApplicationError> {
-    Ok(StoredRun {
-        run_id: id.to_string(),
-        deployment_id: record.deployment_id.clone(),
-        workspace_id: record.workspace_id.clone(),
-        data: serde_json::to_string(record)
-            .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?,
+) -> Result<DeploymentRunView, DeploymentApplicationError> {
+    Ok(DeploymentRunView {
+        id: id.to_string(),
+        record: record.clone(),
     })
 }
 
@@ -1180,7 +1169,9 @@ mod tests {
             name: "nightly".into(),
             description: None,
             metadata: BTreeMap::new(),
-            initial_events: vec![serde_json::json!({"type":"user.message"})],
+            initial_events: vec![DeploymentSeedEvent::UserMessage {
+                content: Vec::new(),
+            }],
             resources: Vec::new(),
             schedule: schedule.then(|| DeploymentSchedule::Cron {
                 expression: "*/15 * * * *".into(),
@@ -1242,14 +1233,14 @@ mod tests {
         let first = application.create(command(true)).await.expect("R1");
         let unscheduled = application.create(command(false)).await.unwrap();
         assert!(application.create(command(true)).await.is_err(), "R2");
-        let schedule = command(true).schedule;
+        let schedule = command(true).schedule.expect("scheduled fixture");
         assert!(
             application
                 .update(
                     "workspace-a",
                     &unscheduled.id,
                     UpdateDeploymentCommand {
-                        schedule: Some(schedule.clone()),
+                        schedule: Some(FieldUpdate::Replace(schedule.clone())),
                         ..UpdateDeploymentCommand::default()
                     },
                 )
@@ -1274,7 +1265,7 @@ mod tests {
                     "workspace-a",
                     &unscheduled.id,
                     UpdateDeploymentCommand {
-                        schedule: Some(schedule),
+                        schedule: Some(FieldUpdate::Replace(schedule)),
                         ..UpdateDeploymentCommand::default()
                     },
                 )

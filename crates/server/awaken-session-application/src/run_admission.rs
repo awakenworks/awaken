@@ -45,8 +45,8 @@ pub struct CreateProfiledSessionCommand {
     /// published Agent's authored defaults.
     pub environment_id: Option<String>,
     pub model: Option<String>,
-    pub mounts: Vec<serde_json::Value>,
-    pub env: Vec<serde_json::Value>,
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
@@ -178,8 +178,13 @@ impl SessionApplication {
             return Ok(Some(recovered));
         }
         let owner = recovered.owner_scope;
-        let session = self
-            .reconcile_persisted_resources(&owner, recovered.session)
+        // Resource convergence is the largest Session state machine. Keep its
+        // future behind one heap indirection at this application boundary so
+        // protocol handlers do not synchronously embed the complete recovery,
+        // credential, and Resource reconciliation graph in their poll stack.
+        // The owned aggregate still crosses exactly one domain boundary; this
+        // is execution-shape isolation, not another persistence abstraction.
+        let session = Box::pin(self.reconcile_persisted_resources(&owner, recovered.session))
             .await
             .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let requires_external_realization = self.requires_external_realization(&session);

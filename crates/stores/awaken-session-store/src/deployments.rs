@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use awaken_deployment_contract::{
     DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository, DeploymentRepositoryError,
-    DeploymentRunRecord, DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION, ScheduledRunClaimOutcome,
+    DeploymentRunRecord, DeploymentRunView, DeploymentView, DeploymentWriteOutcome,
+    MAX_DEPLOYMENT_REVISION, ScheduledRunClaimOutcome,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
@@ -16,6 +17,68 @@ fn storage(error: impl std::fmt::Display) -> DeploymentRepositoryError {
 
 fn deployment_lifecycle_str(fact: &DeploymentLifecycleFact) -> String {
     serde_json::to_string(fact).expect("Deployment lifecycle fact serializes")
+}
+
+struct StoredDeploymentRow {
+    deployment_id: String,
+    workspace_id: String,
+    revision: u64,
+    data: String,
+}
+
+impl StoredDeploymentRow {
+    fn encode(view: DeploymentView) -> Result<Self, DeploymentRepositoryError> {
+        Ok(Self {
+            deployment_id: view.id,
+            workspace_id: view.record.workspace_id.clone(),
+            revision: view.record.revision,
+            data: serde_json::to_string(&view.record).map_err(storage)?,
+        })
+    }
+
+    fn decode(self) -> Result<DeploymentView, DeploymentRepositoryError> {
+        let record: DeploymentRecord = serde_json::from_str(&self.data).map_err(storage)?;
+        if record.workspace_id != self.workspace_id || record.revision != self.revision {
+            return Err(storage(
+                "Deployment indexed facts do not match its durable document",
+            ));
+        }
+        Ok(DeploymentView {
+            id: self.deployment_id,
+            record,
+        })
+    }
+}
+
+struct StoredDeploymentRunRow {
+    run_id: String,
+    deployment_id: String,
+    workspace_id: String,
+    data: String,
+}
+
+impl StoredDeploymentRunRow {
+    fn encode(view: DeploymentRunView) -> Result<Self, DeploymentRepositoryError> {
+        Ok(Self {
+            run_id: view.id,
+            deployment_id: view.record.deployment_id.clone(),
+            workspace_id: view.record.workspace_id.clone(),
+            data: serde_json::to_string(&view.record).map_err(storage)?,
+        })
+    }
+
+    fn decode(self) -> Result<DeploymentRunView, DeploymentRepositoryError> {
+        let record: DeploymentRunRecord = serde_json::from_str(&self.data).map_err(storage)?;
+        if record.deployment_id != self.deployment_id || record.workspace_id != self.workspace_id {
+            return Err(storage(
+                "DeploymentRun indexed facts do not match its durable document",
+            ));
+        }
+        Ok(DeploymentRunView {
+            id: self.run_id,
+            record,
+        })
+    }
 }
 
 fn scheduled_live(data: &str) -> Result<bool, DeploymentRepositoryError> {
@@ -45,7 +108,7 @@ fn is_exact_revision_step(revision: u64, expected_revision: Option<u64>) -> bool
 
 #[async_trait]
 impl DeploymentRepository for SqliteManagedSessionRepository {
-    async fn deployments(&self) -> Result<Vec<DeploymentRecord>, DeploymentRepositoryError> {
+    async fn deployments(&self) -> Result<Vec<DeploymentView>, DeploymentRepositoryError> {
         let conn = self.conn.lock().map_err(storage)?;
         let mut statement = conn
             .prepare(
@@ -55,7 +118,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
             .map_err(storage)?;
         statement
             .query_map([], |row| {
-                Ok(DeploymentRecord {
+                Ok(StoredDeploymentRow {
                     deployment_id: row.get(0)?,
                     workspace_id: row.get(1)?,
                     revision: row.get::<_, i64>(2)?.try_into().map_err(|error| {
@@ -70,10 +133,13 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
             })
             .map_err(storage)?
             .map(|row| row.map_err(storage))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(StoredDeploymentRow::decode)
             .collect()
     }
 
-    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunRecord>, DeploymentRepositoryError> {
+    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunView>, DeploymentRepositoryError> {
         let conn = self.conn.lock().map_err(storage)?;
         let mut statement = conn
             .prepare(
@@ -83,7 +149,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
             .map_err(storage)?;
         statement
             .query_map([], |row| {
-                Ok(DeploymentRunRecord {
+                Ok(StoredDeploymentRunRow {
                     run_id: row.get(0)?,
                     deployment_id: row.get(1)?,
                     workspace_id: row.get(2)?,
@@ -92,16 +158,20 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
             })
             .map_err(storage)?
             .map(|row| row.map_err(storage))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(StoredDeploymentRunRow::decode)
             .collect()
     }
 
     async fn write_deployment(
         &self,
-        record: DeploymentRecord,
+        deployment: DeploymentView,
         expected_revision: Option<u64>,
         scheduled_limit: usize,
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<DeploymentWriteOutcome, DeploymentRepositoryError> {
+        let record = StoredDeploymentRow::encode(deployment)?;
         if !is_exact_revision_step(record.revision, expected_revision) {
             return Ok(DeploymentWriteOutcome::Conflict);
         }
@@ -178,9 +248,10 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
 
     async fn upsert_deployment_run(
         &self,
-        record: DeploymentRunRecord,
+        run: DeploymentRunView,
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
+        let record = StoredDeploymentRunRow::encode(run)?;
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn.transaction().map_err(storage)?;
         tx.execute(
@@ -210,10 +281,12 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         &self,
         claim_id: &str,
         expected_deployment_revision: u64,
-        deployment: DeploymentRecord,
-        run: DeploymentRunRecord,
+        deployment: DeploymentView,
+        run: DeploymentRunView,
         lifecycle: DeploymentLifecycleFact,
     ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError> {
+        let deployment = StoredDeploymentRow::encode(deployment)?;
+        let run = StoredDeploymentRunRow::encode(run)?;
         if !is_exact_revision_step(deployment.revision, Some(expected_deployment_revision)) {
             return Ok(ScheduledRunClaimOutcome::StaleDeployment);
         }
@@ -285,7 +358,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
 
 #[async_trait]
 impl DeploymentRepository for PostgresManagedSessionRepository {
-    async fn deployments(&self) -> Result<Vec<DeploymentRecord>, DeploymentRepositoryError> {
+    async fn deployments(&self) -> Result<Vec<DeploymentView>, DeploymentRepositoryError> {
         sqlx::query(
             "SELECT deployment_id, workspace_id, revision, data FROM managed_deployment \
              ORDER BY deployment_id",
@@ -295,7 +368,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
         .map_err(storage)?
         .into_iter()
         .map(|row| {
-            Ok(DeploymentRecord {
+            StoredDeploymentRow {
                 deployment_id: row.try_get(0).map_err(storage)?,
                 workspace_id: row.try_get(1).map_err(storage)?,
                 revision: row
@@ -304,12 +377,13 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
                     .try_into()
                     .map_err(storage)?,
                 data: row.try_get(3).map_err(storage)?,
-            })
+            }
+            .decode()
         })
         .collect()
     }
 
-    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunRecord>, DeploymentRepositoryError> {
+    async fn deployment_runs(&self) -> Result<Vec<DeploymentRunView>, DeploymentRepositoryError> {
         sqlx::query(
             "SELECT run_id, deployment_id, workspace_id, data \
              FROM managed_deployment_run ORDER BY run_id",
@@ -319,23 +393,25 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
         .map_err(storage)?
         .into_iter()
         .map(|row| {
-            Ok(DeploymentRunRecord {
+            StoredDeploymentRunRow {
                 run_id: row.try_get(0).map_err(storage)?,
                 deployment_id: row.try_get(1).map_err(storage)?,
                 workspace_id: row.try_get(2).map_err(storage)?,
                 data: row.try_get(3).map_err(storage)?,
-            })
+            }
+            .decode()
         })
         .collect()
     }
 
     async fn write_deployment(
         &self,
-        record: DeploymentRecord,
+        deployment: DeploymentView,
         expected_revision: Option<u64>,
         scheduled_limit: usize,
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<DeploymentWriteOutcome, DeploymentRepositoryError> {
+        let record = StoredDeploymentRow::encode(deployment)?;
         if !is_exact_revision_step(record.revision, expected_revision) {
             return Ok(DeploymentWriteOutcome::Conflict);
         }
@@ -421,9 +497,10 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
 
     async fn upsert_deployment_run(
         &self,
-        record: DeploymentRunRecord,
+        run: DeploymentRunView,
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
+        let record = StoredDeploymentRunRow::encode(run)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
             "INSERT INTO managed_deployment_run (run_id, deployment_id, workspace_id, data) \
@@ -455,10 +532,12 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
         &self,
         claim_id: &str,
         expected_deployment_revision: u64,
-        deployment: DeploymentRecord,
-        run: DeploymentRunRecord,
+        deployment: DeploymentView,
+        run: DeploymentRunView,
         lifecycle: DeploymentLifecycleFact,
     ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError> {
+        let deployment = StoredDeploymentRow::encode(deployment)?;
+        let run = StoredDeploymentRunRow::encode(run)?;
         if !is_exact_revision_step(deployment.revision, Some(expected_deployment_revision)) {
             return Ok(ScheduledRunClaimOutcome::StaleDeployment);
         }

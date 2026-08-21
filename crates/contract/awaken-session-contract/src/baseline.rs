@@ -52,29 +52,18 @@ pub enum SessionNetworkPolicy {
     None,
 }
 
-/// When a Session materializes the sandbox selected by its frozen Environment.
-///
-/// This is Session configuration truth. Providers consume the decision but do
-/// not own or reinterpret it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SandboxProvisioning {
-    #[default]
-    Eager,
-    OnToolUse,
-}
+pub use awaken_provisioning_contract::{
+    SandboxCheckpointExpiryBehavior as EnvironmentCheckpointExpiryBehavior,
+    SandboxIdleRetentionMode as EnvironmentIdleRetentionMode,
+    SandboxIdleRetentionPolicy as EnvironmentIdleRetentionPolicy, SandboxProvisioning,
+};
 
 /// Frozen owner class for the Session Runtime projection. Environment
 /// WorkQueue selection is an independent Environment concern and must not be
 /// reinterpreted as this deployment placement decision.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionRuntimePlacement {
-    /// Retained rows written before Runtime placement became a frozen Session
-    /// fact. Only the Session application may resolve this upgrade state from
-    /// the process role; newly compiled baselines never emit it.
-    #[default]
-    LegacyUnspecified,
     Local,
     Worker,
 }
@@ -151,108 +140,30 @@ pub struct SessionBaselineFingerprint(pub String);
 
 /// Exact normalized Environment facts frozen for one Session.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentSnapshot {
     pub environment_id: String,
     pub revision: EnvironmentRevision,
     /// Whether execution is delegated through the external Worker WorkQueue.
     /// This placement fact is frozen with the Environment revision so recovery
     /// never reopens today's mutable executable catalog.
-    #[serde(default)]
     pub self_hosted: bool,
     pub config_fingerprint: EnvironmentFingerprint,
     /// Canonicalized, network-free sandbox requirement. `network` is the only
     /// reachability authority in this snapshot.
-    pub sandbox: serde_json::Value,
+    pub sandbox: awaken_provisioning_contract::SandboxOverride,
     /// Frozen creation timing from the exact Environment-bound execution policy.
-    /// Absence in older persisted rows preserves the historical eager behavior.
-    #[serde(default)]
     pub sandbox_provisioning: SandboxProvisioning,
-    /// Frozen whole-Environment idle continuation policy. Historical Sessions
-    /// default to resident and therefore never acquire destructive new behavior.
-    #[serde(default)]
+    /// Frozen whole-Environment idle continuation policy.
     pub idle_retention: EnvironmentIdleRetentionPolicy,
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
-    #[serde(default)]
     pub packages: EnvironmentPackages,
-    /// Immutable OCI reference prepared by Coordinator for these exact package
-    /// inputs. Older snapshots omit it and retain build-at-realization behavior.
+    /// Immutable OCI reference prepared by Coordinator for these exact package inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_image: Option<String>,
     pub network: SessionNetworkPolicy,
     pub credential_realization: CredentialRealizationProfile,
-}
-
-/// Full-Environment behavior after the Session reaches a durable idle edge.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentIdleRetentionMode {
-    #[default]
-    Resident,
-    CheckpointAndRelease,
-}
-
-/// Expiry never silently reinterprets a corrupt live checkpoint. It only
-/// authorizes a new Sandbox from the already frozen Environment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentCheckpointExpiryBehavior {
-    #[default]
-    FreshFromFrozenEnvironment,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EnvironmentIdleRetentionPolicy {
-    #[serde(default)]
-    pub mode: EnvironmentIdleRetentionMode,
-    #[serde(default)]
-    pub checkpoint_after_secs: u64,
-    #[serde(default)]
-    pub retention_secs: u64,
-    #[serde(default)]
-    pub expiry_behavior: EnvironmentCheckpointExpiryBehavior,
-    #[serde(default)]
-    pub max_checkpoint_bytes: u64,
-    #[serde(default)]
-    pub max_checkpoint_duration_secs: u64,
-    /// Exact portable format required at both provider and Worker admission.
-    #[serde(default)]
-    pub checkpoint_format: String,
-}
-
-impl Default for EnvironmentIdleRetentionPolicy {
-    fn default() -> Self {
-        Self {
-            mode: EnvironmentIdleRetentionMode::Resident,
-            checkpoint_after_secs: 0,
-            retention_secs: 0,
-            expiry_behavior: EnvironmentCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
-            max_checkpoint_bytes: 0,
-            max_checkpoint_duration_secs: 0,
-            checkpoint_format: String::new(),
-        }
-    }
-}
-
-impl EnvironmentIdleRetentionPolicy {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.mode == EnvironmentIdleRetentionMode::Resident {
-            return Ok(());
-        }
-        if self.checkpoint_after_secs == 0 {
-            return Err("checkpoint_after_secs must be positive");
-        }
-        if self.retention_secs <= self.checkpoint_after_secs {
-            return Err("retention_secs must exceed checkpoint_after_secs");
-        }
-        if self.max_checkpoint_bytes == 0 || self.max_checkpoint_duration_secs == 0 {
-            return Err("checkpoint bounds must be positive");
-        }
-        if self.checkpoint_format.trim().is_empty() {
-            return Err("checkpoint_format must be non-empty");
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -261,9 +172,9 @@ pub struct SessionMcpAuthoringContext {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControlSessionCreationInputs {
     pub environment: EnvironmentSnapshot,
-    #[serde(default)]
     pub runtime_placement: SessionRuntimePlacement,
     pub agent_id: String,
     /// Exact immutable Agent publication selected for this Session. Historical
@@ -271,7 +182,6 @@ pub struct ControlSessionCreationInputs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
     pub model: String,
-    #[serde(default)]
     pub execution_model_ref: String,
     /// Complete Session-local model semantics when the caller overrides the
     /// Agent model. `None` means the immutable Agent route and inference controls
@@ -280,15 +190,10 @@ pub struct ControlSessionCreationInputs {
     pub model_override: Option<crate::SessionModelOverride>,
     pub runtime: Option<String>,
     pub mcp_authoring: SessionMcpAuthoringContext,
-    #[serde(default)]
     pub delegate_ids: Vec<String>,
-    #[serde(default)]
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
-    #[serde(default)]
-    pub mounts: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub env: Vec<serde_json::Value>,
-    #[serde(default)]
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
     /// Optional immutable committed-history prefix projected into every model
     /// request for this Session. The referenced source Thread remains the sole
@@ -297,11 +202,11 @@ pub struct ControlSessionCreationInputs {
     pub transcript_prefix:
         Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
     pub resources: crate::ResolvedSessionResources,
-    #[serde(default)]
     pub initial_mcp: Vec<crate::McpAttachmentDraft>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionCreationIntent {
     pub control: ControlSessionCreationInputs,
 }
@@ -373,10 +278,10 @@ impl SessionCreationIntent {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionBaseline {
     pub fingerprint: SessionBaselineFingerprint,
     pub environment: EnvironmentSnapshot,
-    #[serde(default)]
     pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
@@ -386,20 +291,14 @@ pub struct SessionBaseline {
     /// Runtime coordinate resolved from `model` by the canonical publication
     /// resolver (the Agent publication or a Session-local override). It is
     /// fingerprinted and never inferred from public syntax after admission.
-    #[serde(default)]
     pub execution_model_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<crate::SessionModelOverride>,
     pub runtime: Option<String>,
-    #[serde(default)]
     pub delegate_ids: Vec<String>,
-    #[serde(default)]
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
-    #[serde(default)]
-    pub mounts: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub env: Vec<serde_json::Value>,
-    #[serde(default)]
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_prefix:
@@ -417,8 +316,8 @@ pub struct SessionBaselineInputs {
     pub runtime: Option<String>,
     pub delegate_ids: Vec<String>,
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
-    pub mounts: Vec<serde_json::Value>,
-    pub env: Vec<serde_json::Value>,
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
     pub transcript_prefix:
         Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
@@ -458,8 +357,8 @@ impl SessionBaseline {
             runtime: &'a Option<String>,
             delegate_ids: &'a [String],
             toolsets: &'a [awaken_agent_contract::ToolsetPolicy],
-            mounts: &'a [serde_json::Value],
-            env: &'a [serde_json::Value],
+            mounts: &'a [awaken_provisioning_contract::MountRequirement],
+            env: &'a [awaken_provisioning_contract::EnvVar],
             prompts: &'a [String],
             transcript_prefix:
                 &'a Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
@@ -522,6 +421,30 @@ impl SessionBaseline {
 mod tests {
     use super::*;
     use awaken_credential_contract::{PlaintextBoundary, PlaintextHolder};
+    use awaken_provisioning_contract::{
+        EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
+    };
+
+    fn mount(id: &str) -> MountRequirement {
+        MountRequirement {
+            mount_id: id.into(),
+            source: MountSource::Inline {
+                contents: id.into(),
+            },
+            mount_path: format!("/workspace/{id}"),
+            access: MountAccess::ReadOnly,
+            lifetime: MountLifetime::PerRun,
+            required: true,
+        }
+    }
+
+    fn env_var(name: &str) -> EnvVar {
+        EnvVar {
+            name: name.into(),
+            value: EnvValue::Inline { value: "1".into() },
+            visibility: EnvVisibility::Process,
+        }
+    }
 
     fn environment(revision: u64, network: SessionNetworkPolicy) -> EnvironmentSnapshot {
         EnvironmentSnapshot {
@@ -529,7 +452,7 @@ mod tests {
             revision: EnvironmentRevision(revision),
             self_hosted: false,
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
-            sandbox: serde_json::json!({}),
+            sandbox: Default::default(),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
             packages: Default::default(),
@@ -608,29 +531,36 @@ mod tests {
     }
 
     #[test]
-    fn legacy_environment_snapshot_defaults_to_local_placement() {
-        // Cause/effect decision table for persisted compatibility:
-        // P1 explicit self_hosted=true -> external Worker reconciliation;
-        // P2 explicit false -> local execution; P3 legacy field absent -> false.
-        // P3 must fail closed against manufacturing new external work for rows
-        // written before placement became a frozen fact.
+    fn environment_snapshot_requires_every_frozen_fact() {
+        // Required-field partition: P1 complete snapshot -> exact round trip;
+        // P2 missing placement; P3 missing retention; P4 unknown fact -> reject.
+        // Recovery cannot invent a placement or lifecycle policy.
         let mut encoded =
             serde_json::to_value(environment(1, SessionNetworkPolicy::Unrestricted)).unwrap();
         encoded.as_object_mut().unwrap().remove("self_hosted");
+        assert!(
+            serde_json::from_value::<EnvironmentSnapshot>(encoded).is_err(),
+            "P2"
+        );
+
+        let mut encoded =
+            serde_json::to_value(environment(1, SessionNetworkPolicy::Unrestricted)).unwrap();
         encoded.as_object_mut().unwrap().remove("idle_retention");
-        let decoded: EnvironmentSnapshot = serde_json::from_value(encoded).unwrap();
-        assert!(!decoded.self_hosted, "P3");
-        assert_eq!(
-            decoded.idle_retention,
-            EnvironmentIdleRetentionPolicy::default(),
-            "P3: retained rows remain Resident"
+        assert!(
+            serde_json::from_value::<EnvironmentSnapshot>(encoded).is_err(),
+            "P3"
         );
 
         let mut explicit = environment(1, SessionNetworkPolicy::Unrestricted);
         explicit.self_hosted = true;
-        let decoded: EnvironmentSnapshot =
-            serde_json::from_value(serde_json::to_value(explicit).unwrap()).unwrap();
+        let mut encoded = serde_json::to_value(&explicit).unwrap();
+        let decoded: EnvironmentSnapshot = serde_json::from_value(encoded.clone()).unwrap();
         assert!(decoded.self_hosted, "P1");
+        encoded["unexpected"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<EnvironmentSnapshot>(encoded).is_err(),
+            "P4"
+        );
     }
 
     fn baseline_inputs(environment: EnvironmentSnapshot) -> SessionBaselineInputs {
@@ -669,8 +599,8 @@ mod tests {
             mcp_authoring: SessionMcpAuthoringContext::default(),
             delegate_ids: vec!["delegate".into()],
             toolsets: Vec::new(),
-            mounts: vec![serde_json::json!({"source": "control"})],
-            env: vec![serde_json::json!({"name": "CONTROL"})],
+            mounts: vec![mount("control")],
+            env: vec![env_var("CONTROL")],
             prompts: vec!["control".into()],
             transcript_prefix: None,
             resources: crate::ResolvedSessionResources::default(),
@@ -887,7 +817,7 @@ mod tests {
             "B3"
         );
         let mut with_mount = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
-        with_mount.mounts = vec![serde_json::json!({"mount_id": "workspace"})];
+        with_mount.mounts = vec![mount("workspace")];
         assert_ne!(
             original.fingerprint,
             SessionBaseline::compile(with_mount).fingerprint,
@@ -896,49 +826,37 @@ mod tests {
     }
 
     #[test]
-    fn legacy_baseline_defaults_runtime_placement_and_mounts() {
-        // Cause/effect graph: C1 a retained baseline omits fields introduced
-        // after its fingerprint was written; E1 mounts remain empty and E2
-        // Runtime placement stays explicitly unresolved. An explicit value must
-        // round-trip unchanged.
-        //
-        // | Rule | placement field | Effect |
-        // |---|---|---|
-        // | L1 | absent | LegacyUnspecified |
-        // | L2 | local | Local |
-        // | L3 | worker | Worker |
-        let legacy = serde_json::json!({
-            "fingerprint": "legacy",
-            "environment": environment(1, SessionNetworkPolicy::Unrestricted),
-            "mcp_authoring": {"ordered_vault_ids": []},
-            "agent_id": "agent",
-            "model": "model",
-            "runtime": null,
-            "delegate_ids": [],
-            "skills": [],
-            "env": [],
-            "prompts": []
-        });
-        let decoded: SessionBaseline = serde_json::from_value(legacy).unwrap();
-        assert!(decoded.mounts.is_empty());
-        assert_eq!(
-            decoded.runtime_placement,
-            SessionRuntimePlacement::LegacyUnspecified,
-            "L1"
-        );
+    fn baseline_requires_complete_canonical_shape() {
+        // Grammar partition: B1/B2 canonical local/worker shapes round-trip;
+        // B3 missing placement and B4 unknown field are rejected. This prevents
+        // topology-dependent recovery from changing a frozen ownership fact.
         for (rule, placement) in [
-            ("L2", SessionRuntimePlacement::Local),
-            ("L3", SessionRuntimePlacement::Worker),
+            ("B1", SessionRuntimePlacement::Local),
+            ("B2", SessionRuntimePlacement::Worker),
         ] {
-            let decoded: SessionBaseline = serde_json::from_value(
-                serde_json::to_value(SessionBaseline::compile(SessionBaselineInputs {
-                    runtime_placement: placement,
-                    ..baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted))
-                }))
-                .expect("encode explicit placement"),
-            )
-            .expect("decode explicit placement");
+            let baseline = SessionBaseline::compile(SessionBaselineInputs {
+                runtime_placement: placement,
+                ..baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted))
+            });
+            let mut encoded = serde_json::to_value(&baseline).expect("encode explicit placement");
+            let decoded: SessionBaseline =
+                serde_json::from_value(encoded.clone()).expect("decode explicit placement");
             assert_eq!(decoded.runtime_placement, placement, "{rule}");
+            encoded["unknown"] = serde_json::json!(true);
+            assert!(
+                serde_json::from_value::<SessionBaseline>(encoded).is_err(),
+                "B4"
+            );
         }
+
+        let mut missing = serde_json::to_value(SessionBaseline::compile(baseline_inputs(
+            environment(1, SessionNetworkPolicy::Unrestricted),
+        )))
+        .unwrap();
+        missing.as_object_mut().unwrap().remove("runtime_placement");
+        assert!(
+            serde_json::from_value::<SessionBaseline>(missing).is_err(),
+            "B3"
+        );
     }
 }

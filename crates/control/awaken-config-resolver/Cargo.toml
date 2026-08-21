@@ -11,6 +11,7 @@ authority = "config-resolver"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-agent-config.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-model-catalog.workspace = true

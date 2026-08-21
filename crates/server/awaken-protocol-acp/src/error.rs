@@ -219,9 +219,11 @@ pub fn classify_error(stage: Stage, err: &RawAcpError) -> AcpFailure {
             err.message.clone(),
         );
     }
-    if let Some(retry_after_secs) = provider_quota_retry(err) {
+    if let Some(quota) = provider_quota(err) {
         return AcpFailure::new(
-            AcpFailureClass::RateLimited { retry_after_secs },
+            AcpFailureClass::RateLimited {
+                retry_after_secs: quota.retry_after_secs,
+            },
             err.message.clone(),
         );
     }
@@ -308,16 +310,24 @@ fn auth_required_kind(err: &RawAcpError) -> Option<CredentialKind> {
 }
 
 /// A windowed-quota exhaustion (`session_limit`) — cools in oversight; here it
-/// just classifies `RateLimited`. Returns `Some(retry_after_secs)` (inner `None`
-/// when no reset was named). A transient `rate_limit`/`429` is NOT this — it is
-/// [`is_transient`].
-fn provider_quota_retry(err: &RawAcpError) -> Option<Option<u64>> {
+/// just classifies `RateLimited`. A transient `rate_limit`/`429` is NOT this —
+/// it is [`is_transient`].
+struct ProviderQuota {
+    /// The provider may identify the exhausted window without publishing its
+    /// reset time. This optional value belongs to the detected quota, rather
+    /// than encoding detection itself as a nested `Option`.
+    retry_after_secs: Option<u64>,
+}
+
+fn provider_quota(err: &RawAcpError) -> Option<ProviderQuota> {
     let kind_matches = err.kind_is("session_limit") || err.kind_is("session_limit_error");
     let msg = err.message.to_ascii_lowercase();
     let message_matches = msg.contains("session_limit") || msg.contains("session limit");
     let code_ok = err.code.is_none_or(|c| c == ACP_RATE_LIMIT_CODE);
     if code_ok && (kind_matches || message_matches) {
-        return Some(err.retry_after_secs);
+        return Some(ProviderQuota {
+            retry_after_secs: err.retry_after_secs,
+        });
     }
     None
 }

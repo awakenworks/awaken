@@ -273,7 +273,9 @@ async fn build(
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
-        extra: None,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
     };
 
     // A volatile Memory repository seeded with one note, shared with the assertion side.

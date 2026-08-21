@@ -92,15 +92,14 @@ pub(super) async fn prepare_publication(
         resolved.advisor,
     )
     .map_err(|error| PublishError::Compile(error.to_string()))?;
-    let stored_inputs = defaults
-        .as_ref()
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|error| PublishError::Store(error.to_string()))?;
-    let publication =
-        StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
-            .with_execution_workspace(workspace.as_str())
-            .with_agent_inputs(stored_inputs);
+    let stored_inputs = defaults.clone();
+    let publication = StoredPublication::published_at_revision(
+        snapshot.clone(),
+        id,
+        source_revision,
+        workspace.as_str(),
+    )
+    .with_agent_inputs(stored_inputs);
     let session_profile = registered_session_profile(
         &snapshot,
         &resolved.config,

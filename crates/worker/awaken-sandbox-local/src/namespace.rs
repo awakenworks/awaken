@@ -17,7 +17,6 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
-use serde_json::json;
 use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
@@ -747,27 +746,13 @@ impl NamespaceProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        // Older macOS handles were mislabeled as `bwrap`; accept them during
-        // adoption so the provider-kind correction does not strand a persisted
-        // Session environment.
-        let compatible_provider = if cfg!(target_os = "macos") {
-            matches!(handle.provider_kind.as_str(), "seatbelt" | "bwrap")
+        let provider_kind = if cfg!(target_os = "macos") {
+            "seatbelt"
         } else {
-            handle.provider_kind == "bwrap"
+            "bwrap"
         };
-        if !compatible_provider {
-            return Err(err(format!(
-                "namespace provider cannot adopt {:?} sandbox",
-                handle.provider_kind
-            )));
-        }
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs")
-            .to_string();
+        let payload = handle.namespace_payload(provider_kind)?;
+        let outputs_path = payload.outputs_path.clone();
         let raw_root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
         let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).unwrap_or(raw_root));
         let host_workspace = root.resolve("/workspace").map_err(err)?;
@@ -778,16 +763,10 @@ impl NamespaceProvider {
             outputs_path,
             host_workspace,
             host_outputs,
-            base_env: handle
-                .extra
-                .as_ref()
-                .and_then(|value| value.get("base_env"))
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default(),
+            base_env: payload.base_env.clone(),
             inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
-            network: pc::NetworkPolicy::Unrestricted,
+            network: payload.network.clone(),
             layout: std::sync::RwLock::new(Vec::new()),
             realized: Vec::new(),
             secret_paths: Vec::new(),
@@ -1122,17 +1101,19 @@ impl pc::Sandbox for NamespaceSandbox {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        let provider_kind = if cfg!(target_os = "macos") {
-            "seatbelt"
-        } else {
-            "bwrap"
-        };
-        let mut h = pc::SandboxHandle::new(provider_kind, &self.id);
-        h.extra = Some(json!({
-            "outputs_path": self.outputs_path,
-            "base_env": self.base_env,
-        }));
-        h
+        pc::SandboxHandle::namespace(
+            if cfg!(target_os = "macos") {
+                pc::NamespaceProviderKind::Seatbelt
+            } else {
+                pc::NamespaceProviderKind::Bubblewrap
+            },
+            &self.id,
+            pc::NamespaceSandboxHandleV1 {
+                outputs_path: self.outputs_path.clone(),
+                base_env: self.base_env.clone(),
+                network: self.network.clone(),
+            },
+        )
     }
 
     async fn spawn(
@@ -1335,7 +1316,9 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
-            extra: None,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
         }
     }
 
@@ -1468,6 +1451,31 @@ mod tests {
             std::os::unix::fs::symlink(outputs.join("result.txt"), &projection).unwrap();
             sandbox.clear_resource_projection().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn adoption_preserves_network_policy_and_rejects_corrupt_handles() {
+        // Invariant: recovery may preserve or narrow an isolation decision; it
+        // must never replace `None` with a more permissive network policy.
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        let mut spec = ns_spec("t-ns-network-recovery", Vec::new());
+        spec.network = pc::NetworkPolicy::None;
+        let original = provider.create_sandbox(&spec).await.unwrap();
+        let handle = pc::Sandbox::handle(&original);
+        let adopted = provider.adopt_sandbox(&handle).await.unwrap();
+        assert_eq!(adopted.network, pc::NetworkPolicy::None);
+
+        let mut corrupt = serde_json::to_value(&handle).unwrap();
+        corrupt["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("network");
+        assert!(serde_json::from_value::<pc::SandboxHandle>(corrupt).is_err());
+
+        let mut unknown_schema = serde_json::to_value(&handle).unwrap();
+        unknown_schema["payload"]["schema"] = serde_json::json!("namespace_v2");
+        assert!(serde_json::from_value::<pc::SandboxHandle>(unknown_schema).is_err());
     }
 
     /// Live attach cause/effect decision table:
