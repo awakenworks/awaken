@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, ConfigMapVolumeSource, Container, EnvVar, KeyToPath, LocalObjectReference, Pod,
-    PodSpec, PodTemplateSpec, SecretVolumeSource, SecurityContext, Volume, VolumeMount,
+    AppArmorProfile, ConfigMap, ConfigMapVolumeSource, Container, EnvVar, KeyToPath,
+    LocalObjectReference, Pod, PodSpec, PodTemplateSpec, SecretVolumeSource, SecurityContext,
+    Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, PostParams};
@@ -336,6 +337,10 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 run_as_user: Some(1000),
                 run_as_group: Some(1000),
                 seccomp_profile: Some(k8s_openapi::api::core::v1::SeccompProfile {
+                    type_: "Unconfined".into(),
+                    ..Default::default()
+                }),
+                app_armor_profile: Some(AppArmorProfile {
                     type_: "Unconfined".into(),
                     ..Default::default()
                 }),

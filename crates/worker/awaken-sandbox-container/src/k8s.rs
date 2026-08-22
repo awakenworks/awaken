@@ -976,11 +976,11 @@ mod tests {
         // Cause/effect decision table: R1 exact base/packages + shared Registry
         // produce one deterministic ConfigMap/Job destination; R2 insecure local
         // Registry emits an explicit BuildKit host policy; R3 the Job is rootless,
-        // tokenless, no-retry, and ends before Coordinator's lease; R4 output is
-        // recorded through the termination digest contract; R5 an unsafe Registry
-        // prefix is rejected before it can enter generated BuildKit configuration;
-        // R6 ring+aws-lc feature unification => select the canonical ring provider
-        // before constructing the lazy kube client (no provider ambiguity panic).
+        // tokenless, no-retry, bounded, and admits RootlessKit's subordinate mount
+        // namespace through unconfined seccomp and AppArmor; R4 output uses the
+        // termination digest contract; R5 unsafe Registry prefixes fail before
+        // entering BuildKit configuration; R6 ring+aws-lc feature unification =>
+        // select ring before constructing the lazy kube client.
         install_rustls_crypto_provider();
         let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
         let client = Client::try_from(config).unwrap();
@@ -1036,26 +1036,25 @@ mod tests {
             "R3 private Registry auth"
         );
         let buildkit = &pod.containers[0];
+        let security_context = buildkit.security_context.as_ref().unwrap();
         assert_eq!(
             buildkit.image.as_deref(),
             Some("registry.local:5000/system/buildkit:v0.30.0-rootless"),
             "R3 the operator-selected mirror must be the only BuildKit pull reference"
         );
+        assert_eq!(security_context.run_as_user, Some(1000), "R3");
         assert_eq!(
-            buildkit
-                .security_context
-                .as_ref()
-                .and_then(|value| value.run_as_user),
-            Some(1000),
-            "R3"
-        );
-        assert_eq!(
-            buildkit
-                .security_context
-                .as_ref()
-                .and_then(|value| value.allow_privilege_escalation),
+            security_context.allow_privilege_escalation,
             Some(true),
             "R3 rootless newuidmap/newgidmap helpers require setuid execution"
+        );
+        assert_eq!(
+            security_context
+                .app_armor_profile
+                .as_ref()
+                .map(|profile| profile.type_.as_str()),
+            Some("Unconfined"),
+            "R3 GKE AppArmor must not reject RootlessKit mount propagation"
         );
         assert!(
             buildkit.args.as_ref().unwrap()[0].contains("/dev/termination-log"),
