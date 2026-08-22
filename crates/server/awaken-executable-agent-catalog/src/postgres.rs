@@ -468,6 +468,52 @@ mod tests {
         test_registration(7, "fp-a")
     }
 
+    #[test]
+    fn persisted_registration_replays_the_previous_tool_identity_wire() {
+        // Cause/effect rules: R1 a persisted registration whose descriptor has
+        // the former derived content_hash but no content_namespace recovers the
+        // namespace and decodes through the canonical command; R2 an id/hash
+        // mismatch is corrupt storage and never reaches catalog replay.
+        let mut registration = registration();
+        registration.snapshot.resolved_spec.tool_descriptors.push(
+            awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+                "fixture",
+                "fixture_tool",
+                "run",
+                serde_json::json!({}),
+            ),
+        );
+        let mut wire = serde_json::to_value(&registration).expect("encode registration");
+        let descriptor = wire
+            .pointer_mut("/snapshot/resolved_spec/tool_descriptors/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("descriptor wire");
+        descriptor.remove("content_namespace");
+        descriptor.insert(
+            "content_hash".into(),
+            serde_json::json!("fixture:fixture_tool:0123456789abcdef"),
+        );
+        let encoded = serde_json::to_string(&wire).expect("encode legacy registration");
+        assert!(matches!(
+            CatalogCommand::decode("workspace-a", "agent-a", 7, REGISTRATION_KIND, &encoded),
+            Ok(CatalogCommand::Registration(_))
+        ));
+
+        let descriptor = wire
+            .pointer_mut("/snapshot/resolved_spec/tool_descriptors/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("descriptor wire");
+        descriptor.insert(
+            "content_hash".into(),
+            serde_json::json!("fixture:other:0123456789abcdef"),
+        );
+        let encoded = serde_json::to_string(&wire).expect("encode corrupt registration");
+        assert!(matches!(
+            CatalogCommand::decode("workspace-a", "agent-a", 7, REGISTRATION_KIND, &encoded),
+            Err(ExecutableAgentRegistrationError::Storage(_))
+        ));
+    }
+
     #[derive(Default)]
     struct MemoryCommandLog {
         commands: StdMutex<Vec<Sequenced<CatalogCommand>>>,

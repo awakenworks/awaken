@@ -362,12 +362,105 @@ impl SharedHost {
             .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default();
         for repository in repositories {
+            let credential = self
+                .repository_operation_credential(thread, &repository)
+                .await?;
             realizer
-                .realize_repository(&repository.plan, repository.credential.as_ref())
+                .realize_repository(&repository.plan, credential.as_deref())
                 .await
                 .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Refresh a short Gateway capability at the actual Git operation edge.
+    /// Package image resolution and Sandbox creation may outlive the capability
+    /// staged with the immutable Repository plan; direct credentials retain the
+    /// existing injection path.
+    async fn repository_operation_credential<'a>(
+        &self,
+        thread: &str,
+        repository: &'a RepositoryActivation,
+    ) -> Result<
+        Option<std::borrow::Cow<'a, pc::RepositoryHttpBasicCredential>>,
+        crate::host::HostError,
+    > {
+        if !repository
+            .credential
+            .as_ref()
+            .is_some_and(|credential| credential.is_gateway_capability())
+        {
+            return Ok(repository
+                .credential
+                .as_ref()
+                .map(std::borrow::Cow::Borrowed));
+        }
+        let checks = self
+            .session_slots
+            .read(thread, |slot| slot.resources.binding_checks.clone())
+            .unwrap_or_default();
+        let mut matching = checks.iter().filter_map(|check| match check {
+            ResourceBindingCheck::Repository {
+                repository_id,
+                config_version,
+                claim,
+            } if repository_id == &repository.plan.repository_id => {
+                Some((*config_version, claim.as_ref()))
+            }
+            _ => None,
+        });
+        let Some((config_version, claim)) = matching.next() else {
+            return Err(crate::host::HostError::internal(
+                "Gateway-mediated Repository has no exact binding check",
+            ));
+        };
+        if matching.next().is_some() {
+            return Err(crate::host::HostError::internal(
+                "Gateway-mediated Repository has ambiguous binding checks",
+            ));
+        }
+        let verifier = self
+            .dispatch_session_runtime
+            .read()
+            .map_err(|_| {
+                crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
+            })?
+            .as_ref()
+            .and_then(|runtime| runtime.repository_binding_verifier.clone())
+            .ok_or_else(|| {
+                crate::host::HostError::internal(
+                    "Gateway-mediated Repository has no binding verifier",
+                )
+            })?;
+        let transport = verifier
+            .verify(
+                &self.thread_workspace(thread),
+                &repository.plan.repository_id,
+                config_version,
+                claim,
+            )
+            .await
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        match transport {
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url,
+                capability,
+            } if remote_url == repository.plan.remote_url => Ok(Some(std::borrow::Cow::Owned(
+                pc::RepositoryHttpBasicCredential::gateway_capability(
+                    capability.expose().to_owned(),
+                ),
+            ))),
+            awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
+                Err(crate::host::HostError::internal(
+                    "Gateway-mediated Repository changed its frozen remote URL",
+                ))
+            }
+            awaken_resource_contract::RepositoryTransport::Direct => {
+                Err(crate::host::HostError::internal(
+                    "Gateway-mediated Repository cannot fall back to direct credentials",
+                ))
+            }
+        }
     }
 
     /// Publish a thread's Agent-authored commits through the Repository realizer.
@@ -397,10 +490,14 @@ impl SharedHost {
             if repository.plan.access == pc::MountAccess::ReadOnly {
                 continue;
             }
+            let credential = self
+                .repository_operation_credential(thread, &repository)
+                .await
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             pc::RepositoryRealizer::publish_repository(
                 env.as_ref(),
                 &repository.plan,
-                repository.credential.as_ref(),
+                credential.as_deref(),
             )
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;

@@ -427,6 +427,57 @@ fn descriptor_state_owns_one_derived_content_identity() {
 }
 
 #[test]
+fn persisted_descriptor_namespace_has_one_versioned_decode_boundary() {
+    // Cause/effect graph: C1=the current namespace fact is present;
+    // C2=only the former derived content_hash is present; C3=that legacy hash
+    // binds the exact descriptor id and a 16-hex digest; C4=an old semantic
+    // kind/recovery suffix follows the digest. E1=construct the descriptor from
+    // source facts; E2=recover the one namespace; E3=fail closed.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | R1   | Y  | -  | -  | -  | E1     |
+    // | R2   | N  | Y  | Y  | N  | E1+E2  |
+    // | R3   | N  | Y  | Y  | Y  | E1+E2  |
+    // | R4   | N  | N  | -  | -  | E3     |
+    // | R5   | N  | Y  | N  | -  | E3     |
+    let current = ToolDescriptor::pinned("fixture", "fixture_tool", "run", serde_json::json!({}));
+    let current_wire = serde_json::to_value(&current).expect("R1 serialize current facts");
+    let current_round_trip: ToolDescriptor =
+        serde_json::from_value(current_wire).expect("R1 decode current facts");
+    assert_eq!(current_round_trip.content_hash(), current.content_hash());
+
+    for legacy_hash in [
+        "fixture:fixture_tool:0123456789abcdef",
+        "fixture:fixture_tool:0123456789abcdef:kind:Advisor:recovery:{}",
+    ] {
+        let decoded: ToolDescriptor = serde_json::from_value(serde_json::json!({
+            "content_hash": legacy_hash,
+            "id": "fixture_tool",
+            "description": "run",
+            "parameters": {}
+        }))
+        .expect("R2/R3 decode persisted descriptor facts");
+        assert!(decoded.content_hash().starts_with("fixture:fixture_tool:"));
+    }
+
+    for invalid in [
+        serde_json::json!({
+            "id": "fixture_tool",
+            "description": "run",
+            "parameters": {}
+        }),
+        serde_json::json!({
+            "content_hash": "fixture:other:0123456789abcdef",
+            "id": "fixture_tool",
+            "description": "run",
+            "parameters": {}
+        }),
+    ] {
+        assert!(serde_json::from_value::<ToolDescriptor>(invalid).is_err());
+    }
+}
+
+#[test]
 fn persisted_invalid_tool_schema_never_constructs_a_descriptor() {
     let descriptor = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
     let mut encoded = serde_json::to_value(descriptor).expect("serialize descriptor");
