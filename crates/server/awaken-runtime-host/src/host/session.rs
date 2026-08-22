@@ -766,7 +766,7 @@ impl SharedHost {
             .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
         let provisioning = installed
             .as_ref()
-            .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
+            .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let execution_backend = published_backend_ref
             .as_deref()

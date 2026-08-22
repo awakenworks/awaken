@@ -245,8 +245,9 @@ impl CatalogModelPublicationResolver {
             processing_placement: None,
         };
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
-        Ok(match acp {
-            Some(acp) => ResolvedModelCandidate::provider_with_acp(
+        let error_binding = binding.clone();
+        match acp {
+            Some(acp) => ResolvedModelCandidate::try_provider_with_acp(
                 binding,
                 provider_ref,
                 route_ref,
@@ -255,7 +256,7 @@ impl CatalogModelPublicationResolver {
                 endpoint,
                 acp,
             ),
-            None => ResolvedModelCandidate::provider(
+            None => ResolvedModelCandidate::try_provider(
                 binding,
                 provider_ref,
                 route_ref,
@@ -263,6 +264,10 @@ impl CatalogModelPublicationResolver {
                 credential,
                 endpoint,
             ),
+        }
+        .map_err(|error| PublicationResolutionError::CandidateUnavailable {
+            binding: error_binding,
+            reason: error.to_string(),
         })
     }
 }

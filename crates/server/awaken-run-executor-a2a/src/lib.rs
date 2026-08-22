@@ -126,7 +126,7 @@ impl TransportResolver for AnonymousHttpTransportResolver {
         _context: &RuntimeRunContext,
     ) -> std::result::Result<Arc<dyn Transport>, String> {
         let endpoint = candidate
-            .binding
+            .binding()
             .backend_ref
             .strip_prefix("a2a:")
             .ok_or_else(|| "anonymous A2A fixture received a non-remote candidate".to_string())?;
@@ -262,7 +262,7 @@ fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandi
 }
 
 fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> {
-    Backend::from_ref(&candidate.binding.backend_ref)
+    Backend::from_ref(&candidate.binding().backend_ref)
         .remote_endpoint()
         .map(str::to_string)
         .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))

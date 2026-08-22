@@ -812,7 +812,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             .execution_candidates(None)
             .into_iter()
             .all(|candidate| candidate
-                .binding
+                .binding()
                 .provider_identity_ref
                 .starts_with("override-")),
         "O1 original Agent route must be absent"

@@ -387,7 +387,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .snapshot
                 .resolved_spec
                 .model_binding
-                .provisioning,
+                .provisioning(),
             claimed.request.placement.recovery,
         )
         .await?;

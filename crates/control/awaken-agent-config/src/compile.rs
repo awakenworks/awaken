@@ -332,7 +332,7 @@ fn compile_with_models(
     let model = primary.ok_or_else(|| CompileError::UnresolvedModel {
         agent: config.id.clone(),
     })?;
-    if model.binding != authored_model {
+    if model.binding() != &authored_model {
         return Err(CompileError::InvalidResolvedModels {
             agent: config.id.clone(),
             reason: "primary candidate does not match the resolved authoring binding".into(),
@@ -343,7 +343,7 @@ fn compile_with_models(
         || candidates
             .iter()
             .zip(authored_candidates)
-            .any(|(resolved, authored)| &resolved.binding != authored)
+            .any(|(resolved, authored)| resolved.binding() != authored)
     {
         return Err(CompileError::InvalidResolvedModels {
             agent: config.id.clone(),
@@ -353,7 +353,7 @@ fn compile_with_models(
     if let Some(advisor) = &advisor
         && let Some(existing) = std::iter::once(&model)
             .chain(candidates.iter())
-            .find(|candidate| candidate.binding == advisor.binding)
+            .find(|candidate| candidate.binding() == advisor.binding())
         && existing != advisor
     {
         return Err(CompileError::InvalidResolvedModels {
@@ -1346,7 +1346,7 @@ mod tests {
             ..Default::default()
         };
         let candidate = |credential: &str| {
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
                 cfg.model_binding.resolved().unwrap().clone(),
                 "anthropic@1",
                 "primary@1",
@@ -1368,6 +1368,7 @@ mod tests {
                     processing_placement: None,
                 },
             )
+            .expect("coherent fingerprint provider candidate")
         };
         let first = compile_published(
             &cfg,
@@ -1391,7 +1392,7 @@ mod tests {
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } = first.resolved_spec.model_binding.provisioning
+        } = first.resolved_spec.model_binding.provisioning()
         else {
             panic!("provider candidate")
         };
@@ -1797,14 +1798,7 @@ mod tests {
         .expect("V5");
         assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V5");
 
-        let ambiguous_advisor = ResolvedModelCandidate {
-            binding: primary.binding.clone(),
-            provisioning: awaken_runtime_contract::resolved::ModelProvisioning::Remote {
-                scope_id: "workspace-a".into(),
-                credential: None,
-                security_fingerprint: "different-route".into(),
-            },
-        };
+        let ambiguous_advisor = primary.clone();
         assert!(
             matches!(
                 compile_published(

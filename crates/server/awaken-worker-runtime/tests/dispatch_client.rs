@@ -74,7 +74,7 @@ fn activation(run: &str) -> RunActivation {
 fn provider_candidate(
     reference: &str,
 ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
         awaken_runtime_contract::ModelBinding::new("provider@1", "gateway-model", "genai"),
         "provider@1",
         "route@1",
@@ -96,6 +96,7 @@ fn provider_candidate(
             processing_placement: None,
         },
     )
+    .expect("coherent Worker dispatch provider candidate")
 }
 
 /// Stand up a live server mirroring the Control Node's Worker dispatch routes

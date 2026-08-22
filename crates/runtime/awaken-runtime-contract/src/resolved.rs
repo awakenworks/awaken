@@ -670,12 +670,44 @@ impl ModelProvisioning {
 /// `binding` is the small runtime identity copied into [`crate::ChatRequest`].
 /// `provisioning` is consumed before the runtime loop to create an executor and
 /// therefore never needs to enter each model request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+/// let mut candidate = ResolvedModelCandidate::host(ModelBinding::new("p", "m", "native"));
+/// candidate.binding.backend_ref = "acp:codex".into();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedModelCandidate {
     #[serde(flatten)]
-    pub binding: ModelBinding,
+    binding: ModelBinding,
     #[serde(default, skip_serializing_if = "ModelProvisioning::is_host_executor")]
-    pub provisioning: ModelProvisioning,
+    provisioning: ModelProvisioning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidResolvedModelCandidate(&'static str);
+
+impl std::fmt::Display for InvalidResolvedModelCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for InvalidResolvedModelCandidate {}
+
+#[derive(Deserialize)]
+struct ResolvedModelCandidateWire {
+    #[serde(flatten)]
+    binding: ModelBinding,
+    #[serde(default)]
+    provisioning: ModelProvisioning,
+}
+
+impl<'de> Deserialize<'de> for ResolvedModelCandidate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ResolvedModelCandidateWire::deserialize(deserializer)?;
+        Self::try_from_parts(wire.binding, wire.provisioning).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ResolvedModelCandidate {
@@ -687,18 +719,17 @@ impl ResolvedModelCandidate {
         }
     }
 
-    #[must_use]
-    pub fn provider(
+    pub fn try_provider(
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
         scope_id: impl Into<awaken_tenancy::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_from_parts(
             binding,
-            provisioning: ModelProvisioning::Provider {
+            ModelProvisioning::Provider {
                 provider_ref: provider_ref.into(),
                 route_ref: route_ref.into(),
                 scope_id: scope_id.into(),
@@ -706,11 +737,10 @@ impl ResolvedModelCandidate {
                 endpoint: Box::new(endpoint),
                 acp: None,
             },
-        }
+        )
     }
 
-    #[must_use]
-    pub fn provider_with_acp(
+    pub fn try_provider_with_acp(
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
@@ -718,10 +748,10 @@ impl ResolvedModelCandidate {
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         acp: AcpExecutionProfile,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_from_parts(
             binding,
-            provisioning: ModelProvisioning::Provider {
+            ModelProvisioning::Provider {
                 provider_ref: provider_ref.into(),
                 route_ref: route_ref.into(),
                 scope_id: scope_id.into(),
@@ -729,21 +759,20 @@ impl ResolvedModelCandidate {
                 endpoint: Box::new(endpoint),
                 acp: Some(Box::new(acp)),
             },
-        }
+        )
     }
 
-    #[must_use]
-    pub fn backend_owned(
+    pub fn try_backend_owned(
         binding: ModelBinding,
         credential: crate::CredentialRef,
         model_selection: BackendModelSelection,
         capability_adapter_version: impl Into<String>,
         capability_fingerprint: impl Into<String>,
         session_configuration: AcpSessionConfiguration,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_from_parts(
             binding,
-            provisioning: ModelProvisioning::BackendOwned {
+            ModelProvisioning::BackendOwned {
                 credential,
                 model_selection,
                 acp: AcpExecutionProfile {
@@ -752,25 +781,141 @@ impl ResolvedModelCandidate {
                     session_configuration,
                 },
             },
-        }
+        )
     }
 
     /// Build one publication-pinned A2A transport demand.
-    #[must_use]
-    pub fn remote(
+    pub fn try_remote(
         binding: ModelBinding,
         scope_id: impl Into<awaken_tenancy::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         security_fingerprint: impl Into<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_from_parts(
             binding,
-            provisioning: ModelProvisioning::Remote {
+            ModelProvisioning::Remote {
                 scope_id: scope_id.into(),
                 credential: credential.map(Box::new),
                 security_fingerprint: security_fingerprint.into(),
             },
+        )
+    }
+
+    pub fn try_from_parts(
+        binding: ModelBinding,
+        provisioning: ModelProvisioning,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        fn canonical_nonempty(value: &str) -> bool {
+            !value.is_empty() && value.trim() == value
         }
+
+        let backend = Backend::from_ref(&binding.backend_ref);
+        match &provisioning {
+            ModelProvisioning::HostExecutor => {}
+            ModelProvisioning::BackendOwned {
+                credential,
+                model_selection,
+                acp,
+            } => {
+                if !matches!(backend, Backend::Acp(_)) {
+                    return Err(InvalidResolvedModelCandidate(
+                        "backend-owned provisioning requires an exact ACP backend",
+                    ));
+                }
+                if !canonical_nonempty(&binding.provider_identity_ref)
+                    || !canonical_nonempty(&credential.id)
+                {
+                    return Err(InvalidResolvedModelCandidate(
+                        "backend-owned provisioning requires exact identity and credential references",
+                    ));
+                }
+                let coherent_model = match model_selection {
+                    BackendModelSelection::Default => binding.model_ref.is_empty(),
+                    BackendModelSelection::Exact => {
+                        ExactModelRef::parse(binding.model_ref.clone()).is_ok()
+                    }
+                };
+                if !coherent_model {
+                    return Err(InvalidResolvedModelCandidate(
+                        "backend model selection and model reference are incoherent",
+                    ));
+                }
+                if !canonical_nonempty(&acp.capability_adapter_version)
+                    || !canonical_nonempty(&acp.capability_fingerprint)
+                {
+                    return Err(InvalidResolvedModelCandidate(
+                        "ACP provisioning requires an exact capability pin",
+                    ));
+                }
+            }
+            ModelProvisioning::Provider {
+                provider_ref,
+                route_ref,
+                endpoint,
+                acp,
+                ..
+            } => {
+                if !canonical_nonempty(&binding.provider_identity_ref)
+                    || !canonical_nonempty(&binding.model_ref)
+                    || !canonical_nonempty(provider_ref)
+                    || !canonical_nonempty(route_ref)
+                    || !canonical_nonempty(&endpoint.adapter_kind)
+                    || !canonical_nonempty(&endpoint.api_dialect)
+                    || !canonical_nonempty(&endpoint.base_url)
+                    || !canonical_nonempty(&endpoint.upstream_model)
+                {
+                    return Err(InvalidResolvedModelCandidate(
+                        "provider provisioning requires complete canonical route coordinates",
+                    ));
+                }
+                let backend_matches = matches!(
+                    (&backend, acp),
+                    (Backend::Native, None) | (Backend::Acp(_), Some(_))
+                );
+                if !backend_matches {
+                    return Err(InvalidResolvedModelCandidate(
+                        "provider provisioning and executor backend are incoherent",
+                    ));
+                }
+                if let Some(acp) = acp
+                    && (!canonical_nonempty(&acp.capability_adapter_version)
+                        || !canonical_nonempty(&acp.capability_fingerprint))
+                {
+                    return Err(InvalidResolvedModelCandidate(
+                        "ACP provider provisioning requires an exact capability pin",
+                    ));
+                }
+            }
+            ModelProvisioning::Remote {
+                security_fingerprint,
+                ..
+            } => {
+                if !matches!(backend, Backend::Remote(_)) || !binding.model_ref.is_empty() {
+                    return Err(InvalidResolvedModelCandidate(
+                        "remote provisioning requires an exact A2A backend and no local model",
+                    ));
+                }
+                if !canonical_nonempty(security_fingerprint) {
+                    return Err(InvalidResolvedModelCandidate(
+                        "remote provisioning requires an exact security fingerprint",
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            binding,
+            provisioning,
+        })
+    }
+
+    #[must_use]
+    pub fn binding(&self) -> &ModelBinding {
+        &self.binding
+    }
+
+    #[must_use]
+    pub fn provisioning(&self) -> &ModelProvisioning {
+        &self.provisioning
     }
 }
 
@@ -779,12 +924,6 @@ impl std::ops::Deref for ResolvedModelCandidate {
 
     fn deref(&self) -> &Self::Target {
         &self.binding
-    }
-}
-
-impl std::ops::DerefMut for ResolvedModelCandidate {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.binding
     }
 }
 
@@ -1361,560 +1500,5 @@ pub struct ResolvedRun {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::{
-        AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
-        ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet, ToolKind,
-        ToolPresentation, content_hash, normalize_model_tool_schema,
-    };
-
-    #[test]
-    fn placement_mechanism_has_one_stable_boundary_vocabulary() {
-        // Cause/effect decision table: each supported mechanism must round-trip
-        // through its stable cross-context string (R1/R2); an unknown value must
-        // fail instead of selecting a default mechanism (R3).
-        for (rule, mechanism, wire) in [
-            (
-                "R1",
-                InferencePlacementMechanism::AnthropicRequestBody,
-                "anthropic_request_body",
-            ),
-            (
-                "R2",
-                InferencePlacementMechanism::FrozenRegionalRoute,
-                "frozen_regional_route",
-            ),
-        ] {
-            assert_eq!(mechanism.as_str(), wire, "{rule}");
-            assert_eq!(wire.parse(), Ok(mechanism), "{rule}");
-        }
-        assert!(
-            "caller_selected"
-                .parse::<InferencePlacementMechanism>()
-                .is_err(),
-            "R3"
-        );
-    }
-
-    fn td(id: &str) -> ToolDescriptor {
-        ToolDescriptor::pinned("t", id, format!("desc of {id}"), serde_json::json!({}))
-    }
-
-    #[test]
-    fn empty_presentation_is_the_identity() {
-        let p = ToolPresentation::default();
-        assert!(p.is_empty());
-        let tools = vec![td("a"), td("mcp__x__y")];
-        let out = p.present(&tools);
-        assert_eq!(out.face, tools, "no overrides ⇒ face unchanged");
-        assert!(out.deferred.is_empty());
-        assert_eq!(p.resolve("a"), "a", "no alias ⇒ resolve is identity");
-    }
-
-    #[test]
-    fn present_renames_redescribes_and_defers_by_canonical_id() {
-        // Works identically for a static id and an MCP id.
-        let p = ToolPresentation::from_facets([
-            (
-                "a".to_string(),
-                ToolFacet {
-                    alias: Some("say".into()),
-                    description: Some("Speak.".into()),
-                    defer: false,
-                },
-            ),
-            (
-                "mcp__x__y".to_string(),
-                ToolFacet {
-                    alias: Some("y".into()),
-                    description: None,
-                    defer: true,
-                },
-            ),
-            ("noop".to_string(), ToolFacet::default()), // all-default ⇒ dropped
-        ]);
-        assert!(!p.is_empty());
-        let out = p.present(&[td("a"), td("mcp__x__y"), td("keep")]);
-        // `a` renamed + redescribed and stays in the face; `keep` passes through.
-        assert!(
-            out.face
-                .iter()
-                .any(|d| d.id == "say" && d.description == "Speak.")
-        );
-        assert!(out.face.iter().any(|d| d.id == "keep"));
-        // The MCP tool is deferred (renamed) — withheld from the face.
-        assert!(out.face.iter().all(|d| d.id != "y"));
-        assert!(out.deferred.iter().any(|d| d.id == "y"));
-    }
-
-    #[test]
-    fn model_tools_withholds_a_deferred_tool_until_opened_and_offers_tool_open() {
-        use super::TOOL_OPEN_ID;
-        let p = ToolPresentation::from_facets([(
-            "mcp__srv__a".to_string(),
-            ToolFacet {
-                alias: Some("create_issue".into()),
-                description: None,
-                defer: true,
-            },
-        )]);
-        let tools = [td("mcp__srv__a"), td("keep")];
-
-        // Nothing opened: the deferred tool is withheld; tool_open is offered.
-        let closed = std::collections::BTreeSet::new();
-        let face = p.model_tools(&tools, &closed);
-        let ids: Vec<&str> = face.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"keep"));
-        assert!(ids.contains(&TOOL_OPEN_ID));
-        assert!(!ids.contains(&"create_issue"), "deferred tool withheld");
-
-        // Opened (by canonical id): the tool appears, and tool_open is gone.
-        let opened: std::collections::BTreeSet<String> = ["mcp__srv__a".to_string()].into();
-        let ids2: Vec<String> = p
-            .model_tools(&tools, &opened)
-            .iter()
-            .map(|d| d.id.clone())
-            .collect();
-        assert!(ids2.contains(&"create_issue".to_string()));
-        assert!(
-            !ids2.iter().any(|i| i == TOOL_OPEN_ID),
-            "no deferred left ⇒ no tool_open"
-        );
-    }
-
-    #[test]
-    fn resolve_reverses_an_alias_to_its_canonical_id() {
-        let p = ToolPresentation::from_facets([(
-            "mcp__x__y".to_string(),
-            ToolFacet {
-                alias: Some("y".into()),
-                ..Default::default()
-            },
-        )]);
-        // The single choke: a model call by alias reverses to the canonical id; a
-        // non-alias (e.g. an un-renamed tool) passes through untouched.
-        assert_eq!(p.resolve("y"), "mcp__x__y");
-        assert_eq!(p.resolve("other"), "other");
-    }
-
-    // Cause/effect decision table for the sole ACP plugin-config codec:
-    // R1 known values + unknown ACP/non-ACP keys -> decode/encode byte value stable;
-    // R2 clearing an owned value -> remove only that key;
-    // R3 no ACP keys remain -> remove the empty ACP section;
-    // R4 unrecognized historical MCP wire -> preserve it byte-for-byte.
-    #[test]
-    fn acp_spec_round_trip_preserves_unowned_plugin_configuration() {
-        let original = BTreeMap::from([
-            ("other".into(), serde_json::json!({"enabled": true})),
-            (
-                "acp".into(),
-                serde_json::json!({
-                    "compact_window": 120_000,
-                    "mcp_servers": [{
-                        "name": "github",
-                        "transport": {"kind": "http", "url": "https://mcp.invalid"}
-                    }],
-                    "adapter_extension": {"native": 7}
-                }),
-            ),
-        ]);
-        let spec = AcpSpec::from_plugin_config(&original);
-        assert_eq!(
-            spec.clone().into_plugin_config(original.clone()),
-            original,
-            "R1"
-        );
-
-        let without_window = AcpSpec {
-            compact_window: None,
-            ..spec
-        }
-        .into_plugin_config(original);
-        assert!(without_window["acp"].get("compact_window").is_none(), "R2");
-        assert_eq!(
-            without_window["acp"]["adapter_extension"],
-            serde_json::json!({"native": 7}),
-            "R2"
-        );
-
-        assert!(
-            !AcpSpec::default()
-                .into_plugin_config(BTreeMap::from([(
-                    "acp".into(),
-                    serde_json::json!({"compact_window": 1})
-                )]))
-                .contains_key("acp"),
-            "R3"
-        );
-
-        let historical = BTreeMap::from([(
-            "acp".into(),
-            serde_json::json!({
-                "compact_window": 7,
-                "mcp_servers": [{"name": "legacy", "url": "https://mcp.invalid"}]
-            }),
-        )]);
-        assert_eq!(
-            AcpSpec::from_plugin_config(&historical).into_plugin_config(historical.clone()),
-            historical,
-            "R4"
-        );
-    }
-
-    #[test]
-    fn backend_typed_view_distinguishes_native_and_acp() {
-        // Any non-`acp` ref is Native — including the provider axis "genai", which
-        // Backend must NOT absorb as a fourth kind.
-        assert_eq!(Backend::from_ref("genai"), Backend::Native);
-        assert_eq!(Backend::from_ref("default"), Backend::Native);
-        assert!(!Backend::from_ref("genai").is_acp());
-
-        // Only exact `acp:<profile>` routes are runnable; a bare family token is
-        // authoring syntax and cannot become an execution backend.
-        assert!(matches!(Backend::from_ref("acp"), Backend::Invalid(_)));
-        assert!(matches!(Backend::from_ref("acp:"), Backend::Invalid(_)));
-        assert!(
-            matches!(Backend::from_ref("acp:claude"), Backend::Acp(cli) if cli.cli() == "claude" && cli.backend_ref() == "acp:claude")
-        );
-        assert!(Backend::from_ref("acp:codex").is_acp());
-
-        // The binding's stored `backend_ref` parses to the same typed backend.
-        assert!(matches!(
-            Backend::from_ref(&ModelBinding::new("p", "m", "acp:codex").backend_ref),
-            Backend::Acp(cli) if cli.cli() == "codex"
-        ));
-
-        // `a2a:<endpoint>` is a remote A2A backend.
-        assert!(matches!(
-            Backend::from_ref("a2a:https://host/a2a"),
-            Backend::Remote(endpoint) if endpoint.endpoint() == "https://host/a2a"
-        ));
-        assert_eq!(
-            Backend::from_ref("a2a:https://host/a2a").remote_endpoint(),
-            Some("https://host/a2a")
-        );
-        assert!(matches!(Backend::from_ref("a2a:x"), Backend::Invalid(_)));
-        assert!(matches!(Backend::from_ref("a2a:"), Backend::Invalid(_)));
-        assert!(matches!(
-            Backend::from_ref("a2a:ftp://agent.example"),
-            Backend::Invalid(_)
-        ));
-        assert!(matches!(
-            Backend::from_ref(" acp:codex"),
-            Backend::Invalid(_)
-        ));
-        assert!(matches!(Backend::from_ref(""), Backend::Invalid(_)));
-    }
-
-    #[test]
-    fn backend_owned_candidate_serializes_only_identity_and_model_policy() {
-        // Cause graph: exact Worker-local reference + explicit model policy ->
-        // immutable BackendOwned candidate. Endpoint and material have no fields.
-        //
-        // Decision table: Default and Exact both round-trip; changing the policy
-        // changes the snapshot data without inventing a model-id sentinel.
-        for selection in [BackendModelSelection::Default, BackendModelSelection::Exact] {
-            let model = if selection == BackendModelSelection::Default {
-                ""
-            } else {
-                "gpt-exact"
-            };
-            let candidate = ResolvedModelCandidate::backend_owned(
-                ModelBinding::new("cred:local", model, "acp:codex"),
-                crate::CredentialRef {
-                    id: "cred:local".into(),
-                    revision: 3,
-                },
-                selection,
-                "test",
-                "sha256:test-capability",
-                Default::default(),
-            );
-            let wire = serde_json::to_string(&candidate).unwrap();
-            assert!(!wire.contains("base_url"));
-            assert!(!wire.contains("material"));
-            assert_eq!(
-                serde_json::from_str::<ResolvedModelCandidate>(&wire).unwrap(),
-                candidate
-            );
-        }
-    }
-
-    #[test]
-    fn execution_model_selection_is_limited_to_the_published_pool() {
-        let mut spec = crate::snapshot::ExecutableAgentSnapshot::builder("agent")
-            .model(ModelBinding::new("primary-id", "primary", "native"))
-            .model_candidates([ModelBinding::new("fallback-id", "fallback", "native")])
-            .build()
-            .resolved_spec;
-        let unchanged = spec.clone();
-
-        assert!(!spec.select_execution_model("not-published"));
-        assert_eq!(
-            spec, unchanged,
-            "a rejected selector cannot mutate the pool"
-        );
-
-        assert!(spec.select_execution_model("fallback"));
-        assert_eq!(spec.model_binding.provider_identity_ref, "fallback-id");
-        assert!(spec.model_candidates.is_empty());
-    }
-
-    #[test]
-    fn attempt_candidates_add_advisor_without_turning_it_into_a_fallback() {
-        // Cause/effect graph: the primary pool controls model failover, while a
-        // distinct advisor still needs attempt-fenced credentials and routing.
-        // An advisor identical to the primary is one route, not two claims.
-        //
-        // Decision table:
-        // | Rule | pool       | advisor  | attempt set | failover set |
-        // | C1   | primary+fb | absent   | 2           | 2            |
-        // | C2   | primary+fb | distinct | 3           | 2            |
-        // | C3   | primary+fb | primary  | 2           | 2            |
-        // | C4   | no match   | distinct | 0           | 0            |
-        let mut spec = crate::snapshot::ExecutableAgentSnapshot::builder("agent")
-            .model(ModelBinding::new("primary-id", "primary", "native"))
-            .model_candidates([ModelBinding::new("fallback-id", "fallback", "native")])
-            .build()
-            .resolved_spec;
-        assert_eq!(spec.attempt_candidates(None).len(), 2, "C1");
-
-        let advisor =
-            ResolvedModelCandidate::host(ModelBinding::new("advisor-id", "advisor", "native"));
-        spec.plugin_config.agent.advisor = Some(crate::agent_bindings::AgentAdvisorBinding {
-            model: "claude-opus-5".into(),
-            candidate: advisor.clone(),
-        });
-        assert_eq!(spec.attempt_candidates(None).len(), 3, "C2");
-        assert_eq!(spec.candidate_bindings().len(), 2, "C2");
-        assert_eq!(spec.candidate_for_binding(&advisor.binding), Some(&advisor));
-
-        spec.plugin_config.agent.advisor = Some(crate::agent_bindings::AgentAdvisorBinding {
-            model: "claude-primary".into(),
-            candidate: spec.model_binding.clone(),
-        });
-        assert_eq!(spec.attempt_candidates(None).len(), 2, "C3");
-        assert_eq!(spec.candidate_bindings().len(), 2, "C3");
-        assert!(
-            spec.attempt_candidates(Some("not-published")).is_empty(),
-            "C4"
-        );
-    }
-
-    #[test]
-    fn a_legacy_spec_without_the_defaulted_fields_still_loads() {
-        // The `#[serde(default)]` fields (model_candidates, plugin_config,
-        // context_policy, tool_presentation) exist so a snapshot compiled before they
-        // were added stays loadable. A JSON carrying only the required surface must
-        // deserialize with each optional field at its documented default — the very
-        // backward-compat promise those attributes make.
-        let legacy = serde_json::json!({
-            "catalog_fingerprint": "fp-1",
-            "instructions": "be concise",
-            "max_steps": 8,
-            "model_binding": {
-                "provider_identity_ref": "p",
-                "model_ref": "m",
-                "backend_ref": "genai"
-            },
-            "tool_descriptors": [],
-            "plugin_ids": []
-        });
-        let spec: ResolvedSpec = serde_json::from_value(legacy).expect("legacy spec loads");
-        assert!(spec.model_candidates.is_empty());
-        assert!(spec.plugin_config.is_empty());
-        assert!(spec.tool_presentation.is_empty());
-        // An unset context policy sends the whole transcript (KeepAll), unchanged behavior.
-        assert_eq!(spec.context_policy, ContextPolicy::KeepAll);
-        // A single-model agent yields exactly the primary binding.
-        assert_eq!(spec.candidate_bindings().len(), 1);
-    }
-
-    #[test]
-    fn context_policy_wire_is_internally_tagged_snake_case_and_defaults_to_keep_all() {
-        // `tag = "kind"`, `rename_all = "snake_case"`: the unit variant carries just its
-        // tag, the struct variant its fields alongside.
-        assert_eq!(
-            serde_json::to_value(ContextPolicy::KeepAll).unwrap(),
-            serde_json::json!({ "kind": "keep_all" })
-        );
-        assert_eq!(
-            serde_json::to_value(ContextPolicy::KeepLast { keep_last: 3 }).unwrap(),
-            serde_json::json!({ "kind": "keep_last", "keep_last": 3 })
-        );
-        // Both directions round-trip, and the derived default is KeepAll.
-        let back: ContextPolicy =
-            serde_json::from_value(serde_json::json!({ "kind": "keep_last", "keep_last": 0 }))
-                .unwrap();
-        assert_eq!(back, ContextPolicy::KeepLast { keep_last: 0 });
-        assert_eq!(ContextPolicy::default(), ContextPolicy::KeepAll);
-    }
-
-    #[test]
-    fn content_hash_covers_id_description_and_schema() {
-        let base = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1}));
-
-        // Same inputs hash equally.
-        let same = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1}));
-        assert_eq!(base.content_hash(), same.content_hash());
-
-        // Any surface change moves the hash.
-        let schema_changed = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 2}));
-        let desc_changed = ToolDescriptor::pinned("p", "t", "other", serde_json::json!({"a": 1}));
-        let id_changed = ToolDescriptor::pinned("p", "u", "desc", serde_json::json!({"a": 1}));
-        assert_ne!(base.content_hash(), schema_changed.content_hash());
-        assert_ne!(base.content_hash(), desc_changed.content_hash());
-        assert_ne!(base.content_hash(), id_changed.content_hash());
-        assert!(base.content_hash().starts_with("p:t:"));
-    }
-
-    #[test]
-    fn descriptor_state_owns_one_derived_content_identity() {
-        // Metamorphic contract: every semantic mutation changes the derived
-        // identity; serialization carries the source facts, never a stale hash
-        // that could disagree with them.
-        let base = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
-        let kind_changed = base.clone().with_kind(ToolKind::Advisor);
-        let recovery_changed = base
-            .clone()
-            .with_recovery(crate::tool::ToolRecoveryPolicy::durable_request());
-        assert_ne!(base.content_hash(), kind_changed.content_hash());
-        assert_ne!(base.content_hash(), recovery_changed.content_hash());
-
-        let encoded = serde_json::to_value(&base).expect("serialize descriptor facts");
-        assert!(encoded.get("content_hash").is_none());
-        let decoded: ToolDescriptor =
-            serde_json::from_value(encoded).expect("deserialize valid descriptor facts");
-        assert_eq!(decoded.content_hash(), base.content_hash());
-    }
-
-    #[test]
-    fn persisted_invalid_tool_schema_never_constructs_a_descriptor() {
-        let descriptor = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
-        let mut encoded = serde_json::to_value(descriptor).expect("serialize descriptor");
-        encoded["parameters"] = serde_json::json!({"type": "string"});
-        assert!(serde_json::from_value::<ToolDescriptor>(encoded).is_err());
-    }
-
-    #[test]
-    fn model_tool_schema_normalization_decision_table() {
-        // Cause graph: C1=root is an object, C2=root type is object,
-        // C3=properties is missing/object/invalid, C4=nested array lacks items.
-        // Effects: E1=canonical schema, E2=preserve valid fields,
-        // E3=reject before provider I/O.
-        //
-        // | Rule | C1 | C2 | C3      | C4 | Effect |
-        // | R1   | Y  | Y  | missing | -  | E1     |
-        // | R2   | Y  | -  | missing | -  | E1     |
-        // | R3   | Y  | Y  | object  | Y  | E1+E2  |
-        // | R4   | Y  | Y  | invalid | -  | E3     |
-        // | R5   | N  | -  | -       | -  | E3     |
-        // | R6   | Y  | N  | -       | -  | E3     |
-        let missing_properties =
-            normalize_model_tool_schema(serde_json::json!({"type":"object"})).expect("R1");
-        assert_eq!(missing_properties["properties"], serde_json::json!({}));
-
-        let empty = normalize_model_tool_schema(serde_json::json!({})).expect("R2");
-        assert_eq!(empty["type"], "object");
-        assert_eq!(empty["properties"], serde_json::json!({}));
-
-        let nested = normalize_model_tool_schema(serde_json::json!({
-            "type":"object",
-            "properties": {
-                "filters": {
-                    "type":"object",
-                    "properties": {
-                        "literal": {
-                            "const": {"type":"object"}
-                        }
-                    }
-                },
-                "names": {"type":"array"}
-            },
-            "additionalProperties": false
-        }))
-        .expect("R3");
-        assert!(nested["properties"]["filters"]["properties"].is_object());
-        assert_eq!(
-            nested["properties"]["names"]["items"],
-            serde_json::json!({})
-        );
-        assert_eq!(
-            nested["properties"]["filters"]["properties"]["literal"]["const"],
-            serde_json::json!({"type":"object"}),
-            "R3 preserves instance-valued schema metadata"
-        );
-        assert_eq!(nested["additionalProperties"], false);
-
-        assert!(
-            normalize_model_tool_schema(serde_json::json!({"type":"object","properties":[]}))
-                .is_err(),
-            "R4"
-        );
-        assert!(
-            normalize_model_tool_schema(serde_json::json!(null)).is_err(),
-            "R5"
-        );
-        assert!(
-            normalize_model_tool_schema(serde_json::json!({"type":"string"})).is_err(),
-            "R6"
-        );
-    }
-
-    #[test]
-    fn pinned_descriptor_hashes_the_canonical_provider_schema() {
-        // R1: a legacy-compatible empty object and an explicit zero-argument
-        // object describe the same provider surface, so they must converge to
-        // one schema and one content identity.
-        let omitted = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
-        let explicit = ToolDescriptor::pinned(
-            "p",
-            "t",
-            "desc",
-            serde_json::json!({"type":"object","properties":{}}),
-        );
-        assert_eq!(omitted.parameters, explicit.parameters);
-        assert_eq!(omitted.content_hash(), explicit.content_hash());
-    }
-
-    #[test]
-    fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
-        // Without length-prefixing, ("ab","c") and ("a","bc") would concatenate to
-        // the same byte stream and collide. The id is part of the readable prefix,
-        // so vary the description/schema boundary where the digest actually matters.
-        let recovery = crate::tool::ToolRecoveryPolicy::default();
-        let a = content_hash(
-            "p",
-            "t",
-            "ab",
-            &serde_json::json!("c"),
-            ToolKind::Regular,
-            &recovery,
-        );
-        let b = content_hash(
-            "p",
-            "t",
-            "a",
-            &serde_json::json!("bc"),
-            ToolKind::Regular,
-            &recovery,
-        );
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn content_hash_is_deterministic_sha256_hex() {
-        // Portable digest: the same inputs always yield the same 16 hex chars, and
-        // the tail is valid lowercase hex (not a platform-dependent SipHash value).
-        let h =
-            ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1})).content_hash();
-        let tail = h.rsplit(':').next().unwrap();
-        assert_eq!(tail.len(), 16);
-        assert!(
-            tail.chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        );
-    }
-}
+#[path = "resolved/tests.rs"]
+mod tests;

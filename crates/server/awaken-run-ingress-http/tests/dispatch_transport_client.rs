@@ -74,7 +74,7 @@ fn credential_dispatch(
     );
     let mut activation = activation(run, thread);
     activation.snapshot.resolved_spec.model_binding =
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
             ModelBinding::new("provider", "model", "native"),
             "provider@1",
             "route@1",
@@ -95,7 +95,8 @@ fn credential_dispatch(
                 upstream_model: "model".into(),
                 processing_placement: None,
             },
-        );
+        )
+        .expect("coherent credential dispatch candidate");
     let mut dispatch = RunDispatch::new(activation);
     dispatch.inference_plaintext_holder = Some(holder.clone());
     (

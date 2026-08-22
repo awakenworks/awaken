@@ -341,7 +341,7 @@ impl SessionApplication {
         let execution_model_ref = model_override
             .as_ref()
             .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding.model_ref.clone())
+            .map(|publication| publication.primary.binding().model_ref.clone())
             .or_else(|| {
                 profile
                     .as_ref()
@@ -351,7 +351,7 @@ impl SessionApplication {
         let published_backend_ref = model_override
             .as_ref()
             .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding.backend_ref.clone())
+            .map(|publication| publication.primary.binding().backend_ref.clone())
             .or_else(|| {
                 profile
                     .as_ref()

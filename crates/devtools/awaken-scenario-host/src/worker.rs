@@ -28,7 +28,7 @@ pub async fn run_echo_worker(
             _context: &awaken_runtime_contract::RuntimeRunContext,
         ) -> Option<Arc<dyn LlmExecutor>> {
             if !matches!(
-                candidate.provisioning,
+                candidate.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
             ) {
                 return None;

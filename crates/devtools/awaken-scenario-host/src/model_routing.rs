@@ -55,10 +55,10 @@ impl InferenceExecutorMaterializer for RouteProvider {
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        if !matches!(candidate.provisioning, ModelProvisioning::HostExecutor) {
+        if !matches!(candidate.provisioning(), ModelProvisioning::HostExecutor) {
             return None;
         }
-        let model_ref = candidate.binding.model_ref.as_str();
+        let model_ref = candidate.binding().model_ref.as_str();
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),

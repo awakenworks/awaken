@@ -75,7 +75,7 @@ pub(crate) fn child_attempt_executor(
         .resolved_spec
         .attempt_candidates(None)
         .into_iter()
-        .map(|candidate| Backend::from_ref(&candidate.binding.backend_ref))
+        .map(|candidate| Backend::from_ref(&candidate.binding().backend_ref))
         .collect::<Vec<_>>();
     let acp = backends
         .iter()
@@ -124,7 +124,7 @@ pub(super) fn bind_direct_child_credentials(
         .into_iter()
         .filter(|candidate| {
             matches!(
-                candidate.provisioning,
+                candidate.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             )
         })

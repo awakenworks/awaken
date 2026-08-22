@@ -131,7 +131,7 @@ fn delegation_bindings_read_legacy_ids_but_write_one_canonical_shape() {
 #[test]
 fn provider_model_candidate_provisioning_is_pinned() {
     let mut spec = spec();
-    spec.model_binding = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+    spec.model_binding = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
         ModelBinding::new("identity-a", "model-a", "genai"),
         "provider-a@2",
         "route-a@3",
@@ -152,7 +152,8 @@ fn provider_model_candidate_provisioning_is_pinned() {
             upstream_model: "upstream-a".into(),
             processing_placement: None,
         },
-    );
+    )
+    .expect("coherent provider candidate");
 
     let wire = serde_json::to_value(spec).expect("serialize provider candidate");
     assert_eq!(
@@ -201,7 +202,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
                 .collect(),
         },
     };
-    let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+    let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         ModelBinding::new("local-codex", "", "acp:codex"),
         awaken_runtime_contract::CredentialRef {
             id: "local-codex".into(),
@@ -211,7 +212,8 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
         "1.2.3",
         "sha256:profile",
         profile.session_configuration.clone(),
-    );
+    )
+    .expect("coherent backend-owned candidate");
     assert_eq!(
         serde_json::to_value(backend).unwrap()["provisioning"],
         json!({
@@ -235,14 +237,15 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
         upstream_model: "gpt-5".into(),
         processing_placement: None,
     };
-    let native = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+    let native = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
         ModelBinding::new("openai", "gpt-5", "genai"),
         "openai@1",
         "openai.open_ai_chat@1",
         "workspace-a",
         None,
         endpoint(),
-    );
+    )
+    .expect("coherent native provider candidate");
     assert!(
         serde_json::to_value(native).unwrap()["provisioning"]
             .get("acp")
@@ -250,15 +253,17 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
         "E2"
     );
 
-    let provider = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider_with_acp(
-        ModelBinding::new("openai", "gpt-5", "acp:codex"),
-        "openai@1",
-        "openai.open_ai_chat@1",
-        "workspace-a",
-        None,
-        endpoint(),
-        profile,
-    );
+    let provider =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+            ModelBinding::new("openai", "gpt-5", "acp:codex"),
+            "openai@1",
+            "openai.open_ai_chat@1",
+            "workspace-a",
+            None,
+            endpoint(),
+            profile,
+        )
+        .expect("coherent ACP provider candidate");
     let provider = serde_json::to_value(provider).unwrap();
     assert_eq!(
         provider["provisioning"]["acp"]["capability_fingerprint"], "sha256:profile",

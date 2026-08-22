@@ -1924,7 +1924,7 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
 fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHolder) -> RunDispatch {
     let mut request = dispatch(ns, run, thread);
     request.activation.snapshot.resolved_spec.model_binding =
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
             ModelBinding::new(format!("{ns}-provider"), "model", "genai"),
             format!("{ns}-provider@1"),
             format!("{ns}-route@1"),
@@ -1945,7 +1945,8 @@ fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHold
                 upstream_model: "model".into(),
                 processing_placement: None,
             },
-        );
+        )
+        .expect("testkit provider candidate is coherent");
     request.inference_plaintext_holder = Some(holder.clone());
     request
 }

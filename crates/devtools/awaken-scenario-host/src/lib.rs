@@ -558,7 +558,7 @@ pub async fn build_resolved_real_router() -> Router {
     mount(
         runtime_resource_host_with_deployment(
             executor,
-            published.primary.binding.model_ref,
+            published.primary.binding().model_ref.clone(),
             scenario_deployment(),
         )
         .await,
@@ -683,7 +683,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     mount(
         runtime_resource_host_with_deployment(
             executor,
-            published.primary.binding.model_ref,
+            published.primary.binding().model_ref.clone(),
             scenario_deployment(),
         )
         .await,
@@ -961,12 +961,15 @@ pub fn build_remote_delegation_router() -> Router {
         })
         .build();
     let researcher = ExecutableAgentSnapshot::builder("researcher")
-        .resolved_model(ResolvedModelCandidate::remote(
-            ModelBinding::new("remote", "", format!("a2a:{url}")),
-            awaken_tenancy::ScopeId::from("default"),
-            None,
-            security_fingerprint,
-        ))
+        .resolved_model(
+            ResolvedModelCandidate::try_remote(
+                ModelBinding::new("remote", "", format!("a2a:{url}")),
+                awaken_tenancy::ScopeId::from("default"),
+                None,
+                security_fingerprint,
+            )
+            .expect("environment supplied a coherent remote candidate"),
+        )
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([assistant, researcher])
         .expect("valid remote delegation publication");

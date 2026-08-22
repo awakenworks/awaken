@@ -111,12 +111,15 @@ fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
         })
         .build();
     let remote = ExecutableAgentSnapshot::builder("researcher")
-        .resolved_model(ResolvedModelCandidate::remote(
-            ModelBinding::new("remote", "", "a2a:http://remote.invalid"),
-            awaken_tenancy::ScopeId::from("default"),
-            None,
-            "test-fixed-transport",
-        ))
+        .resolved_model(
+            ResolvedModelCandidate::try_remote(
+                ModelBinding::new("remote", "", "a2a:http://remote.invalid"),
+                awaken_tenancy::ScopeId::from("default"),
+                None,
+                "test-fixed-transport",
+            )
+            .expect("coherent anonymous A2A candidate"),
+        )
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
@@ -149,12 +152,15 @@ fn published_delegating_host(
         })
         .build();
     let remote = ExecutableAgentSnapshot::builder("researcher")
-        .resolved_model(ResolvedModelCandidate::remote(
-            ModelBinding::new("remote", "", format!("a2a:{endpoint}")),
-            awaken_tenancy::ScopeId::from("default"),
-            Some(credential),
-            security_fingerprint,
-        ))
+        .resolved_model(
+            ResolvedModelCandidate::try_remote(
+                ModelBinding::new("remote", "", format!("a2a:{endpoint}")),
+                awaken_tenancy::ScopeId::from("default"),
+                Some(credential),
+                security_fingerprint,
+            )
+            .expect("coherent authenticated A2A candidate"),
+        )
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");

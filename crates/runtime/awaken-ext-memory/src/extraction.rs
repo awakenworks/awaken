@@ -375,7 +375,7 @@ impl MemoryExtractionIntent {
                     .agent
                     .resolved_spec
                     .model_binding
-                    .binding
+                    .binding()
                     .model_ref
                     .as_str(),
             ),

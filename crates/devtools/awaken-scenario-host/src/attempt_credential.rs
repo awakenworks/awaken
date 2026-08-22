@@ -7,7 +7,7 @@ use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidat
 fn native_binding(
     candidate: &ResolvedModelCandidate,
 ) -> awaken_runtime_contract::AttemptCredentialBinding {
-    let credential = match &candidate.provisioning {
+    let credential = match candidate.provisioning() {
         ModelProvisioning::Provider {
             credential: Some(access),
             ..

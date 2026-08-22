@@ -1480,7 +1480,10 @@ fn session_home_binding_is_none_for_a_non_acp_backend() {
     // A native (non-ACP) backend has no CLI session-home — the binding is absent, so
     // the provider is never engaged (Gateway/stateless adapters skip the same way).
     let mut act = activation();
-    *act.snapshot.resolved_spec.model_binding = ModelBinding::new("prov", "model", "native");
+    act.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+            "prov", "model", "native",
+        ));
     let e = exec(vec![]);
     assert!(e.session_home_binding(&act).is_none());
 }
@@ -3197,8 +3200,12 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
 
         // Reflect the scenario: the run binds this row's backend (acp:<id>).
         let mut act = activation();
-        *act.snapshot.resolved_spec.model_binding =
-            ModelBinding::new("prov", "model", format!("acp:{}", row.id));
+        act.snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "prov",
+                "model",
+                format!("acp:{}", row.id),
+            ));
 
         let coord = Arc::new(RecordingCoordinator::default());
         let state = exec

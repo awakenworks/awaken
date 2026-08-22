@@ -340,7 +340,7 @@ impl PinnedCredentialMaterializer {
         candidate: &'a ResolvedModelCandidate,
         context: &'a awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<Option<(&'a CredentialAccess, &'a AttemptCredentialBinding)>, String> {
-        let ModelProvisioning::Provider { credential, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Provider { credential, .. } = candidate.provisioning() else {
             return Err("model candidate has no provider provisioning".into());
         };
         Self::claimed_binding(candidate, context, credential.as_deref(), "provider")
@@ -350,7 +350,7 @@ impl PinnedCredentialMaterializer {
         candidate: &'a ResolvedModelCandidate,
         context: &'a awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<Option<(&'a CredentialAccess, &'a AttemptCredentialBinding)>, String> {
-        let ModelProvisioning::Remote { credential, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Remote { credential, .. } = candidate.provisioning() else {
             return Err("model candidate has no remote provisioning".into());
         };
         Self::claimed_binding(candidate, context, credential.as_deref(), "remote")
@@ -599,7 +599,7 @@ impl PinnedCredentialMaterializer {
             credential,
             endpoint,
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             return Err("model candidate does not require a provider credential".into());
         };
@@ -651,7 +651,7 @@ impl PinnedCredentialMaterializer {
             scope_id,
             credential,
             security_fingerprint,
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             return Err("model candidate does not require remote transport authentication".into());
         };
@@ -676,7 +676,7 @@ impl PinnedCredentialMaterializer {
                 selected_holder,
                 CredentialMaterialBinding::for_target(
                     scope_id.as_str(),
-                    &(&candidate.binding.backend_ref, security_fingerprint),
+                    &(&candidate.binding().backend_ref, security_fingerprint),
                     &credential.usage,
                 ),
                 None,
@@ -1604,14 +1604,15 @@ mod tests {
             "sha256:provider-payload",
             holder,
         ));
-        let candidate = ResolvedModelCandidate::provider(
+        let candidate = ResolvedModelCandidate::try_provider(
             ModelBinding::new("anthropic", "model", "native"),
             provider_ref,
             "endpoint@1",
             "workspace-a",
             Some(provider_access),
             endpoint,
-        );
+        )
+        .expect("coherent external-material provider candidate");
         assert_eq!(
             provider_materializer
                 .materialize_provider(&candidate)
@@ -1646,7 +1647,7 @@ mod tests {
                 "credential material source is unsupported",
             ),
         ] {
-            let candidate = ResolvedModelCandidate::provider(
+            let candidate = ResolvedModelCandidate::try_provider(
                 ModelBinding::new("anthropic", "model", "native"),
                 "anthropic@1",
                 "endpoint@1",
@@ -1667,7 +1668,8 @@ mod tests {
                     upstream_model: "model".into(),
                     processing_placement: None,
                 },
-            );
+            )
+            .expect("coherent unavailable-material provider candidate");
             let materializer = PinnedCredentialMaterializer::new(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
@@ -1763,7 +1765,7 @@ mod tests {
         .await
         .unwrap();
         let holder = selected_holder();
-        let candidate = ResolvedModelCandidate::remote(
+        let candidate = ResolvedModelCandidate::try_remote(
             ModelBinding::new("", "", "a2a:https://agent.example"),
             "workspace-a",
             Some(CredentialAccess::new(
@@ -1779,7 +1781,8 @@ mod tests {
                 CredentialExecutionPolicy::self_hosted_provider(),
             )),
             "sha256:card",
-        );
+        )
+        .expect("coherent remote credential candidate");
         let capabilities = CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
             material_sources: [CredentialMaterialSource::ControlPlaneReference]

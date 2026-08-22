@@ -147,7 +147,12 @@ impl ConfigPlaneManagedAgentRepository {
                 ModelSelection::Auto | ModelSelection::Profile { .. }
             )
         {
-            let binding = publication.snapshot.resolved_spec.model_binding.binding;
+            let binding = publication
+                .snapshot
+                .resolved_spec
+                .model_binding
+                .binding()
+                .clone();
             revision.config.model_binding = ModelSelection::Pinned(binding);
         }
         Ok(project(revision))
@@ -1007,7 +1012,7 @@ mod tests {
                 .ok_or_else(|| "test requires a pinned model".to_string())?;
             let resolved = |binding: ModelBinding| {
                 let model = binding.model_ref.clone();
-                ResolvedModelCandidate::provider(
+                ResolvedModelCandidate::try_provider(
                     binding,
                     "test-provider",
                     format!("test-route:{model}"),
@@ -1026,8 +1031,13 @@ mod tests {
                 )
             };
             Ok(ResolvedPublicationModels {
-                primary: resolved(primary),
-                candidates: candidates.iter().cloned().map(resolved).collect(),
+                primary: resolved(primary).map_err(|error| error.to_string())?,
+                candidates: candidates
+                    .iter()
+                    .cloned()
+                    .map(resolved)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?,
                 context_window: None,
                 max_output_tokens: None,
             })

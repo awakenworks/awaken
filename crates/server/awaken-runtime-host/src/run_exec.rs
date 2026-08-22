@@ -368,7 +368,7 @@ impl SessionAttemptExecutor {
             resolved
                 .attempt_candidates(None)
                 .into_iter()
-                .map(|candidate| &candidate.binding)
+                .map(|candidate| candidate.binding())
         }) {
             let executor = match Backend::from_ref(&binding.backend_ref) {
                 Backend::Native => continue,
@@ -445,7 +445,7 @@ impl SharedHost {
         let mut bindings = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for candidate in &candidates {
-            let backend = Backend::from_ref(&candidate.binding.backend_ref);
+            let backend = Backend::from_ref(&candidate.binding().backend_ref);
             // Each route is admitted only by the resolver/provider that will
             // execute that exact candidate. Unioning evidence across fallback
             // candidates would let one ACP route authorize another route.
@@ -879,9 +879,11 @@ mod tests {
     fn resolved_with(backend_refs: &[&str]) -> awaken_runtime_contract::resolved::ResolvedSpec {
         let mut resolved = activation(backend_refs[0]).snapshot.resolved_spec;
         for backend_ref in &backend_refs[1..] {
-            let mut candidate = resolved.model_binding.clone();
-            candidate.binding.backend_ref = (*backend_ref).to_string();
-            resolved.model_candidates.push(candidate);
+            let mut binding = resolved.model_binding.binding().clone();
+            binding.backend_ref = (*backend_ref).to_string();
+            resolved
+                .model_candidates
+                .push(awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding));
         }
         resolved
     }

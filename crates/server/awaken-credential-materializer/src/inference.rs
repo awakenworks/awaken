@@ -142,7 +142,7 @@ impl CredentialInferenceMaterializer {
             route_ref,
             endpoint,
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             return Ok(None);
         };
@@ -159,7 +159,7 @@ impl CredentialInferenceMaterializer {
             return crate::brokered_inference::BrokeredCandidateExecutor::new(
                 client,
                 provider_ref,
-                &candidate.binding.model_ref,
+                &candidate.binding().model_ref,
                 &endpoint.api_dialect,
                 &endpoint.adapter_kind,
                 local_run_correlation,
@@ -254,7 +254,7 @@ impl PinnedCandidateExecutor {
         let candidate = self
             .candidates
             .iter()
-            .find(|candidate| &candidate.binding == requested)
+            .find(|candidate| candidate.binding() == requested)
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "model {} is outside the publication-pinned candidate set",
@@ -352,7 +352,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
                 "effective model is outside the publication candidate set".to_string()
             })?;
         if !matches!(
-            Backend::from_ref(&exact.binding.backend_ref),
+            Backend::from_ref(&exact.binding().backend_ref),
             Backend::Native
         ) {
             return Ok(None);
@@ -368,7 +368,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
             if let ModelProvisioning::Provider {
                 credential: Some(access),
                 ..
-            } = &candidate.provisioning
+            } = candidate.provisioning()
             {
                 let binding = context
                     .credential_realization
@@ -416,7 +416,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
         }) as Arc<dyn LlmExecutor>)
         .filter(|_| {
             !matches!(
-                &candidate.provisioning,
+                candidate.provisioning(),
                 ModelProvisioning::Provider {
                     credential: Some(_),
                     ..
@@ -548,7 +548,7 @@ mod tests {
 
     #[cfg(feature = "brokered")]
     fn brokered_candidate(model: &str) -> ResolvedModelCandidate {
-        ResolvedModelCandidate::provider(
+        ResolvedModelCandidate::try_provider(
             ModelBinding::new("openai", model, "genai"),
             "openai@1",
             "brokered:awaken-cloud:openai:open_ai_responses@7",
@@ -562,6 +562,7 @@ mod tests {
                 processing_placement: None,
             },
         )
+        .expect("coherent brokered provider candidate")
     }
 
     #[cfg(feature = "brokered")]
@@ -614,9 +615,12 @@ mod tests {
             ownership: context.ownership,
             local_run_correlation: Some("run-a".into()),
         };
-        assert!(router.executor_for(&primary.binding).await.is_ok(), "B3/E1");
         assert!(
-            router.executor_for(&fallback.binding).await.is_ok(),
+            router.executor_for(primary.binding()).await.is_ok(),
+            "B3/E1"
+        );
+        assert!(
+            router.executor_for(fallback.binding()).await.is_ok(),
             "B3/E1 fallback"
         );
         assert!(

@@ -779,7 +779,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .snapshot
                     .resolved_spec
                     .model_binding
-                    .binding
+                    .binding()
                     .backend_ref,
             )
             .is_acp()

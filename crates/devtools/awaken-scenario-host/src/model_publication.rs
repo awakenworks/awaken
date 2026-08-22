@@ -137,7 +137,7 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
             .await?;
         let candidate = |binding: ModelBinding| {
             let upstream_model = binding.model_ref.clone();
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
                 binding,
                 DISTRIBUTED_PROVIDER_REF,
                 DISTRIBUTED_ROUTE_REF,
@@ -171,12 +171,14 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
             )
         };
         Ok(awaken_config_service::ResolvedPublicationModels {
-            primary: candidate(selected.primary.binding),
+            primary: candidate(selected.primary.binding().clone())
+                .map_err(|error| error.to_string())?,
             candidates: selected
                 .candidates
                 .into_iter()
-                .map(|candidate_model| candidate(candidate_model.binding))
-                .collect(),
+                .map(|candidate_model| candidate(candidate_model.binding().clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?,
             context_window: selected.context_window,
             max_output_tokens: selected.max_output_tokens,
         })
@@ -206,12 +208,12 @@ mod tests {
             )
             .await
             .expect("M1 explicit model");
-        assert_eq!(resolved.primary.binding, explicit, "M1");
+        assert_eq!(resolved.primary.binding(), &explicit, "M1");
         let resolved = resolver
             .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
             .await
             .expect("M2 Auto model");
-        assert_eq!(resolved.primary.binding.model_ref, "echo", "M2");
+        assert_eq!(resolved.primary.binding().model_ref, "echo", "M2");
 
         let empty = ScenarioHostModelResolver::new(Arc::new(
             awaken_model_catalog::repo::InMemoryCatalogRepo::new(),
@@ -242,7 +244,7 @@ mod tests {
             credential: Some(access),
             endpoint,
             ..
-        } = &resolved.primary.provisioning
+        } = resolved.primary.provisioning()
         else {
             panic!("P1 must publish one Provider candidate");
         };

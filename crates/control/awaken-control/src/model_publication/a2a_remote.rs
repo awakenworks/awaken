@@ -143,12 +143,13 @@ impl CatalogModelPublicationResolver {
                 CredentialExecutionPolicy::self_hosted_provider(),
             ))
         };
-        Ok(ResolvedModelCandidate::remote(
-            binding,
+        ResolvedModelCandidate::try_remote(
+            binding.clone(),
             workspace.clone(),
             credential,
             security.fingerprint,
-        ))
+        )
+        .map_err(|error| unavailable(error.to_string()))
     }
 }
 
@@ -209,7 +210,7 @@ mod tests {
         .await
         .expect("A1");
         assert!(matches!(
-            anonymous.primary.provisioning,
+            anonymous.primary.provisioning(),
             ModelProvisioning::Remote {
                 credential: None,
                 ..
@@ -261,7 +262,7 @@ mod tests {
             credential: Some(access),
             security_fingerprint,
             ..
-        } = authenticated.primary.provisioning
+        } = authenticated.primary.provisioning()
         else {
             panic!("A2 must freeze Remote credential authority");
         };

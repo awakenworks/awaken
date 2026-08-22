@@ -3101,7 +3101,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     host.deployment.disable_local_pool = true;
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("local-codex")
         .resolved_model(
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
                 awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
                 awaken_runtime_contract::CredentialRef {
                     id: "codex-login".into(),
@@ -3111,7 +3111,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
                 "codex-test",
                 "sha256:codex-test",
                 Default::default(),
-            ),
+            )
+            .expect("coherent backend-owned candidate"),
         )
         .build();
 
@@ -7462,28 +7463,57 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // | R4   | T  | T  | T  | T  | F  | reject                    |
     // | R5   | T  | -  | -  | -  | T  | exact publication holder  |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
-    let candidate = |model: &str, backend: &str| {
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-            awaken_runtime_contract::resolved::ModelBinding::new("provider", model, backend),
-            "provider@1",
-            "route@1",
-            "workspace-a",
-            Some(awaken_runtime_contract::CredentialAccess::new(
+    let candidate_with_policy =
+        |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
+            let binding =
+                awaken_runtime_contract::resolved::ModelBinding::new("provider", model, backend);
+            let credential = Some(awaken_runtime_contract::CredentialAccess::new(
                 awaken_runtime_contract::CredentialRef {
                     id: format!("credential-{model}"),
                     revision: 1,
                 },
                 awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
                 awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            )),
-            awaken_runtime_contract::InferenceEndpoint {
+                policy,
+            ));
+            let endpoint = awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "test".into(),
-                api_dialect: String::new(),
+                api_dialect: "test".into(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: model.into(),
                 processing_placement: None,
-            },
+            };
+            if backend.starts_with("acp:") {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                    binding,
+                    "provider@1",
+                    "route@1",
+                    "workspace-a",
+                    credential,
+                    endpoint,
+                    awaken_runtime_contract::resolved::AcpExecutionProfile {
+                        capability_fingerprint: "sha256:test-capability".into(),
+                        capability_adapter_version: "test".into(),
+                        session_configuration: Default::default(),
+                    },
+                )
+            } else {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+                    binding,
+                    "provider@1",
+                    "route@1",
+                    "workspace-a",
+                    credential,
+                    endpoint,
+                )
+            }
+            .expect("coherent holder-policy candidate")
+        };
+    let candidate = |model: &str, backend: &str| {
+        candidate_with_policy(
+            model,
+            backend,
+            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
         )
     };
     let activation = |primary, fallbacks| {
@@ -7542,17 +7572,13 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
         awaken_runtime_contract::PlaintextBoundary::Platform,
         "awaken.cloud.egress-gateway",
     );
-    let mut platform_candidate = candidate("platform", "hosted");
-    let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
-        credential: Some(credential),
-        ..
-    } = &mut platform_candidate.provisioning
-    else {
-        unreachable!("candidate fixture has a credential")
-    };
-    credential.policy = awaken_runtime_contract::CredentialExecutionPolicy::exact(
-        platform_holder.clone(),
-        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+    let platform_candidate = candidate_with_policy(
+        "platform",
+        "hosted",
+        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            platform_holder.clone(),
+            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+        ),
     );
     assert_eq!(
         super::self_hosted_inference_holder(&activation(platform_candidate, Vec::new())).unwrap(),

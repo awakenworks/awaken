@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashMap};
 pub(crate) fn model_realization_capability(
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
 ) -> Option<&'static str> {
-    match &candidate.provisioning {
+    match candidate.provisioning() {
         awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
             Some(HOST_EXECUTOR_CAPABILITY)
         }
@@ -45,7 +45,7 @@ fn worker_local_credentials(
 ) -> BTreeSet<awaken_run_ingress::WorkerCredentialRevision> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
-        .filter_map(|candidate| match &candidate.provisioning {
+        .filter_map(|candidate| match candidate.provisioning() {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
                 credential,
                 ..
@@ -70,12 +70,12 @@ fn worker_acp_capabilities(
 ) -> BTreeSet<awaken_run_ingress::WorkerAcpCapabilityRequirement> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
-        .filter_map(|candidate| match &candidate.provisioning {
+        .filter_map(|candidate| match candidate.provisioning() {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { acp, .. }
                 if !acp.capability_fingerprint.trim().is_empty() =>
             {
                 Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
-                    backend_ref: candidate.binding.backend_ref.clone(),
+                    backend_ref: candidate.binding().backend_ref.clone(),
                     fingerprint: acp.capability_fingerprint.clone(),
                 })
             }
@@ -84,7 +84,7 @@ fn worker_acp_capabilities(
                 ..
             } if !acp.capability_fingerprint.trim().is_empty() => {
                 Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
-                    backend_ref: candidate.binding.backend_ref.clone(),
+                    backend_ref: candidate.binding().backend_ref.clone(),
                     fingerprint: acp.capability_fingerprint.clone(),
                 })
             }
@@ -104,7 +104,7 @@ pub(crate) fn requires_local_environment(
         .any(|candidate| {
             !matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &candidate.binding.backend_ref
+                    &candidate.binding().backend_ref
                 ),
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             )
@@ -127,7 +127,7 @@ pub fn self_hosted_inference_holder(
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             continue;
         };
@@ -138,7 +138,7 @@ pub fn self_hosted_inference_holder(
             }
         }
         let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
-            &candidate.binding.backend_ref,
+            &candidate.binding().backend_ref,
         ) {
             awaken_runtime_contract::resolved::Backend::Acp(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Workload
@@ -210,11 +210,11 @@ pub fn remote_worker_placement(
         .any(|candidate| {
             matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &candidate.binding.backend_ref
+                    &candidate.binding().backend_ref
                 ),
                 awaken_runtime_contract::resolved::Backend::Acp(_)
             ) && !matches!(
-                candidate.provisioning,
+                candidate.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
             )
         });
@@ -234,7 +234,7 @@ pub fn remote_worker_placement(
     for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
         placement.required_capabilities.insert(
             awaken_runtime_contract::execution::execution_capability(
-                &candidate.binding.backend_ref,
+                &candidate.binding().backend_ref,
             ),
         );
         if let Some(capability) = model_realization_capability(candidate) {
@@ -896,9 +896,7 @@ mod completion_tests {
     #[test]
     fn environment_and_backend_compile_one_worker_sandbox_requirement_vector() {
         use awaken_provisioning_contract::IsolationClass;
-        use awaken_runtime_contract::resolved::{
-            BackendModelSelection, ModelProvisioning, ResolvedModelCandidate,
-        };
+        use awaken_runtime_contract::resolved::{BackendModelSelection, ResolvedModelCandidate};
 
         // Cause/effect graph:
         // C1=Native; C2=projected ACP opaque process; C3=trusted BackendOwned ACP;
@@ -936,7 +934,7 @@ mod completion_tests {
         );
 
         let mut projected_acp = host_models();
-        projected_acp.model_binding = ResolvedModelCandidate::provider(
+        projected_acp.model_binding = ResolvedModelCandidate::try_provider_with_acp(
             ModelBinding::new("provider", "model", "acp:claude"),
             "provider@1",
             "route@1",
@@ -949,7 +947,13 @@ mod completion_tests {
                 upstream_model: "model".into(),
                 processing_placement: None,
             },
-        );
+            awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_fingerprint: "sha256:test-capability".into(),
+                capability_adapter_version: "test".into(),
+                session_configuration: Default::default(),
+            },
+        )
+        .expect("coherent projected ACP candidate");
         let acp = remote_worker_placement(&projected_acp, Some(&frozen), None, true);
         assert!(
             acp.sandbox.tool_transparent && acp.sandbox.path_fidelity,
@@ -957,15 +961,18 @@ mod completion_tests {
         );
 
         let mut trusted = host_models();
-        trusted.model_binding.provisioning = ModelProvisioning::BackendOwned {
-            credential: awaken_runtime_contract::CredentialRef {
+        trusted.model_binding = ResolvedModelCandidate::try_backend_owned(
+            ModelBinding::new("local", "", "acp:codex"),
+            awaken_runtime_contract::CredentialRef {
                 id: "local".into(),
                 revision: 1,
             },
-            model_selection: BackendModelSelection::Default,
-            acp: Default::default(),
-        };
-        trusted.model_binding.binding.backend_ref = "acp:codex".into();
+            BackendModelSelection::Default,
+            "test",
+            "sha256:test-capability",
+            Default::default(),
+        )
+        .expect("coherent trusted ACP candidate");
         let mut workdir = frozen.clone();
         workdir.sandbox = Default::default();
         workdir.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
@@ -975,12 +982,13 @@ mod completion_tests {
         assert!(!trusted.sandbox.tool_transparent, "R3");
 
         let mut remote = host_models();
-        remote.model_binding = ResolvedModelCandidate::remote(
+        remote.model_binding = ResolvedModelCandidate::try_remote(
             ModelBinding::new("agent", "", "a2a:https://agent.test"),
             "workspace",
             None,
             "security-fp",
-        );
+        )
+        .expect("coherent remote candidate");
         let remote_placement = remote_worker_placement(&remote, Some(&frozen), None, true);
         assert_eq!(remote_placement.sandbox, Default::default(), "R4");
         assert_eq!(
@@ -1200,9 +1208,8 @@ mod completion_tests {
     #[test]
     fn coordinator_admission_pins_protocol_and_every_materialization_capability() {
         let mut models = host_models();
-        models
-            .model_candidates
-            .push(ResolvedModelCandidate::provider(
+        models.model_candidates.push(
+            ResolvedModelCandidate::try_provider(
                 ModelBinding::new("provider", "fallback", "native"),
                 "provider@1",
                 "route@1",
@@ -1215,7 +1222,9 @@ mod completion_tests {
                     upstream_model: "fallback".into(),
                     processing_placement: None,
                 },
-            ));
+            )
+            .expect("coherent fallback provider candidate"),
+        );
         let placement = remote_worker_placement(&models, None, None, true);
         assert_eq!(placement.contract_version, 1);
         assert_eq!(placement.dispatch_contract_version, 1);
@@ -1236,9 +1245,16 @@ mod completion_tests {
     #[test]
     fn coordinator_admission_requires_exact_acp_and_generic_a2a_capabilities() {
         let mut models = host_models();
-        models.model_binding.binding.backend_ref = "acp:claude".to_string();
-        let mut remote = models.model_binding.clone();
-        remote.binding.backend_ref = "a2a:https://agent.example".to_string();
+        let mut binding = models.model_binding.binding().clone();
+        binding.backend_ref = "acp:claude".to_string();
+        models.model_binding = ResolvedModelCandidate::host(binding);
+        let remote = ResolvedModelCandidate::try_remote(
+            ModelBinding::new("agent", "", "a2a:https://agent.example"),
+            "workspace",
+            None,
+            "sha256:test-security",
+        )
+        .expect("coherent remote candidate");
         models.model_candidates.push(remote);
 
         let placement = remote_worker_placement(&models, None, None, true);
@@ -1266,7 +1282,7 @@ mod completion_tests {
         };
 
         let worker_candidate = |model: &str, credential: &str, revision: u64| {
-            ResolvedModelCandidate::provider(
+            ResolvedModelCandidate::try_provider(
                 ModelBinding::new("provider", model, "genai"),
                 "provider@1",
                 "route@1",
@@ -1288,6 +1304,7 @@ mod completion_tests {
                     processing_placement: None,
                 },
             )
+            .expect("coherent Worker-local provider candidate")
         };
         let mut models = host_models();
         models.model_binding = worker_candidate("primary", "cred:primary", 2);
@@ -1329,7 +1346,7 @@ mod completion_tests {
         // Decision table: BackendOwned always requires its one exact observation;
         // HostExecutor requires neither this capability nor credential revision.
         let mut models = host_models();
-        models.model_binding = ResolvedModelCandidate::backend_owned(
+        models.model_binding = ResolvedModelCandidate::try_backend_owned(
             ModelBinding::new("cred:local", "", "acp:codex"),
             awaken_runtime_contract::CredentialRef {
                 id: "cred:local".into(),
@@ -1339,7 +1356,8 @@ mod completion_tests {
             "test",
             "sha256:test-capability",
             Default::default(),
-        );
+        )
+        .expect("coherent backend-owned candidate");
 
         let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
