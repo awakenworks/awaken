@@ -986,7 +986,7 @@ impl std::ops::Deref for ToolSchema {
 /// is derived from the current complete state, never stored as a second mutable
 /// fact. It carries no executable handle — authority lives behind the gate and
 /// `ToolExecutor`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolDescriptor {
     content_namespace: String,
     pub id: String,
@@ -1004,6 +1004,60 @@ pub struct ToolDescriptor {
     /// trusted capability before any recovery action.
     #[serde(default, skip_serializing_if = "is_default_tool_recovery")]
     pub recovery_policy: crate::tool::ToolRecoveryPolicy,
+}
+
+#[derive(Deserialize)]
+struct ToolDescriptorWire {
+    #[serde(default)]
+    content_namespace: Option<String>,
+    #[serde(default)]
+    content_hash: Option<String>,
+    id: String,
+    description: String,
+    parameters: ToolSchema,
+    #[serde(default)]
+    kind: ToolKind,
+    #[serde(default)]
+    recovery_policy: crate::tool::ToolRecoveryPolicy,
+}
+
+impl<'de> Deserialize<'de> for ToolDescriptor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ToolDescriptorWire::deserialize(deserializer)?;
+        let content_namespace = match wire.content_namespace {
+            Some(namespace) => namespace,
+            None => legacy_tool_content_namespace(
+                wire.content_hash.as_deref().unwrap_or_default(),
+                &wire.id,
+            )
+            .ok_or_else(|| serde::de::Error::missing_field("content_namespace"))?,
+        };
+        Ok(Self {
+            content_namespace,
+            id: wire.id,
+            description: wire.description,
+            parameters: wire.parameters,
+            kind: wire.kind,
+            recovery_policy: wire.recovery_policy,
+        })
+    }
+}
+
+fn legacy_tool_content_namespace(content_hash: &str, id: &str) -> Option<String> {
+    let marker = format!(":{id}:");
+    content_hash.match_indices(&marker).find_map(|(index, _)| {
+        let identity = &content_hash[index + marker.len()..];
+        let digest = identity.get(..16)?;
+        let semantic_tail = identity.get(16..)?;
+        (digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && (semantic_tail.is_empty()
+                || semantic_tail.starts_with(":kind:")
+                || semantic_tail.starts_with(":recovery:")))
+        .then(|| content_hash[..index].to_owned())
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
