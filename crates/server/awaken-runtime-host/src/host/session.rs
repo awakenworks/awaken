@@ -1257,7 +1257,6 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
-        let generated_config = installed.is_none();
         let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
@@ -1276,9 +1275,6 @@ impl SharedHost {
         // removed published custom tool from leaking beside an official
         // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
         // and delegation ownership.
-        if generated_config && session_tools.is_some() {
-            config.resolved_spec.plugin_config.agent.toolsets = toolsets;
-        }
         if let Some(session_tools) = &session_tools {
             let projected = session_tools
                 .client_tools
@@ -1294,7 +1290,9 @@ impl SharedHost {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            if current != projected {
+            if config.resolved_spec.plugin_config.agent.toolsets != toolsets || current != projected
+            {
+                config.resolved_spec.plugin_config.agent.toolsets = toolsets;
                 config.resolved_spec.tool_descriptors.retain(|descriptor| {
                     descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
                 });
