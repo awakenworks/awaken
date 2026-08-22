@@ -4,6 +4,7 @@ use awaken_provisioning_contract as pc;
 use tokio::io::AsyncReadExt;
 
 const MAX_REPO_BUNDLE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_REPOSITORY_BRANCH_BYTES: usize = 1024;
 static TRANSFER_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(super) async fn provision(
@@ -89,13 +90,16 @@ pub(super) async fn push(
     let process = sandbox
         .spawn_agent_process(pc::Command {
             argv: vec![
-                "git".into(),
-                "-C".into(),
+                "sh".into(),
+                "-c".into(),
+                concat!(
+                    "set -eu; repo=$1; ",
+                    "git -C \"$repo\" symbolic-ref --quiet --short HEAD; ",
+                    "git -C \"$repo\" bundle create - --all"
+                )
+                .into(),
+                "awaken-repo-export".into(),
                 repo,
-                "bundle".into(),
-                "create".into(),
-                "-".into(),
-                "--all".into(),
             ],
             cwd: "/workspace".into(),
             env: Vec::new(),
@@ -105,11 +109,11 @@ pub(super) async fn push(
     let mut bundle = Vec::new();
     process
         .channel
-        .take((MAX_REPO_BUNDLE_BYTES + 1) as u64)
+        .take((MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 2) as u64)
         .read_to_end(&mut bundle)
         .await
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-    if bundle.len() > MAX_REPO_BUNDLE_BYTES {
+    if bundle.len() > MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 1 {
         let _ = process.process.signal(pc::Signal::Kill).await;
         return Err(pc::SandboxError::new("repository bundle exceeds limit"));
     }
@@ -120,10 +124,22 @@ pub(super) async fn push(
             status.code
         )));
     }
+    let branch_end = bundle
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .filter(|index| *index > 0 && *index <= MAX_REPOSITORY_BRANCH_BYTES)
+        .ok_or_else(|| pc::SandboxError::new("repository export has no current branch"))?;
+    let branch = std::str::from_utf8(&bundle[..branch_end])
+        .map_err(|error| pc::SandboxError::new(error.to_string()))?
+        .to_owned();
+    let bundle = bundle.split_off(branch_end + 1);
+    if bundle.len() > MAX_REPO_BUNDLE_BYTES {
+        return Err(pc::SandboxError::new("repository bundle exceeds limit"));
+    }
     let url = url.to_string();
     let credential = credential.cloned();
     tokio::task::spawn_blocking(move || {
-        awaken_sandbox_local::push_repo_bundle(&bundle, &url, credential.as_ref())
+        awaken_sandbox_local::push_repo_bundle(&bundle, &branch, &url, credential.as_ref())
     })
     .await
     .map_err(|error| pc::SandboxError::new(error.to_string()))?
