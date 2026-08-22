@@ -251,7 +251,7 @@ impl CatalogModelPublicationResolver {
             );
         }
         let primary = resolved.remove(0);
-        let primary_model = primary.binding.model_ref.clone();
+        let primary_model = primary.binding().model_ref.clone();
         Ok(ResolvedPublicationModels {
             primary,
             candidates: resolved,
@@ -678,7 +678,7 @@ mod tests {
             .resolve_models(&ScopeId::from("workspace-a"), &selection, &[])
             .await
             .unwrap();
-        let ModelProvisioning::Provider { route_ref, .. } = resolved.primary.provisioning else {
+        let ModelProvisioning::Provider { route_ref, .. } = resolved.primary.provisioning() else {
             panic!("exact provider target must produce provider provisioning")
         };
         assert_eq!(route_ref, "ep2@9");
@@ -781,13 +781,13 @@ mod tests {
             .unwrap();
         let pins = std::iter::once(&resolved.primary)
             .chain(resolved.candidates.iter())
-            .map(|candidate| match &candidate.provisioning {
+            .map(|candidate| match candidate.provisioning() {
                 ModelProvisioning::Provider {
                     route_ref,
                     credential: Some(credential),
                     ..
                 } => (
-                    candidate.binding.model_ref.as_str(),
+                    candidate.binding().model_ref.as_str(),
                     route_ref.as_str(),
                     credential.credential.id.as_str(),
                 ),
@@ -888,7 +888,7 @@ mod tests {
             .unwrap();
         let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
             .with_profiles(profiles);
-        let selected_id = |models: &ResolvedPublicationModels| match &models.primary.provisioning {
+        let selected_id = |models: &ResolvedPublicationModels| match models.primary.provisioning() {
             ModelProvisioning::Provider {
                 credential: Some(access),
                 ..
@@ -1055,7 +1055,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resolved.primary.binding.model_ref, "primary");
+        assert_eq!(resolved.primary.binding().model_ref, "primary");
     }
 
     #[tokio::test]
@@ -1096,7 +1096,7 @@ mod tests {
             route_ref,
             credential,
             ..
-        } = resolved.primary.provisioning
+        } = resolved.primary.provisioning()
         else {
             panic!("brokered model remains a native Provider-protocol candidate")
         };
@@ -1194,19 +1194,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            resolved.primary.binding,
-            ModelBinding::new("openai", "m-first", "genai")
+            resolved.primary.binding(),
+            &ModelBinding::new("openai", "m-first", "genai")
         );
         assert_eq!(
             resolved
                 .candidates
                 .iter()
-                .map(|candidate| candidate.binding.model_ref.as_str())
+                .map(|candidate| candidate.binding().model_ref.as_str())
                 .collect::<Vec<_>>(),
             vec!["m-second", "m-third"]
         );
         assert!(matches!(
-            resolved.primary.provisioning,
+            resolved.primary.provisioning(),
             ModelProvisioning::Provider { .. }
         ));
     }
@@ -1232,8 +1232,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            resolved.primary.binding,
-            ModelBinding::new("openai", "m-first", "genai")
+            resolved.primary.binding(),
+            &ModelBinding::new("openai", "m-first", "genai")
         );
     }
 
@@ -1250,8 +1250,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resolved.primary.binding, primary);
-        assert_eq!(resolved.candidates[0].binding, fallback);
+        assert_eq!(resolved.primary.binding(), &primary);
+        assert_eq!(resolved.candidates[0].binding(), &fallback);
     }
 
     #[tokio::test]
@@ -1290,10 +1290,10 @@ mod tests {
             )
             .await
             .expect("P1");
-        assert_eq!(managed.primary.binding.backend_ref, "acp:codex", "P1");
+        assert_eq!(managed.primary.binding().backend_ref, "acp:codex", "P1");
         assert!(
             matches!(
-                managed.primary.provisioning,
+                managed.primary.provisioning(),
                 ModelProvisioning::Provider { .. }
             ),
             "P1"
@@ -1323,7 +1323,7 @@ mod tests {
                 .expect("P2");
         assert!(
             matches!(
-                backend_owned.primary.provisioning,
+                backend_owned.primary.provisioning(),
                 ModelProvisioning::BackendOwned { .. }
             ),
             "P2"
@@ -1341,7 +1341,7 @@ mod tests {
             )
             .await
             .expect("P3");
-        assert_eq!(native.primary.binding.backend_ref, "genai", "P3");
+        assert_eq!(native.primary.binding().backend_ref, "genai", "P3");
     }
 
     #[tokio::test]
@@ -1420,7 +1420,7 @@ mod tests {
             .await
             .expect("A1");
         assert!(matches!(
-            resolved.primary.provisioning,
+            resolved.primary.provisioning(),
             ModelProvisioning::Provider { acp: Some(acp), .. }
                 if acp.capability_fingerprint == "sha256:codex-options"
                     && acp.session_configuration.options["reasoning_effort"] == "high"
@@ -1523,7 +1523,7 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(native_access),
             ..
-        } = native.primary.provisioning
+        } = native.primary.provisioning()
         else {
             panic!("S1 provider credential")
         };
@@ -1551,7 +1551,7 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(claude_access),
             ..
-        } = claude.primary.provisioning
+        } = claude.primary.provisioning()
         else {
             panic!("S2 provider credential")
         };
@@ -1675,7 +1675,7 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(access),
             ..
-        } = resolved.primary.provisioning
+        } = resolved.primary.provisioning()
         else {
             panic!("provider publication carries its credential")
         };
@@ -1726,14 +1726,15 @@ mod tests {
             )
             .await
             .expect("B1");
-        assert_eq!(default.primary.binding.model_ref, "", "B1");
+        assert_eq!(default.primary.binding().model_ref, "", "B1");
         assert_eq!(
-            default.primary.binding.provider_identity_ref, codex.id.0,
+            default.primary.binding().provider_identity_ref,
+            codex.id.0,
             "B1"
         );
         assert!(
             matches!(
-                &default.primary.provisioning,
+                default.primary.provisioning(),
                 ModelProvisioning::BackendOwned {
                     credential,
                     model_selection: BackendModelSelection::Default,
@@ -1743,7 +1744,7 @@ mod tests {
             "B1"
         );
         assert!(matches!(
-            &default.primary.provisioning,
+            default.primary.provisioning(),
             ModelProvisioning::BackendOwned {
                 acp,
                 ..
@@ -1759,10 +1760,10 @@ mod tests {
             )
             .await
             .expect("B2");
-        assert_eq!(exact.primary.binding.model_ref, "gpt-exact", "B2");
+        assert_eq!(exact.primary.binding().model_ref, "gpt-exact", "B2");
         assert!(
             matches!(
-                exact.primary.provisioning,
+                exact.primary.provisioning(),
                 ModelProvisioning::BackendOwned {
                     model_selection: BackendModelSelection::Exact,
                     ..
@@ -1828,7 +1829,8 @@ mod tests {
             .await
             .expect("B5");
         assert_eq!(
-            selected.primary.binding.provider_identity_ref, secondary.id.0,
+            selected.primary.binding().provider_identity_ref,
+            secondary.id.0,
             "B5"
         );
 

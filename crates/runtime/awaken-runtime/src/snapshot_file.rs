@@ -76,7 +76,7 @@ mod tests {
         let runtime = Runtime::new();
         let loaded = runtime.load_snapshot_file(&path).unwrap();
         assert_eq!(
-            loaded.resolved_spec.model_binding.binding.model_ref,
+            loaded.resolved_spec.model_binding.binding().model_ref,
             "model-b"
         );
         assert_ne!(loaded.fingerprint, snapshot.fingerprint);
@@ -109,7 +109,10 @@ mod tests {
         let original_bytes = std::fs::read(&path).unwrap();
 
         let mut rejected = original.clone();
-        rejected.resolved_spec.model_binding.binding.backend_ref = "a2a:https://agent".into();
+        let mut binding = rejected.resolved_spec.model_binding.binding().clone();
+        binding.backend_ref = "a2a:https://agent".into();
+        rejected.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
         assert_eq!(
             Runtime::save_snapshot_file(&rejected, &path)
                 .unwrap_err()

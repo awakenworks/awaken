@@ -74,7 +74,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             return None;
         };

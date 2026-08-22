@@ -74,7 +74,7 @@ fn project(
     let managed_model = crate::render_managed_model_id(authored_model_selection)
         .or_else(|_| {
             crate::render_managed_model_id(&awaken_agent_config::ModelSelection::Pinned(
-                spec.model_binding.binding.clone(),
+                spec.model_binding.binding().clone(),
             ))
         })
         .ok();
@@ -84,7 +84,7 @@ fn project(
         source_revision: snapshot.metadata.source.revision,
         model: managed_model,
         inference: spec.plugin_config.inference.clone(),
-        execution_model_ref: Some(spec.model_binding.binding.model_ref.clone()),
+        execution_model_ref: Some(spec.model_binding.binding().model_ref.clone()),
         backend_ref: spec.model_binding.backend_ref.clone(),
         system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
         tool_ids: spec
@@ -245,6 +245,6 @@ mod tests {
     }
 
     fn spec_model(snapshot: &ExecutableAgentSnapshot) -> awaken_runtime_contract::ModelBinding {
-        snapshot.resolved_spec.model_binding.binding.clone()
+        snapshot.resolved_spec.model_binding.binding().clone()
     }
 }

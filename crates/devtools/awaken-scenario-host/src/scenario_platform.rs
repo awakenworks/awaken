@@ -113,7 +113,7 @@ impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadine
         };
         Ok(!matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(
-                &publication.primary.binding.backend_ref
+                &publication.primary.binding().backend_ref
             ),
             awaken_runtime_contract::resolved::Backend::Remote(_)
         ))
@@ -346,7 +346,11 @@ pub(super) fn fixed_host_model_publication(
 ) -> Arc<FixedAgentPublication> {
     let snapshot = ExecutableAgentSnapshot::builder(id)
         .resolved_model(primary)
-        .model_candidates(candidates.into_iter().map(|candidate| candidate.binding))
+        .model_candidates(
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.binding().clone()),
+        )
         .build();
     Arc::new(FixedAgentPublication {
         snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
@@ -469,11 +473,11 @@ mod tests {
             .current("workspace", &AgentId("acp-agent".into()))
             .expect("fixed publication");
         assert!(matches!(
-            snapshot.resolved_spec.model_binding.provisioning,
+            snapshot.resolved_spec.model_binding.provisioning(),
             ModelProvisioning::HostExecutor
         ));
         assert_eq!(
-            snapshot.resolved_spec.model_binding.binding.backend_ref,
+            snapshot.resolved_spec.model_binding.binding().backend_ref,
             "acp:claude"
         );
     }

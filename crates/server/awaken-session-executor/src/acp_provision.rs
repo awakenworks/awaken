@@ -99,17 +99,19 @@ impl PublishedAcpLaunchResolver {
             credential,
             acp,
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             if let ModelProvisioning::BackendOwned {
                 model_selection,
                 acp,
                 ..
-            } = &candidate.provisioning
+            } = candidate.provisioning()
             {
                 let coherent = match model_selection {
-                    BackendModelSelection::Default => candidate.binding.model_ref.is_empty(),
-                    BackendModelSelection::Exact => !candidate.binding.model_ref.trim().is_empty(),
+                    BackendModelSelection::Default => candidate.binding().model_ref.is_empty(),
+                    BackendModelSelection::Exact => {
+                        !candidate.binding().model_ref.trim().is_empty()
+                    }
                 };
                 if !coherent {
                     return Err(OpenError(
@@ -125,7 +127,7 @@ impl PublishedAcpLaunchResolver {
                 }
                 return Ok(ResolvedModel::backend_owned(
                     *model_selection,
-                    candidate.binding.model_ref.clone(),
+                    candidate.binding().model_ref.clone(),
                     self.cli.id,
                     &acp.capability_adapter_version,
                     &acp.capability_fingerprint,
@@ -229,7 +231,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Result<Vec<(String, String)>, OpenError> {
-        match &self.candidate(activation)?.provisioning {
+        match self.candidate(activation)?.provisioning() {
             ModelProvisioning::BackendOwned { .. } => Ok(Vec::new()),
             ModelProvisioning::Provider { .. } => self.config_home_env(&activation.thread_id.0),
             ModelProvisioning::Remote { .. } => Err(OpenError(
@@ -425,6 +427,14 @@ mod tests {
         )
     }
 
+    fn test_acp_profile() -> awaken_runtime_contract::resolved::AcpExecutionProfile {
+        awaken_runtime_contract::resolved::AcpExecutionProfile {
+            capability_fingerprint: "sha256:test-capability".into(),
+            capability_adapter_version: "test".into(),
+            session_configuration: Default::default(),
+        }
+    }
+
     fn attempt_context_with(
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         include_binding: bool,
@@ -432,7 +442,7 @@ mod tests {
         ownership: Arc<dyn AttemptOwnershipVerifier>,
         recorder: Arc<dyn CredentialRealizationRecorder>,
     ) -> awaken_runtime_contract::RuntimeRunContext {
-        let credential = match &candidate.provisioning {
+        let credential = match candidate.provisioning() {
             ModelProvisioning::Provider {
                 credential: Some(access),
                 ..
@@ -637,28 +647,31 @@ mod tests {
         });
         let resolver = PublishedAcpLaunchResolver::brokered(claude(), None, authority);
 
-        let provider = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-            ModelBinding::new("anthropic", "published-model", "acp:claude"),
-            "anthropic@1",
-            "anthropic-messages@1",
-            "ws",
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: "provider-credential".into(),
-                    revision: 7,
+        let provider =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                ModelBinding::new("anthropic", "published-model", "acp:claude"),
+                "anthropic@1",
+                "anthropic-messages@1",
+                "ws",
+                Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: "provider-credential".into(),
+                        revision: 7,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
+                InferenceEndpoint {
+                    adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
+                    base_url: "https://provider.example/v1".into(),
+                    upstream_model: "published-model".into(),
+                    processing_placement: None,
                 },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )),
-            InferenceEndpoint {
-                adapter_kind: "anthropic".into(),
-                api_dialect: "anthropic_messages".into(),
-                base_url: "https://provider.example/v1".into(),
-                upstream_model: "published-model".into(),
-                processing_placement: None,
-            },
-        );
+                test_acp_profile(),
+            )
+            .expect("coherent brokered ACP provider candidate");
         let resolved = resolver
             .model(
                 &activation(Some(provider)),
@@ -689,7 +702,7 @@ mod tests {
         );
         assert_eq!(resolver.credential_realization_capabilities(), capabilities);
 
-        let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+        let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
             ModelBinding::new("local", "codex-model", "acp:claude"),
             CredentialRef {
                 id: "backend-owned".into(),
@@ -699,7 +712,8 @@ mod tests {
             "test",
             "sha256:test-capability",
             Default::default(),
-        );
+        )
+        .expect("coherent backend-owned candidate");
         assert!(matches!(
             resolver
                 .model(
@@ -730,28 +744,31 @@ mod tests {
             repo.as_ref(),
         );
         let source = source.await.unwrap();
-        let model = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-            ModelBinding::new("anthropic", "published-model", "acp:claude"),
-            "anthropic@1",
-            "anthropic-messages@1",
-            "ws",
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: source.id.0,
-                    revision: 1,
+        let model =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                ModelBinding::new("anthropic", "published-model", "acp:claude"),
+                "anthropic@1",
+                "anthropic-messages@1",
+                "ws",
+                Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: source.id.0,
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
+                InferenceEndpoint {
+                    adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
+                    base_url: "https://db.example/v1".into(),
+                    upstream_model: "upstream-model".into(),
+                    processing_placement: None,
                 },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )),
-            InferenceEndpoint {
-                adapter_kind: "anthropic".into(),
-                api_dialect: "anthropic_messages".into(),
-                base_url: "https://db.example/v1".into(),
-                upstream_model: "upstream-model".into(),
-                processing_placement: None,
-            },
-        );
+                test_acp_profile(),
+            )
+            .expect("coherent persisted ACP provider candidate");
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             None,
@@ -914,28 +931,31 @@ mod tests {
             )
             .await
             .unwrap_or_else(|error| panic!("{} fixture: {error}", rule.id));
-            let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-                ModelBinding::new("anthropic", "published-model", "acp:claude"),
-                "anthropic@1",
-                "anthropic-messages@1",
-                "ws",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: source.id.0,
-                        revision: 1,
+            let candidate =
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                    ModelBinding::new("anthropic", "published-model", "acp:claude"),
+                    "anthropic@1",
+                    "anthropic-messages@1",
+                    "ws",
+                    Some(CredentialAccess::new(
+                        CredentialRef {
+                            id: source.id.0,
+                            revision: 1,
+                        },
+                        CredentialMaterialSource::ControlPlaneReference,
+                        CredentialUsage::ProviderAdapter,
+                        CredentialExecutionPolicy::self_hosted_provider(),
+                    )),
+                    InferenceEndpoint {
+                        adapter_kind: "anthropic".into(),
+                        api_dialect: "anthropic_messages".into(),
+                        base_url: "https://db.example/v1".into(),
+                        upstream_model: "upstream-model".into(),
+                        processing_placement: None,
                     },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
-                InferenceEndpoint {
-                    adapter_kind: "anthropic".into(),
-                    api_dialect: "anthropic_messages".into(),
-                    base_url: "https://db.example/v1".into(),
-                    upstream_model: "upstream-model".into(),
-                    processing_placement: None,
-                },
-            );
+                    test_acp_profile(),
+                )
+                .expect("coherent decision-table ACP provider candidate");
             let record_calls = Arc::new(AtomicUsize::new(0));
             let context = attempt_context_with(
                 &candidate,
@@ -1014,7 +1034,7 @@ mod tests {
             ("L2", BackendModelSelection::Exact, "gpt-exact"),
         ] {
             let candidate =
-                awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
                     ModelBinding::new("local-codex", model, "acp:codex"),
                     CredentialRef {
                         id: "local-codex".into(),
@@ -1024,7 +1044,8 @@ mod tests {
                     "test",
                     "sha256:test-capability",
                     Default::default(),
-                );
+                )
+                .expect("coherent backend-owned model policy");
             let resolver = PublishedAcpLaunchResolver::backend_owned(
                 *awaken_run_executor_acp::acp_cli("codex").unwrap(),
                 Some(std::path::PathBuf::from("/path/that/must/not/be/opened")),
@@ -1112,28 +1133,31 @@ mod tests {
         )
         .await
         .unwrap();
-        let provider = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-            ModelBinding::new("anthropic", "published-model", "acp:claude"),
-            "anthropic@1",
-            "anthropic-messages@1",
-            "ws",
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: source.id.0,
-                    revision: 1,
+        let provider =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                ModelBinding::new("anthropic", "published-model", "acp:claude"),
+                "anthropic@1",
+                "anthropic-messages@1",
+                "ws",
+                Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: source.id.0,
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
+                InferenceEndpoint {
+                    adapter_kind: "anthropic".into(),
+                    api_dialect: "anthropic_messages".into(),
+                    base_url: "https://gateway.example/v1".into(),
+                    upstream_model: "upstream-model".into(),
+                    processing_placement: None,
                 },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )),
-            InferenceEndpoint {
-                adapter_kind: "anthropic".into(),
-                api_dialect: "anthropic_messages".into(),
-                base_url: "https://gateway.example/v1".into(),
-                upstream_model: "upstream-model".into(),
-                processing_placement: None,
-            },
-        );
+                test_acp_profile(),
+            )
+            .expect("coherent unavailable-material ACP provider candidate");
         let error = resolver
             .model(
                 &activation(Some(provider)),

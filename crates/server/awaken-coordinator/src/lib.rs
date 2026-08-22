@@ -190,7 +190,7 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
         use awaken_runtime_contract::resolved::ModelProvisioning;
 
         let endpoint = candidate
-            .binding
+            .binding()
             .backend_ref
             .strip_prefix("a2a:")
             .filter(|endpoint| !endpoint.trim().is_empty())
@@ -200,9 +200,9 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
             credential,
             security_fingerprint,
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
-            return match &candidate.provisioning {
+            return match candidate.provisioning() {
                 // Explicit scenario/test platforms may still install a
                 // HostExecutor candidate. Persisted publication never does.
                 ModelProvisioning::HostExecutor => Ok(Arc::new(anonymous)),
@@ -216,7 +216,7 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
             .await
             .map_err(|error| format!("discover A2A Agent Card before launch: {error}"))?;
         let security = awaken_protocol_a2a::project_agent_card_security(&card)?;
-        if &security.fingerprint != security_fingerprint {
+        if security.fingerprint != *security_fingerprint {
             return Err("A2A Agent Card security changed after publication".into());
         }
         let Some(access) = credential else {

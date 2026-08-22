@@ -77,7 +77,7 @@ impl InferenceExecutorMaterializer for HostMaterializer {
         _context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Option<Arc<dyn LlmExecutor>> {
         matches!(
-            candidate.provisioning,
+            candidate.provisioning(),
             awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
         )
         .then(|| Arc::new(HandBrainModel) as Arc<dyn LlmExecutor>)

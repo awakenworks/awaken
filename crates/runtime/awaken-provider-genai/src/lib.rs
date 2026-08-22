@@ -254,12 +254,12 @@ impl GenaiExecutor {
         candidate: &ResolvedModelCandidate,
         credential: impl Into<String>,
     ) -> std::result::Result<Self, String> {
-        let endpoint = match &candidate.provisioning {
+        let endpoint = match candidate.provisioning() {
             ModelProvisioning::Provider { endpoint, .. } => endpoint,
             _ => {
                 return Err(format!(
                     "snapshot candidate `{}` has no provider endpoint",
-                    candidate.binding.model_ref
+                    candidate.binding().model_ref
                 ));
             }
         };
@@ -1329,7 +1329,7 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
 mod classify_tests {
     use std::time::Duration;
 
-    use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
+    use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 
     use super::{DEFAULT_IDLE_TIMEOUT, GenaiExecutor, classify_error};
 
@@ -1404,7 +1404,7 @@ mod classify_tests {
         .unwrap();
         assert!(GenaiExecutor::from_snapshot_candidate(&provider, "key").is_ok());
 
-        let host = ResolvedModelCandidate::host(provider.binding.clone());
+        let host = ResolvedModelCandidate::host(provider.binding().clone());
         assert!(
             GenaiExecutor::from_snapshot_candidate(&host, "key")
                 .err()
@@ -1412,10 +1412,10 @@ mod classify_tests {
                 .contains("no provider endpoint")
         );
 
-        let mut unknown = provider;
-        if let ModelProvisioning::Provider { endpoint, .. } = &mut unknown.provisioning {
-            endpoint.adapter_kind = "unknown".into();
-        }
+        let mut unknown_wire = serde_json::to_value(&provider).unwrap();
+        unknown_wire["provisioning"]["endpoint"]["adapter_kind"] =
+            serde_json::Value::String("unknown".into());
+        let unknown: ResolvedModelCandidate = serde_json::from_value(unknown_wire).unwrap();
         assert!(
             GenaiExecutor::from_snapshot_candidate(&unknown, "key")
                 .err()

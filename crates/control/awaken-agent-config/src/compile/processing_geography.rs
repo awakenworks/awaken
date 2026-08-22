@@ -37,7 +37,7 @@ pub(super) fn validate_candidate_pool(
         return Ok(());
     };
     for candidate in std::iter::once(primary).chain(fallbacks).chain(advisor) {
-        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Provider { endpoint, .. } = candidate.provisioning() else {
             debug_assert!(!candidate_geography_admitted(
                 Some(required),
                 false,
@@ -48,7 +48,7 @@ pub(super) fn validate_candidate_pool(
                 agent,
                 format!(
                     "model candidate {:?} cannot prove inference_geo `{required}`",
-                    candidate.binding
+                    candidate.binding()
                 ),
             ));
         };
@@ -65,7 +65,7 @@ pub(super) fn validate_candidate_pool(
                 agent,
                 format!(
                     "model candidate {:?} has no processing placement for inference_geo `{required}`",
-                    candidate.binding
+                    candidate.binding()
                 ),
             ));
         };
@@ -74,7 +74,7 @@ pub(super) fn validate_candidate_pool(
                 agent,
                 format!(
                     "model candidate {:?} processing geography does not satisfy inference_geo `{required}`",
-                    candidate.binding
+                    candidate.binding()
                 ),
             ));
         }
@@ -82,7 +82,8 @@ pub(super) fn validate_candidate_pool(
             agent,
             format!(
                 "model candidate {:?} uses Anthropic placement on protocol `{}`",
-                candidate.binding, endpoint.api_dialect
+                candidate.binding(),
+                endpoint.api_dialect
             ),
         ));
     }
@@ -154,7 +155,7 @@ mod tests {
         dialect: &str,
         processing_placement: Option<InferencePlacement>,
     ) -> ResolvedModelCandidate {
-        ResolvedModelCandidate::provider(
+        ResolvedModelCandidate::try_provider(
             ModelBinding::new("provider", model, "gateway"),
             "provider-account",
             format!("route:1:{model}"),
@@ -168,6 +169,7 @@ mod tests {
                 processing_placement,
             },
         )
+        .expect("coherent geography provider candidate")
     }
 
     #[test]

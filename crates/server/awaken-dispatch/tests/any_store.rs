@@ -46,7 +46,7 @@ fn candidate(
     provider: &str,
     route: &str,
 ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
         awaken_runtime_contract::ModelBinding::new(provider, model, "genai"),
         provider,
         route,
@@ -68,6 +68,7 @@ fn candidate(
             processing_placement: None,
         },
     )
+    .expect("coherent test provider candidate")
 }
 
 #[tokio::test]

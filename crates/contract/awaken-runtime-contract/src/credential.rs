@@ -52,7 +52,7 @@ pub fn compile_candidate_credential_bindings(
     let mut seen = std::collections::BTreeSet::new();
     let mut bindings = Vec::new();
     for candidate in candidates {
-        let access = match &candidate.provisioning {
+        let access = match candidate.provisioning() {
             ModelProvisioning::Provider {
                 credential: Some(access),
                 ..
@@ -64,7 +64,7 @@ pub fn compile_candidate_credential_bindings(
             _ => continue,
         };
         let holder = holder.ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
-        let backend = Backend::from_ref(&candidate.binding.backend_ref);
+        let backend = Backend::from_ref(&candidate.binding().backend_ref);
         match &backend {
             Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
@@ -87,7 +87,7 @@ pub fn compile_candidate_credential_bindings(
                 CredentialRealizationKind::WorkerProviderAdapter
             }
             (Backend::Acp(_), PlaintextBoundary::Workload) => installed
-                .acp_backend_realization_kind(&candidate.binding.backend_ref)
+                .acp_backend_realization_kind(&candidate.binding().backend_ref)
                 .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
                 .unwrap_or(CredentialRealizationKind::ProcessSecretEnvironment),
             (Backend::Acp(_), PlaintextBoundary::Worker) => CredentialRealizationKind::WorkerRelay,
@@ -100,13 +100,13 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Native | Backend::Acp(_) | Backend::Remote(_), boundary) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary,
-                    backend: candidate.binding.backend_ref.clone(),
+                    backend: candidate.binding().backend_ref.clone(),
                 });
             }
             (Backend::Invalid(_), _) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary: holder.boundary,
-                    backend: candidate.binding.backend_ref.clone(),
+                    backend: candidate.binding().backend_ref.clone(),
                 });
             }
         };
@@ -309,7 +309,7 @@ mod tests {
         // Decision table: Default and Exact model policies both produce zero
         // material bindings, even when no plaintext holder is available.
         for selection in [BackendModelSelection::Default, BackendModelSelection::Exact] {
-            let candidate = ResolvedModelCandidate::backend_owned(
+            let candidate = ResolvedModelCandidate::try_backend_owned(
                 ModelBinding::new(
                     "local-codex",
                     if selection == BackendModelSelection::Exact {
@@ -327,7 +327,8 @@ mod tests {
                 "test",
                 "sha256:test-capability",
                 Default::default(),
-            );
+            )
+            .expect("coherent backend-owned candidate");
             assert_eq!(
                 compile_candidate_credential_bindings(
                     &[&candidate],
@@ -357,12 +358,12 @@ mod tests {
             },
             CredentialExecutionPolicy::self_hosted_provider(),
         );
-        let candidate = ResolvedModelCandidate::provider(
+        let candidate = ResolvedModelCandidate::try_provider_with_acp(
             ModelBinding::new("anthropic", "claude-test", "acp:claude"),
             "anthropic@1",
             "anthropic-messages@1",
             "workspace-a",
-            Some(access),
+            Some(access.clone()),
             crate::InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
                 api_dialect: "anthropic_messages".into(),
@@ -370,7 +371,13 @@ mod tests {
                 upstream_model: "claude-test".into(),
                 processing_placement: None,
             },
-        );
+            crate::resolved::AcpExecutionProfile {
+                capability_fingerprint: "sha256:claude-capability".into(),
+                capability_adapter_version: "test".into(),
+                session_configuration: Default::default(),
+            },
+        )
+        .expect("coherent ACP provider candidate");
         let capabilities = CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
             material_sources: [CredentialMaterialSource::ControlPlaneReference]
@@ -394,8 +401,21 @@ mod tests {
             1
         );
 
-        let mut native = candidate;
-        native.binding.backend_ref = "genai".into();
+        let native = ResolvedModelCandidate::try_provider(
+            ModelBinding::new("anthropic", "claude-test", "genai"),
+            "anthropic@1",
+            "anthropic-messages@1",
+            "workspace-a",
+            Some(access),
+            crate::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://api.anthropic.com/v1".into(),
+                upstream_model: "claude-test".into(),
+                processing_placement: None,
+            },
+        )
+        .expect("coherent native provider candidate");
         assert_eq!(
             compile_candidate_credential_bindings(&[&native], Some(&holder), &capabilities, 1, 0,),
             Err(AttemptCredentialBindingError::InvalidCredentialUsage)
@@ -438,7 +458,7 @@ mod tests {
             ),
         ]);
         let candidate = |backend_ref: &str| {
-            ResolvedModelCandidate::provider(
+            ResolvedModelCandidate::try_provider_with_acp(
                 ModelBinding::new("provider", "model", backend_ref),
                 "provider@1",
                 "route@1",
@@ -459,7 +479,13 @@ mod tests {
                     upstream_model: "model".into(),
                     processing_placement: None,
                 },
+                crate::resolved::AcpExecutionProfile {
+                    capability_fingerprint: "sha256:test-capability".into(),
+                    capability_adapter_version: "test".into(),
+                    session_configuration: Default::default(),
+                },
             )
+            .expect("coherent ACP provider candidate")
         };
 
         for (backend_ref, expected) in [
@@ -512,12 +538,13 @@ mod tests {
             ..Default::default()
         };
         let remote = |credential| {
-            ResolvedModelCandidate::remote(
+            ResolvedModelCandidate::try_remote(
                 ModelBinding::new("", "", "a2a:https://agent.example"),
                 "workspace-a",
                 credential,
                 "sha256:card-security",
             )
+            .expect("coherent remote candidate")
         };
         let access = |usage| {
             CredentialAccess::new(

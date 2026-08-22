@@ -171,7 +171,10 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 .adopt_bound_session_environment(
                     session_id,
                     Some(binding),
-                    &published_snapshot.resolved_spec.model_binding.provisioning,
+                    published_snapshot
+                        .resolved_spec
+                        .model_binding
+                        .provisioning(),
                     self.rebuild_unavailable_environment,
                 )
                 .await
@@ -855,7 +858,10 @@ mod tests {
         projection.baseline.runtime = Some("acp:claude".into());
         let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
         snapshot.metadata.source.revision = 7;
-        snapshot.resolved_spec.model_binding.backend_ref = "acp:claude".into();
+        let mut binding = snapshot.resolved_spec.model_binding.binding().clone();
+        binding.backend_ref = "acp:claude".into();
+        snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
         projection.agent_publication = Some(snapshot.clone());
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
@@ -966,7 +972,10 @@ mod tests {
                 0 => delivered.root_agent_id.0 = "another-agent".into(),
                 1 => delivered.metadata.source.revision = 8,
                 _ => {
-                    delivered.resolved_spec.model_binding.backend_ref = "native:other".into();
+                    let mut binding = delivered.resolved_spec.model_binding.binding().clone();
+                    binding.backend_ref = "native:other".into();
+                    delivered.resolved_spec.model_binding =
+                        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
                 }
             }
             let error = WorkerProjectionSynchronizer {

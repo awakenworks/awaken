@@ -119,7 +119,7 @@ pub fn frozen_agent_publication_decision(
         .model_override
         .as_ref()
         .and_then(|model_override| model_override.publication.as_ref())
-        .map(|publication| &publication.primary.binding.backend_ref)
+        .map(|publication| &publication.primary.binding().backend_ref)
         .unwrap_or(&publication.resolved_spec.model_binding.backend_ref);
     frozen_agent_publication_facts(
         true,

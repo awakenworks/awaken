@@ -64,7 +64,7 @@ pub(super) async fn consult_advisor(
         )],
     });
     let request = ChatRequest {
-        model_binding: advisor.candidate.binding.clone(),
+        model_binding: advisor.candidate.binding().clone(),
         inference: resolved.spec.plugin_config.inference.clone(),
         messages,
         tools: Vec::new(),
@@ -104,7 +104,7 @@ pub(super) async fn consult_advisor(
                 ToolOutput::ok(&call.call_id, text),
                 response
                     .usage
-                    .map(|usage| (advisor.candidate.binding.model_ref.clone(), usage)),
+                    .map(|usage| (advisor.candidate.binding().model_ref.clone(), usage)),
             )
         }
         Ok(_) | Err(_) => (

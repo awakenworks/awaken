@@ -1247,7 +1247,7 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)?;
         let provisioning = publication
             .as_ref()
-            .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
+            .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let (adopted, rebuild) = self
             .host

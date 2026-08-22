@@ -434,7 +434,7 @@ mod tests {
         provider: &str,
         route: &str,
     ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
             ModelBinding::new(provider, model, "genai"),
             provider,
             route,
@@ -456,6 +456,7 @@ mod tests {
                 processing_placement: None,
             },
         )
+        .expect("coherent run-dispatch provider candidate")
     }
 
     fn activation() -> RunActivation {
@@ -740,7 +741,7 @@ mod tests {
         assert_eq!(
             std::iter::once(&spec.model_binding)
                 .chain(spec.model_candidates.iter())
-                .map(|candidate| candidate.binding.model_ref.as_str())
+                .map(|candidate| candidate.binding().model_ref.as_str())
                 .collect::<Vec<_>>(),
             vec!["primary", "fallback"]
         );
@@ -748,7 +749,7 @@ mod tests {
             provider_ref,
             credential: Some(credential),
             ..
-        } = &spec.model_candidates[0].provisioning
+        } = spec.model_candidates[0].provisioning()
         else {
             panic!("fallback is provider-backed")
         };
@@ -768,9 +769,9 @@ mod tests {
         let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
             ModelBinding::new("host", "embedded-model", "native"),
         );
-        assert_eq!(candidate.binding.model_ref, "embedded-model");
+        assert_eq!(candidate.binding().model_ref, "embedded-model");
         assert!(matches!(
-            candidate.provisioning,
+            candidate.provisioning(),
             ModelProvisioning::HostExecutor
         ));
         assert!(
