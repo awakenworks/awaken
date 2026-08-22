@@ -105,14 +105,13 @@ mod realization_renewal_tests {
     }
 }
 
-/// The single Session-baseline prompt projection boundary for foreground,
+/// The single Session-local attempt projection boundary for foreground,
 /// durable, Native, ACP, and A2A attempts.
 ///
-/// Mutating only Host `pending_system` state cannot affect an already-serialized
-/// activation. Wrapping the authoritative attempt router keeps one mechanism for
-/// every topology. Deterministic message ids make a retried uncommitted attempt
-/// byte-for-byte stable; committed history prevents later turns from reinjecting
-/// the baseline.
+/// Mutating only Host state cannot affect an already-serialized activation.
+/// Wrapping the authoritative attempt router keeps one mechanism for every
+/// topology. The projection applies the complete Session tool replacement and
+/// deterministic baseline prompts without mutating the retained publication.
 pub(crate) struct SessionPromptAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     slots: crate::session_slot::SessionRuntimeSlots,
@@ -132,10 +131,28 @@ impl SessionPromptAttemptExecutor {
         }
     }
 
-    fn project(&self, mut activation: RunActivation) -> RunActivation {
+    fn project(
+        &self,
+        mut activation: RunActivation,
+    ) -> awaken_runtime_contract::execution::Result<RunActivation> {
+        if let Some(result) = self
+            .slots
+            .read(&self.session_id, |slot| {
+                slot.tools.as_ref().map(|tools| {
+                    crate::config::project_session_tools(&mut activation.snapshot, tools)
+                })
+            })
+            .flatten()
+        {
+            result.map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(format!(
+                    "fingerprint Session tool projection: {error}"
+                ))
+            })?;
+        }
         let prompts = self.slots.prompts(&self.session_id);
         if prompts.is_empty() {
-            return activation;
+            return Ok(activation);
         }
         let already_present = |prompt: &str| {
             activation.input.iter().any(|message| {
@@ -166,7 +183,7 @@ impl SessionPromptAttemptExecutor {
             .collect::<Vec<_>>();
         projected.append(&mut activation.input);
         activation.input = projected;
-        activation
+        Ok(activation)
     }
 }
 
@@ -177,7 +194,7 @@ impl awaken_runtime_contract::execution::RunExecutor for SessionPromptAttemptExe
         activation: RunActivation,
         context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        self.inner.execute(self.project(activation), context).await
+        self.inner.execute(self.project(activation)?, context).await
     }
 
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -194,7 +211,7 @@ impl RunAttemptExecutor for SessionPromptAttemptExecutor {
         context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
         self.inner
-            .resume(self.project(activation), command, context)
+            .resume(self.project(activation)?, command, context)
             .await
     }
 
@@ -389,7 +406,7 @@ mod acp_context_tests {
                 prompts: vec!["frozen session prompt".into()],
             });
         });
-        let projected = executor.project(activation("genai"));
+        let projected = executor.project(activation("genai")).unwrap();
         assert_eq!(projected.input.len(), 2, "C1+C2+!C3 -> E1");
         assert_eq!(projected.input[0].role, Role::System, "E1");
         assert_eq!(
@@ -398,7 +415,7 @@ mod acp_context_tests {
             "E1"
         );
 
-        let replayed = executor.project(projected);
+        let replayed = executor.project(projected).unwrap();
         assert_eq!(
             replayed
                 .input
@@ -415,9 +432,121 @@ mod acp_context_tests {
             "session-1",
         );
         assert_eq!(
-            empty.project(activation("genai")).input.len(),
+            empty.project(activation("genai")).unwrap().input.len(),
             1,
             "!C1 -> E2"
+        );
+    }
+
+    #[test]
+    fn claimed_attempt_projects_the_complete_session_tool_configuration() {
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+
+        // Cause/effect graph: C1 an immutable claimed activation has no Flow MCP
+        // toolset; C2 the frozen Session supplies an enabled/disabled Flow policy;
+        // C3 it supplies an exact client tool; C4 the same attempt is retried.
+        // Effects: E1 the attempt-local snapshot exposes only the Session policy
+        // and client surface; E2 the retained publication stays unchanged; E3 a
+        // disabled tool remains disabled; E4 replay is byte-stable. The Runtime's
+        // model-face decision table owns the downstream dynamic-tool filtering.
+        //
+        // | Rule | C1 | Session tools | retry | effect |
+        // | R1 | yes | enabled MCP + client | no | E1 + E2 |
+        // | R2 | yes | disabled MCP | no | E2 + E3 |
+        // | R3 | yes | enabled MCP + client | yes | E4 |
+        // | R4 | yes | absent | no | unchanged |
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let executor =
+            SessionPromptAttemptExecutor::new(Arc::new(UnusedExecutor), slots.clone(), "session-1");
+        let publication = activation("genai");
+        let retained = publication.snapshot.clone();
+        let flow_policy = |enabled| awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "flow".into(),
+                },
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride {
+                    name: "workflow_get".into(),
+                    policy: ToolExecutionPolicy {
+                        enabled,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
+                }],
+            }],
+            client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+                name: "resource_request".into(),
+                description: "Request one frozen WorkUnit resource".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }],
+        };
+        slots.update("session-1", |slot| slot.tools = Some(flow_policy(true)));
+
+        let projected = executor.project(publication).expect("R1 projection");
+        assert_eq!(
+            projected
+                .snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .tool_policy("mcp__flow__workflow_get"),
+            Some(ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            }),
+            "R1/E1"
+        );
+        assert!(
+            projected
+                .snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|tool| tool.id == "resource_request"),
+            "R1/E1"
+        );
+        assert!(
+            retained
+                .resolved_spec
+                .plugin_config
+                .agent
+                .toolsets
+                .is_empty(),
+            "R1/E2"
+        );
+
+        let replayed = executor.project(projected.clone()).expect("R3 replay");
+        assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
+
+        slots.update("session-1", |slot| slot.tools = Some(flow_policy(false)));
+        let disabled = executor
+            .project(activation("genai"))
+            .expect("R2 projection");
+        assert_eq!(
+            disabled
+                .snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .tool_policy("mcp__flow__workflow_get")
+                .map(|policy| policy.enabled),
+            Some(false),
+            "R2/E3"
+        );
+
+        let absent = SessionPromptAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            crate::session_slot::SessionRuntimeSlots::default(),
+            "session-1",
+        );
+        let unchanged = activation("genai");
+        assert_eq!(
+            absent.project(unchanged.clone()).expect("R4 projection"),
+            unchanged,
+            "R4"
         );
     }
 

@@ -254,6 +254,43 @@ pub(crate) fn session_client_tool_descriptor(
     )
 }
 
+/// Apply the complete Session-owned tool replacement to one attempt-local
+/// snapshot. The retained Agent publication stays immutable; direct, durable,
+/// and recovered attempts all consume this same projection.
+pub(crate) fn project_session_tools(
+    snapshot: &mut ExecutableAgentSnapshot,
+    tools: &awaken_session_contract::SessionToolConfiguration,
+) -> Result<(), serde_json::Error> {
+    let projected = tools
+        .client_tools
+        .iter()
+        .map(session_client_tool_descriptor)
+        .collect::<Vec<_>>();
+    let current = snapshot
+        .resolved_spec
+        .tool_descriptors
+        .iter()
+        .filter(|descriptor| {
+            descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if snapshot.resolved_spec.plugin_config.agent.toolsets == tools.toolsets && current == projected
+    {
+        return Ok(());
+    }
+    snapshot.resolved_spec.plugin_config.agent.toolsets = tools.toolsets.clone();
+    snapshot
+        .resolved_spec
+        .tool_descriptors
+        .retain(|descriptor| {
+            descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+        });
+    snapshot.resolved_spec.tool_descriptors.extend(projected);
+    snapshot.recompute_fingerprint()?;
+    Ok(())
+}
+
 /// The `agent_run` delegation descriptor (advertised only when a roster is set).
 pub(crate) fn delegation_descriptor() -> ToolDescriptor {
     builtin_tools()

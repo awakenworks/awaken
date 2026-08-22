@@ -1276,31 +1276,9 @@ impl SharedHost {
         // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
         // and delegation ownership.
         if let Some(session_tools) = &session_tools {
-            let projected = session_tools
-                .client_tools
-                .iter()
-                .map(crate::config::session_client_tool_descriptor)
-                .collect::<Vec<_>>();
-            let current = config
-                .resolved_spec
-                .tool_descriptors
-                .iter()
-                .filter(|descriptor| {
-                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if config.resolved_spec.plugin_config.agent.toolsets != toolsets || current != projected
-            {
-                config.resolved_spec.plugin_config.agent.toolsets = toolsets;
-                config.resolved_spec.tool_descriptors.retain(|descriptor| {
-                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                });
-                config.resolved_spec.tool_descriptors.extend(projected);
-                config.recompute_fingerprint().map_err(|error| {
-                    HostError::internal(format!("fingerprint Session tool projection: {error}"))
-                })?;
-            }
+            crate::config::project_session_tools(&mut config, session_tools).map_err(|error| {
+                HostError::internal(format!("fingerprint Session tool projection: {error}"))
+            })?;
         }
         // WebSearch has one configuration/dispatch owner for both execution
         // backends. Native lets Runtime resolve the plugin once; ACP resolves
