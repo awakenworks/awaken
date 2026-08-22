@@ -119,41 +119,225 @@ fn acp_capability_is_detected_exactly_after_a_verified_observation() {
 }
 
 /// Point-in-time, secret-free capability evidence from one Worker-local ACP.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ```compile_fail
+/// use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
+/// let _ = AcpCapabilityObservation {
+///     backend_ref: "acp:codex".into(),
+///     adapter_version: "1".into(),
+///     state: AcpCapabilityObservationState::Verified,
+///     observed_at_ms: 0,
+///     fingerprint: None,
+///     negotiated: None,
+///     reason_code: None,
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcpCapabilityObservation {
-    pub backend_ref: String,
-    pub adapter_version: String,
-    pub state: AcpCapabilityObservationState,
-    pub observed_at_ms: u64,
-    pub fingerprint: Option<String>,
-    pub negotiated: Option<NegotiatedAcpCapabilities>,
-    pub reason_code: Option<String>,
+    backend_ref: String,
+    adapter_version: String,
+    state: AcpCapabilityObservationState,
+    observed_at_ms: u64,
+    fingerprint: Option<String>,
+    negotiated: Option<NegotiatedAcpCapabilities>,
+    reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidAcpCapabilityObservation(&'static str);
+
+impl std::fmt::Display for InvalidAcpCapabilityObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "invalid ACP capability observation: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidAcpCapabilityObservation {}
+
+#[derive(Deserialize)]
+struct AcpCapabilityObservationWire {
+    backend_ref: String,
+    adapter_version: String,
+    state: AcpCapabilityObservationState,
+    observed_at_ms: u64,
+    fingerprint: Option<String>,
+    negotiated: Option<NegotiatedAcpCapabilities>,
+    reason_code: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AcpCapabilityObservation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = AcpCapabilityObservationWire::deserialize(deserializer)?;
+        Self::try_from_parts(
+            wire.backend_ref,
+            wire.adapter_version,
+            wire.state,
+            wire.observed_at_ms,
+            wire.fingerprint,
+            wire.negotiated,
+            wire.reason_code,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl AcpCapabilityObservation {
-    /// Whether the state and its mutually exclusive evidence fields agree.
-    ///
-    /// Callers must reject incoherent observations rather than inferring a
-    /// verified capability from whichever optional fields happen to be set.
-    #[must_use]
-    pub fn is_coherent(&self) -> bool {
-        match self.state {
+    pub fn verified(
+        backend_ref: impl Into<String>,
+        adapter_version: impl Into<String>,
+        observed_at_ms: u64,
+        fingerprint: impl Into<String>,
+        negotiated: NegotiatedAcpCapabilities,
+    ) -> Result<Self, InvalidAcpCapabilityObservation> {
+        Self::try_from_parts(
+            backend_ref.into(),
+            adapter_version.into(),
+            AcpCapabilityObservationState::Verified,
+            observed_at_ms,
+            Some(fingerprint.into()),
+            Some(negotiated),
+            None,
+        )
+    }
+
+    pub fn unavailable(
+        backend_ref: impl Into<String>,
+        adapter_version: impl Into<String>,
+        observed_at_ms: u64,
+        reason_code: impl Into<String>,
+    ) -> Result<Self, InvalidAcpCapabilityObservation> {
+        Self::failure(
+            backend_ref,
+            adapter_version,
+            AcpCapabilityObservationState::Unavailable,
+            observed_at_ms,
+            reason_code,
+        )
+    }
+
+    pub fn probe_failed(
+        backend_ref: impl Into<String>,
+        adapter_version: impl Into<String>,
+        observed_at_ms: u64,
+        reason_code: impl Into<String>,
+    ) -> Result<Self, InvalidAcpCapabilityObservation> {
+        Self::failure(
+            backend_ref,
+            adapter_version,
+            AcpCapabilityObservationState::ProbeFailed,
+            observed_at_ms,
+            reason_code,
+        )
+    }
+
+    fn failure(
+        backend_ref: impl Into<String>,
+        adapter_version: impl Into<String>,
+        state: AcpCapabilityObservationState,
+        observed_at_ms: u64,
+        reason_code: impl Into<String>,
+    ) -> Result<Self, InvalidAcpCapabilityObservation> {
+        Self::try_from_parts(
+            backend_ref.into(),
+            adapter_version.into(),
+            state,
+            observed_at_ms,
+            None,
+            None,
+            Some(reason_code.into()),
+        )
+    }
+
+    fn try_from_parts(
+        backend_ref: String,
+        adapter_version: String,
+        state: AcpCapabilityObservationState,
+        observed_at_ms: u64,
+        fingerprint: Option<String>,
+        negotiated: Option<NegotiatedAcpCapabilities>,
+        reason_code: Option<String>,
+    ) -> Result<Self, InvalidAcpCapabilityObservation> {
+        let canonical = |value: &str| !value.is_empty() && value.trim() == value;
+        if !backend_ref.strip_prefix("acp:").is_some_and(canonical) || !canonical(&adapter_version)
+        {
+            return Err(InvalidAcpCapabilityObservation(
+                "an exact ACP backend and adapter version are required",
+            ));
+        }
+        let coherent = match state {
             AcpCapabilityObservationState::Verified => {
-                self.fingerprint
-                    .as_deref()
-                    .is_some_and(|fingerprint| !fingerprint.trim().is_empty())
-                    && self.negotiated.is_some()
-                    && self.reason_code.is_none()
+                fingerprint.as_deref().is_some_and(canonical)
+                    && negotiated.is_some()
+                    && reason_code.is_none()
             }
             AcpCapabilityObservationState::Unavailable
             | AcpCapabilityObservationState::ProbeFailed => {
-                self.fingerprint.is_none()
-                    && self.negotiated.is_none()
-                    && self
-                        .reason_code
-                        .as_deref()
-                        .is_some_and(|reason| !reason.trim().is_empty())
+                fingerprint.is_none()
+                    && negotiated.is_none()
+                    && reason_code.as_deref().is_some_and(canonical)
             }
+        };
+        if !coherent {
+            return Err(InvalidAcpCapabilityObservation(
+                "state and mutually exclusive evidence disagree",
+            ));
+        }
+        Ok(Self {
+            backend_ref,
+            adapter_version,
+            state,
+            observed_at_ms,
+            fingerprint,
+            negotiated,
+            reason_code,
+        })
+    }
+
+    #[must_use]
+    pub fn backend_ref(&self) -> &str {
+        &self.backend_ref
+    }
+
+    #[must_use]
+    pub fn adapter_version(&self) -> &str {
+        &self.adapter_version
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> AcpCapabilityObservationState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn observed_at_ms(&self) -> u64 {
+        self.observed_at_ms
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> Option<&str> {
+        self.fingerprint.as_deref()
+    }
+
+    #[must_use]
+    pub fn negotiated(&self) -> Option<&NegotiatedAcpCapabilities> {
+        self.negotiated.as_ref()
+    }
+
+    #[must_use]
+    pub fn reason_code(&self) -> Option<&str> {
+        self.reason_code.as_deref()
+    }
+
+    /// Consume a verified observation into the publication-pinnable evidence.
+    /// Failure observations return `None`; coherent construction guarantees a
+    /// verified state cannot be missing either value.
+    #[must_use]
+    pub fn into_verified_evidence(self) -> Option<(String, String, NegotiatedAcpCapabilities)> {
+        match (self.state, self.fingerprint, self.negotiated) {
+            (AcpCapabilityObservationState::Verified, Some(fingerprint), Some(negotiated)) => {
+                Some((self.adapter_version, fingerprint, negotiated))
+            }
+            _ => None,
         }
     }
 }
@@ -380,42 +564,45 @@ mod tests {
         // | W3   | F  | F  | T  | T  | F  | E1 accept failure evidence |
         // | W4   | F  | F  | T  | F  | F  | E2 reject |
         // | W5   | F  | F  | T  | T  | T  | E2 reject mixed evidence |
-        let failure = AcpCapabilityObservation {
-            backend_ref: "acp:codex".into(),
-            adapter_version: "1.0".into(),
-            state: AcpCapabilityObservationState::ProbeFailed,
-            observed_at_ms: 42,
-            fingerprint: None,
-            negotiated: None,
-            reason_code: Some("handshake_timeout".into()),
-        };
-        let verified = AcpCapabilityObservation {
-            state: AcpCapabilityObservationState::Verified,
-            fingerprint: Some("sha256:verified".into()),
-            negotiated: Some(capabilities()),
-            reason_code: None,
-            ..failure.clone()
-        };
-        assert!(verified.is_coherent(), "W1");
+        let failure =
+            AcpCapabilityObservation::probe_failed("acp:codex", "1.0", 42, "handshake_timeout")
+                .expect("W3 coherent failure evidence");
+        let verified = AcpCapabilityObservation::verified(
+            "acp:codex",
+            "1.0",
+            42,
+            "sha256:verified",
+            capabilities(),
+        )
+        .expect("W1 coherent verified evidence");
 
-        let missing_fingerprint = AcpCapabilityObservation {
-            fingerprint: None,
-            ..verified.clone()
-        };
-        assert!(!missing_fingerprint.is_coherent(), "W2");
-        assert!(failure.is_coherent(), "W3");
-
-        let missing_reason = AcpCapabilityObservation {
-            reason_code: None,
-            ..failure.clone()
-        };
-        assert!(!missing_reason.is_coherent(), "W4");
-        let mixed_failure = AcpCapabilityObservation {
-            fingerprint: verified.fingerprint,
-            negotiated: verified.negotiated,
-            ..failure
-        };
-        assert!(!mixed_failure.is_coherent(), "W5");
+        for (rule, mut wire) in [
+            ("W2", serde_json::to_value(&verified).unwrap()),
+            ("W4", serde_json::to_value(&failure).unwrap()),
+            ("W5", serde_json::to_value(&failure).unwrap()),
+        ] {
+            match rule {
+                "W2" => wire["fingerprint"] = serde_json::Value::Null,
+                "W4" => wire["reason_code"] = serde_json::Value::Null,
+                _ => {
+                    wire["fingerprint"] = "sha256:stale".into();
+                    wire["negotiated"] = serde_json::to_value(capabilities()).unwrap();
+                }
+            }
+            assert!(
+                serde_json::from_value::<AcpCapabilityObservation>(wire).is_err(),
+                "{rule}",
+            );
+        }
+        assert!(
+            AcpCapabilityObservation::verified("acp:codex", "1.0", 42, "", capabilities(),)
+                .is_err(),
+            "W2 construction",
+        );
+        assert!(
+            AcpCapabilityObservation::probe_failed("acp:codex", "1.0", 42, "").is_err(),
+            "W4 construction",
+        );
     }
 
     #[test]

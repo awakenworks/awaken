@@ -1738,7 +1738,24 @@ mod tests {
                 model: "claude-opus-5".into(),
             }],
         });
-        let primary = ResolvedModelCandidate::host(cfg.model_binding.resolved().unwrap().clone());
+        let provider_candidate = |route_ref: &str| {
+            ResolvedModelCandidate::try_provider(
+                cfg.model_binding.resolved().unwrap().clone(),
+                "provider@1",
+                route_ref,
+                "workspace-a",
+                None,
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "test".into(),
+                    api_dialect: "test".into(),
+                    base_url: "https://provider.invalid".into(),
+                    upstream_model: "m".into(),
+                    processing_placement: None,
+                },
+            )
+            .expect("coherent advisor-collision fixture")
+        };
+        let primary = provider_candidate("route-a@1");
         let advisor_only = compile_published(
             &cfg,
             std::slice::from_ref(&delegation),
@@ -1798,7 +1815,7 @@ mod tests {
         .expect("V5");
         assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V5");
 
-        let ambiguous_advisor = primary.clone();
+        let ambiguous_advisor = provider_candidate("route-b@1");
         assert!(
             matches!(
                 compile_published(

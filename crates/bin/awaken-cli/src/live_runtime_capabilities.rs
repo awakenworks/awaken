@@ -80,8 +80,8 @@ impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
                         .acp_capability_observations
                         .iter()
                         .find(|row| {
-                            row.observation.backend_ref == backend_ref
-                                && row.observation.observed_at_ms <= now
+                            row.observation.backend_ref() == backend_ref
+                                && row.observation.observed_at_ms() <= now
                                 && now < row.valid_until_ms
                         })
                 });
@@ -103,10 +103,10 @@ impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
                         .and_then(|local| local.version.clone());
                     capability = capability.with_local(awaken_control::LocalRuntimeCapability {
                         detected: awaken_acp_contract::has_verified_capability_observation(
-                            live_capability.map(|row| row.observation.state),
+                            live_capability.map(|row| row.observation.state()),
                         ),
                         version: live_capability
-                            .map(|row| row.observation.adapter_version.clone())
+                            .map(|row| row.observation.adapter_version().to_owned())
                             .or(initial_version),
                         login_state: live_credential
                             .and_then(|row| serde_json::to_value(row.state).ok())
@@ -114,14 +114,16 @@ impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
                         reason_code: live_credential
                             .and_then(|row| row.reason_code.clone())
                             .or_else(|| {
-                                live_capability.and_then(|row| row.observation.reason_code.clone())
+                                live_capability.and_then(|row| {
+                                    row.observation.reason_code().map(str::to_owned)
+                                })
                             }),
                         remediation: live_credential
                             .and_then(|row| row.reason_code.as_deref())
                             .and_then(|reason| cli.remediation(Some(reason)))
                             .map(str::to_string),
                         negotiated: live_capability
-                            .and_then(|row| row.observation.negotiated.as_ref())
+                            .and_then(|row| row.observation.negotiated())
                             .and_then(|negotiated| serde_json::to_value(negotiated).ok()),
                     });
                 }

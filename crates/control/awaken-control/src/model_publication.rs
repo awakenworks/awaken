@@ -485,15 +485,14 @@ mod tests {
                     .into_iter()
                     .collect(),
                     acp_capability_observations: vec![WorkerAcpCapabilityObservation {
-                        observation: awaken_acp_contract::AcpCapabilityObservation {
-                            backend_ref: backend_ref.into(),
-                            adapter_version: "test".into(),
-                            state: awaken_acp_contract::AcpCapabilityObservationState::Verified,
-                            observed_at_ms: now,
-                            fingerprint: Some(fingerprint.into()),
-                            negotiated: Some(negotiated),
-                            reason_code: None,
-                        },
+                        observation: awaken_acp_contract::AcpCapabilityObservation::verified(
+                            backend_ref,
+                            "test",
+                            now,
+                            fingerprint,
+                            negotiated,
+                        )
+                        .expect("coherent verified capability fixture"),
                         valid_until_ms: now + 30_000,
                     }],
                 },
