@@ -165,9 +165,7 @@ fn lease_capability_observations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_acp_contract::{
-        AcpCapabilityObservationSource, AcpCapabilityObservationState, NegotiatedAcpCapabilities,
-    };
+    use awaken_acp_contract::{AcpCapabilityObservationSource, NegotiatedAcpCapabilities};
     use awaken_runtime_contract::{
         CredentialObservation, CredentialObservationSource, CredentialRef,
         WorkerLocalReferenceRevalidator,
@@ -229,26 +227,27 @@ mod tests {
     #[async_trait::async_trait]
     impl AcpCapabilityObservationSource for VerifiedCapabilitySource {
         async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
-            Ok(vec![AcpCapabilityObservation {
-                backend_ref: "acp:codex".into(),
-                adapter_version: "1.2.3".into(),
-                state: AcpCapabilityObservationState::Verified,
-                observed_at_ms: 1,
-                fingerprint: Some("fingerprint".into()),
-                negotiated: Some(NegotiatedAcpCapabilities {
-                    protocol_version: "1".into(),
-                    load_session: true,
-                    prompt_image: false,
-                    prompt_audio: false,
-                    prompt_embedded_context: false,
-                    mcp_http: false,
-                    mcp_sse: false,
-                    session_list: false,
-                    modes: Vec::new(),
-                    config_options: Vec::new(),
-                }),
-                reason_code: None,
-            }])
+            Ok(vec![
+                AcpCapabilityObservation::verified(
+                    "acp:codex",
+                    "1.2.3",
+                    1,
+                    "fingerprint",
+                    NegotiatedAcpCapabilities {
+                        protocol_version: "1".into(),
+                        load_session: true,
+                        prompt_image: false,
+                        prompt_audio: false,
+                        prompt_embedded_context: false,
+                        mcp_http: false,
+                        mcp_sse: false,
+                        session_list: false,
+                        modes: Vec::new(),
+                        config_options: Vec::new(),
+                    },
+                )
+                .map_err(|error| error.to_string())?,
+            ])
         }
     }
 

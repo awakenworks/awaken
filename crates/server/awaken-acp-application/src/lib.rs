@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
-use awaken_acp_contract::{
-    AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
-};
+use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
 use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
@@ -516,15 +514,15 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
         for binding in &bindings {
             let observed_at_ms = wall_clock_ms();
             if binding.status != CredentialStatus::Active {
-                observations.push(AcpCapabilityObservation {
-                    backend_ref: format!("acp:{}", binding.cli.id),
-                    adapter_version: "unknown".into(),
-                    state: AcpCapabilityObservationState::Unavailable,
-                    observed_at_ms,
-                    fingerprint: None,
-                    negotiated: None,
-                    reason_code: Some("worker_local_source_disabled".into()),
-                });
+                observations.push(
+                    AcpCapabilityObservation::unavailable(
+                        format!("acp:{}", binding.cli.id),
+                        "unknown",
+                        observed_at_ms,
+                        "worker_local_source_disabled",
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
                 continue;
             }
             let cached = self
@@ -538,27 +536,27 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                 None => self.discovery.discover(binding.cli).await,
             };
             if host.credential_state != Some(CredentialObservationState::Available) {
-                observations.push(AcpCapabilityObservation {
-                    backend_ref: format!("acp:{}", binding.cli.id),
-                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
-                    state: AcpCapabilityObservationState::Unavailable,
-                    observed_at_ms,
-                    fingerprint: None,
-                    negotiated: None,
-                    reason_code: Some("acp_login_not_available".into()),
-                });
+                observations.push(
+                    AcpCapabilityObservation::unavailable(
+                        format!("acp:{}", binding.cli.id),
+                        host.version.unwrap_or_else(|| "unknown".into()),
+                        observed_at_ms,
+                        "acp_login_not_available",
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
                 continue;
             }
             let Some(argv) = capability.launch_argv.get(binding.cli.id) else {
-                observations.push(AcpCapabilityObservation {
-                    backend_ref: format!("acp:{}", binding.cli.id),
-                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
-                    state: AcpCapabilityObservationState::ProbeFailed,
-                    observed_at_ms,
-                    fingerprint: None,
-                    negotiated: None,
-                    reason_code: Some("acp_launch_route_missing".into()),
-                });
+                observations.push(
+                    AcpCapabilityObservation::probe_failed(
+                        format!("acp:{}", binding.cli.id),
+                        host.version.unwrap_or_else(|| "unknown".into()),
+                        observed_at_ms,
+                        "acp_launch_route_missing",
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
                 continue;
             };
             match capability
@@ -572,28 +570,29 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                         host.version.as_deref().unwrap_or("unknown"),
                         negotiated,
                     );
-                    observations.push(AcpCapabilityObservation {
-                        backend_ref: format!("acp:{}", binding.cli.id),
-                        adapter_version: profile.cli_version,
-                        state: AcpCapabilityObservationState::Verified,
-                        observed_at_ms,
-                        fingerprint: Some(profile.fingerprint),
-                        negotiated: Some(profile.negotiated),
-                        reason_code: None,
-                    });
+                    observations.push(
+                        AcpCapabilityObservation::verified(
+                            format!("acp:{}", binding.cli.id),
+                            profile.cli_version,
+                            observed_at_ms,
+                            profile.fingerprint,
+                            profile.negotiated,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
                 }
-                Err(_) => observations.push(AcpCapabilityObservation {
-                    backend_ref: format!("acp:{}", binding.cli.id),
-                    adapter_version: host.version.unwrap_or_else(|| "unknown".into()),
-                    state: AcpCapabilityObservationState::ProbeFailed,
-                    observed_at_ms,
-                    fingerprint: None,
-                    negotiated: None,
-                    reason_code: Some("acp_capability_probe_failed".into()),
-                }),
+                Err(_) => observations.push(
+                    AcpCapabilityObservation::probe_failed(
+                        format!("acp:{}", binding.cli.id),
+                        host.version.unwrap_or_else(|| "unknown".into()),
+                        observed_at_ms,
+                        "acp_capability_probe_failed",
+                    )
+                    .map_err(|error| error.to_string())?,
+                ),
             }
         }
-        observations.sort_by(|left, right| left.backend_ref.cmp(&right.backend_ref));
+        observations.sort_by(|left, right| left.backend_ref().cmp(right.backend_ref()));
         Ok(observations)
     }
 }

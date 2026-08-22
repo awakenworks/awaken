@@ -130,21 +130,10 @@ impl CatalogModelPublicationResolver {
             .flat_map(|worker| worker.acp_capability_observations)
             .filter(|capability| {
                 capability.valid_until_ms > now_ms
-                    && capability.observation.observed_at_ms <= now_ms
-                    && capability.observation.backend_ref == backend_ref
-                    && capability.observation.is_coherent()
+                    && capability.observation.observed_at_ms() <= now_ms
+                    && capability.observation.backend_ref() == backend_ref
             })
-            .filter_map(|capability| {
-                capability.observation.fingerprint.and_then(|fingerprint| {
-                    capability.observation.negotiated.map(|negotiated| {
-                        (
-                            capability.observation.adapter_version,
-                            fingerprint,
-                            negotiated,
-                        )
-                    })
-                })
-            })
+            .filter_map(|capability| capability.observation.into_verified_evidence())
             .collect::<Vec<_>>();
         fingerprints.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
         fingerprints.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);

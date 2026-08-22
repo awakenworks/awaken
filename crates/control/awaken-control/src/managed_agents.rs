@@ -1003,7 +1003,7 @@ mod tests {
                 .or_else(|| {
                     selection.target().map(|(target, backend_ref)| {
                         ModelBinding::new(
-                            target.provider_id.as_deref().unwrap_or_default(),
+                            target.provider_id.as_deref().unwrap_or("test-provider"),
                             &target.model_id,
                             backend_ref,
                         )

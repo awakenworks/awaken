@@ -121,12 +121,10 @@ impl WorkerAcpCapabilityObservation {
         now_ms: u64,
     ) -> bool {
         dynamic_observation_admitted(
-            self.observation.is_coherent()
-                && self.observation.state == AcpCapabilityObservationState::Verified
-                && self.observation.backend_ref == requirement.backend_ref
-                && self.observation.fingerprint.as_deref()
-                    == Some(requirement.fingerprint.as_str()),
-            self.observation.observed_at_ms,
+            self.observation.state() == AcpCapabilityObservationState::Verified
+                && self.observation.backend_ref() == requirement.backend_ref
+                && self.observation.fingerprint() == Some(requirement.fingerprint.as_str()),
+            self.observation.observed_at_ms(),
             now_ms,
             self.valid_until_ms,
         )
@@ -1574,28 +1572,36 @@ mod tests {
         let observation = |backend_ref: &str,
                            fingerprint: &str,
                            state: AcpCapabilityObservationState| {
-            let verified = state == AcpCapabilityObservationState::Verified;
+            let negotiated = || awaken_acp_contract::NegotiatedAcpCapabilities {
+                protocol_version: "1".into(),
+                load_session: false,
+                prompt_image: false,
+                prompt_audio: false,
+                prompt_embedded_context: false,
+                mcp_http: false,
+                mcp_sse: false,
+                session_list: false,
+                modes: Vec::new(),
+                config_options: Vec::new(),
+            };
+            let observation = match state {
+                AcpCapabilityObservationState::Verified => AcpCapabilityObservation::verified(
+                    backend_ref,
+                    "test",
+                    100,
+                    fingerprint,
+                    negotiated(),
+                ),
+                AcpCapabilityObservationState::Unavailable => {
+                    AcpCapabilityObservation::unavailable(backend_ref, "test", 100, "not_verified")
+                }
+                AcpCapabilityObservationState::ProbeFailed => {
+                    AcpCapabilityObservation::probe_failed(backend_ref, "test", 100, "not_verified")
+                }
+            }
+            .expect("coherent capability fixture");
             WorkerAcpCapabilityObservation {
-                observation: AcpCapabilityObservation {
-                    backend_ref: backend_ref.into(),
-                    adapter_version: "test".into(),
-                    state,
-                    observed_at_ms: 100,
-                    fingerprint: verified.then(|| fingerprint.into()),
-                    negotiated: verified.then(|| awaken_acp_contract::NegotiatedAcpCapabilities {
-                        protocol_version: "1".into(),
-                        load_session: false,
-                        prompt_image: false,
-                        prompt_audio: false,
-                        prompt_embedded_context: false,
-                        mcp_http: false,
-                        mcp_sse: false,
-                        session_list: false,
-                        modes: Vec::new(),
-                        config_options: Vec::new(),
-                    }),
-                    reason_code: (!verified).then(|| "not_verified".into()),
-                },
+                observation,
                 valid_until_ms: 200,
             }
         };
@@ -1621,8 +1627,12 @@ mod tests {
         assert!(worker.accepts(&requirements, 100), "A1");
         assert!(worker.accepts(&requirements, 199), "A1");
         assert!(!worker.accepts(&requirements, 200), "A3");
-        worker.acp_capability_observations[0].observation.negotiated = None;
-        assert!(!worker.accepts(&requirements, 150), "A4");
+        let mut malformed = serde_json::to_value(&worker.acp_capability_observations[0]).unwrap();
+        malformed["observation"]["negotiated"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<WorkerAcpCapabilityObservation>(malformed).is_err(),
+            "A4 malformed evidence cannot enter a Worker manifest",
+        );
     }
 
     #[test]

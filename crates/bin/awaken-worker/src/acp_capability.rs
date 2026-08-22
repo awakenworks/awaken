@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+#[cfg(test)]
+use awaken_acp_contract::AcpCapabilityObservationState;
 use awaken_acp_contract::{
     AcpCapabilityNegotiator, AcpCapabilityObservation, AcpCapabilityObservationSource,
-    AcpCapabilityObservationState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,19 +85,21 @@ impl ConfiguredAcpCapabilityObservationSource {
                     .negotiate(&target.argv, &cwd, target.auth_method_id.as_deref())
                     .await
                 {
-                    Ok(negotiated) => AcpCapabilityObservation {
-                        backend_ref: format!("acp:{}", target.cli_id),
-                        fingerprint: Some(awaken_acp_contract::capability_fingerprint(
+                    Ok(negotiated) => {
+                        let fingerprint = awaken_acp_contract::capability_fingerprint(
                             &target.cli_id,
                             &target.adapter_version,
                             &negotiated,
-                        )),
-                        adapter_version: target.adapter_version,
-                        state: AcpCapabilityObservationState::Verified,
-                        observed_at_ms,
-                        negotiated: Some(negotiated),
-                        reason_code: None,
-                    },
+                        );
+                        AcpCapabilityObservation::verified(
+                            format!("acp:{}", target.cli_id),
+                            target.adapter_version,
+                            observed_at_ms,
+                            fingerprint,
+                            negotiated,
+                        )
+                        .map_err(|error| error.to_string())?
+                    }
                     Err(error) => {
                         return Err(format!(
                             "acp:{} capability probe failed: {error}",
@@ -204,11 +207,11 @@ mod tests {
         );
         let observations = verified.capability_observations().await.unwrap();
         assert_eq!(
-            observations[0].state,
+            observations[0].state(),
             AcpCapabilityObservationState::Verified,
             "T2"
         );
-        assert!(observations[0].fingerprint.is_some(), "T2");
+        assert!(observations[0].fingerprint().is_some(), "T2");
         let failed = ConfiguredAcpCapabilityObservationSource::new(
             vec![
                 ConfiguredAcpCapabilityTarget::new(
@@ -271,8 +274,8 @@ mod tests {
         .await
         .expect("probes must overlap")
         .unwrap();
-        assert_eq!(observations[0].backend_ref, "acp:first");
-        assert_eq!(observations[1].backend_ref, "acp:second");
+        assert_eq!(observations[0].backend_ref(), "acp:first");
+        assert_eq!(observations[1].backend_ref(), "acp:second");
     }
 
     #[derive(Default)]
