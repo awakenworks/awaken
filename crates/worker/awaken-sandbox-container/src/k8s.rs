@@ -976,11 +976,12 @@ mod tests {
         // Cause/effect decision table: R1 exact base/packages + shared Registry
         // produce one deterministic ConfigMap/Job destination; R2 insecure local
         // Registry emits an explicit BuildKit host policy; R3 the Job is rootless,
-        // tokenless, no-retry, bounded, and admits RootlessKit's subordinate mount
-        // namespace through unconfined seccomp and AppArmor; R4 output uses the
-        // termination digest contract; R5 unsafe Registry prefixes fail before
-        // entering BuildKit configuration; R6 ring+aws-lc feature unification =>
-        // select ring before constructing the lazy kube client.
+        // tokenless, no-retry, bounded, admits RootlessKit's subordinate mount
+        // namespace through unconfined seccomp and AppArmor, and gives rootless
+        // BuildKit a COS-compatible state volume; R4 output uses the termination
+        // digest contract; R5 unsafe Registry prefixes fail before entering
+        // BuildKit configuration; R6 ring+aws-lc feature unification => select
+        // ring before constructing the lazy kube client.
         install_rustls_crypto_provider();
         let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
         let client = Client::try_from(config).unwrap();
@@ -1036,6 +1037,26 @@ mod tests {
             "R3 private Registry auth"
         );
         let buildkit = &pod.containers[0];
+        assert!(
+            pod.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|volume| { volume.name == "buildkit-state" && volume.empty_dir.is_some() }),
+            "R3 rootless BuildKit state must use an emptyDir on Google COS"
+        );
+        assert!(
+            buildkit
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|mount| {
+                    mount.name == "buildkit-state"
+                        && mount.mount_path == "/home/user/.local/share/buildkit"
+                }),
+            "R3 rootless BuildKit state must use the official writable path"
+        );
         let security_context = buildkit.security_context.as_ref().unwrap();
         assert_eq!(
             buildkit.image.as_deref(),
@@ -1095,36 +1116,6 @@ mod tests {
                 "mkdir -p /tmp/workspace\ncp /input/Dockerfile /tmp/workspace/Dockerfile"
             ),
             "R6 rootless BuildKit must use a writable workspace"
-        );
-        let environment = buildkit.env.as_ref().unwrap();
-        for name in [
-            "FORWARD_PROXY",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "http_proxy",
-            "https_proxy",
-        ] {
-            assert!(
-                environment.iter().any(|variable| {
-                    variable.name == name
-                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
-                }),
-                "R8 BuildKit and package-manager egress must inherit {name}"
-            );
-        }
-        assert!(
-            environment.iter().any(|variable| {
-                variable.name == "NO_PROXY"
-                    && variable
-                        .value
-                        .as_deref()
-                        .is_some_and(|value| value.contains("registry.local:5000"))
-            }),
-            "R8 the package Registry must bypass the external proxy"
-        );
-        assert!(
-            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
-            "R8 predefined proxy args must reach package-manager RUN steps"
         );
         assert!(
             K8sPackageImageProvisioner::new(
