@@ -1322,7 +1322,6 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
-        let generated_config = installed.is_none();
         let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
