@@ -249,20 +249,34 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         } else {
             ""
         };
-        let mut volume_mounts = vec![VolumeMount {
-            name: "build-input".into(),
-            mount_path: "/input".into(),
-            read_only: Some(true),
-            ..Default::default()
-        }];
-        let mut volumes = vec![Volume {
-            name: "build-input".into(),
-            config_map: Some(ConfigMapVolumeSource {
-                name: name.clone(),
+        let mut volume_mounts = vec![
+            VolumeMount {
+                name: "build-input".into(),
+                mount_path: "/input".into(),
+                read_only: Some(true),
                 ..Default::default()
-            }),
-            ..Default::default()
-        }];
+            },
+            VolumeMount {
+                name: "buildkit-state".into(),
+                mount_path: "/home/user/.local/share/buildkit".into(),
+                ..Default::default()
+            },
+        ];
+        let mut volumes = vec![
+            Volume {
+                name: "build-input".into(),
+                config_map: Some(ConfigMapVolumeSource {
+                    name: name.clone(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Volume {
+                name: "buildkit-state".into(),
+                empty_dir: Some(Default::default()),
+                ..Default::default()
+            },
+        ];
         if let Some(secret_name) = self.image_pull_secrets.first() {
             volume_mounts.push(VolumeMount {
                 name: "registry-auth".into(),
