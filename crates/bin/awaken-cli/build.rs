@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod build_support;
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let workspace = manifest_dir
@@ -34,11 +36,9 @@ fn main() {
 }
 
 fn build_console(web: &Path) {
-    let package_manager = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-    if !web.join("node_modules").is_dir() {
-        run(package_manager, web, &["install", "--frozen-lockfile"]);
+    for command in build_support::console_commands(cfg!(windows)) {
+        run(command.program, web, command.args);
     }
-    run(package_manager, web, &["build"]);
 }
 
 fn run(program: &str, current_dir: &Path, args: &[&str]) {
