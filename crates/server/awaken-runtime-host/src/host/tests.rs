@@ -541,6 +541,61 @@ impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim> for FixedRep
     }
 }
 
+struct SequencedRepositoryTransport(AtomicUsize);
+
+#[async_trait::async_trait]
+impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim>
+    for SequencedRepositoryTransport
+{
+    async fn verify(
+        &self,
+        _workspace_id: &str,
+        _repository_id: &str,
+        _config_version: awaken_resource_contract::ConfigVersion,
+        _claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        let sequence = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.internal/git/repo-platform".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(format!(
+                    "repository-capability-{sequence}"
+                ))?,
+            },
+        )
+    }
+}
+
+#[derive(Default)]
+struct RecordingRepositoryRealizer(Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRealizer {
+    async fn realize_repository(
+        &self,
+        _plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
+        credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        self.0.lock().unwrap().push(
+            credential
+                .map(|credential| credential.expose_password().to_owned())
+                .unwrap_or_default(),
+        );
+        Ok(())
+    }
+
+    async fn publish_repository(
+        &self,
+        _plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
+        _credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+    ) -> Result<bool, awaken_provisioning_contract::SandboxError> {
+        Ok(false)
+    }
+}
+
 fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -> Vec<u8> {
     let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = &mount.source
     else {
@@ -6869,6 +6924,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// | P1 | exact | Gateway mediated | absent | stage rewritten URL + short capability |
 /// | P2 | exact | Direct | any | reject; never fall back to Worker plaintext |
 /// | P3 | absent Coordinator staging | Direct | absent | stage secret-free plan without opening material |
+/// | P4 | exact, delayed use | Gateway mediated again | absent | refresh capability at Git operation edge |
 #[tokio::test]
 async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
     fn platform_resources() -> awaken_session_contract::ResolvedSessionResources {
@@ -6908,16 +6964,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         epoch: 7,
     };
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sequenced = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
     let _runtime = crate::ManagedHost::new(host.clone())
-        .with_repository_binding_verifier(Arc::new(FixedRepositoryTransport(
-            awaken_resource_contract::RepositoryTransport::GatewayMediated {
-                remote_url: "https://gateway.internal/git/repo-platform".into(),
-                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
-                    "repository-capability",
-                )
-                .unwrap(),
-            },
-        )))
+        .with_repository_binding_verifier(sequenced.clone())
         .install_dispatch_session_runtime();
     let manifest = awaken_session_contract::SessionResourceManifest::new(
         host.local_workspace(),
@@ -6936,7 +6985,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             .credential
             .as_ref()
             .map(|credential| credential.expose_password()),
-        Some("repository-capability"),
+        Some("repository-capability-1"),
         "P1"
     );
     assert!(
@@ -6945,6 +6994,16 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             .as_ref()
             .is_some_and(|credential| credential.is_gateway_capability()),
         "P1 preserves the admitted Gateway transport at the target boundary"
+    );
+    let realizer = RecordingRepositoryRealizer::default();
+    host.realize_thread_repositories("platform-mediated", &realizer)
+        .await
+        .expect("P4 refreshes at the Git operation edge");
+    assert_eq!(sequenced.0.load(Ordering::SeqCst), 2, "P4");
+    assert_eq!(
+        *realizer.0.lock().unwrap(),
+        vec!["repository-capability-2".to_owned()],
+        "P4 never reuses the capability staged before package or Sandbox preparation"
     );
 
     let direct_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
