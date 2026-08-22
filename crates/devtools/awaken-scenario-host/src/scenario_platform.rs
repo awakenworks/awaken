@@ -115,7 +115,7 @@ impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadine
             awaken_runtime_contract::resolved::Backend::from_ref(
                 &publication.primary.binding.backend_ref
             ),
-            awaken_runtime_contract::resolved::Backend::Remote { .. }
+            awaken_runtime_contract::resolved::Backend::Remote(_)
         ))
     }
 }

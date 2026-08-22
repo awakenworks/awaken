@@ -1348,9 +1348,9 @@ impl SharedHost {
         let relay = self.mcp_relay.get();
         let mut acp_mcp_servers = if is_acp {
             let adapter = match &execution_backend {
-                awaken_runtime_contract::resolved::Backend::Acp { cli } => {
-                    awaken_run_executor_acp::acp_cli(cli).ok_or_else(|| {
-                        HostError::internal(format!("unknown ACP adapter `{cli}`"))
+                awaken_runtime_contract::resolved::Backend::Acp(backend) => {
+                    awaken_run_executor_acp::acp_cli(backend.cli()).ok_or_else(|| {
+                        HostError::internal(format!("unknown ACP adapter `{backend}`"))
                     })?
                 }
                 _ => unreachable!("is_acp is derived from the execution backend"),

@@ -1496,7 +1496,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 let realization_kind = match holder.boundary {
                     PlaintextBoundary::Worker => CredentialRealizationKind::WorkerRelay,
                     PlaintextBoundary::Workload if is_acp => {
-                        let Some(awaken_runtime_contract::resolved::Backend::Acp { cli }) =
+                        let Some(awaken_runtime_contract::resolved::Backend::Acp(backend)) =
                             execution_backend.as_ref()
                         else {
                             return Err(RunError::classified(
@@ -1504,11 +1504,11 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                                 "Workload-held MCP credentials require an ACP backend",
                             ));
                         };
-                        let Some(adapter) = awaken_run_executor_acp::acp_cli(cli) else {
+                        let Some(adapter) = awaken_run_executor_acp::acp_cli(backend.cli()) else {
                             return Err(RunError::classified(
                                 "mcp_client_injection_unsupported",
                                 format!(
-                                    "ACP adapter `{cli}` has no credential delivery declaration"
+                                    "ACP adapter `{backend}` has no credential delivery declaration"
                                 ),
                             ));
                         };
@@ -1523,7 +1523,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             return Err(RunError::classified(
                                 "mcp_client_injection_unsupported",
                                 format!(
-                                    "ACP adapter `{cli}` cannot consume this MCP credential through its process-private channel"
+                                    "ACP adapter `{backend}` cannot consume this MCP credential through its process-private channel"
                                 ),
                             ));
                         }

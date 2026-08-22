@@ -104,7 +104,7 @@ impl HostWorkerResolver {
                         .model_binding
                         .backend_ref
                 ),
-                awaken_runtime_contract::resolved::Backend::Remote { .. }
+                awaken_runtime_contract::resolved::Backend::Remote(_)
             )
         {
             let executor = host.remote_attempt_executor.clone().ok_or_else(|| {

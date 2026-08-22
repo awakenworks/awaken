@@ -214,9 +214,8 @@ impl crate::host::SharedHost {
                 )
             })
             .collect();
-        let default = profile.default_cli().map(str::to_string);
         let source = crate::LaunchSource::Projected(
-            crate::AcpLaunchRegistry::with_resolved_argv(routes, default)
+            crate::AcpLaunchRegistry::with_resolved_argv(routes)
                 .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
         );
         // The same exact, claim-fenced materializer owns both sides of the

@@ -106,7 +106,7 @@ pub(crate) fn requires_local_environment(
                 awaken_runtime_contract::resolved::Backend::from_ref(
                     &candidate.binding.backend_ref
                 ),
-                awaken_runtime_contract::resolved::Backend::Remote { .. }
+                awaken_runtime_contract::resolved::Backend::Remote(_)
             )
         })
 }
@@ -140,12 +140,18 @@ pub fn self_hosted_inference_holder(
         let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
             &candidate.binding.backend_ref,
         ) {
-            awaken_runtime_contract::resolved::Backend::Acp { .. } => {
+            awaken_runtime_contract::resolved::Backend::Acp(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Workload
             }
             awaken_runtime_contract::resolved::Backend::Native
-            | awaken_runtime_contract::resolved::Backend::Remote { .. } => {
+            | awaken_runtime_contract::resolved::Backend::Remote(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Worker
+            }
+            awaken_runtime_contract::resolved::Backend::Invalid(invalid) => {
+                return Err(HostError::bad_request(format!(
+                    "invalid backend_ref {}",
+                    invalid.as_str()
+                )));
             }
         };
         if boundary.is_some_and(|existing| existing != candidate_boundary) {
@@ -206,7 +212,7 @@ pub fn remote_worker_placement(
                 awaken_runtime_contract::resolved::Backend::from_ref(
                     &candidate.binding.backend_ref
                 ),
-                awaken_runtime_contract::resolved::Backend::Acp { .. }
+                awaken_runtime_contract::resolved::Backend::Acp(_)
             ) && !matches!(
                 candidate.provisioning,
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }

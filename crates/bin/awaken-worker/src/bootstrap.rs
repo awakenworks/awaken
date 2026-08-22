@@ -107,7 +107,6 @@ struct WorkerFileConfig {
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     acp_clis: Option<Vec<String>>,
-    acp_default_cli: Option<String>,
     container_image: Option<String>,
 }
 
@@ -173,7 +172,7 @@ impl WorkerDaemonConfig {
         }
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
-            .then(|| awaken_runtime_host::AcpWorkerProfile::new(acp_clis, file.acp_default_cli))
+            .then(|| awaken_runtime_host::AcpWorkerProfile::new(acp_clis))
             .transpose()?;
         runtime.container_image = file.container_image;
         Ok(Self {

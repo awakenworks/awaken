@@ -2,7 +2,7 @@
 //! Code, Codex, Gemini…) describing how to launch it and how the resolved model
 //! reaches it. Pure data + a projection function — no `match adapter_kind` anywhere
 //! (adding a CLI is a row, not a branch). A row is a *catalog binding* an agent
-//! references by id (`Backend::Acp { cli }`), the same category as a model provider
+//! references by id (`Backend::Acp(cli)`), the same category as a model provider
 //! — never agent config itself.
 
 use crate::discovery_spec::{
@@ -136,7 +136,7 @@ fn mcp_client_credential_admission_has_no_gateway_or_adapter_fallback() {
 }
 
 /// The definition of one external ACP CLI: how to launch it and project config onto
-/// it. Referenced by `Backend::Acp { cli }` via [`AcpCli::id`].
+/// it. Referenced by `Backend::Acp(cli)` via [`AcpCli::id`].
 #[derive(Debug, Clone, Copy)]
 pub struct AcpCli {
     pub id: &'static str,
@@ -753,7 +753,7 @@ impl AcpCli {
     }
 }
 
-/// Resolve an ACP CLI by id (`Backend::Acp { cli }`); `None` is a fail-closed
+/// Resolve an ACP CLI by id (`Backend::Acp(cli)`); `None` is a fail-closed
 /// "unknown CLI" the caller rejects (never a silent default).
 #[must_use]
 pub fn acp_cli(id: &str) -> Option<&'static AcpCli> {

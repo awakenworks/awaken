@@ -102,7 +102,6 @@ pub(super) struct FileConfig {
     pub(super) content_redaction: Option<String>,
     pub(super) acp_session_blob_root: Option<PathBuf>,
     pub(super) acp_clis: Option<Vec<String>>,
-    pub(super) acp_default_cli: Option<String>,
     pub(super) container_image: Option<String>,
     pub(super) dispatch_wake: Option<String>,
     pub(super) dispatch_wake_channel: Option<String>,

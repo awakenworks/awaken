@@ -375,7 +375,7 @@ fn compile_with_models(
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
     // agent runs everything on the far side, so local skills/MCP would be a silent
     // runtime no-op; reject at publish so the mistake surfaces at authoring time.
-    if matches!(config.kind(), AgentKind::A2a { .. }) {
+    if matches!(config.kind(), AgentKind::A2a(_)) {
         if !config.skills.is_empty() {
             return Err(CompileError::UnsupportedCapability {
                 agent: config.id.clone(),

@@ -241,7 +241,7 @@ fn builder_rejects_incomplete_or_invalid_topology() {
 fn standard_manifest_is_derived_from_builder_topology() {
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
     deployment.acp = Some(
-        awaken_runtime_host::AcpWorkerProfile::new(vec!["codex".to_string()], None)
+        awaken_runtime_host::AcpWorkerProfile::new(vec!["codex".to_string()])
             .expect("valid ACP profile"),
     );
     let worker = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))

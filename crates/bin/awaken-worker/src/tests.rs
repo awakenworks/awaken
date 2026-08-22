@@ -576,11 +576,8 @@ fn external_credential_resolver_has_one_canonical_resolution_path() {
 fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     let mut acp = deployment();
     acp.acp = Some(
-        awaken_runtime_host::AcpWorkerProfile::new(
-            ["claude".to_string(), "codex".to_string()],
-            None,
-        )
-        .expect("mixed ACP profile"),
+        awaken_runtime_host::AcpWorkerProfile::new(["claude".to_string(), "codex".to_string()])
+            .expect("mixed ACP profile"),
     );
     let workload = derive_standard_manifest(StandardManifestInputs {
         deployment: &acp,
@@ -1064,8 +1061,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     // | R4 | yes | yes | no  | E3 error |
     // | R5 | yes | every catalog row | yes | one exact target per row |
     let mut config = deployment();
-    config.acp =
-        Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()], None).unwrap());
+    config.acp = Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()]).unwrap());
     assert!(
         configured_container_acp_targets(&config)
             .unwrap()
@@ -1083,8 +1079,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
         "R2"
     );
 
-    config.acp =
-        Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()], None).unwrap());
+    config.acp = Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()]).unwrap());
     let targets = configured_container_acp_targets(&config).unwrap();
     assert_eq!(targets.len(), 1, "R3");
     assert_eq!(targets[0].cli_id, "gemini", "R3");
@@ -1110,11 +1105,8 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     config.container_image = Some("image@sha256:exact".into());
     let catalog = awaken_run_executor_acp::known_acp_clis();
     config.acp = Some(
-        awaken_runtime_host::AcpWorkerProfile::new(
-            catalog.iter().map(|cli| cli.id.to_owned()),
-            None,
-        )
-        .unwrap(),
+        awaken_runtime_host::AcpWorkerProfile::new(catalog.iter().map(|cli| cli.id.to_owned()))
+            .unwrap(),
     );
     let targets = configured_container_acp_targets(&config).unwrap();
     assert_eq!(targets.len(), catalog.len(), "R5");

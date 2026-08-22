@@ -694,14 +694,10 @@ impl ResolvedDeployment {
         observations: Vec<awaken_acp_application::AcpHostObservation>,
         routable_cli_ids: Vec<String>,
     ) -> Result<(), String> {
-        let explicit = self.runtime.acp.clone();
-        let default_cli = explicit
-            .as_ref()
-            .and_then(|profile| profile.default_cli().map(str::to_string));
         self.runtime.acp = if routable_cli_ids.is_empty() {
             None
         } else {
-            Some(AcpWorkerProfile::new(routable_cli_ids, default_cli)?)
+            Some(AcpWorkerProfile::new(routable_cli_ids)?)
         };
         self.local_acp_observations = observations;
         Ok(())
@@ -876,7 +872,6 @@ mod tests {
             .unwrap();
         let one = one.runtime.acp.unwrap();
         assert_eq!(one.cli_ids().collect::<Vec<_>>(), ["codex"], "A2");
-        assert_eq!(one.default_cli(), Some("codex"), "A2");
 
         let mut many = resolve(FileConfig::default(), ConfigOverrides::default());
         many.apply_local_acp_observations(
@@ -890,7 +885,6 @@ mod tests {
             ["claude", "codex"],
             "A3"
         );
-        assert_eq!(many.default_cli(), None, "A3");
 
         let mut incompatible = codex.clone();
         incompatible.capability_state =

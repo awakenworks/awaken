@@ -78,7 +78,7 @@ impl ToolFreeAcpRunner {
                     max_steps,
                     delegation_limits: Default::default(),
                     model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                        ModelBinding::new("eval", "weakest", "acp"),
+                        ModelBinding::new("eval", "weakest", "acp:eval"),
                     ),
                     model_candidates: Vec::new(),
                     tool_descriptors: Vec::new(),

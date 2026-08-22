@@ -523,7 +523,7 @@ fn acp_configuration_to_preserve(
 ) -> Option<awaken_runtime_contract::resolved::AcpSessionConfiguration> {
     let same_model = render_managed_model_id(&config.model_binding)
         .is_ok_and(|current| current == incoming_model_id);
-    (same_model && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
+    (same_model && matches!(config.kind(), AgentKind::Acp(_)))
         .then(|| config.model_binding.acp_configuration().cloned())
         .flatten()
 }

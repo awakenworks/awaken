@@ -69,7 +69,7 @@ pub fn compile_candidate_credential_bindings(
             Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
-            Backend::Acp { .. }
+            Backend::Acp(_)
                 if !matches!(
                     access.usage,
                     CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
@@ -77,9 +77,7 @@ pub fn compile_candidate_credential_bindings(
             {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
-            Backend::Remote { .. }
-                if !matches!(access.usage, CredentialUsage::HttpHeader { .. }) =>
-            {
+            Backend::Remote(_) if !matches!(access.usage, CredentialUsage::HttpHeader { .. }) => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
             _ => {}
@@ -88,22 +86,26 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Native, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerProviderAdapter
             }
-            (Backend::Acp { .. }, PlaintextBoundary::Workload) => installed
+            (Backend::Acp(_), PlaintextBoundary::Workload) => installed
                 .acp_backend_realization_kind(&candidate.binding.backend_ref)
                 .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
                 .unwrap_or(CredentialRealizationKind::ProcessSecretEnvironment),
-            (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
-                CredentialRealizationKind::WorkerRelay
-            }
-            (Backend::Remote { .. }, PlaintextBoundary::Worker) => {
+            (Backend::Acp(_), PlaintextBoundary::Worker) => CredentialRealizationKind::WorkerRelay,
+            (Backend::Remote(_), PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
             }
             (Backend::Native, PlaintextBoundary::Platform) => {
                 CredentialRealizationKind::PlatformProviderAdapter
             }
-            (Backend::Native | Backend::Acp { .. } | Backend::Remote { .. }, boundary) => {
+            (Backend::Native | Backend::Acp(_) | Backend::Remote(_), boundary) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary,
+                    backend: candidate.binding.backend_ref.clone(),
+                });
+            }
+            (Backend::Invalid(_), _) => {
+                return Err(AttemptCredentialBindingError::UnsupportedRealization {
+                    boundary: holder.boundary,
                     backend: candidate.binding.backend_ref.clone(),
                 });
             }

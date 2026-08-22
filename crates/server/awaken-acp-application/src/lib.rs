@@ -398,11 +398,11 @@ impl AcpLocalCredentialResolver {
             let binding = source.worker_local_binding.as_ref().ok_or_else(|| {
                 format!("worker-local source {} has no stable binding", source.id.0)
             })?;
-            let Backend::Acp { cli } = Backend::from_ref(&binding.driver_id) else {
+            let Backend::Acp(backend) = Backend::from_ref(&binding.driver_id) else {
                 continue;
             };
-            let cli = acp_cli(&cli)
-                .ok_or_else(|| format!("worker-local source names unknown ACP CLI `{cli}`"))?;
+            let cli = acp_cli(backend.cli())
+                .ok_or_else(|| format!("worker-local source names unknown ACP CLI `{backend}`"))?;
             let revision = u64::try_from(source.version)
                 .ok()
                 .filter(|revision| *revision > 0)
