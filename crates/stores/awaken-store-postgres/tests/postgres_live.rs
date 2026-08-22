@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
+};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -30,6 +32,7 @@ use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::types::Json;
 
 fn database_url() -> String {
     std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -300,6 +303,74 @@ async fn reconnect_replays_committed_state() {
         CommittedThreadView::committed_state(&reopened, &thread),
         commands,
         "committed state replays from durable truth after a reconnect"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
+    let Some(pool) = schema_pool("t_legacy_resume_reopen").await else {
+        return;
+    };
+    let thread = ThreadId("thread-1".to_string());
+    let run = RunId("run-legacy-resume".to_string());
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("coordinator");
+    store
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: RunDisposition::awaiting(ResumeTicket::new(
+                "corr-1",
+                run.clone(),
+                thread.clone(),
+                "snap-1",
+                "fp-1",
+                AwaitTarget::Pause(PauseReason::Manual),
+            )),
+            messages: vec![],
+            state: vec![],
+            events: vec![],
+        })
+        .await
+        .expect("commit awaiting");
+
+    // Cause/effect rule: a valid pre-closed-shape ticket is durable committed
+    // truth. A fresh process must converge it to the one closed AwaitTarget;
+    // malformed products remain rejected by the contract test. This exercises
+    // the production hydrate path rather than adding a Postgres-only decoder.
+    let legacy = serde_json::json!({
+        "correlation_id": "corr-1",
+        "run_id": "run-legacy-resume",
+        "thread_id": "thread-1",
+        "snapshot_id": "snap-1",
+        "catalog_fingerprint": "fp-1",
+        "reason": "ExternalEvent",
+        "call_id": "call-1",
+        "pending_tool": {"tool_id": "tool-1", "arguments": {"cmd": "true"}},
+        "deadline_ms": null
+    });
+    sqlx::query("UPDATE runtime_waiting SET ticket = $1 WHERE run_id = $2")
+        .bind(Json(legacy))
+        .bind(&run.0)
+        .execute(&pool)
+        .await
+        .expect("replace ticket with historical wire shape");
+    drop(store);
+
+    let reopened = PostgresCommitCoordinator::with_pool(pool)
+        .await
+        .expect("reconnect");
+    let ticket = CommittedThreadView::resume_ticket(&reopened, &run).expect("resume ticket");
+    assert_eq!(
+        ticket.target(),
+        &AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::ClientExecution,
+            call_id: "call-1".into(),
+            tool: PendingTool {
+                tool_id: "tool-1".into(),
+                arguments: serde_json::json!({"cmd": "true"}),
+            },
+        }
     );
 }
 
