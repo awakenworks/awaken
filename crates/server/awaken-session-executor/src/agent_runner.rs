@@ -950,7 +950,7 @@ mod tests {
         provider: &str,
         route: &str,
     ) -> ResolvedModelCandidate {
-        ResolvedModelCandidate::provider(
+        ResolvedModelCandidate::try_provider(
             ModelBinding::new(provider, model, "native"),
             provider,
             route,
@@ -966,12 +966,13 @@ mod tests {
             )),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "test".into(),
-                api_dialect: String::new(),
+                api_dialect: "test".into(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: model.into(),
                 processing_placement: None,
             },
         )
+        .expect("coherent published test model")
     }
 
     fn memory_context() -> RuntimeRunContext {
@@ -1160,7 +1161,10 @@ mod tests {
         // parent silently broaden or narrow its referenced Agent, unlike the
         // Managed Agents version-pinned thread model.
         let mut acp_snapshot = agent("acp-child", "child");
-        acp_snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+        let mut binding = acp_snapshot.resolved_spec.model_binding.binding().clone();
+        binding.backend_ref = "acp:claude".to_string();
+        acp_snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
         acp_snapshot.resolved_spec.plugin_config.agent.toolsets = vec![
             awaken_runtime_contract::agent_bindings::ToolsetPolicy {
                 source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
@@ -1367,12 +1371,13 @@ mod tests {
         // durably pending but incompatible with every current Worker; the
         // explicit version assertions detect that silent delegation stall.
         let mut config = agent("remote-child", "remote child");
-        config.resolved_spec.model_binding = ResolvedModelCandidate::remote(
+        config.resolved_spec.model_binding = ResolvedModelCandidate::try_remote(
             ModelBinding::new("remote", "", "a2a:https://agent.example"),
             awaken_tenancy::ScopeId::from("default"),
             None,
             "sha256:card",
-        );
+        )
+        .expect("coherent remote child candidate");
         let runtime = awaken_runtime::Runtime::new();
         let (_, activation) = runtime.prepare(
             &config,

@@ -87,7 +87,7 @@ async fn http_export_model_edit_and_offline_runtime_form_one_path() {
     let runtime = Runtime::new().with_llm(Arc::new(EchoModel));
     let snapshot = runtime.load_snapshot_file(&path).expect("R2 load");
     assert_eq!(
-        snapshot.resolved_spec.model_binding.binding.model_ref,
+        snapshot.resolved_spec.model_binding.binding().model_ref,
         "local-edited-model"
     );
     assert_ne!(snapshot.fingerprint.0, fingerprint, "R2 identity");

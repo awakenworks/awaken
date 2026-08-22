@@ -63,7 +63,8 @@ impl CatalogModelPublicationResolver {
             )
             .await?;
         validate_acp_session_configuration(&resolved_binding, session_configuration, &negotiated)?;
-        Ok(ResolvedModelCandidate::backend_owned(
+        let error_binding = resolved_binding.clone();
+        ResolvedModelCandidate::try_backend_owned(
             resolved_binding,
             CredentialRef {
                 id: source.id.0.clone(),
@@ -73,7 +74,11 @@ impl CatalogModelPublicationResolver {
             capability_adapter_version,
             capability_fingerprint,
             session_configuration.clone(),
-        ))
+        )
+        .map_err(|error| PublicationResolutionError::CandidateUnavailable {
+            binding: error_binding,
+            reason: error.to_string(),
+        })
     }
 
     pub(super) async fn verified_acp_capability(

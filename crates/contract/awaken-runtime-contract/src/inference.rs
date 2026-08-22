@@ -47,7 +47,7 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
             ));
         }
         if !matches!(
-            Backend::from_ref(&exact.binding.backend_ref),
+            Backend::from_ref(&exact.binding().backend_ref),
             Backend::Native
         ) {
             return Ok(None);

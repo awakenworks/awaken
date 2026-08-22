@@ -316,7 +316,10 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-acp".to_string());
     let mut acp = activation("run-acp");
-    acp.snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+    let mut binding = acp.snapshot.resolved_spec.model_binding.binding().clone();
+    binding.backend_ref = "acp:claude".to_string();
+    acp.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
 
     store
         .enqueue(RunDispatch::new(acp))
@@ -364,7 +367,10 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut acp = activation("run-acp-committed");
-    acp.snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+    let mut binding = acp.snapshot.resolved_spec.model_binding.binding().clone();
+    binding.backend_ref = "acp:claude".to_string();
+    acp.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
 
     store
         .enqueue(RunDispatch::new(acp.clone()))

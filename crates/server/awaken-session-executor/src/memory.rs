@@ -586,12 +586,12 @@ impl MemoryRuntime {
                 .ok_or_else(|| {
                     format!(
                         "published model candidate `{}` is unavailable",
-                        model.binding.model_ref
+                        model.binding().model_ref
                     )
                 });
         }
         matches!(
-            snapshot.agent.resolved_spec.model_binding.provisioning,
+            snapshot.agent.resolved_spec.model_binding.provisioning(),
             awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
         )
         .then(|| (self.llm.clone(), RuntimeRunContext::new()))

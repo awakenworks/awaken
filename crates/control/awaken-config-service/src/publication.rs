@@ -67,7 +67,7 @@ fn validate_candidate_scope_and_proof(
     workspace: &awaken_tenancy::ScopeId,
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
 ) -> Result<(), PublishError> {
-    let candidate_scope = match &candidate.provisioning {
+    let candidate_scope = match candidate.provisioning() {
         awaken_runtime_contract::resolved::ModelProvisioning::Provider { scope_id, .. }
         | awaken_runtime_contract::resolved::ModelProvisioning::Remote { scope_id, .. } => {
             Some(scope_id)
@@ -79,7 +79,7 @@ fn validate_candidate_scope_and_proof(
     {
         return Err(PublishError::Unresolvable(
             PublicationResolutionError::CandidateUnavailable {
-                binding: candidate.binding.clone(),
+                binding: candidate.binding().clone(),
                 reason: format!(
                     "resolved candidate belongs to Workspace {scope_id}, not trusted execution Workspace {workspace}"
                 ),
@@ -88,7 +88,7 @@ fn validate_candidate_scope_and_proof(
         ));
     }
     if matches!(
-        &candidate.provisioning,
+        candidate.provisioning(),
         awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             acp,
             ..
@@ -100,7 +100,7 @@ fn validate_candidate_scope_and_proof(
         ));
     }
     if matches!(
-        &candidate.provisioning,
+        candidate.provisioning(),
         awaken_runtime_contract::resolved::ModelProvisioning::Remote {
             security_fingerprint,
             ..
@@ -130,9 +130,10 @@ pub(crate) async fn prepare_agent_publication(
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
         validate_candidate_scope_and_proof(workspace, candidate)?;
-        if !bindings.insert(candidate.binding.clone()) {
+        if !bindings.insert(candidate.binding().clone()) {
             return Err(PublishError::Unresolvable(
-                PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
+                PublicationResolutionError::DuplicateBinding(candidate.binding().clone())
+                    .to_string(),
             ));
         }
     }
@@ -162,10 +163,10 @@ pub(crate) async fn prepare_agent_publication(
     };
     if let Some(backend_ref) = config.model_binding.backend_default_ref() {
         let valid = !backend_ref.trim().is_empty()
-            && models.primary.binding.backend_ref == backend_ref
-            && models.primary.binding.model_ref.is_empty()
+            && models.primary.binding().backend_ref == backend_ref
+            && models.primary.binding().model_ref.is_empty()
             && matches!(
-                models.primary.provisioning,
+                models.primary.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
                     model_selection:
                         awaken_runtime_contract::resolved::BackendModelSelection::Default,
@@ -180,10 +181,10 @@ pub(crate) async fn prepare_agent_publication(
         }
     }
     if let Some((backend_ref, model_ref)) = config.model_binding.backend_exact() {
-        let valid = models.primary.binding.backend_ref == backend_ref
-            && models.primary.binding.model_ref == model_ref
+        let valid = models.primary.binding().backend_ref == backend_ref
+            && models.primary.binding().model_ref == model_ref
             && matches!(
-                models.primary.provisioning,
+                models.primary.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
                     model_selection:
                         awaken_runtime_contract::resolved::BackendModelSelection::Exact,
@@ -198,7 +199,7 @@ pub(crate) async fn prepare_agent_publication(
         }
     }
     if let Some(authored) = config.model_binding.resolved()
-        && !resolved_binding_matches_authored(&models.primary.binding, authored)
+        && !resolved_binding_matches_authored(models.primary.binding(), authored)
     {
         return Err(PublishError::Unresolvable(
             "resolved primary candidate does not match the pinned authoring binding".into(),
@@ -213,18 +214,18 @@ pub(crate) async fn prepare_agent_publication(
                 .iter()
                 .zip(&config.model_fallbacks)
                 .any(|(resolved, authored)| {
-                    !resolved_binding_matches_authored(&resolved.binding, authored)
+                    !resolved_binding_matches_authored(resolved.binding(), authored)
                 }))
     {
         return Err(PublishError::Unresolvable(
             "resolved fallback candidates do not match the pinned authoring order".into(),
         ));
     }
-    config.model_binding = ModelSelection::Pinned(models.primary.binding.clone());
+    config.model_binding = ModelSelection::Pinned(models.primary.binding().clone());
     config.model_fallbacks = models
         .candidates
         .iter()
-        .map(|candidate| candidate.binding.clone())
+        .map(|candidate| candidate.binding().clone())
         .collect();
     let strategy = config.compaction.clone().unwrap_or_default();
     apply_compaction(
@@ -433,7 +434,7 @@ mod tests {
         // R4 Remote   + other Workspace -> E1
         let binding = ModelBinding::new("provider-account", "model", "genai");
         let provider = |scope: &str| {
-            ResolvedModelCandidate::provider(
+            ResolvedModelCandidate::try_provider(
                 binding.clone(),
                 "provider@1",
                 "route@1",
@@ -450,10 +451,17 @@ mod tests {
         };
         let remote_binding = ModelBinding::new("", "", "a2a:https://agent.example");
         let remote = |scope: &str| {
-            ResolvedModelCandidate::remote(remote_binding.clone(), scope, None, "sha256:agent-card")
+            ResolvedModelCandidate::try_remote(
+                remote_binding.clone(),
+                scope,
+                None,
+                "sha256:agent-card",
+            )
         };
 
-        for accepted in [provider("workspace-a"), remote("workspace-a")] {
+        for accepted in [provider("workspace-a"), remote("workspace-a")]
+            .map(|candidate| candidate.expect("coherent scoped candidate"))
+        {
             let resolver = FixedResolver {
                 expected_workspace: "workspace-a",
                 output: ResolvedPublicationModels {
@@ -472,7 +480,9 @@ mod tests {
             .expect("R1/R3: trusted scope is publishable");
         }
 
-        for rejected in [provider("workspace-b"), remote("workspace-b")] {
+        for rejected in [provider("workspace-b"), remote("workspace-b")]
+            .map(|candidate| candidate.expect("coherent cross-Workspace candidate"))
+        {
             let resolver = FixedResolver {
                 expected_workspace: "workspace-a",
                 output: ResolvedPublicationModels {
@@ -512,14 +522,15 @@ mod tests {
             id: "local-codex".into(),
             revision: 4,
         };
-        let valid = ResolvedModelCandidate::backend_owned(
+        let valid = ResolvedModelCandidate::try_backend_owned(
             binding.clone(),
             credential.clone(),
             BackendModelSelection::Default,
             "test",
             "sha256:test-capability",
             Default::default(),
-        );
+        )
+        .expect("coherent backend-default candidate");
         let resolver = FixedResolver {
             expected_workspace: "workspace-a",
             output: ResolvedPublicationModels {
@@ -544,14 +555,15 @@ mod tests {
 
         for invalid in [
             ResolvedModelCandidate::host(binding.clone()),
-            ResolvedModelCandidate::backend_owned(
+            ResolvedModelCandidate::try_backend_owned(
                 ModelBinding::new("local-codex", "gpt-exact", "acp:codex"),
                 credential.clone(),
                 BackendModelSelection::Exact,
                 "test",
                 "sha256:test-capability",
                 Default::default(),
-            ),
+            )
+            .expect("coherent backend-exact candidate"),
         ] {
             let resolver = FixedResolver {
                 expected_workspace: "workspace-a",
@@ -576,33 +588,15 @@ mod tests {
             assert!(error.to_string().contains("backend-default resolution"));
         }
 
-        let resolver = FixedResolver {
-            expected_workspace: "workspace-a",
-            output: ResolvedPublicationModels {
-                primary: ResolvedModelCandidate::backend_owned(
-                    binding,
-                    credential,
-                    BackendModelSelection::Default,
-                    "",
-                    "",
-                    Default::default(),
-                ),
-                candidates: vec![],
-                context_window: None,
-                max_output_tokens: None,
-            },
-        };
-        let error = prepare_agent_publication(
-            &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
-            revision(
-                ModelSelection::try_backend_default("acp:codex", Default::default())
-                    .expect("exact ACP backend"),
-                vec![],
-            ),
+        let error = ResolvedModelCandidate::try_backend_owned(
+            binding,
+            credential,
+            BackendModelSelection::Default,
+            "",
+            "",
+            Default::default(),
         )
-        .await
-        .unwrap_err();
+        .expect_err("D4: missing capability pin is not constructible");
         assert!(error.to_string().contains("capability pin"), "D4");
     }
 
@@ -622,12 +616,15 @@ mod tests {
         };
         let valid = FixedResolver {
             expected_workspace: "workspace-a",
-            output: output(ResolvedModelCandidate::remote(
-                binding.clone(),
-                "workspace-a",
-                None,
-                "sha256:card",
-            )),
+            output: output(
+                ResolvedModelCandidate::try_remote(
+                    binding.clone(),
+                    "workspace-a",
+                    None,
+                    "sha256:card",
+                )
+                .expect("coherent remote candidate"),
+            ),
         };
         prepare_agent_publication(
             &valid,
@@ -637,22 +634,8 @@ mod tests {
         .await
         .expect("fresh Agent Card evidence");
 
-        let stale = FixedResolver {
-            expected_workspace: "workspace-a",
-            output: output(ResolvedModelCandidate::remote(
-                binding.clone(),
-                "workspace-a",
-                None,
-                "",
-            )),
-        };
-        let error = prepare_agent_publication(
-            &stale,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
-            revision(),
-        )
-        .await
-        .unwrap_err();
+        let error = ResolvedModelCandidate::try_remote(binding.clone(), "workspace-a", None, "")
+            .expect_err("missing Agent Card proof is not constructible");
         assert!(error.to_string().contains("security fingerprint"));
     }
 }

@@ -474,7 +474,7 @@ pub(crate) mod resource_prompt_tests {
                 .cloned()
                 .ok_or_else(|| "test requires a pinned model".to_string())?;
             let candidate = |binding: ModelBinding| {
-                ResolvedModelCandidate::provider(
+                ResolvedModelCandidate::try_provider(
                     binding.clone(),
                     "provider@2",
                     "endpoint@4",
@@ -498,8 +498,13 @@ pub(crate) mod resource_prompt_tests {
                 )
             };
             Ok(ResolvedPublicationModels {
-                primary: candidate(primary),
-                candidates: candidates.iter().cloned().map(candidate).collect(),
+                primary: candidate(primary).map_err(|error| error.to_string())?,
+                candidates: candidates
+                    .iter()
+                    .cloned()
+                    .map(candidate)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?,
                 context_window: None,
                 max_output_tokens: None,
             })
@@ -544,7 +549,7 @@ pub(crate) mod resource_prompt_tests {
             scope_id,
             credential: Some(credential),
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             panic!("publication carries a complete provider candidate")
         };
@@ -623,7 +628,7 @@ pub(crate) mod resource_prompt_tests {
                 .snapshot
                 .resolved_spec
                 .model_binding
-                .provisioning,
+                .provisioning(),
             awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
         ));
     }

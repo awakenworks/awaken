@@ -184,7 +184,7 @@ pub async fn current_model_references(
             let spec = registration.snapshot.resolved_spec;
             std::iter::once(spec.model_binding)
                 .chain(spec.model_candidates)
-                .map(|candidate| candidate.binding.model_ref)
+                .map(|candidate| candidate.binding().model_ref.clone())
         })
         .filter(|model_reference| !model_reference.trim().is_empty())
         .collect::<Vec<_>>();

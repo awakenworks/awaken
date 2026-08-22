@@ -682,7 +682,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         let prepared = resolved_runtime.prepared.lock().unwrap();
         assert_eq!(
             prepared[0].model.as_deref(),
-            Some(primary.binding.model_ref.as_str()),
+            Some(primary.binding().model_ref.as_str()),
             "R2"
         );
         assert_eq!(prepared[0].runtime.as_deref(), Some("acp:claude"), "R2");

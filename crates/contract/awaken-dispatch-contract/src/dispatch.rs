@@ -19,8 +19,6 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::CredentialRealizationCapabilities;
-#[cfg(test)]
-use awaken_runtime_contract::resolved::ModelProvisioning;
 use awaken_runtime_contract::resume::ResumeResult;
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialBindingError, CandidateFingerprint,
@@ -37,115 +35,11 @@ use crate::run_dispatch::RunDispatch;
 
 include!("commit_epoch.rs");
 
-/// Complete claim-time credential admission failure for one dispatch.
-///
-/// Inference failures retain the Runtime contract's neutral vocabulary. Session
-/// MCP projection failures belong here because durable Run ingress is the only
-/// boundary that joins the frozen Session envelope to Worker claim admission.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DispatchCredentialAdmissionError {
-    #[error(transparent)]
-    Attempt(#[from] AttemptCredentialBindingError),
-    #[error("Session runtime credential projection is invalid: {0}")]
-    InvalidSessionCredentialProjection(String),
-    #[error("Session MCP credential and selected plaintext holder must be present together")]
-    InvalidSessionMcpCredentialBinding,
-    #[error("Session MCP credential usage is unsupported")]
-    InvalidSessionMcpCredentialUsage,
-    #[error("Session MCP credentials require a Worker plaintext holder")]
-    UnsupportedSessionMcpHolder,
-    #[error("Session MCP credential admission failed: {0}")]
-    SessionAdmission(awaken_runtime_contract::CredentialAdmissionError),
-}
-
-pub fn worker_credential_realization_capabilities(
-    worker: &WorkerSnapshot,
-) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
-    CredentialRealizationCapabilities::from_manifest_capabilities(&worker.manifest.capabilities)
-        .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)
-}
-
-/// Compile all credential-bearing candidates selected for this Run into exact
-/// attempt bindings. Every caller must pass installed capability evidence: an
-/// immutable registered Worker manifest or the in-process Worker's composed
-/// capabilities. Claim admission never synthesizes capabilities from the request.
-pub fn compile_attempt_credential_bindings(
-    request: &RunDispatch,
-    installed: &CredentialRealizationCapabilities,
-    claim_epoch: u64,
-    now_unix_ms: u64,
-) -> Result<Vec<AttemptCredentialBinding>, DispatchCredentialAdmissionError> {
-    let candidates = request
-        .activation
-        .snapshot
-        .resolved_spec
-        .attempt_candidates(request.activation.model_ref_override.as_deref());
-    let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
-        &candidates,
-        request.inference_plaintext_holder.as_ref(),
-        installed,
-        claim_epoch,
-        now_unix_ms,
-    )?;
-    if let Some(envelope) = &request.session_runtime {
-        let projection = envelope.decode_projection().map_err(|error| {
-            DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(error.to_string())
-        })?;
-        for stage in projection.mcp_stages.into_iter().flatten() {
-            match (
-                stage.credential.as_ref(),
-                stage.selected_plaintext_holder.as_ref(),
-            ) {
-                (None, None) => {}
-                (Some(access), Some(holder)) => {
-                    if holder.boundary != awaken_runtime_contract::PlaintextBoundary::Worker {
-                        return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
-                    }
-                    match &access.usage {
-                        awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
-                            if name.eq_ignore_ascii_case("authorization")
-                                && scheme.as_deref().is_some_and(|scheme| {
-                                    scheme.eq_ignore_ascii_case("bearer")
-                                }) => {}
-                        _ => {
-                            return Err(
-                                DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage,
-                            );
-                        }
-                    }
-                    access
-                        .admit(
-                            holder,
-                            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
-                            installed,
-                            now_unix_ms,
-                        )
-                        .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
-                }
-                _ => {
-                    return Err(
-                        DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding,
-                    );
-                }
-            }
-        }
-    }
-    Ok(bindings)
-}
-
-/// Read-only eligibility check for a scheduler selecting among multiple rows.
-/// Exact claim still calls [`compile_attempt_credential_bindings`] and returns
-/// the concrete failure; a broad selector skips a row this Worker cannot admit
-/// so it cannot poison unrelated runnable work.
-#[must_use]
-pub fn can_admit_attempt_credentials(
-    request: &RunDispatch,
-    installed: &CredentialRealizationCapabilities,
-    claim_epoch: u64,
-    now_unix_ms: u64,
-) -> bool {
-    compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms).is_ok()
-}
+mod credential_admission;
+pub use credential_admission::{
+    DispatchCredentialAdmissionError, can_admit_attempt_credentials,
+    compile_attempt_credential_bindings, worker_credential_realization_capabilities,
+};
 
 /// A durable-store failure. Commit-time agent truth uses the commit coordinator's
 /// own error; this is only the dispatch queue's own storage failure.
@@ -960,12 +854,11 @@ mod tests {
         credential_id: &str,
         allowed_holder: &PlaintextHolder,
     ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
-            ModelBinding::new(provider, model, backend),
-            format!("{provider}@1"),
-            format!("{provider}-route@1"),
-            "workspace-a",
-            Some(CredentialAccess::new(
+        candidate_with_access(
+            provider,
+            model,
+            backend,
+            CredentialAccess::new(
                 CredentialRef {
                     id: credential_id.into(),
                     revision: 7,
@@ -976,28 +869,66 @@ mod tests {
                     allowed_holder.clone(),
                     ModelExposurePolicy::Forbidden,
                 ),
-            )),
-            InferenceEndpoint {
-                adapter_kind: "openai".into(),
-                api_dialect: "open_ai_chat".into(),
-                base_url: "https://provider.invalid/v1".into(),
-                upstream_model: model.into(),
-                processing_placement: None,
-            },
+            ),
         )
     }
 
-    fn credential_access_mut(
-        candidate: &mut awaken_runtime_contract::resolved::ResolvedModelCandidate,
-    ) -> &mut CredentialAccess {
-        let ModelProvisioning::Provider {
-            credential: Some(access),
-            ..
-        } = &mut candidate.provisioning
-        else {
-            panic!("test candidate must carry provider credential access")
+    fn candidate_with_access(
+        provider: &str,
+        model: &str,
+        backend: &str,
+        access: CredentialAccess,
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        let binding = ModelBinding::new(
+            provider,
+            if backend.starts_with("a2a:") {
+                ""
+            } else {
+                model
+            },
+            backend,
+        );
+        if backend.starts_with("a2a:") {
+            return awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+                binding,
+                "workspace-a",
+                Some(access),
+                "sha256:test-agent-card",
+            )
+            .expect("coherent dispatch remote candidate");
+        }
+        let endpoint = InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            api_dialect: "open_ai_chat".into(),
+            base_url: "https://provider.invalid/v1".into(),
+            upstream_model: model.into(),
+            processing_placement: None,
         };
-        access
+        let result = if backend.starts_with("acp:") {
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+                binding,
+                format!("{provider}@1"),
+                format!("{provider}-route@1"),
+                "workspace-a",
+                Some(access),
+                endpoint,
+                awaken_runtime_contract::resolved::AcpExecutionProfile {
+                    capability_adapter_version: "test".into(),
+                    capability_fingerprint: "sha256:test-capability".into(),
+                    session_configuration: Default::default(),
+                },
+            )
+        } else {
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+                binding,
+                format!("{provider}@1"),
+                format!("{provider}-route@1"),
+                "workspace-a",
+                Some(access),
+                endpoint,
+            )
+        };
+        result.expect("coherent dispatch provider candidate")
     }
 
     fn request_with_candidates(
@@ -1377,57 +1308,61 @@ mod tests {
                     CredentialRealizationKind::WorkerProviderAdapter,
                 ),
             };
-            let mut candidate = provider_candidate(
-                "provider-a",
-                "model-a",
-                backend,
-                "credential-a",
-                &selected_holder,
-            );
-            if matches!(
+            let usage = if matches!(
                 rule.fixture,
                 BindingFixture::InvalidUsage | BindingFixture::RemoteWorker
             ) {
-                credential_access_mut(&mut candidate).usage = CredentialUsage::HttpHeader {
+                CredentialUsage::HttpHeader {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
-                };
-            }
-            if matches!(rule.fixture, BindingFixture::HolderForbidden) {
-                credential_access_mut(&mut candidate).policy = CredentialExecutionPolicy::exact(
+                }
+            } else {
+                CredentialUsage::ProviderAdapter
+            };
+            let policy = if matches!(rule.fixture, BindingFixture::HolderForbidden) {
+                CredentialExecutionPolicy::exact(
                     holder(PlaintextBoundary::Worker, "worker-b"),
                     ModelExposurePolicy::Forbidden,
-                );
-            }
+                )
+            } else {
+                CredentialExecutionPolicy::exact(
+                    selected_holder.clone(),
+                    ModelExposurePolicy::Forbidden,
+                )
+            };
+            let mut access = CredentialAccess::new(
+                CredentialRef {
+                    id: "credential-a".into(),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                usage,
+                policy,
+            );
             if matches!(rule.fixture, BindingFixture::EnvelopeExpired) {
-                let access = credential_access_mut(&mut candidate).clone().with_envelope(
-                    CredentialEnvelope::SealedForWorker {
-                        envelope_ref: SealedCredentialEnvelopeRef {
-                            id: "envelope-a".into(),
-                            payload_fingerprint: "sha256:payload".into(),
-                        },
-                        recipient: TrustDomainRef(selected_holder.trust_domain.0.clone()),
-                        expires_at_unix_ms: 9,
+                access = access.with_envelope(CredentialEnvelope::SealedForWorker {
+                    envelope_ref: SealedCredentialEnvelopeRef {
+                        id: "envelope-a".into(),
+                        payload_fingerprint: "sha256:payload".into(),
                     },
-                );
-                *credential_access_mut(&mut candidate) = access;
+                    recipient: TrustDomainRef(selected_holder.trust_domain.0.clone()),
+                    expires_at_unix_ms: 9,
+                });
             }
             if matches!(rule.fixture, BindingFixture::RefreshRevisionMismatch) {
-                let access = credential_access_mut(&mut candidate).clone().with_refresh(
-                    CredentialRefreshAccess::new(
-                        8,
-                        "https://auth.invalid/token".into(),
-                        "client-a".into(),
-                        TokenEndpointAuth::None,
-                        None,
-                        "refresh-a".into(),
-                        "access-a".into(),
-                        None,
-                        None,
-                    ),
-                );
-                *credential_access_mut(&mut candidate) = access;
+                access = access.with_refresh(CredentialRefreshAccess::new(
+                    8,
+                    "https://auth.invalid/token".into(),
+                    "client-a".into(),
+                    TokenEndpointAuth::None,
+                    None,
+                    "refresh-a".into(),
+                    "access-a".into(),
+                    None,
+                    None,
+                ));
             }
+            let candidate = candidate_with_access("provider-a", "model-a", backend, access);
             let primary = if matches!(rule.fixture, BindingFixture::CredentialFree) {
                 awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
                     "host", "model-a", "native",

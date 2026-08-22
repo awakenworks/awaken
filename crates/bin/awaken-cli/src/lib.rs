@@ -1266,7 +1266,7 @@ mod runtime_session_store_tests {
             .await
             .expect("model-only SDK/UI selection resolves through the host adapter");
 
-        assert_eq!(resolved.primary.binding, binding);
+        assert_eq!(resolved.primary.binding(), &binding);
     }
 
     #[tokio::test]

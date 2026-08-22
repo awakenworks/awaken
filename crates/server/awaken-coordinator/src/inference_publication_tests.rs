@@ -73,7 +73,7 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(access),
             ..
-        } = &candidate.provisioning
+        } = candidate.provisioning()
         else {
             return None;
         };
@@ -273,7 +273,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let candidate = ResolvedModelCandidate::provider(
+        let candidate = ResolvedModelCandidate::try_provider(
             ModelBinding::new("anthropic", "claude-x", "genai"),
             "anthropic@1",
             "endpoint@1",
@@ -294,7 +294,8 @@ mod tests {
                 upstream_model: "claude-x".into(),
                 processing_placement: None,
             },
-        );
+        )
+        .expect("coherent inference publication candidate");
         (
             CredentialInferenceMaterializer::new(credentials, secrets.clone()),
             candidate,
@@ -462,7 +463,7 @@ mod tests {
                             "model {model_ref} is outside the published candidate set"
                         ))
                     })?
-                    .binding
+                    .binding()
                     .clone(),
                 Vec::new(),
             )
@@ -472,14 +473,14 @@ mod tests {
                     .snapshot
                     .resolved_spec
                     .model_binding
-                    .binding
+                    .binding()
                     .clone(),
                 activation
                     .snapshot
                     .resolved_spec
                     .model_candidates
                     .iter()
-                    .map(|candidate| candidate.binding.clone())
+                    .map(|candidate| candidate.binding().clone())
                     .collect(),
             )
         };
@@ -582,7 +583,7 @@ mod tests {
             route_ref,
             credential: Some(credential),
             ..
-        } = &pinned.primary.provisioning
+        } = pinned.primary.provisioning()
         else {
             panic!("publication must carry a complete provider candidate")
         };
@@ -660,7 +661,7 @@ mod tests {
             scope_id,
             credential: Some(credential),
             ..
-        } = &resolved.primary.provisioning
+        } = resolved.primary.provisioning()
         else {
             panic!("publication must carry a complete provider candidate")
         };
@@ -673,11 +674,16 @@ mod tests {
                 .is_some()
         );
 
-        let mut forged = resolved.primary;
-        let ModelProvisioning::Provider { scope_id, .. } = &mut forged.provisioning else {
+        let mut provisioning = resolved.primary.provisioning().clone();
+        let ModelProvisioning::Provider { scope_id, .. } = &mut provisioning else {
             unreachable!()
         };
         *scope_id = "ws".into();
+        let forged = ResolvedModelCandidate::try_from_parts(
+            resolved.primary.binding().clone(),
+            provisioning,
+        )
+        .expect("cross-workspace fixture is intrinsically coherent");
         assert!(
             p.materializer
                 .materialize_candidate(&forged, &attempt_context(&forged))
@@ -690,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_never_weakens_the_published_injection_policy() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
-        let mut resolved = p
+        let resolved = p
             .resolver
             .resolve_models(
                 &awaken_tenancy::ScopeId::from("ws"),
@@ -702,11 +708,11 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } = &mut resolved.primary.provisioning
+        } = resolved.primary.provisioning()
         else {
             panic!("publication must carry a credential pin")
         };
-        *credential = serde_json::from_value(serde_json::json!({
+        let direct_credential = serde_json::from_value(serde_json::json!({
             "credential": {
                 "id": credential.credential.id,
                 "revision": credential.credential.revision
@@ -716,10 +722,33 @@ mod tests {
             "policy": credential.policy
         }))
         .unwrap();
+        let ModelProvisioning::Provider {
+            provider_ref,
+            route_ref,
+            scope_id,
+            endpoint,
+            acp,
+            ..
+        } = resolved.primary.provisioning().clone()
+        else {
+            unreachable!()
+        };
+        let forged = ResolvedModelCandidate::try_from_parts(
+            resolved.primary.binding().clone(),
+            ModelProvisioning::Provider {
+                provider_ref,
+                route_ref,
+                scope_id,
+                credential: Some(Box::new(direct_credential)),
+                endpoint,
+                acp,
+            },
+        )
+        .expect("direct-injection fixture is intrinsically coherent");
 
         assert!(
             p.materializer
-                .materialize_candidate(&resolved.primary, &attempt_context(&resolved.primary))
+                .materialize_candidate(&forged, &attempt_context(&forged))
                 .await
                 .is_none(),
             "a reference-only materializer cannot downgrade a direct-only publication policy"
@@ -811,7 +840,7 @@ mod tests {
         assert_eq!(
             std::iter::once(&pinned.primary)
                 .chain(pinned.candidates.iter())
-                .map(|candidate| candidate.binding.model_ref.as_str())
+                .map(|candidate| candidate.binding().model_ref.as_str())
                 .collect::<Vec<_>>(),
             vec!["claude-x", "gpt-x"]
         );
@@ -819,7 +848,7 @@ mod tests {
             provider_ref,
             route_ref,
             ..
-        } = &pinned.candidates[0].provisioning
+        } = pinned.candidates[0].provisioning()
         else {
             panic!("fallback must be provider-backed")
         };
@@ -829,7 +858,7 @@ mod tests {
         let ModelProvisioning::Provider {
             credential: Some(primary_credential),
             ..
-        } = &pinned.primary.provisioning
+        } = pinned.primary.provisioning()
         else {
             panic!("primary must carry its credential pin")
         };

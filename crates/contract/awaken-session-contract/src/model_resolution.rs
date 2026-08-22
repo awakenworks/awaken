@@ -50,13 +50,13 @@ impl SessionModelPublication {
     ) -> Result<(), SessionModelResolutionError> {
         let mut bindings = std::collections::BTreeSet::new();
         for candidate in std::iter::once(&self.primary).chain(self.candidates.iter()) {
-            if !bindings.insert(candidate.binding.clone()) {
+            if !bindings.insert(candidate.binding().clone()) {
                 return Err(SessionModelResolutionError::Invalid(format!(
                     "duplicate model candidate {:?}",
-                    candidate.binding
+                    candidate.binding()
                 )));
             }
-            match &candidate.provisioning {
+            match candidate.provisioning() {
                 awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                     scope_id, ..
                 }
@@ -205,14 +205,15 @@ mod tests {
             processing_placement: None,
         };
         let wrong_provider_scope = SessionModelPublication {
-            primary: ResolvedModelCandidate::provider(
+            primary: ResolvedModelCandidate::try_provider(
                 ModelBinding::new("third-party", "model", "genai"),
                 "third-party@1",
                 "open-ai-chat@1",
                 "other-workspace",
                 None,
                 endpoint,
-            ),
+            )
+            .expect("coherent cross-Workspace provider candidate"),
             candidates: Vec::new(),
         };
         assert!(
@@ -222,37 +223,25 @@ mod tests {
             "V3 provider credential scope"
         );
 
-        let unproved_acp = SessionModelPublication {
-            primary: ResolvedModelCandidate::backend_owned(
-                ModelBinding::new("local", "", "acp:codex"),
-                awaken_runtime_contract::CredentialRef {
-                    id: "codex-login".into(),
-                    revision: 1,
-                },
-                BackendModelSelection::Default,
-                "",
-                "",
-                AcpSessionConfiguration::default(),
-            ),
-            candidates: Vec::new(),
-        };
-        assert!(
-            unproved_acp.validate_for_workspace("workspace").is_err(),
-            "V4 ACP capability proof"
+        let unproved_acp = ResolvedModelCandidate::try_backend_owned(
+            ModelBinding::new("local", "", "acp:codex"),
+            awaken_runtime_contract::CredentialRef {
+                id: "codex-login".into(),
+                revision: 1,
+            },
+            BackendModelSelection::Default,
+            "",
+            "",
+            AcpSessionConfiguration::default(),
         );
+        assert!(unproved_acp.is_err(), "V4 ACP capability proof");
 
-        let unproved_a2a = SessionModelPublication {
-            primary: ResolvedModelCandidate::remote(
-                ModelBinding::new("", "", "a2a:https://agent.example"),
-                "workspace",
-                None,
-                "",
-            ),
-            candidates: Vec::new(),
-        };
-        assert!(
-            unproved_a2a.validate_for_workspace("workspace").is_err(),
-            "V5 A2A Agent Card proof"
+        let unproved_a2a = ResolvedModelCandidate::try_remote(
+            ModelBinding::new("", "", "a2a:https://agent.example"),
+            "workspace",
+            None,
+            "",
         );
+        assert!(unproved_a2a.is_err(), "V5 A2A Agent Card proof");
     }
 }
