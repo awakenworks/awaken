@@ -16,5 +16,8 @@ async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10"
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

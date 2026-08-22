@@ -533,10 +533,8 @@ mod tests {
             &resolver,
             &awaken_tenancy::ScopeId::from("workspace-a"),
             revision(
-                ModelSelection::BackendDefault {
-                    backend_ref: "acp:codex".into(),
-                    configuration: Default::default(),
-                },
+                ModelSelection::try_backend_default("acp:codex", Default::default())
+                    .expect("exact ACP backend"),
                 vec![],
             ),
         )
@@ -568,10 +566,8 @@ mod tests {
                 &resolver,
                 &awaken_tenancy::ScopeId::from("workspace-a"),
                 revision(
-                    ModelSelection::BackendDefault {
-                        backend_ref: "acp:codex".into(),
-                        configuration: Default::default(),
-                    },
+                    ModelSelection::try_backend_default("acp:codex", Default::default())
+                        .expect("exact ACP backend"),
                     vec![],
                 ),
             )
@@ -600,10 +596,8 @@ mod tests {
             &resolver,
             &awaken_tenancy::ScopeId::from("workspace-a"),
             revision(
-                ModelSelection::BackendDefault {
-                    backend_ref: "acp:codex".into(),
-                    configuration: Default::default(),
-                },
+                ModelSelection::try_backend_default("acp:codex", Default::default())
+                    .expect("exact ACP backend"),
                 vec![],
             ),
         )

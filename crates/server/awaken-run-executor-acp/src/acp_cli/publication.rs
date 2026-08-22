@@ -15,8 +15,11 @@ pub fn known_acp_publication_capabilities() -> Vec<awaken_acp_contract::AcpPubli
                 .iter()
                 .map(|dialect| (*dialect).to_string())
                 .collect(),
-            supports_exact_model_selection: cli.backend_model_interface
-                != BackendModelInterface::Unsupported,
+            model_selection: if cli.backend_model_interface == BackendModelInterface::Unsupported {
+                awaken_acp_contract::AcpModelSelectionSupport::DefaultOnly
+            } else {
+                awaken_acp_contract::AcpModelSelectionSupport::DefaultAndExact
+            },
             model_delivery_credential_environments: cli.model_delivery.map(|delivery| {
                 delivery
                     .credential_env

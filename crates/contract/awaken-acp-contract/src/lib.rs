@@ -166,11 +166,29 @@ pub trait AcpCapabilityObservationSource: Send + Sync {
 /// Secret-free static projection of one installed ACP adapter that Control may
 /// use while freezing an executable publication. Launch commands and other
 /// Worker implementation details never cross this contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpModelSelectionSupport {
+    /// The ACP owns model choice. Awaken injects credentials and leaves the
+    /// model unset, so the CLI's built-in or Worker-local profile selects it.
+    DefaultOnly,
+    /// In addition to its own default, the ACP exposes an interface through
+    /// which Awaken can require one exact model.
+    DefaultAndExact,
+}
+
+impl AcpModelSelectionSupport {
+    #[must_use]
+    pub const fn admits_exact(self) -> bool {
+        matches!(self, Self::DefaultAndExact)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpPublicationCapability {
     pub backend_ref: String,
     pub model_api_dialects: Vec<String>,
-    pub supports_exact_model_selection: bool,
+    pub model_selection: AcpModelSelectionSupport,
     pub model_delivery_credential_environments: Option<Vec<String>>,
 }
 
@@ -409,7 +427,7 @@ mod tests {
         let capability = AcpPublicationCapability {
             backend_ref: "acp:test".into(),
             model_api_dialects: vec!["anthropic_messages".into()],
-            supports_exact_model_selection: true,
+            model_selection: AcpModelSelectionSupport::DefaultAndExact,
             model_delivery_credential_environments: Some(vec!["TEST_API_KEY".into()]),
         };
         assert_eq!(
@@ -437,5 +455,38 @@ mod tests {
             .is_err(),
             "P3/E3 no delivery"
         );
+    }
+
+    #[test]
+    fn model_selection_support_is_a_closed_wire_contract() {
+        // Equivalence partitions: a default-only adapter cannot admit an exact
+        // publication; an adapter with an exact interface can. The serialized
+        // names are assertions on the management-plane contract, preventing a
+        // regression to an ambiguous boolean capability.
+        for (support, expected_wire, admits_exact) in [
+            (
+                AcpModelSelectionSupport::DefaultOnly,
+                "\"default_only\"",
+                false,
+            ),
+            (
+                AcpModelSelectionSupport::DefaultAndExact,
+                "\"default_and_exact\"",
+                true,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&support).expect("closed selection support serializes"),
+                expected_wire
+            );
+            assert_eq!(support.admits_exact(), admits_exact);
+            assert_eq!(
+                serde_json::from_str::<AcpModelSelectionSupport>(expected_wire)
+                    .expect("canonical selection support deserializes"),
+                support
+            );
+        }
+        assert!(serde_json::from_str::<AcpModelSelectionSupport>("true").is_err());
+        assert!(serde_json::from_str::<AcpModelSelectionSupport>("\"unknown\"").is_err());
     }
 }

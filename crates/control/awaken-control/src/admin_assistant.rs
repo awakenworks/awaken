@@ -1099,10 +1099,10 @@ mod tests {
         let state = AdminAssistantLifecycleState {
             plane,
             fixed_execution_workspace: Some("workspace-recovered".into()),
-            model_selection: Some(ModelSelection::BackendDefault {
-                backend_ref: "acp:stale".into(),
-                configuration: Default::default(),
-            }),
+            model_selection: Some(
+                ModelSelection::try_backend_default("acp:stale", Default::default())
+                    .expect("exact ACP backend"),
+            ),
         };
 
         let Json(result) = ensure_admin_assistant(State(state), None)

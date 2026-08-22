@@ -102,10 +102,10 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
 fn executor_only(executor: &str, original: &str) -> Result<ModelSelection, ManagedModelIdError> {
     let backend_ref = parse_executor(executor, original)?;
     match Backend::from_ref(&backend_ref) {
-        Backend::Acp(_) => Ok(ModelSelection::BackendDefault {
-            backend_ref,
-            configuration: AcpSessionConfiguration::default(),
-        }),
+        Backend::Acp(_) => {
+            ModelSelection::try_backend_default(backend_ref, AcpSessionConfiguration::default())
+                .map_err(|_| ManagedModelIdError::Invalid(original.into()))
+        }
         Backend::Remote(_) => Ok(ModelSelection::Pinned(ModelBinding::new(
             "",
             "",
@@ -141,12 +141,14 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
             backend_ref,
             ..
         } => render_target(target, backend_ref),
-        ModelSelection::BackendDefault { backend_ref, .. } => render_executor_only(backend_ref),
+        ModelSelection::BackendDefault { backend_ref, .. } => {
+            render_executor_only(backend_ref.backend_ref())
+        }
         ModelSelection::BackendExact {
             backend_ref,
             model_ref,
             ..
-        } => render_model_and_executor(model_ref, backend_ref),
+        } => render_model_and_executor(model_ref.as_str(), backend_ref.backend_ref()),
         ModelSelection::Pinned(binding) => render_binding(binding),
         ModelSelection::Profile { profile_id } if !profile_id.is_empty() => {
             Ok(format!("profile={}", encode_component(profile_id)))
