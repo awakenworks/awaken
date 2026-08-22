@@ -261,6 +261,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-credential-contract",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
 ]
 

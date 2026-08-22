@@ -184,7 +184,7 @@ impl CatalogModelPublicationResolver {
                 reason: format!("incoherent {selection:?} backend model selection"),
             });
         }
-        if selection == BackendModelSelection::Exact && !profile.supports_exact_model_selection {
+        if selection == BackendModelSelection::Exact && !profile.model_selection.admits_exact() {
             return Err(PublicationResolutionError::CandidateUnavailable {
                 binding: binding.clone(),
                 reason: format!("ACP backend {cli} cannot guarantee an exact model selection"),

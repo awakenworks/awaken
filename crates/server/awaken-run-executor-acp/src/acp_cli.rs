@@ -882,7 +882,7 @@ mod tests {
                 .find(|capability| capability.backend_ref == format!("acp:{}", row.id))
                 .expect("E1");
             assert_eq!(
-                capability.supports_exact_model_selection,
+                capability.model_selection.admits_exact(),
                 row.backend_model_interface != BackendModelInterface::Unsupported,
                 "E2 {}",
                 row.id
