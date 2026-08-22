@@ -36,6 +36,7 @@ pub fn clone_repo_bundle(
 /// with the host-held credential. No credential is written into the bundle.
 pub fn push_repo_bundle(
     bundle: &[u8],
+    branch: &str,
     remote_url: &str,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<bool, pc::SandboxError> {
@@ -48,7 +49,7 @@ pub fn push_repo_bundle(
     let repo = temp.path().join("repo");
     let bundle_arg = bundle_path.to_string_lossy().into_owned();
     let repo_arg = repo.to_string_lossy().into_owned();
-    run_git(None, &["clone", &bundle_arg, &repo_arg])
+    run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg])
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     run_git(Some(&repo), &["remote", "set-url", "origin", remote_url])
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
@@ -60,6 +61,7 @@ pub fn push_repo_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_stdout;
 
     fn git(cwd: &std::path::Path, args: &[&str]) {
         let status = std::process::Command::new("git")
@@ -70,6 +72,10 @@ mod tests {
         assert!(status.success(), "git {args:?}");
     }
 
+    /// Repository bundle publication decision table. R1 a bundle names an
+    /// absent branch -> fail closed and change no remote ref; R2 a non-default
+    /// current branch has a novel commit -> push that exact branch while the
+    /// base branch stays unchanged; R3 replay the same bundle/branch -> no-op.
     #[test]
     fn bundle_round_trip_pushes_agent_commits_without_a_credential_in_the_bundle() {
         let temp = tempfile::tempdir().unwrap();
@@ -86,6 +92,7 @@ mod tests {
         git(&seed, &["add", "README.md"]);
         git(&seed, &["commit", "-m", "base"]);
         git(&seed, &["push", "-u", "origin", "HEAD"]);
+        let base_branch = git_stdout(Some(&seed), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
 
         let initial = clone_repo_bundle(remote.to_str().unwrap(), None, None, None).unwrap();
         let agent = temp.path().join("agent");
@@ -99,15 +106,30 @@ mod tests {
                 agent.to_str().unwrap(),
             ],
         );
+        let base = git_stdout(Some(&agent), &["rev-parse", "HEAD"]).unwrap();
+        git(&agent, &["checkout", "-b", "awf/work"]);
         git(&agent, &["config", "user.name", "agent"]);
         git(&agent, &["config", "user.email", "agent@example.invalid"]);
         std::fs::write(agent.join("README.md"), "changed").unwrap();
         git(&agent, &["add", "README.md"]);
         git(&agent, &["commit", "-m", "agent change"]);
+        let work = git_stdout(Some(&agent), &["rev-parse", "HEAD"]).unwrap();
         let changed = git_bytes(Some(&agent), &["bundle", "create", "-", "--all"]).unwrap();
 
-        assert!(push_repo_bundle(&changed, remote.to_str().unwrap(), None).unwrap());
-        assert!(!push_repo_bundle(&changed, remote.to_str().unwrap(), None).unwrap());
+        assert!(push_repo_bundle(&changed, "absent", remote.to_str().unwrap(), None).is_err());
+        assert!(push_repo_bundle(&changed, "awf/work", remote.to_str().unwrap(), None).unwrap());
+        assert!(!push_repo_bundle(&changed, "awf/work", remote.to_str().unwrap(), None).unwrap());
+        let refs = std::process::Command::new("git")
+            .args(["--git-dir", remote.to_str().unwrap(), "show-ref", "--heads"])
+            .output()
+            .unwrap();
+        let refs = String::from_utf8(refs.stdout).unwrap();
+        assert!(refs.contains(&format!(
+            "{} refs/heads/{}",
+            base.trim(),
+            base_branch.trim()
+        )));
+        assert!(refs.contains(&format!("{} refs/heads/awf/work", work.trim())));
         let count = std::process::Command::new("git")
             .args([
                 "--git-dir",

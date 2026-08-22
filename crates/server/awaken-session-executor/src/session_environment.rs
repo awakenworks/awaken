@@ -452,7 +452,10 @@ mod tests {
             command: pc::Command,
         ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
             let (ours, theirs) = tokio::io::duplex(64 * 1024);
-            let repository_export = command.argv.iter().any(|part| part == "bundle");
+            let repository_export = command
+                .argv
+                .iter()
+                .any(|part| part == "bundle" || part.contains("bundle create"));
             if command.argv.iter().any(|part| part == "--stdio") {
                 let spawn = self
                     .hand_spawns
@@ -1841,6 +1844,10 @@ mod tests {
     }
 
     #[cfg(feature = "container-docker")]
+    // Container Repository transfer rules: C1 a non-default Agent work branch
+    // has one committed change -> publish that exact branch without changing
+    // the base branch; C2 replay the unchanged container state -> no second
+    // push; C3 outputs and authored Skills remain independently harvestable.
     #[tokio::test]
     async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_token() {
         let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
@@ -1926,6 +1933,7 @@ mod tests {
                 concat!(
                     "git -C /workspace/repo config user.name agent && ",
                     "git -C /workspace/repo config user.email agent@example.invalid && ",
+                    "git -C /workspace/repo checkout -b awf/work && ",
                     "printf changed > /workspace/repo/README.md && ",
                     "git -C /workspace/repo add README.md && ",
                     "git -C /workspace/repo commit -m changed && ",
@@ -1966,6 +1974,16 @@ mod tests {
         );
         environment.dispose().await.unwrap();
 
+        git(
+            temp.path(),
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "show-ref",
+                "--verify",
+                "refs/heads/awf/work",
+            ],
+        );
         let count = std::process::Command::new("git")
             .args([
                 "--git-dir",
