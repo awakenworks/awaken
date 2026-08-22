@@ -1315,11 +1315,8 @@ mod tests {
                 .with_worker_observations(workers)
                 .resolve_models(
                     &ScopeId::from("workspace-a"),
-                    &ModelSelection::BackendExact {
-                        backend_ref: "acp:codex".into(),
-                        model_ref: "primary".into(),
-                        configuration: Default::default(),
-                    },
+                    &ModelSelection::try_backend_exact("acp:codex", "primary", Default::default())
+                        .expect("exact ACP selection"),
                     &[],
                 )
                 .await
@@ -1723,10 +1720,8 @@ mod tests {
         let default = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::BackendDefault {
-                    backend_ref: "acp:codex".into(),
-                    configuration: Default::default(),
-                },
+                &ModelSelection::try_backend_default("acp:codex", Default::default())
+                    .expect("exact ACP backend"),
                 &[],
             )
             .await
@@ -1758,11 +1753,8 @@ mod tests {
         let exact = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::BackendExact {
-                    backend_ref: "acp:codex".into(),
-                    model_ref: "gpt-exact".into(),
-                    configuration: Default::default(),
-                },
+                &ModelSelection::try_backend_exact("acp:codex", "gpt-exact", Default::default())
+                    .expect("exact ACP selection"),
                 &[],
             )
             .await
@@ -1784,10 +1776,8 @@ mod tests {
                 resolver
                     .resolve_models(
                         &ScopeId::from("workspace-a"),
-                        &ModelSelection::BackendDefault {
-                            backend_ref: "acp:claude".into(),
-                            configuration: Default::default(),
-                        },
+                        &ModelSelection::try_backend_default("acp:claude", Default::default())
+                            .expect("exact ACP backend"),
                         &[],
                     )
                     .await,
@@ -1809,10 +1799,8 @@ mod tests {
                 resolver
                     .resolve_models(
                         &ScopeId::from("workspace-a"),
-                        &ModelSelection::BackendDefault {
-                            backend_ref: "acp:codex".into(),
-                            configuration: Default::default(),
-                        },
+                        &ModelSelection::try_backend_default("acp:codex", Default::default())
+                            .expect("exact ACP backend"),
                         &[],
                     )
                     .await,
@@ -1849,10 +1837,11 @@ mod tests {
                 resolver
                     .resolve_models(
                         &ScopeId::from("workspace-a"),
-                        &ModelSelection::BackendDefault {
-                            backend_ref: "acp:not-installed".into(),
-                            configuration: Default::default(),
-                        },
+                        &ModelSelection::try_backend_default(
+                            "acp:not-installed",
+                            Default::default(),
+                        )
+                        .expect("syntactically exact ACP backend"),
                         &[],
                     )
                     .await,
@@ -1863,11 +1852,8 @@ mod tests {
         let error = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::BackendExact {
-                    backend_ref: "acp:opencode".into(),
-                    model_ref: "model-x".into(),
-                    configuration: Default::default(),
-                },
+                &ModelSelection::try_backend_exact("acp:opencode", "model-x", Default::default())
+                    .expect("syntactically exact ACP selection"),
                 &[],
             )
             .await

@@ -220,7 +220,6 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
         let backend_ref = object
             .get("backend_ref")
             .and_then(Value::as_str)
-            .map(str::trim)
             .filter(|backend| !backend.is_empty())
             .ok_or_else(|| "backend-default model requires a non-empty backend_ref".to_string())?;
         let ambiguous = ["id", "model_ref", "provider_identity_ref"]
@@ -243,10 +242,7 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
             .transpose()
             .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
             .unwrap_or_default();
-        return Ok(ModelSelection::BackendDefault {
-            backend_ref: backend_ref.to_string(),
-            configuration,
-        });
+        return ModelSelection::try_backend_default(backend_ref, configuration);
     }
     if let Some(object) = model.as_object()
         && object.get("mode").and_then(Value::as_str) == Some("backend_exact")
@@ -254,13 +250,11 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
         let backend_ref = object
             .get("backend_ref")
             .and_then(Value::as_str)
-            .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "backend-exact model requires a non-empty backend_ref".to_string())?;
         let model_ref = object
             .get("model_ref")
             .and_then(Value::as_str)
-            .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "backend-exact model requires a non-empty model_ref".to_string())?;
         let configuration = object
@@ -270,11 +264,7 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
             .transpose()
             .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
             .unwrap_or_default();
-        return Ok(ModelSelection::BackendExact {
-            backend_ref: backend_ref.to_string(),
-            model_ref: model_ref.to_string(),
-            configuration,
-        });
+        return ModelSelection::try_backend_exact(backend_ref, model_ref, configuration);
     }
     let (provider_identity_ref, model_ref, backend_ref) = match model {
         Value::Object(model)

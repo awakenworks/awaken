@@ -415,15 +415,28 @@ pub enum Backend {
 pub struct AcpBackend(String);
 
 impl AcpBackend {
+    pub fn parse(backend_ref: impl Into<String>) -> Result<Self, InvalidBackendRef> {
+        let backend_ref = backend_ref.into();
+        match Backend::from_ref(&backend_ref) {
+            Backend::Acp(backend) => Ok(backend),
+            _ => Err(InvalidBackendRef(backend_ref)),
+        }
+    }
+
     #[must_use]
     pub fn cli(&self) -> &str {
+        &self.0["acp:".len()..]
+    }
+
+    #[must_use]
+    pub fn backend_ref(&self) -> &str {
         &self.0
     }
 }
 
 impl std::fmt::Display for AcpBackend {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(self.cli())
     }
 }
 
@@ -461,6 +474,14 @@ impl InvalidBackendRef {
     }
 }
 
+impl std::fmt::Display for InvalidBackendRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "invalid backend reference `{}`", self.0)
+    }
+}
+
+impl std::error::Error for InvalidBackendRef {}
+
 impl Backend {
     /// Classify and validate a `backend_ref`. The result is total so inspection
     /// code can retain the rejected spelling, while runnable variants themselves
@@ -469,7 +490,7 @@ impl Backend {
     pub fn from_ref(backend_ref: &str) -> Self {
         if let Some(cli) = backend_ref.strip_prefix("acp:") {
             if !cli.is_empty() && cli.trim() == cli {
-                Backend::Acp(AcpBackend(cli.to_string()))
+                Backend::Acp(AcpBackend(backend_ref.to_string()))
             } else {
                 Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))
             }
@@ -546,6 +567,40 @@ pub struct ModelBinding {
 pub enum BackendModelSelection {
     Default,
     Exact,
+}
+
+/// A model coordinate proven non-empty and free of accidental surrounding
+/// whitespace. The private payload prevents an `Exact` policy from carrying no
+/// exact model at all.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::ExactModelRef;
+/// let _ = ExactModelRef(String::new());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExactModelRef(String);
+
+impl ExactModelRef {
+    pub fn parse(model_ref: impl Into<String>) -> Result<Self, &'static str> {
+        let model_ref = model_ref.into();
+        if model_ref.is_empty() || model_ref.trim() != model_ref {
+            return Err(
+                "exact model reference must be non-empty and contain no surrounding whitespace",
+            );
+        }
+        Ok(Self(model_ref))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ExactModelRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 /// The provisioning facts for one published model candidate. This is snapshot
@@ -1521,7 +1576,7 @@ mod tests {
         assert!(matches!(Backend::from_ref("acp"), Backend::Invalid(_)));
         assert!(matches!(Backend::from_ref("acp:"), Backend::Invalid(_)));
         assert!(
-            matches!(Backend::from_ref("acp:claude"), Backend::Acp(cli) if cli.cli() == "claude")
+            matches!(Backend::from_ref("acp:claude"), Backend::Acp(cli) if cli.cli() == "claude" && cli.backend_ref() == "acp:claude")
         );
         assert!(Backend::from_ref("acp:codex").is_acp());
 

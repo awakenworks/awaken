@@ -7,7 +7,7 @@ use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::delegation::DelegationLimits;
 use awaken_runtime_contract::resolved::{
-    AcpSessionConfiguration, ContextPolicy, ModelBinding, ToolDescriptor,
+    AcpBackend, AcpSessionConfiguration, ContextPolicy, ExactModelRef, ModelBinding, ToolDescriptor,
 };
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -45,14 +45,14 @@ pub enum ModelSelection {
     /// default model. Publication must resolve an exact Worker-local binding;
     /// this is never a fallback to [`Auto`](Self::Auto).
     BackendDefault {
-        backend_ref: String,
+        backend_ref: AcpBackend,
         configuration: AcpSessionConfiguration,
     },
     /// Use one exact model delivered through the external ACP together with
     /// adapter-native Session mode/options.
     BackendExact {
-        backend_ref: String,
-        model_ref: String,
+        backend_ref: AcpBackend,
+        model_ref: ExactModelRef,
         configuration: AcpSessionConfiguration,
     },
     /// The operator's explicit concrete binding — never overwritten by resolution.
@@ -71,7 +71,7 @@ impl ModelSelection {
             Self::Auto | Self::Profile { .. } => None,
             Self::Target { backend_ref, .. } => Some(backend_ref),
             Self::BackendDefault { backend_ref, .. } | Self::BackendExact { backend_ref, .. } => {
-                Some(backend_ref)
+                Some(backend_ref.backend_ref())
             }
             Self::Pinned(binding) => Some(&binding.backend_ref),
         }
@@ -89,6 +89,28 @@ impl ModelSelection {
             model_ref,
             backend_ref,
         ))
+    }
+
+    pub fn try_backend_default(
+        backend_ref: impl Into<String>,
+        configuration: AcpSessionConfiguration,
+    ) -> Result<Self, String> {
+        Ok(Self::BackendDefault {
+            backend_ref: AcpBackend::parse(backend_ref).map_err(|error| error.to_string())?,
+            configuration,
+        })
+    }
+
+    pub fn try_backend_exact(
+        backend_ref: impl Into<String>,
+        model_ref: impl Into<String>,
+        configuration: AcpSessionConfiguration,
+    ) -> Result<Self, String> {
+        Ok(Self::BackendExact {
+            backend_ref: AcpBackend::parse(backend_ref).map_err(|error| error.to_string())?,
+            model_ref: ExactModelRef::parse(model_ref).map_err(str::to_string)?,
+            configuration,
+        })
     }
 
     /// The concrete binding if pinned. Policy selections return `None` because
@@ -130,7 +152,7 @@ impl ModelSelection {
     #[must_use]
     pub fn backend_default_ref(&self) -> Option<&str> {
         match self {
-            Self::BackendDefault { backend_ref, .. } => Some(backend_ref),
+            Self::BackendDefault { backend_ref, .. } => Some(backend_ref.backend_ref()),
             Self::Auto
             | Self::Profile { .. }
             | Self::Target { .. }
@@ -172,7 +194,7 @@ impl ModelSelection {
                 backend_ref,
                 model_ref,
                 ..
-            } => Some((backend_ref, model_ref)),
+            } => Some((backend_ref.backend_ref(), model_ref.as_str())),
             _ => None,
         }
     }
@@ -318,7 +340,7 @@ impl Serialize for ModelSelection {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("mode", "backend_default")?;
-                map.serialize_entry("backend_ref", backend_ref)?;
+                map.serialize_entry("backend_ref", backend_ref.backend_ref())?;
                 if !configuration.is_empty() {
                     map.serialize_entry("configuration", configuration)?;
                 }
@@ -332,8 +354,8 @@ impl Serialize for ModelSelection {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("mode", "backend_exact")?;
-                map.serialize_entry("backend_ref", backend_ref)?;
-                map.serialize_entry("model_ref", model_ref)?;
+                map.serialize_entry("backend_ref", backend_ref.backend_ref())?;
+                map.serialize_entry("model_ref", model_ref.as_str())?;
                 if !configuration.is_empty() {
                     map.serialize_entry("configuration", configuration)?;
                 }
@@ -373,19 +395,14 @@ impl<'de> Deserialize<'de> for ModelSelection {
             ModelSelectionWire::BackendDefault {
                 backend_ref,
                 configuration,
-            } => Ok(Self::BackendDefault {
-                backend_ref,
-                configuration,
-            }),
+            } => Self::try_backend_default(backend_ref, configuration)
+                .map_err(serde::de::Error::custom),
             ModelSelectionWire::BackendExact {
                 backend_ref,
                 model_ref,
                 configuration,
-            } => Ok(Self::BackendExact {
-                backend_ref,
-                model_ref,
-                configuration,
-            }),
+            } => Self::try_backend_exact(backend_ref, model_ref, configuration)
+                .map_err(serde::de::Error::custom),
             ModelSelectionWire::Pinned {
                 provider_identity_ref,
                 model_ref,
@@ -824,21 +841,44 @@ mod model_selection_tests {
         );
         assert!(ModelSelection::Auto.requires_reconciliation());
         assert!(
-            ModelSelection::BackendDefault {
-                backend_ref: "acp:codex".into(),
-                configuration: Default::default(),
-            }
-            .requires_reconciliation()
+            ModelSelection::try_backend_default("acp:codex", Default::default())
+                .expect("exact ACP backend")
+                .requires_reconciliation()
         );
         assert!(
-            ModelSelection::BackendExact {
-                backend_ref: "acp:codex".into(),
-                model_ref: "gpt-exact".into(),
-                configuration: Default::default(),
-            }
-            .requires_reconciliation()
+            ModelSelection::try_backend_exact("acp:codex", "gpt-exact", Default::default())
+                .expect("exact ACP selection")
+                .requires_reconciliation()
         );
         assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
+    }
+
+    #[test]
+    fn backend_owned_selection_cannot_encode_an_inexact_backend_or_model() {
+        // Boundary-value partitions: Default requires an exact ACP executor;
+        // Exact additionally requires one non-blank, already-canonical model.
+        // Both Rust constructors and the wire decoder share those same types.
+        for backend_ref in ["", "acp", "acp:", "genai", " acp:codex", "acp:codex "] {
+            assert!(
+                ModelSelection::try_backend_default(backend_ref, Default::default()).is_err(),
+                "rejected backend {backend_ref:?}"
+            );
+        }
+        for model_ref in ["", " ", " gpt-exact", "gpt-exact "] {
+            assert!(
+                ModelSelection::try_backend_exact("acp:codex", model_ref, Default::default())
+                    .is_err(),
+                "rejected model {model_ref:?}"
+            );
+        }
+        for wire in [
+            serde_json::json!({"mode":"backend_default","backend_ref":"genai"}),
+            serde_json::json!({"mode":"backend_default","backend_ref":"acp:"}),
+            serde_json::json!({"mode":"backend_exact","backend_ref":"acp:codex","model_ref":""}),
+            serde_json::json!({"mode":"backend_exact","backend_ref":"acp:codex","model_ref":" model"}),
+        ] {
+            assert!(serde_json::from_value::<ModelSelection>(wire).is_err());
+        }
     }
 
     // Cause/effect decision table for the derived executor lens:

@@ -73,8 +73,13 @@ pub(crate) fn select(
         })
         .collect::<Vec<_>>();
     if let [cli] = available.as_slice() {
+        let awaken_runtime_contract::resolved::Backend::Acp(backend_ref) =
+            awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{}", cli.id))
+        else {
+            return None;
+        };
         return Some(ModelSelection::BackendDefault {
-            backend_ref: format!("acp:{}", cli.id),
+            backend_ref,
             configuration: Default::default(),
         });
     }
@@ -184,10 +189,10 @@ mod tests {
                 &[worker],
                 &[observation("codex")],
             ),
-            Some(ModelSelection::BackendDefault {
-                backend_ref: "acp:codex".into(),
-                configuration: Default::default(),
-            })
+            Some(
+                ModelSelection::try_backend_default("acp:codex", Default::default())
+                    .expect("exact ACP backend"),
+            )
         );
     }
 
@@ -235,10 +240,10 @@ mod tests {
                 std::slice::from_ref(&codex),
                 &[observation("codex")]
             ),
-            Some(ModelSelection::BackendDefault {
-                backend_ref: "acp:codex".into(),
-                configuration: Default::default(),
-            }),
+            Some(
+                ModelSelection::try_backend_default("acp:codex", Default::default())
+                    .expect("exact ACP backend"),
+            ),
             "S2"
         );
         assert_eq!(

@@ -1229,10 +1229,8 @@ mod tests {
             serde_json::from_value::<ModelSelection>(auto).unwrap(),
             ModelSelection::Auto
         );
-        let backend_default = ModelSelection::BackendDefault {
-            backend_ref: "acp:codex".into(),
-            configuration: Default::default(),
-        };
+        let backend_default = ModelSelection::try_backend_default("acp:codex", Default::default())
+            .expect("exact ACP backend");
         let wire = serde_json::to_value(&backend_default).unwrap();
         assert_eq!(
             wire,
@@ -1293,16 +1291,17 @@ mod tests {
         // W2 exact + native mode/options -> one lossless discriminated union;
         // W3 provider fields cannot enter either backend-owned variant because
         // they are absent from the canonical Rust type.
-        let backend_exact = ModelSelection::BackendExact {
-            backend_ref: "acp:codex".into(),
-            model_ref: "gpt-exact".into(),
-            configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+        let backend_exact = ModelSelection::try_backend_exact(
+            "acp:codex",
+            "gpt-exact",
+            awaken_runtime_contract::resolved::AcpSessionConfiguration {
                 mode: Some("plan".into()),
                 options: [("reasoning_effort".into(), "high".into())]
                     .into_iter()
                     .collect(),
             },
-        };
+        )
+        .expect("exact ACP selection");
         let wire = serde_json::to_value(&backend_exact).unwrap();
         assert_eq!(
             wire,
@@ -1938,10 +1937,8 @@ mod tests {
         assert_eq!(ModelSelection::Auto.resolved(), None);
         assert!(ModelSelection::Auto.is_auto());
         assert_eq!(ModelSelection::Auto.backend_default_ref(), None);
-        let backend_default = ModelSelection::BackendDefault {
-            backend_ref: "acp:codex".into(),
-            configuration: Default::default(),
-        };
+        let backend_default = ModelSelection::try_backend_default("acp:codex", Default::default())
+            .expect("exact ACP backend");
         assert_eq!(backend_default.resolved(), None);
         assert!(!backend_default.is_auto());
         assert_eq!(backend_default.backend_default_ref(), Some("acp:codex"));
