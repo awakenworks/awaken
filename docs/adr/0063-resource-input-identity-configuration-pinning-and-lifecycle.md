@@ -359,6 +359,38 @@ This preserves Anthropic behavior—Session resource input, current repository
 clone, no commit pin—while allowing awaken Agent defaults and internal config
 version governance.
 
+#### 2026-08-23 amendment: capability-selected MemoryStore delivery
+
+One frozen MemoryStore binding now has two mutually-exclusive runtime
+projections, selected by the same effective filesystem-capability decision as
+ADR-0036 Skills:
+
+| Delivery | Runtime projection | Prompt contract |
+|---|---|---|
+| `ManagedFilesystem` | the existing `MountSource::MemoryStore` path and ordinary file tools | binding/display identity, mount path, access, and authored usage instructions |
+| `SemanticTools` | no Memory mount; `list_memories`, `read_memory`, `write_memory`, `delete_memory` | binding/display identity, access, authored usage instructions, and the required `binding` argument |
+
+This does not add a second Memory implementation. Both rows use the same
+Session-scoped `BoundMemory`, live Resource validation, and D7
+`MemoryRepository`. Semantic writes are create-only without
+`expected_sha256`; updates require the current hash. Deletes require the exact
+entry id and hash, preserving the repository's CAS and path-recreation ABA
+fence. Read-only bindings reject both mutation tools at the data-plane adapter.
+
+Multiple stores remain one frozen map keyed by Session `BindingId`. Every
+semantic call must select one binding explicitly; model arguments never contain
+Workspace ids, physical store ids, repository handles, or authorization state.
+Native installs the shared descriptor/executor set as Session tools. ACP exports
+that exact set—together with other Host-owned Session tools—through one MCP
+server and one lifetime lease. A filesystem delivery exposes none of these
+semantic tools, and a Session delivery mode cannot change after first
+projection.
+
+The optional Awaken automatic recall/extraction extension remains a separate,
+explicit policy that selects one binding. It may contribute bounded
+request-only recall and durable post-commit extraction, but it neither chooses
+the standard binding set nor replaces direct file/semantic Memory operations.
+
 ### D9: Skill versions and bundles have one durable truth
 
 `SkillDefinition`, immutable `SkillVersion`, and binary-safe `SkillBundleFile`

@@ -61,7 +61,9 @@ mod run_application_host;
 mod run_exec;
 mod sandbox_source;
 mod session_environment;
+mod session_memory_tools;
 mod session_slot;
+mod session_tools;
 pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
@@ -469,6 +471,7 @@ impl ManagedHost {
             }
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
+            all.memory_prompts.extend(one.memory_prompts);
             all.binding_checks.extend(one.binding_checks);
             all.repositories.extend(one.repositories);
         }

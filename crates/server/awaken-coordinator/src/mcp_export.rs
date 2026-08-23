@@ -29,16 +29,15 @@ impl Drop for SessionToolExportLease {
 
 #[async_trait::async_trait]
 impl awaken_runtime_host::AcpToolExporter for SessionToolExporter {
-    async fn export(
+    async fn export_set(
         &self,
         server_name: &str,
-        descriptor: ToolDescriptor,
-        tool: Arc<dyn RawTool>,
+        descriptors: Vec<ToolDescriptor>,
+        tools: Vec<Arc<dyn RawTool>>,
     ) -> Result<awaken_runtime_host::AcpToolExport, String> {
-        let source = Arc::new(awaken_protocol_mcp::StaticExports::new(vec![
-            awaken_protocol_mcp::McpExportedTool::try_plain(descriptor, tool)
-                .map_err(|error| error.to_string())?,
-        ]));
+        let exports = awaken_protocol_mcp::McpExportedTool::try_plain_set(descriptors, tools)
+            .map_err(|error| error.to_string())?;
+        let source = Arc::new(awaken_protocol_mcp::StaticExports::new(exports));
         let service = Arc::new(awaken_protocol_mcp::McpToolService::new(
             server_name,
             env!("CARGO_PKG_VERSION"),

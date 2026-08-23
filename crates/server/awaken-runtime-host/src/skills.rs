@@ -19,9 +19,6 @@ use awaken_ext_skills::{
 use awaken_resource_contract::SkillVersion;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
-use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
-};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
@@ -30,6 +27,7 @@ use awaken_sandbox_local::LocalProvider;
 /// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
+pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
 pub(crate) const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
 
 /// Placement policy for Skill `context: fork` auxiliary Runs.
@@ -178,71 +176,6 @@ pub(crate) struct SkillWiring {
     pub gate: Arc<dyn ToolGateHook>,
 }
 
-/// Session-scoped projection of delivered Skill tools. Published Agent
-/// snapshots remain immutable, so Resource-derived descriptors cannot be
-/// appended to their resolved spec. Runtime's existing session-plugin seam is
-/// the one model-visible/executable convergence point for those dynamic tools.
-pub(crate) struct SessionSkillPlugin {
-    tools: Vec<DynamicTool>,
-}
-
-impl SessionSkillPlugin {
-    pub(crate) fn new(
-        descriptors: Vec<ToolDescriptor>,
-        list_tool: Arc<dyn RawTool>,
-        activate_tool: Arc<dyn RawTool>,
-    ) -> Result<Self, String> {
-        let executors = [list_tool, activate_tool]
-            .into_iter()
-            .map(|tool| (tool.id().to_string(), tool))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let mut tools = Vec::with_capacity(descriptors.len());
-        for descriptor in descriptors {
-            let tool = executors.get(&descriptor.id).cloned().ok_or_else(|| {
-                format!(
-                    "Skill descriptor `{}` has no matching runtime executor",
-                    descriptor.id
-                )
-            })?;
-            tools.push(
-                DynamicTool::try_new(descriptor, tool)
-                    .map_err(|error| format!("Invalid Skill runtime tool: {error}"))?,
-            );
-        }
-        if tools.len() != executors.len() {
-            return Err("Skill runtime executor has no matching descriptor".into());
-        }
-        Ok(Self { tools })
-    }
-}
-
-impl Plugin for SessionSkillPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "awaken.session.skills".into(),
-            requires: Vec::new(),
-            config_sections: Vec::new(),
-            bound: CapabilityBound {
-                tools: IdBound::Exact(
-                    self.tools
-                        .iter()
-                        .map(|tool| tool.descriptor().id.clone())
-                        .collect(),
-                ),
-                ..Default::default()
-            },
-        }
-    }
-
-    fn resolve(&self) -> Contributions {
-        let mut contributions = Contributions::new("awaken.session.skills");
-        for tool in &self.tools {
-            contributions.register_dynamic_tool(tool.clone());
-        }
-        contributions
-    }
-}
-
 /// Assemble the skill surface for a thread, or `None` when no skills are offered.
 /// `base_gate` is wrapped so conditional (`paths`) skills surface on file touch;
 /// `fork_base` is the sub-agent sandbox base for `context: fork` skills.
@@ -332,7 +265,9 @@ pub(crate) async fn wire_skills(
             // the host snapshot and is never projected into the Hand workspace.
             // Any supporting file makes the requirement objective and forces
             // materialization regardless of authored metadata.
-            let directory = requires_filesystem(&version, &content).then(|| {
+            let directory = (materialize_delivered_files
+                || requires_filesystem(&version, &content))
+            .then(|| {
                 format!(
                     "{DELIVERED_SKILLS_SUBDIR}/{}",
                     awaken_resource_contract::skill_stem(version.skill_id.as_str())
@@ -411,6 +346,28 @@ pub(crate) async fn wire_skills(
     }))
 }
 
+/// Anthropic-compatible progressive-disclosure metadata. The prompt carries
+/// only name, description, and the exact `SKILL.md` path; the model reads full
+/// instructions with ordinary file tools when the Skill is relevant.
+pub(crate) fn managed_filesystem_prompt(registry: &dyn SkillRegistry) -> Option<String> {
+    let entries = registry
+        .list()
+        .into_iter()
+        .filter(|skill| skill.model_invocable)
+        .filter_map(|skill| {
+            skill
+                .dir
+                .map(|dir| format!("- {}: {} (`{dir}/SKILL.md`)", skill.name, skill.description))
+        })
+        .collect::<Vec<_>>();
+    (!entries.is_empty()).then(|| {
+        format!(
+            "Available Skills are listed below. When a Skill is relevant, read its `SKILL.md` from the given path before acting.\n{}",
+            entries.join("\n")
+        )
+    })
+}
+
 fn list_skills_descriptor() -> ToolDescriptor {
     awaken_ext_skills::list_skills_tool_descriptor()
 }
@@ -422,37 +379,6 @@ fn skill_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn session_skill_plugin_fails_closed_when_descriptor_and_executor_sets_drift() {
-        use awaken_ext_skills::{ListSkillsTool, SkillTool};
-
-        let registry: Arc<dyn SkillRegistry> =
-            Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
-                "test", "Test", "test", "test",
-            )]));
-        let list: Arc<dyn RawTool> = Arc::new(ListSkillsTool::new(registry.clone()));
-        let activate: Arc<dyn RawTool> = Arc::new(SkillTool::new(registry));
-        let missing = SessionSkillPlugin::new(
-            vec![list_skills_descriptor()],
-            list.clone(),
-            activate.clone(),
-        )
-        .err()
-        .expect("an executor without its descriptor must fail closed");
-        assert!(missing.contains("no matching descriptor"));
-
-        let unknown = ToolDescriptor::pinned(
-            "test",
-            "unknown-skill-tool",
-            "unknown",
-            serde_json::json!({"type": "object"}),
-        );
-        let missing = SessionSkillPlugin::new(vec![unknown], list, activate)
-            .err()
-            .expect("a descriptor without its executor must fail closed");
-        assert!(missing.contains("no matching runtime executor"));
-    }
 
     fn version_with(files: Vec<awaken_skill_store::SkillBundleFile>) -> SkillVersion {
         SkillVersion {

@@ -2,7 +2,7 @@
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
 
-pub(super) fn resolved_resource_prompt(input: &awaken_session_contract::ResolvedInput) -> String {
+fn resolved_non_memory_prompt(input: &awaken_session_contract::ResolvedInput) -> Option<String> {
     use awaken_resource_contract::ResourceAccess;
     use awaken_session_contract::ResolvedInputSource;
 
@@ -15,18 +15,49 @@ pub(super) fn resolved_resource_prompt(input: &awaken_session_contract::Resolved
             let carried_path = managed_file_mount_path(&input.mount_path);
             format!("A file is mounted read-only at `{carried_path}`.")
         }
-        ResolvedInputSource::MemoryStore { .. } => {
-            let carried_path = managed_resource_mount_path(&input.mount_path);
-            format!("A persistent memory store is mounted {access} at `{carried_path}`.")
-        }
+        ResolvedInputSource::MemoryStore { .. } => return None,
         ResolvedInputSource::Repository { .. } => format!(
             "A git repository is checked out at `{}` ({access}); use git there to read, edit, commit, and push.",
             input.mount_path
         ),
     };
-    match &input.instructions {
+    Some(match &input.instructions {
         Some(instructions) if !instructions.is_empty() => format!("{base}\n{instructions}"),
         _ => base,
+    })
+}
+
+fn resolved_memory_prompts(
+    input: &awaken_session_contract::ResolvedInput,
+) -> crate::provisioning::MemoryPromptProjection {
+    use awaken_resource_contract::ResourceAccess;
+
+    let (access, filesystem_usage, semantic_usage) = match input.access {
+        ResourceAccess::ReadOnly => (
+            "read-only",
+            "Use standard file tools to read it.",
+            "Use `list_memories` and `read_memory`; mutation tools will reject this binding.",
+        ),
+        ResourceAccess::ReadWrite => (
+            "read/write",
+            "Use standard file tools to read and maintain it.",
+            "Use `list_memories` and `read_memory` before a conditional write or delete.",
+        ),
+    };
+    let path = managed_resource_mount_path(&input.mount_path);
+    let usage = input
+        .instructions
+        .as_deref()
+        .filter(|instructions| !instructions.is_empty())
+        .map_or(String::new(), |instructions| format!("\n{instructions}"));
+    let binding = input.binding_id.as_str();
+    crate::provisioning::MemoryPromptProjection {
+        filesystem: format!(
+            "Persistent memory store `{binding}` is mounted {access} at `{path}`. {filesystem_usage}{usage}"
+        ),
+        semantic_tools: format!(
+            "Persistent memory store `{binding}` is available {access} through the memory tools. Pass `binding: \"{binding}\"` on every memory operation. {semantic_usage}{usage}"
+        ),
     }
 }
 
@@ -83,7 +114,14 @@ impl crate::ManagedHost {
 
         let mut staged = crate::provisioning::StagedResources::default();
         let logical = input.mount_path.trim_start_matches('/').to_string();
-        staged.prompts.push(resolved_resource_prompt(input));
+        if matches!(input.source, ResolvedInputSource::MemoryStore { .. }) {
+            staged.memory_prompts.push(resolved_memory_prompts(input));
+        } else {
+            staged.prompts.push(
+                resolved_non_memory_prompt(input)
+                    .expect("non-Memory input has one prompt projection"),
+            );
+        }
         let mount_access = match input.access {
             ResourceAccess::ReadOnly => awaken_provisioning_contract::MountAccess::ReadOnly,
             ResourceAccess::ReadWrite => awaken_provisioning_contract::MountAccess::ReadWrite,

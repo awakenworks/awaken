@@ -225,6 +225,10 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
+    /// One prompt pair per MemoryStore binding. The Session delivery decision
+    /// selects exactly one member; retaining both here is projection data, not
+    /// a second store or mutable source of truth.
+    pub memory_prompts: Vec<MemoryPromptProjection>,
     /// Resource-domain liveness checks repeated at each Session operation. These
     /// carry only Workspace-owned resource identity and frozen config versions;
     /// authorization was completed before staging.
@@ -232,6 +236,12 @@ pub(crate) struct StagedResources {
     /// Mutable Repository inputs, realized after the environment is created (not a
     /// byte mount). The plan is secret-free; its transport credential is transient.
     pub repositories: Vec<RepositoryActivation>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MemoryPromptProjection {
+    pub filesystem: String,
+    pub semantic_tools: String,
 }
 
 #[derive(Clone)]
@@ -810,6 +820,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
                 prompts: vec!["first".into()],
+                memory_prompts: Vec::new(),
                 binding_checks: Vec::new(),
                 repositories: vec![repository_activation("repo-a")],
             },
@@ -820,6 +831,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("c.md")],
                 prompts: vec!["second".into()],
+                memory_prompts: Vec::new(),
                 binding_checks: Vec::new(),
                 repositories: Vec::new(),
             },

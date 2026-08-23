@@ -74,6 +74,10 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     rules.push(allow(awaken_runtime_contract::resolved::ADVISOR_TOOL_ID));
     rules.push(allow("list_skills"));
     rules.push(allow("Skill"));
+    // Semantic Memory perception mirrors read/glob. Mutations intentionally
+    // retain the default confirmation behavior, matching write/edit.
+    rules.push(allow("list_memories"));
+    rules.push(allow("read_memory"));
     rules.extend(extra_allowed.iter().map(|id| allow(id)));
     rules
 }
@@ -494,6 +498,40 @@ pub(crate) struct DeferredHandToolSource;
 impl RuntimeToolSource for DeferredHandToolSource {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         all_hand_tools()
+    }
+}
+
+/// The only Hand route installed for a filesystem-free Session. It reuses the
+/// canonical WebFetch RawTool in-process and rejects every other Sandbox target;
+/// a disabled/misrouted file tool can therefore never materialize a deferred
+/// Environment as a side effect.
+pub(crate) struct FilesystemFreeAgentToolExecutor {
+    web_fetch: Arc<dyn awaken_runtime_contract::tool::RawTool>,
+}
+
+impl FilesystemFreeAgentToolExecutor {
+    pub(crate) fn new() -> Self {
+        let web_fetch = awaken_ext_builtin_tools::web_hand_tools()
+            .into_iter()
+            .find(|tool| tool.id() == "web_fetch")
+            .expect("canonical web Hand contains web_fetch");
+        Self { web_fetch }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for FilesystemFreeAgentToolExecutor {
+    async fn invoke(
+        &self,
+        call: &awaken_runtime_contract::tool::ToolCall,
+    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
+    {
+        if call.tool_id != "web_fetch" {
+            return Err(awaken_runtime_contract::tool::ToolError::Execution(
+                format!("filesystem-free Session cannot execute `{}`", call.tool_id),
+            ));
+        }
+        self.web_fetch.invoke(call.clone()).await
     }
 }
 

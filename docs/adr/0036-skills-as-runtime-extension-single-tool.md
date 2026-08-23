@@ -1,12 +1,59 @@
 # ADR-0036: Skills Are a Runtime Extension — Two Semantic Tools over Optional Files
 
 - Status: Accepted
+- Amendment: 2026-08-23 capability-selected delivery section below
 - Date: 2026-07-02
 - Supersedes: [ADR-0035](0035-environment-provisioning-tools-skills-resources.md) **D4** only
 - Retains: ADR-0035 D1–D3, D5–D8 (the provisioning seam still materializes the
   per-run substrate and the trust roots; only the *skill shape* changes)
 - Relates to: `design/resources-memory-files-skills.md`,
   `design/tool-and-capability.md`, [ADR-0004](0004-plugin-factory-contributions-and-capability-bound.md)
+
+## 2026-08-23 amendment: one Skill authority, two mutually-exclusive deliveries
+
+This section is authoritative wherever the original D1-D3, D6-D8, consequences,
+or implementation text below implies that every Session always exposes the two
+semantic Skill tools. The original decision remains the semantic-tool design;
+this amendment adds the Anthropic Managed Agents filesystem projection without
+adding another Skill catalog or instruction truth.
+
+The effective, frozen Agent/Session toolset selects delivery once per Session:
+
+| Effective capability | Delivery | Model-visible discovery | Full instructions |
+|---|---|---|---|
+| any of `bash/read/write/edit/glob/grep` enabled | `ManagedFilesystem` | prompt metadata: name, description, exact `SKILL.md` path | model reads `SKILL.md` with ordinary file tools |
+| every filesystem tool disabled | `SemanticTools` | `list_skills` | `Skill` returns the selected body |
+
+Both rows consume the same frozen Skill versions and the same `SkillRegistry`.
+They are projections, not synchronized implementations:
+
+- `ManagedFilesystem` materializes every selected delivered bundle, including a
+  `SKILL.md`-only bundle, scans agent-created Skills at
+  `.claude/skills/<name>/SKILL.md` exactly one directory below the root, and does
+  **not** expose `list_skills` or `Skill`. The prompt contains metadata and path,
+  never the full body.
+- `SemanticTools` materializes no delivered Skill tree. Native Runtime exposes
+  the two existing tools through the Session dynamic-tool plugin; ACP exports
+  the exact same descriptors/executors through the Session MCP server. There is
+  no ACP-only eager body injection.
+- A selected filesystem/fork Skill with every filesystem tool disabled is an
+  invalid Session and fails before inference. It cannot silently receive a path
+  that its Agent cannot read.
+- A Session cannot switch delivery after its first runtime projection. Recovery
+  and rebuild reuse the same value, preventing simultaneous file and tool paths.
+
+Static ownership remains: `SkillStore` owns immutable versions,
+`ResolvedSessionResources` owns the frozen selection, `SkillRegistry` owns
+discovery/body resolution, and `SessionRuntimeSlot` owns only the derived
+delivery projection. Dynamically, Session construction selects the mode,
+materializes files **or** wires tools, injects the matching discovery metadata,
+then Native inference or ACP MCP calls the selected projection. Any descriptor /
+executor mismatch, missing filesystem capability, or attempted mode change
+fails closed before the model receives a competing surface.
+
+ADR-0063 D9 remains authoritative for Managed Session version pinning. The
+historical unpinned-catalog statements in D7/D8 below apply only to direct,
+agent-created run-scoped Skills.
 
 ## Context
 

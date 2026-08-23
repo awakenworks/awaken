@@ -2,6 +2,7 @@
 //! boundary, stream-checkpoint store, run-delivery ingress, and `ctx_for`.
 
 mod child_substrate;
+mod content_delivery;
 mod input_projection;
 
 use super::*;
@@ -93,45 +94,6 @@ impl SharedHost {
         Ok((workspace, selected_agent.to_string(), installed))
     }
 
-    fn session_has_local_environment_inputs(
-        &self,
-        thread: &str,
-        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> bool {
-        let slot_requires = self
-            .session_slots
-            .read(thread, |slot| {
-                !slot.delegates.is_empty()
-                    || slot.memory.is_some()
-                    || !slot.resources.mounts.is_empty()
-                    || !slot.resources.repositories.is_empty()
-                    || slot.baseline.as_ref().is_some_and(|baseline| {
-                        !baseline.mounts.is_empty() || !baseline.env.is_empty()
-                    })
-                    || slot.skills.as_ref().is_some_and(|versions| {
-                        versions
-                            .iter()
-                            .any(crate::skills::version_requires_environment)
-                    })
-            })
-            .unwrap_or(false);
-        let selected_skills = published_snapshot.map(|snapshot| {
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .skills
-                .iter()
-                .map(|skill| skill.skill_id.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        });
-        let workspace = self.thread_workspace(thread);
-        slot_requires
-            || self
-                .skills
-                .requires_environment_in(&workspace, selected_skills.as_ref())
-    }
-
     pub(crate) fn session_environment_provider(
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
@@ -150,69 +112,6 @@ impl SharedHost {
                 Ok(&self.session_provider)
             }
         }
-    }
-
-    fn can_defer_session_environment(
-        &self,
-        thread: &str,
-        agent: Option<&str>,
-        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        has_published_delegates: bool,
-    ) -> bool {
-        // A Coordinator-only Host constructs the durable dispatch envelope but
-        // never executes it. Creating an eager sandbox here would make the
-        // Coordinator a second physical owner beside the registered Worker.
-        if self.deployment.disable_local_pool {
-            return true;
-        }
-        let slot_allows = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.deferred_executor.is_some()
-                    && slot
-                        .environment_projection
-                        .as_ref()
-                        .is_some_and(|projection| {
-                            projection.provisioning
-                                == awaken_session_contract::SandboxProvisioning::OnToolUse
-                        })
-            })
-            .unwrap_or(false);
-        let workspace = self.thread_workspace(thread);
-        let published_backend_is_acp = published_snapshot
-            .cloned()
-            .or_else(|| {
-                self.agent_publications.as_ref().and_then(|source| {
-                    source.current(
-                        &workspace,
-                        &awaken_runtime_contract::snapshot::AgentId(
-                            agent.unwrap_or("assistant").to_string(),
-                        ),
-                    )
-                })
-            })
-            .is_some_and(|snapshot| {
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    &snapshot.resolved_spec.model_binding.backend_ref,
-                )
-                .is_acp()
-            });
-        let selected_backend_is_acp = self
-            .session_slots
-            .read(thread, |slot| slot.backend_ref.clone())
-            .flatten()
-            .is_some_and(|backend_ref| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
-            });
-        // Delegation itself is a Sandbox capability: the child must inherit the
-        // exact parent environment and its lifecycle fence. Keep that fact in the
-        // sole eager-vs-deferred classifier instead of accepting deferral here and
-        // rejecting the same snapshot later while the Runtime is being wired.
-        slot_allows
-            && !self.session_has_local_environment_inputs(thread, published_snapshot)
-            && !published_backend_is_acp
-            && !selected_backend_is_acp
-            && !has_published_delegates
     }
 
     async fn persist_environment_before_publish(
@@ -827,6 +726,11 @@ impl SharedHost {
                 "Managed Session has no Session application authority",
             ));
         }
+        let content_delivery = self.select_content_delivery(
+            thread,
+            installed.as_ref(),
+            frozen_skill_versions.as_ref(),
+        )?;
         let deferred = retained.is_none()
             && adopted.is_none()
             && self.can_defer_session_environment(
@@ -991,7 +895,13 @@ impl SharedHost {
                     .map(str::to_string)
             })
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| crate::skills::DEFAULT_SKILLS_SUBDIR.to_string());
+            .unwrap_or_else(|| {
+                if installed.is_some() {
+                    crate::skills::MANAGED_SKILLS_SUBDIR.to_string()
+                } else {
+                    crate::skills::DEFAULT_SKILLS_SUBDIR.to_string()
+                }
+            });
         let authorization =
             effective_tool_authorization(&published_configuration, &pre_authorized, &toolsets);
         let permission = authorization.policy.clone();
@@ -1069,9 +979,10 @@ impl SharedHost {
         // the sandbox env, the sub-run capability, and the base gate — via
         // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
+        let mut semantic_skill_tools = None;
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
-        let mut session_skill_plugin: Option<Arc<dyn awaken_runtime_contract::plugin::Plugin>> =
-            None;
+        let mut session_content_plugins: Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>> =
+            Vec::new();
         // A managed Session consumes its exact frozen Skill versions. An embedded
         // direct Session without a manifest reads its configured Skill catalog.
         let delivered = if frozen_skill_versions.is_some() {
@@ -1128,30 +1039,70 @@ impl SharedHost {
             self.skill_fork_placement,
             &skills_subdir,
             commit.clone(),
-            // A coordinator-only host owns the Skill registry used to describe
-            // the durable Run, but the exact claimed Worker owns filesystem
-            // realization. Every execution-capable host must materialize here.
-            !self.deployment.disable_local_pool,
+            content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem
+                && !self.deployment.disable_local_pool,
         )
         .await
         .map_err(HostError::internal)?
         {
-            if installed.is_some() {
-                session_skill_plugin = Some(Arc::new(
-                    crate::skills::SessionSkillPlugin::new(
-                        wiring.descriptors.clone(),
-                        wiring.list_tool.clone(),
-                        wiring.activate_tool.clone(),
-                    )
-                    .map_err(HostError::internal)?,
+            if content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem {
+                let prompt = crate::skills::managed_filesystem_prompt(wiring.registry.as_ref());
+                self.session_slots
+                    .update(thread, |slot| slot.skill_prompt = prompt);
+            } else {
+                if installed.is_some() && !is_acp {
+                    session_content_plugins.push(Arc::new(
+                        crate::session_tools::SessionToolPlugin::new(
+                            "awaken.session.skills",
+                            wiring.descriptors.clone(),
+                            vec![wiring.list_tool.clone(), wiring.activate_tool.clone()],
+                        )
+                        .map_err(HostError::internal)?,
+                    ));
+                }
+                if !is_acp {
+                    runtime = runtime
+                        .with_gate(wiring.gate)
+                        .with_tool(wiring.list_tool.clone())
+                        .with_tool(wiring.activate_tool.clone());
+                }
+                skill_descriptors = wiring.descriptors.clone();
+                semantic_skill_tools = Some((
+                    wiring.descriptors,
+                    vec![wiring.list_tool, wiring.activate_tool],
                 ));
             }
-            runtime = runtime
-                .with_gate(wiring.gate)
-                .with_tool(wiring.list_tool)
-                .with_tool(wiring.activate_tool);
-            skill_descriptors = wiring.descriptors;
             skill_registry = Some(wiring.registry);
+        } else {
+            self.session_slots
+                .update(thread, |slot| slot.skill_prompt = None);
+        }
+        let mut memory_descriptors = Vec::new();
+        let mut semantic_memory_tools = None;
+        if content_delivery == crate::session_slot::ManagedContentDelivery::SemanticTools {
+            let bindings = self
+                .session_slots
+                .read(thread, |slot| slot.memory_bindings.clone())
+                .unwrap_or_default();
+            if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
+                if installed.is_some() && !is_acp {
+                    session_content_plugins.push(Arc::new(
+                        crate::session_tools::SessionToolPlugin::new(
+                            "awaken.session.memory",
+                            wiring.descriptors.clone(),
+                            wiring.executors.clone(),
+                        )
+                        .map_err(HostError::internal)?,
+                    ));
+                }
+                if !is_acp {
+                    for tool in &wiring.executors {
+                        runtime = runtime.with_tool(tool.clone());
+                    }
+                }
+                memory_descriptors = wiring.descriptors.clone();
+                semantic_memory_tools = Some(wiring);
+            }
         }
         // This is the sole final gate replacement point. Skill wiring may decorate
         // the ordinary base gate above; an explicit host override intentionally
@@ -1309,6 +1260,9 @@ impl SharedHost {
             Vec::new()
         } else {
             skill_descriptors
+                .into_iter()
+                .chain(memory_descriptors)
+                .collect()
         };
         let session_delegates: HashSet<String> = installed
             .as_ref()
@@ -1467,7 +1421,7 @@ impl SharedHost {
         } else {
             Vec::new()
         };
-        let mut web_tool_exports = Vec::new();
+        let mut acp_tool_exports = Vec::new();
         if is_acp {
             for (name, label, configured) in [
                 ("awaken_web_search", "WebSearch", web_search),
@@ -1478,8 +1432,38 @@ impl SharedHost {
                     .await?
                 {
                     acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, [server])?;
-                    web_tool_exports.push(export);
+                    acp_tool_exports.push(export);
                 }
+            }
+
+            let mut descriptors = Vec::new();
+            let mut executors = Vec::new();
+            if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools {
+                descriptors.extend(skill_descriptors);
+                executors.extend(skill_executors);
+            }
+            if let Some(memory) = semantic_memory_tools {
+                descriptors.extend(memory.descriptors);
+                executors.extend(memory.executors);
+            }
+            if !descriptors.is_empty() {
+                let (servers, exports) = crate::acp_tool_export::export_tools(
+                    self.acp_tool_exporter
+                        .as_ref()
+                        .ok_or_else(|| {
+                            HostError::internal(
+                                "ACP Session tools require an installed tool-export adapter",
+                            )
+                        })?
+                        .as_ref(),
+                    "awaken_session",
+                    descriptors,
+                    executors,
+                )
+                .await
+                .map_err(HostError::internal)?;
+                acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, servers)?;
+                acp_tool_exports.extend(exports);
             }
         }
         // Recover the session's position from committed truth: a durable store may
@@ -1516,9 +1500,7 @@ impl SharedHost {
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::application::AcpContextAttemptExecutor::new(
                 attempt_executor,
-                skill_registry.clone(),
                 acp_memory_recall,
-                thread,
             ));
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::application::SessionPromptAttemptExecutor::new(
@@ -1581,6 +1563,11 @@ impl SharedHost {
         };
         let tool_executor = if a2a_only {
             None
+        } else if content_delivery == crate::session_slot::ManagedContentDelivery::SemanticTools {
+            Some(
+                Arc::new(crate::config::FilesystemFreeAgentToolExecutor::new())
+                    as Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+            )
         } else if let Some(environment) = env.as_ref() {
             // Every realized tier owns the Hand for its Session. Container uses
             // the channel-backed process; Workdir/Namespace use their rooted
@@ -1625,10 +1612,10 @@ impl SharedHost {
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
         );
-        let run_context = match session_skill_plugin {
-            Some(plugin) => run_context.with_session_plugin(plugin),
-            None => run_context,
-        };
+        let run_context = session_content_plugins.into_iter().fold(
+            run_context,
+            awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
+        );
         let run_context = match (session_dispatch, coordination_endpoint) {
             (true, Some(endpoint)) => run_context.with_model_request_gate(Arc::new(
                 crate::coordination::HostModelRequestGate::new(endpoint, thread),
@@ -1685,7 +1672,7 @@ impl SharedHost {
             attempt_context: run_context,
             terminal_observers,
             stream_checkpoint,
-            _web_tool_exports: web_tool_exports,
+            _acp_tool_exports: acp_tool_exports,
             thread_id,
             env,
             skill_registry,
