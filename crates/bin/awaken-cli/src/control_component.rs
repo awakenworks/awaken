@@ -45,6 +45,7 @@ pub(super) async fn control_component_for_process(
     iam: Option<Arc<ManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
 ) -> awaken_control::ControlComponent {
     let control = stores
         .control
@@ -120,6 +121,7 @@ pub(super) async fn control_component_for_process(
         iam,
         local_browser_auth,
         remote_iam,
+        cloud_login,
     })
     .await
 }
@@ -163,6 +165,7 @@ pub(super) async fn prepare_control_routers(
         SharedHost::provision_local_workspace_at,
     );
     let model_capabilities = process.model_supply.clone();
+    let cloud_login = process.cloud_login.clone();
     let cloud_models_enabled = model_capabilities.cloud_models_enabled;
     let worker_observations = process
         .worker_observations
@@ -180,9 +183,16 @@ pub(super) async fn prepare_control_routers(
         cloud_models_enabled,
         worker_observations.clone(),
     );
-    let web_search_providers = process
+    let mut web_search_providers = process
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
+    if let Some(client) = brokered_client.as_ref()
+        && let Err(error) = client
+            .install_managed_web_routes(&mut web_search_providers)
+            .await
+    {
+        eprintln!("Awaken Cloud Web tools are unavailable: {error}");
+    }
     let web_search_publication_resolver =
         process.web_search_publication_resolver.unwrap_or_else(|| {
             Arc::new(
@@ -267,6 +277,7 @@ pub(super) async fn prepare_control_routers(
         iam,
         local_browser_auth,
         remote_iam,
+        cloud_login,
     )
     .await;
     // Hosted compositions may replace the transport/target mechanism while

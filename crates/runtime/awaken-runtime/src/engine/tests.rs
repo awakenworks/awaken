@@ -297,6 +297,7 @@ fn provider_server_tool_requires_explicit_always_allow() {
                 enabled: true,
                 permission: ToolPermissionRequirement::AlwaysAsk,
             },
+            configuration: None,
         }],
     }];
     assert!(

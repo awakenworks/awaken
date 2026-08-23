@@ -42,6 +42,12 @@ function fmtObservedAt(timestamp: number): string {
   });
 }
 
+interface CloudLoginStatus {
+  state: "sign_in_required" | "authorizing" | "authenticated" | "failed";
+  authorize_url?: string;
+  error_code?: string;
+}
+
 function dialectLabel(dialect: string, zh: boolean): string {
   const labels: Record<string, [string, string]> = {
     anthropic_messages: ["Anthropic Messages", "Anthropic Messages 格式"],
@@ -219,6 +225,46 @@ export default function ModelsSurface() {
 
   const c = catalog.data;
   const cloudState = cloudModelUiState(capabilities.data);
+  const loginWindow = useRef<Window | null>(null);
+  const loginUrlApplied = useRef(false);
+  const loginCatalogRefreshed = useRef(false);
+  const cloudLogin = useQuery({
+    queryKey: ["cloud-login", workspace],
+    queryFn: () => api.get<CloudLoginStatus>(ws("/v1/config/cloud-login")),
+    enabled:
+      cloudState === "sign_in_required" &&
+      capabilities.data?.identity.cloud_login_enabled === true,
+    refetchInterval: (query) =>
+      query.state.data?.state === "authenticated" ? false : 750,
+  });
+  const startCloudLogin = useMutation({
+    mutationFn: () => api.post<CloudLoginStatus>(ws("/v1/config/cloud-login")),
+    onSuccess: (status) => {
+      qc.setQueryData(["cloud-login", workspace], status);
+      if (status.authorize_url && loginWindow.current && !loginUrlApplied.current) {
+        loginWindow.current.location.href = status.authorize_url;
+        loginUrlApplied.current = true;
+      }
+    },
+  });
+  useEffect(() => {
+    const status = cloudLogin.data;
+    if (status?.authorize_url && loginWindow.current && !loginUrlApplied.current) {
+      loginWindow.current.location.href = status.authorize_url;
+      loginUrlApplied.current = true;
+    }
+    if (status?.state === "authenticated" && !loginCatalogRefreshed.current) {
+      loginCatalogRefreshed.current = true;
+      void qc.invalidateQueries({ queryKey: ["config-capabilities", workspace] });
+      refreshCloudModels.mutate();
+    }
+  }, [cloudLogin.data, qc, refreshCloudModels, workspace]);
+  const beginCloudLogin = () => {
+    loginUrlApplied.current = false;
+    loginCatalogRefreshed.current = false;
+    loginWindow.current = window.open("about:blank", "awaken-cloud-login");
+    startCloudLogin.mutate();
+  };
   const managedSupply = cloudState === "managed";
   const presentation = modelCatalogPresentation(cloudState);
   const byokEnabled = capabilities.data?.models.byok_enabled === true;
@@ -282,7 +328,23 @@ export default function ModelsSurface() {
             onRefresh={() => refreshCloudModels.mutate()}
           />
         </div>
-        <CloudModelNotice state={cloudState} />
+        <CloudModelNotice
+          state={cloudState}
+          loginPending={
+            startCloudLogin.isPending || cloudLogin.data?.state === "authorizing"
+          }
+          onSignIn={
+            capabilities.data?.identity.cloud_login_enabled ? beginCloudLogin : undefined
+          }
+        />
+        {(startCloudLogin.isError || cloudLogin.data?.state === "failed") && (
+          <div className="err" role="alert" style={{ margin: "0 16px 12px" }}>
+            {app.t(
+              "Awaken Cloud sign-in could not be completed. Try again.",
+              "无法完成 Awaken Cloud 登录，请重试。",
+            )}
+          </div>
+        )}
         {refreshCloudModels.error instanceof Error && (
           <div className="err" style={{ margin: "0 16px 12px" }}>
             {refreshCloudModels.error.message}

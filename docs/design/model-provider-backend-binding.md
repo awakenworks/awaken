@@ -200,16 +200,23 @@ once at startup from `~/.awaken/config.toml`, with explicit CLI overrides:
 
 ```toml
 # "no-login" | "self-managed" | "awaken-cloud"
-identity_mode = "no-login"
+identity_mode = "awaken-cloud" # interactive all-in-one default
 
-# "disabled" (default) | "enabled"
-cloud_models = "disabled"
+# "disabled" | "enabled" (interactive all-in-one default)
+cloud_models = "enabled"
 ```
 
 Equivalent startup overrides are `--identity-mode <mode>` and
 `--cloud-models disabled|enabled`. Enabling Cloud models requires
 `identity_mode = "awaken-cloud"`; invalid combinations fail startup rather than
 silently enabling a network path.
+
+The defaults above apply only to the interactive local `all-in-one` product and
+are resolved from the two existing axes. If an operator explicitly selects
+`no-login` or `self-managed`, omitted `cloud_models` resolves to `disabled`.
+Server and split-service roles have no interactive default and retain explicit
+deployment/service-credential requirements. No `product_mode` field or second
+model catalogue is introduced.
 
 | Identity | `cloud_models` | Login | Local catalog/BYOK | Cloud catalog and brokered inference |
 |---|---|---:|---:|---:|
@@ -218,6 +225,30 @@ silently enabling a network path.
 | `awaken-cloud` | `disabled` | Cloud | on | off |
 | `awaken-cloud` | `enabled` | Cloud | on | on, after authentication/entitlement |
 | any non-Cloud identity | `enabled` | — | — | invalid; startup fails closed |
+
+Default first-run sequence:
+
+```text
+resolve interactive preset
+  -> reuse/refresh IAM CredentialCache, else loopback PKCE login
+  -> construct the existing remote IAM guard from that token source
+  -> refresh the authenticated Cloud model projection
+  -> publish exact model/provider/protocol bindings
+  -> open the existing local Console
+```
+
+The startup login is not a one-shot assumption. The same IAM desktop client and
+credential-cache entry also own runtime refresh, interactive reauthentication,
+and logout. `GET /v1/config/capabilities` derives authentication from that live
+source. The Console starts at most one loopback PKCE operation, opens the
+returned IAM authorization URL, and polls secret-free status; it does not hold a
+token or implement OAuth. A successful login enables discovery, but every model
+grant and Web tool route remains independently admitted by Cloud.
+
+The explicit local bypass stops before IAM discovery and keeps the existing
+local catalogue, Workspace BYOK and builtin-tool providers available. Cloud
+login authorizes identity; each brokered model or hosted tool still requires
+its own exact capability and commercial admission.
 
 `GET /v1/config/capabilities` is the UI/runtime contract for these axes. When
 Cloud models are disabled, brokered rows already persisted locally are projected
@@ -236,8 +267,8 @@ by a timer; model limits such as context window and maximum output tokens are
 optional, provenance-carrying facts, with manual values retained when APIs do not
 publish trustworthy values.
 
-Cloud discovery is an authenticated on-demand API projection, not a timer and
-not a second writable local catalog. It may publish optional context/output
+Cloud discovery is an authenticated startup and explicit-refresh API projection,
+not a timer and not a second writable local catalog. It may publish optional context/output
 limits with `brokered` field provenance. Unknown remains absent, stale Cloud
 facts may clear only prior `brokered` facts, and manually authored facts win.
 Capabilities that vary by protocol remain Offering/endpoint evidence rather
@@ -248,6 +279,16 @@ Billing, subscription, price, quota, usage and charge remain entirely in
 public attributes, local Profile policy, and opaque grant correlation; it never
 stores Cloud internal routes, Provider credentials, prices, balances or usage
 ledger facts.
+
+Cloud-funded `web_search` and `web_fetch` reuse the builtin Web provider catalog
+instead of introducing Cloud-specific tool ids. The open infrastructure adapter
+owns request normalization and Gateway invocation behind one injected exact-
+route resolver. Hosted Workers resolve with their run claim; a signed-in local
+product resolves with its user credential and operation correlation. Both
+receive only a short-lived route-scoped capability, and the Cloud provider is
+discoverable only when Cloud returns an eligible route. Direct/BYOK providers,
+OpenRouter server tools, and Cloud routes therefore remain peer targets in the
+same ordered route plan.
 
 Names follow `awaken-management-contract` (our Agents-product sibling), not raw
 oversight-next; the execution side keeps our existing `ResolvedSpec` /

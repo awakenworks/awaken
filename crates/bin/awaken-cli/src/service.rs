@@ -122,6 +122,33 @@ async fn run_service_with_adapters(
     }
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
+    if deployment.mode == crate::config::OperatingMode::Local
+        && deployment.role == Role::AllInOne
+        && deployment.identity_mode == awaken_control::ManagementIdentityMode::AwakenCloud
+    {
+        let cloud_iam = deployment.cloud_iam.clone();
+        let no_browser = deployment.no_browser;
+        tokio::task::spawn_blocking(move || {
+            crate::identity::ensure_cloud_login(
+                &cloud_iam,
+                awaken_iam_client::CredentialCache::open(),
+                |url| {
+                    eprintln!("\n  Sign in   {url}\n");
+                    if no_browser {
+                        return Ok(());
+                    }
+                    if let Err(error) = open_browser(url) {
+                        eprintln!(
+                            "awaken: could not open sign-in in a browser ({error}); open the URL above manually"
+                        );
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .await
+        .map_err(|error| format!("Awaken Cloud login task failed: {error}"))??;
+    }
     let seal_key = role_seal_key(&deployment)?;
     let local_worker = if awaken_service_lifecycle::startup_requires(
         role.startup_role(),
