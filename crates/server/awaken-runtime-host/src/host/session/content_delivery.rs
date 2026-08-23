@@ -6,12 +6,12 @@
 use super::*;
 
 impl SharedHost {
-    fn session_allows_filesystem_tools(
+    fn session_allows_agent_tool(
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        tool: &str,
     ) -> bool {
-        const FILESYSTEM_TOOLS: [&str; 6] = ["bash", "read", "write", "edit", "glob", "grep"];
         let session_tools = self
             .session_slots
             .read(thread, |slot| slot.tools.clone())
@@ -37,17 +37,35 @@ impl SharedHost {
                 )
             })
         }) {
-            return FILESYSTEM_TOOLS
-                .iter()
-                .any(|name| agent.policy_for(name).enabled);
+            return agent.policy_for(tool).enabled;
         }
         published_snapshot.is_none_or(|snapshot| {
             snapshot
                 .resolved_spec
                 .tool_descriptors
                 .iter()
-                .any(|descriptor| FILESYSTEM_TOOLS.contains(&descriptor.id.as_str()))
+                .any(|descriptor| descriptor.id == tool)
         })
+    }
+
+    pub(crate) fn session_allows_filesystem_tools(
+        &self,
+        thread: &str,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> bool {
+        ["bash", "read", "write", "edit", "glob", "grep"]
+            .into_iter()
+            .any(|tool| self.session_allows_agent_tool(thread, published_snapshot, tool))
+    }
+
+    /// Repository Skill discovery follows Anthropic's `read` capability rule,
+    /// which is intentionally narrower than general filesystem capability.
+    pub(crate) fn session_allows_repository_skill_discovery(
+        &self,
+        thread: &str,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> bool {
+        self.session_allows_agent_tool(thread, published_snapshot, "read")
     }
 
     pub(super) fn select_content_delivery(

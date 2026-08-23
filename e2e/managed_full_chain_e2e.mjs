@@ -2,7 +2,7 @@
 // real provider wire. A single session configures a memory_store + a github_repository
 // resource via the API, is offered a skill, and has out-of-band memory extraction —
 // then one natural-language turn drives the whole ADR-0038/0036 loop:
-//   configure (API) → apply (sandbox mounts) → NL turn → use a skill →
+//   configure (API) → apply (sandbox mounts) → NL turn → read and use a skill →
 //   write the memory store → commit the repo → produce an output artifact →
 //   retrieve the artifact via GET /v1/files → release once to reconcile/publish.
 // Plus: the extractor sub-run saves a cross-session memory after the turn.
@@ -15,7 +15,7 @@
 // C1 authoritative Skill/Memory/Repository configuration exists; C2 Session
 // freezes those resources and env_local; C3 the real provider turn completes;
 // C4 gated mutations are approved; C5 release/reconciliation succeeds. Effects:
-// E1 Skill is offered and invoked; E2 Memory and Repository mutations publish;
+// E1 attached and repository-local Skills are announced and read; E2 Memory and Repository mutations publish;
 // E3 the output is one downloadable File whose bytes are exact; E4 extraction
 // persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
 // changed bytes append one version. Any missing cause must fail the scenario,
@@ -60,6 +60,7 @@ const README = 'SEED_README_FULLCHAIN';
 const REPO_MARKER = 'REPO_FULLCHAIN_8830'; // must match the fullChain behavior
 const MEMO_MARKER = 'MEMO_FULLCHAIN_5521';
 const ARTIFACT_MARKER = 'ARTIFACT_FULLCHAIN_9142';
+const REPOSITORY_SKILL_MARKER = 'REPOSITORY-SKILL-FULLCHAIN-3017';
 
 const client = () => new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,6 +75,11 @@ function seedRemote() {
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, README);
+  fs.mkdirSync(`${work}/.claude/skills/repository-guide`, { recursive: true });
+  fs.writeFileSync(
+    `${work}/.claude/skills/repository-guide/SKILL.md`,
+    `---\nname: repository-guide\ndescription: repository-local guidance\n---\n${REPOSITORY_SKILL_MARKER}`,
+  );
   git(['add', '-A'], work);
   git(['commit', '-q', '-m', 'seed'], work);
   const bare = `${TMP}/remote.git`;
@@ -242,11 +248,29 @@ async function main() {
       await sleep(200);
     }
 
-    // 4) Skill was discovered + used.
+    // 4) Attached and repository-local Skills share the sole filesystem path.
+    // Causes: C6 the Session has filesystem tools and one frozen attached Skill;
+    // C7 the mounted repository contains exact
+    // `.claude/skills/<name>/SKILL.md`; C8 `read` is enabled. Effects: E6 both
+    // metadata entries are announced and each body arrives through ordinary
+    // `read`; E7 neither semantic Skill tool is exposed or called.
+    // Decision rule F6=C6+C7+C8=>E6+E7. Startup timing and same-name repository
+    // combinations remain owned by the lower-level decision-table test.
     const toolNames = evs.filter((e) => e.type === 'agent.tool_use').map((e) => e.name);
-    assert.ok(toolNames.includes('list_skills'), `skill discovery ran: ${JSON.stringify(toolNames)}`);
-    assert.ok(toolNames.includes('Skill'), 'the greet skill was activated via the Skill tool');
-    pass('skill discovered + activated (list_skills → Skill) in the same conversation');
+    assert.deepEqual(toolNames.slice(0, 2), ['read', 'read'], 'both Skill bodies use ordinary read');
+    assert.ok(
+      !toolNames.includes('list_skills') && !toolNames.includes('Skill'),
+      `filesystem delivery has no semantic parallel path: ${JSON.stringify(toolNames)}`,
+    );
+    const skillResults = JSON.stringify(
+      evs.filter((event) => event.type === 'agent.tool_result').map((event) => event.content),
+    );
+    assert.ok(skillResults.includes('GREETING-FROM-SKILL'), 'attached Skill body reached read result');
+    assert.ok(
+      skillResults.includes(REPOSITORY_SKILL_MARKER),
+      'repository-local Skill body reached read result from its discovered path',
+    );
+    pass('attached + repository-local Skills were discovered and read through one filesystem path');
 
     // 5) Memory store write-back landed.
     assert.ok(memContent.includes(MEMO_MARKER), `memory-store write-back landed: ${JSON.stringify(memContent)}`);

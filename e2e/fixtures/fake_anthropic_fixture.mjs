@@ -466,7 +466,7 @@ export const BEHAVIORS = {
     return text(`Echo: ${prompt}`);
   },
   // FullChainModel (the native combined-chain e2e): one conversation that drives the
-  // whole ADR-0038/0036 loop — discover+use a skill, write into the mounted memory
+  // whole ADR-0038/0036 loop — read+use a filesystem Skill, write into the mounted memory
   // store, write into the cloned git repo, and produce an output artifact — plus its
   // out-of-band extractor sub-run that saves a memory. Sequenced by tool-result count
   // so it needs no transcript parsing; every write is host-gated and harvested.
@@ -496,9 +496,20 @@ export const BEHAVIORS = {
       });
     }
     const results = toolResults(parsed);
+    const managedSkillPaths = systemText(parsed)
+      .split('`')
+      .filter((part) => part.endsWith('/SKILL.md'));
+    const attachedSkillPath = managedSkillPaths.find((part) => part.includes('.skills/'));
+    const repositorySkillPath = managedSkillPaths.find((part) => part.includes('/.claude/skills/'));
     switch (results.length) {
-      case 0: return tool('ls', 'list_skills', {});
-      case 1: return tool('sk', 'Skill', { skill: catalogSkillId(results[0]) });
+      case 0: {
+        if (!attachedSkillPath) return text('missing attached filesystem Skill path');
+        return tool('sk-read-attached', 'read', { path: attachedSkillPath });
+      }
+      case 1: {
+        if (!repositorySkillPath) return text('missing repository filesystem Skill path');
+        return tool('sk-read-repository', 'read', { path: repositorySkillPath });
+      }
       // Write into the mounted MemoryStore directory.
       case 2: return tool('wm', 'write', { path: '/mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
       // Write into the cloned repo working tree (host commits + pushes on harvest).
@@ -507,7 +518,7 @@ export const BEHAVIORS = {
       case 4: return tool('wa', 'write', { path: 'outputs/result.txt', content: 'ARTIFACT_FULLCHAIN_9142' });
       // Commit the repo edit in the jail so the host push-back has something to ship.
       case 5: return tool('wc', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add CHAIN.txt'" });
-      default: return text('done: used skill greet, wrote memory + repo + artifact');
+      default: return text('done: used attached and repository skills, wrote memory + repo + artifact');
     }
   },
   // SkillDrivingModel supports the one delivery selected by Session capability:

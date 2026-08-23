@@ -74,6 +74,26 @@ struct SnapshotSkillSource {
     files: Vec<SkillFile>,
 }
 
+fn snapshot_repository_skill_files(
+    env: &crate::session_environment::SessionEnvironment,
+    roots: &[String],
+) -> Vec<SkillFile> {
+    roots
+        .iter()
+        .flat_map(|root| {
+            env.scan_skill_dir(root)
+                .into_iter()
+                .map(move |file| SkillFile {
+                    // The path qualifies identity so same-named Skills from
+                    // multiple repositories remain independently visible.
+                    id: format!("repository:{root}:{}", file.id),
+                    content: file.content,
+                    dir: Some(file.dir),
+                })
+        })
+        .collect()
+}
+
 pub(crate) fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
     let declared = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), content);
     declared.environment == SkillEnvironment::Filesystem
@@ -192,9 +212,25 @@ pub(crate) async fn wire_skills(
     fork_base: PathBuf,
     placement: SkillForkPlacement,
     skills_subdir: &str,
+    repository_skill_roots: &[String],
     execution: Arc<crate::store::HostCommit>,
     materialize_delivered_files: bool,
 ) -> Result<Option<SkillWiring>, String> {
+    if let Some(env) = &env {
+        env.register_skill_dir(skills_subdir);
+        for root in repository_skill_roots {
+            env.register_skill_dir(root);
+        }
+        if let Err(error) = env.refresh_skills().await {
+            tracing::warn!(error = %error, "failed to seed container skill catalog");
+        }
+    }
+    // Repository discovery is frozen once with the Session environment. A
+    // later commit or in-sandbox write cannot mutate the announced catalog;
+    // the next Session receives a new snapshot from its own checkout.
+    let repository_files = env.as_ref().map_or_else(Vec::new, |env| {
+        snapshot_repository_skill_files(env, repository_skill_roots)
+    });
     // Store availability is not a capability grant. Offer the tools only when
     // this exact Session has a static, external, or delivered Skill. A later Run
     // reloads the canonical catalog and may surface newly selected content; an
@@ -202,6 +238,7 @@ pub(crate) async fn wire_skills(
     if configured.is_empty()
         && external_registries.is_empty()
         && delivered.as_ref().is_none_or(Vec::is_empty)
+        && repository_files.is_empty()
     {
         return Ok(None);
     }
@@ -214,12 +251,6 @@ pub(crate) async fn wire_skills(
             "filesystem Skill `{}` has no materialized directory",
             skill.id
         ));
-    }
-    if let Some(env) = &env {
-        env.register_skill_dir(skills_subdir);
-        if let Err(error) = env.refresh_skills().await {
-            tracing::warn!(error = %error, "failed to seed container skill catalog");
-        }
     }
     // `.skills` is one complete runtime-owned projection. Clear it before a
     // rebuild that carries either frozen bundles or config-only Skills, then
@@ -337,7 +368,17 @@ pub(crate) async fn wire_skills(
         )));
     }
     registries.extend(external_registries);
-    if let Some(env) = &env {
+    if !repository_files.is_empty() {
+        registries.push(Arc::new(SourceSkillRegistry::new(
+            Arc::new(SnapshotSkillSource {
+                files: repository_files,
+            }),
+            SkillProvenance::Repository,
+        )));
+    }
+    if repository_skill_roots.is_empty()
+        && let Some(env) = &env
+    {
         registries.push(Arc::new(SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
                 env: env.clone(),
@@ -612,5 +653,114 @@ mod tests {
         assert_eq!(found.dir.as_deref(), Some("recipes/bake"));
 
         env.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repository_skill_snapshot_is_startup_scoped_and_path_qualified() {
+        // Repository discovery cause/effect table:
+        // R0 read-disabled caller supplies no roots -> no repository Skills;
+        // R1 an attached Skill and two mounted repositories contain the same
+        // display name -> all paths remain visible; R2 a repository changes after the snapshot
+        // -> the current Session retains its original catalog; R3 a new Session
+        // snapshot -> updated and newly added Skills become visible.
+        // Invariants: exact `.claude/skills/<dir>/SKILL.md` scanning remains owned
+        // by the Sandbox provider, while this host snapshot owns startup timing.
+        let base = std::env::temp_dir().join(format!(
+            "awaken-repository-skill-snapshot-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(&base)
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        ));
+        let roots =
+            ["workspace/a/.claude/skills", "workspace/b/.claude/skills"].map(str::to_string);
+        for (root, body) in roots.iter().zip(["A-v1", "B-v1"]) {
+            let directory = base.join("t").join(root).join("shared");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("SKILL.md"),
+                format!("---\nname: Shared\ndescription: shared\n---\n{body}"),
+            )
+            .unwrap();
+        }
+
+        assert!(
+            snapshot_repository_skill_files(env.as_ref(), &[]).is_empty(),
+            "R0"
+        );
+        let frozen = Arc::new(SourceSkillRegistry::new(
+            Arc::new(SnapshotSkillSource {
+                files: snapshot_repository_skill_files(env.as_ref(), &roots),
+            }),
+            SkillProvenance::Repository,
+        ));
+        let initial = frozen.list();
+        assert_eq!(initial.len(), 2, "R1 same display name keeps both paths");
+        assert!(initial.iter().all(|skill| skill.name == "Shared"));
+        assert!(
+            initial
+                .iter()
+                .all(|skill| skill.provenance == SkillProvenance::Repository)
+        );
+        assert_ne!(initial[0].id, initial[1].id, "R1 path-qualified identity");
+        assert_ne!(initial[0].dir, initial[1].dir, "R1 distinct sandbox paths");
+        let prompt = managed_filesystem_prompt(frozen.as_ref()).expect("R1 prompt metadata");
+        assert_eq!(prompt.matches("- Shared:").count(), 2, "R1 both announced");
+        assert!(prompt.contains("workspace/a/.claude/skills/shared/SKILL.md"));
+        assert!(prompt.contains("workspace/b/.claude/skills/shared/SKILL.md"));
+        assert!(
+            !prompt.contains("A-v1") && !prompt.contains("B-v1"),
+            "R1 prompt exposes metadata and paths, not instruction bodies"
+        );
+        let mut attached = SkillSpec::new("attached-shared", "Shared", "shared", "ATTACHED");
+        attached.dir = Some(".skills/attached-shared".into());
+        let combined = CompositeSkillRegistry::new(vec![
+            Arc::new(FixedSkillRegistry::from_specs([attached])),
+            frozen.clone(),
+        ]);
+        let combined_prompt =
+            managed_filesystem_prompt(&combined).expect("R1 combined prompt metadata");
+        assert_eq!(
+            combined_prompt.matches("- Shared:").count(),
+            3,
+            "R1 attached and both repository paths coexist"
+        );
+        assert!(combined_prompt.contains(".skills/attached-shared/SKILL.md"));
+
+        let a = base.join("t/workspace/a/.claude/skills/shared/SKILL.md");
+        std::fs::write(&a, "---\nname: Shared\ndescription: shared\n---\nA-v2").unwrap();
+        let late = base.join("t/workspace/a/.claude/skills/late");
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(
+            late.join("SKILL.md"),
+            "---\nname: Late\ndescription: late\n---\nLATE",
+        )
+        .unwrap();
+        let still_frozen = frozen.list();
+        assert_eq!(still_frozen.len(), 2, "R2 no mid-Session discovery");
+        assert!(still_frozen.iter().any(|skill| skill.body.contains("A-v1")));
+        assert!(
+            still_frozen
+                .iter()
+                .all(|skill| !skill.body.contains("A-v2"))
+        );
+
+        let next = SourceSkillRegistry::new(
+            Arc::new(SnapshotSkillSource {
+                files: snapshot_repository_skill_files(env.as_ref(), &roots),
+            }),
+            SkillProvenance::Repository,
+        )
+        .list();
+        assert_eq!(next.len(), 3, "R3 new Session snapshot");
+        assert!(next.iter().any(|skill| skill.body.contains("A-v2")));
+        assert!(next.iter().any(|skill| skill.name == "Late"));
+
+        env.dispose().await.unwrap();
+        std::fs::remove_dir_all(base).ok();
     }
 }

@@ -719,6 +719,122 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
     );
 }
 
+#[tokio::test]
+async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
+    // Cause/effect graph: C1=bwrap is available; C2=two Stores are mounted at
+    // distinct children of `/mnt/memory`; C3=one is ReadOnly and one ReadWrite.
+    // Effects: E1=both seeds are readable; E2=writing inside the RO Store fails;
+    // E3=writing inside the RW Store succeeds and harvests; E4=writing to the
+    // parent `/mnt/memory` outside either Store fails; E5=Store identities and
+    // durable bytes remain isolated.
+    //
+    // | Rule | bwrap | access | target                    | outcome |
+    // | RO0  | no    | -      | -                         | gated skip |
+    // | RO1  | yes   | RO     | notes/note.md read         | E1 |
+    // | RO2  | yes   | RO     | notes/note.md write        | E2,E5 |
+    // | RW1  | yes   | RW     | work/work.md write         | E3,E5 |
+    // | PB1  | yes   | mixed  | parent outside Store write | E4,E5 |
+    // Constraint: the Store owns only its declared child mount; its parent is
+    // not an ambient persistence or scratch surface.
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(VolatileMemoryRepository::new());
+    fs.create("readonly", "/note.md", "v1").await.unwrap();
+    fs.create("writable", "/work.md", "w1").await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path())
+        .with_memory_mounter(Arc::new(MemoryStoreMounter::copy_only(fs.clone())));
+    let mut s = spec("t-nsmem-ro");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "notes".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "readonly".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/notes".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "work".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "writable".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/work".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+
+    let sandbox = provider.create(&s).await.unwrap();
+    let read = sandbox
+        .spawn(sh(
+            "cat /mnt/memory/notes/note.md > /mnt/session/outputs/note.txt",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read.wait().await.unwrap().code, Some(0), "RO1/E1");
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/note.txt"))
+        .expect("RO1 output");
+    assert_eq!(sandbox.read_artifact(&artifact.id).await.unwrap(), b"v1");
+
+    let inside = sandbox
+        .spawn(sh("printf changed > /mnt/memory/notes/note.md"))
+        .await
+        .unwrap();
+    assert_ne!(inside.wait().await.unwrap().code, Some(0), "RO2/E2");
+    let writable = sandbox
+        .spawn(sh("printf w2 > /mnt/memory/work/work.md"))
+        .await
+        .unwrap();
+    assert_eq!(writable.wait().await.unwrap().code, Some(0), "RW1/E3");
+    let parent = sandbox
+        .spawn(sh("printf escape > /mnt/memory/outside.md"))
+        .await
+        .unwrap();
+    assert_ne!(parent.wait().await.unwrap().code, Some(0), "PB1/E4");
+    sandbox.dispose().await.unwrap();
+
+    assert_eq!(
+        fs.get_by_path("readonly", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v1"),
+        "RO2/E5"
+    );
+    assert_eq!(
+        fs.get_by_path("writable", "/work.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("w2"),
+        "RW1/E3,E5"
+    );
+    assert!(
+        !tmp.path().join("t-nsmem-ro/mnt/memory/outside.md").exists(),
+        "PB1/E5"
+    );
+}
+
 /// The bwrap FUSE-splice (ADR-0053 item 2): a memory store FUSE-mounted on the host is
 /// bound into the bwrap mount+user namespace, so the agent reads/writes it LIVE inside
 /// the sandbox (write-through), not a harvested copy. This proves the host FUSE mount

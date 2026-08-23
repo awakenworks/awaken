@@ -12133,6 +12133,63 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
 }
 
 #[test]
+fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
+    // Cause/effect graph: C1 an Agent toolset defaults disabled; C2 `bash` is
+    // explicitly enabled; C3 `read` is disabled or enabled. E1 general
+    // filesystem delivery remains possible from C2; E2 repository Skill
+    // discovery is denied for C3=false and admitted for C3=true.
+    //
+    // Decision table:
+    // | Rule | bash | read | filesystem | repository discovery |
+    // | R1   | on   | off  | yes        | no                   |
+    // | R2   | on   | on   | yes        | yes                  |
+    // Constraint: Anthropic repository discovery authority is the exact
+    // `read` policy; another filesystem capability cannot widen it.
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let enabled = ToolExecutionPolicy {
+        enabled: true,
+        permission: ToolPermissionRequirement::AlwaysAllow,
+    };
+    host.session_slots.update("repository-policy", |slot| {
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: vec![ToolPolicyOverride::new("bash", enabled)],
+            }],
+            client_tools: Vec::new(),
+        });
+    });
+
+    assert!(
+        host.session_allows_filesystem_tools("repository-policy", None),
+        "R1 filesystem delivery"
+    );
+    assert!(
+        !host.session_allows_repository_skill_discovery("repository-policy", None),
+        "R1 exact read denial"
+    );
+
+    host.session_slots.update("repository-policy", |slot| {
+        slot.tools.as_mut().expect("Session tools").toolsets[0]
+            .overrides
+            .push(ToolPolicyOverride::new("read", enabled));
+    });
+    assert!(
+        host.session_allows_repository_skill_discovery("repository-policy", None),
+        "R2 exact read admission"
+    );
+}
+
+#[test]
 fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.

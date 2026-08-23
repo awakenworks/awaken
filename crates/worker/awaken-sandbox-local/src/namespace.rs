@@ -80,6 +80,16 @@ pub struct RenderMount {
     pub host: PathBuf,
     pub dest: String,
     pub read_only: bool,
+    pub boundary: RenderMountBoundary,
+}
+
+/// Namespace policy owned by the mount's domain, kept separate from byte access.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RenderMountBoundary {
+    #[default]
+    General,
+    /// A MemoryStore child bind whose `/mnt/memory` parent must remain read-only.
+    ManagedMemoryStore,
 }
 
 /// Everything the pure launcher renderers need. Host paths appear only here (a
@@ -177,6 +187,7 @@ async fn realize_memory_mount(
             host: host.to_path_buf(),
             dest: req.mount_path.clone(),
             read_only: req.access == pc::MountAccess::ReadOnly,
+            boundary: RenderMountBoundary::ManagedMemoryStore,
         },
         pc::RealizedMount {
             mount_id: req.mount_id.clone(),
@@ -221,6 +232,38 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
     a.extend(["--proc", "/proc"].into_iter().map(s));
     a.extend(["--dev", "/dev"].into_iter().map(s));
     a.extend(["--tmpfs", "/tmp"].into_iter().map(s));
+    let managed_memory_destinations = input
+        .mounts
+        .iter()
+        .filter(|mount| mount.boundary == RenderMountBoundary::ManagedMemoryStore)
+        .map(|mount| sandbox_mount_destination(&mount.dest))
+        .filter(|dest| dest.starts_with("/mnt/memory/"))
+        .collect::<Vec<_>>();
+    if !managed_memory_destinations.is_empty() {
+        // Managed Agents reserves the parent as a read-only directory while
+        // each named Store bind independently carries its declared RO/RW mode.
+        // Create every bind target before sealing the parent; later child bind
+        // mounts may still be writable without widening the parent directory.
+        a.extend([s("--dir"), s("/mnt")]);
+        // `--remount-ro` requires a mount point, so the reserved parent is an
+        // empty tmpfs rather than a directory on bubblewrap's root mount.
+        a.extend([s("--tmpfs"), s("/mnt/memory")]);
+        let mut directories = std::collections::BTreeSet::new();
+        for destination in &managed_memory_destinations {
+            let mut current = String::new();
+            for component in destination.trim_start_matches('/').split('/') {
+                current.push('/');
+                current.push_str(component);
+                if current.starts_with("/mnt/memory/") {
+                    directories.insert(current.clone());
+                }
+            }
+        }
+        for directory in directories {
+            a.extend([s("--dir"), directory]);
+        }
+        a.extend([s("--remount-ro"), s("/mnt/memory")]);
+    }
     // `/etc/resolv.conf` is commonly a symlink into one of these `/run`
     // directories. Binding `/etc` alone leaves a dangling link and makes every
     // otherwise-unrestricted namespace fail DNS with EAI_AGAIN. The `-try`
@@ -622,6 +665,7 @@ impl NamespaceProvider {
                 host: host.clone(),
                 dest: req.mount_path.clone(),
                 read_only: req.access == pc::MountAccess::ReadOnly,
+                boundary: RenderMountBoundary::General,
             });
             realized.push(pc::RealizedMount {
                 mount_id: req.mount_id.clone(),
@@ -1184,6 +1228,7 @@ impl pc::Sandbox for NamespaceSandbox {
             host,
             dest: req.mount_path.clone(),
             read_only: req.access == pc::MountAccess::ReadOnly,
+            boundary: RenderMountBoundary::General,
         });
         Ok(pc::RealizedMount {
             mount_id: req.mount_id,
@@ -1793,11 +1838,13 @@ mod tests {
                 host: PathBuf::from("/h/in"),
                 dest: "/workspace/in.txt".into(),
                 read_only: true,
+                boundary: RenderMountBoundary::General,
             },
             RenderMount {
                 host: PathBuf::from("/h/rw"),
                 dest: ".mnt/data".into(),
                 read_only: false,
+                boundary: RenderMountBoundary::General,
             },
         ];
         let env = vec![("TZ".to_string(), "UTC".to_string())];
@@ -1814,6 +1861,44 @@ mod tests {
         assert!(j.contains("--ro-bind /h/in /workspace/in.txt"));
         assert!(j.contains("--bind /h/rw /workspace/.mnt/data"));
         assert!(!j.contains("UTC"), "environment values stay out of argv");
+    }
+
+    #[test]
+    fn bubblewrap_seals_managed_memory_parent_before_binding_store_children() {
+        // Cause/effect graph: C1 a typed ManagedMemoryStore mount targets a
+        // child of `/mnt/memory`; C2 the child is ReadWrite. E1 the renderer
+        // creates the child target; E2 it seals the parent read-only first; E3
+        // it then binds the Store writable at only that child.
+        // Decision rule MM1: C1+C2 => E1+E2+E3. A General mount is covered by
+        // the adjacent renderer test and must not trigger this boundary.
+        let ws = PathBuf::from("/w");
+        let out = PathBuf::from("/o");
+        let mounts = vec![RenderMount {
+            host: PathBuf::from("/host/notes"),
+            dest: "/mnt/memory/notes".into(),
+            read_only: false,
+            boundary: RenderMountBoundary::ManagedMemoryStore,
+        }];
+        let argv = vec![s("true")];
+        let rendered = bubblewrap_argv(&input(
+            &ws,
+            &out,
+            &mounts,
+            &[],
+            &pc::NetworkPolicy::Unrestricted,
+            &argv,
+        ));
+        let joined = rendered.join(" ");
+        assert!(joined.contains("--dir /mnt/memory/notes"), "MM1/E1");
+        let seal = rendered
+            .windows(2)
+            .position(|args| args == ["--remount-ro", "/mnt/memory"])
+            .expect("MM1/E2 parent seal");
+        let bind = rendered
+            .windows(3)
+            .position(|args| args == ["--bind", "/host/notes", "/mnt/memory/notes"])
+            .expect("MM1/E3 child bind");
+        assert!(seal < bind, "MM1 parent is sealed before child bind");
     }
 
     #[test]
@@ -1867,11 +1952,13 @@ mod tests {
                 host: PathBuf::from("/host/w\"s/readonly"),
                 dest: "/workspace/readonly".into(),
                 read_only: true,
+                boundary: RenderMountBoundary::General,
             },
             RenderMount {
                 host: PathBuf::from("/host/rw"),
                 dest: "/data".into(),
                 read_only: false,
+                boundary: RenderMountBoundary::General,
             },
         ];
         let argv = vec![s("true")];
