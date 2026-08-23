@@ -174,8 +174,10 @@ pub(super) async fn prepare_control_routers(
     let brokered_client = brokered_inference_client(
         cloud_models_enabled && model_supply.needs_interactive_brokered_client(),
         remote_iam.as_ref(),
+        process.cloud_developer_key_file.as_deref(),
         process.cloud_api_base_url.as_deref(),
         &execution_workspace,
+        &local_client_instance_id(stores.workspace_root.as_deref()),
     );
     let model_services = resolve_model_services(
         model_supply,

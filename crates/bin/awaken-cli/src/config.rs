@@ -561,50 +561,7 @@ impl ResolvedDeployment {
                     .to_owned(),
             );
         }
-        if file.cloud_iam_service_token.is_some() && file.cloud_iam_service_token_file.is_some() {
-            return Err(
-                "configure exactly one of cloud_iam_service_token or cloud_iam_service_token_file"
-                    .to_owned(),
-            );
-        }
-        if mode == OperatingMode::Server
-            && identity_mode == awaken_control::ManagementIdentityMode::AwakenCloud
-            && file.cloud_iam_service_token_file.is_none()
-        {
-            return Err(
-                "server-mode Awaken Cloud identity requires cloud_iam_service_token_file"
-                    .to_owned(),
-            );
-        }
-        let cloud_iam = CloudIamConfig {
-            base_url: file
-                .cloud_iam_url
-                .clone()
-                .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
-            inference_base_url: file
-                .cloud_api_url
-                .clone()
-                .unwrap_or_else(|| "https://api.awakenworks.com".to_owned()),
-            audience: file
-                .cloud_iam_audience
-                .clone()
-                .unwrap_or_else(|| "awaken-runtime".to_owned()),
-            issuer: file
-                .cloud_iam_issuer
-                .clone()
-                .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
-            oauth_client_id: file
-                .cloud_oauth_client_id
-                .clone()
-                .unwrap_or_else(|| "awaken-desktop".to_owned()),
-            oauth_redirect_uri: file
-                .cloud_oauth_redirect_uri
-                .clone()
-                .unwrap_or_else(|| "http://127.0.0.1:34115/callback".to_owned()),
-            access_token: file.cloud_access_token.clone(),
-            service_token: file.cloud_iam_service_token.clone(),
-            service_token_file: file.cloud_iam_service_token_file.clone(),
-        };
+        let cloud_iam = CloudIamConfig::resolve(&file, mode, identity_mode)?;
         let suite_hub_url = file
             .suite_hub_url
             .as_deref()
@@ -688,7 +645,7 @@ mod tests {
             overrides,
             Some(PathBuf::from("/home/dev")),
             PathBuf::from("/home/dev/.awaken/config.toml"),
-            file,
+            file.clone(),
         )
         .unwrap()
     }
@@ -1989,9 +1946,20 @@ mod tests {
             ConfigOverrides::default(),
             Some(PathBuf::from("/home/dev")),
             PathBuf::from("/home/dev/.awaken/config.toml"),
-            file,
+            file.clone(),
         )
         .unwrap_err();
         assert!(error.contains("configure exactly one"));
+
+        file.cloud_iam_service_token = None;
+        file.cloud_access_token = Some("inline-user-token-is-forbidden".to_owned());
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            file,
+        )
+        .unwrap_err();
+        assert!(error.contains("forbids inline Cloud credentials"));
     }
 }

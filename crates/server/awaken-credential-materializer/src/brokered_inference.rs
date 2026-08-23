@@ -159,6 +159,7 @@ pub struct HttpBrokeredInferenceClient {
     http: reqwest::Client,
     base_url: String,
     access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
+    workspace_id: String,
     client_instance_id: String,
 }
 
@@ -167,6 +168,7 @@ impl std::fmt::Debug for HttpBrokeredInferenceClient {
         formatter
             .debug_struct("HttpBrokeredInferenceClient")
             .field("base_url", &self.base_url)
+            .field("workspace_id", &self.workspace_id)
             .field("client_instance_id", &self.client_instance_id)
             .finish_non_exhaustive()
     }
@@ -176,10 +178,12 @@ impl HttpBrokeredInferenceClient {
     pub fn new(
         base_url: impl Into<String>,
         access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
+        workspace_id: impl Into<String>,
         client_instance_id: impl Into<String>,
     ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         let client_instance_id = client_instance_id.into();
+        let workspace_id = workspace_id.into();
         let parsed = reqwest::Url::parse(&base_url)
             .map_err(|error| format!("invalid Cloud inference URL: {error}"))?;
         let loopback_http = parsed.scheme() == "http"
@@ -196,11 +200,15 @@ impl HttpBrokeredInferenceClient {
         if client_instance_id.trim().is_empty() {
             return Err("Cloud client instance id must not be empty".into());
         }
+        if workspace_id.trim().is_empty() {
+            return Err("Cloud Workspace id must not be empty".into());
+        }
         resolve_access_token(access_token_source.as_ref())?;
         Ok(Self {
             http: reqwest::Client::new(),
             base_url,
             access_token_source,
+            workspace_id,
             client_instance_id,
         })
     }
@@ -302,6 +310,7 @@ fn resolve_access_token(
 
 #[derive(serde::Serialize)]
 struct CreateGrantBody<'a> {
+    workspace_id: &'a str,
     client_instance_id: &'a str,
     local_run_correlation: Option<&'a str>,
     provider: &'a str,
@@ -328,6 +337,7 @@ struct BrokeredToolRoute {
 
 #[derive(serde::Serialize)]
 struct CreateToolGrantBody<'a> {
+    workspace_id: &'a str,
     client_instance_id: &'a str,
     local_run_correlation: Option<&'a str>,
     operation_id: &'a str,
@@ -455,6 +465,7 @@ impl awaken_ext_builtin_tools::ManagedWebRouteResolver for HttpBrokeredInference
             .send_with_access_token(|token| {
                 self.request(reqwest::Method::POST, "/v1/inference/tools/grants", token)
                     .json(&CreateToolGrantBody {
+                        workspace_id: &self.workspace_id,
                         client_instance_id: &self.client_instance_id,
                         local_run_correlation: Some(&run.0),
                         operation_id: &context.operation_id,
@@ -519,6 +530,7 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
                 self.request(reqwest::Method::POST, "/v1/inference/grants", token)
                     .header("Idempotency-Key", &request.idempotency_key)
                     .json(&CreateGrantBody {
+                        workspace_id: &self.workspace_id,
                         client_instance_id: &self.client_instance_id,
                         local_run_correlation: request.local_run_correlation.as_deref(),
                         provider: &request.provider,
@@ -1005,6 +1017,7 @@ mod tests {
         let client = HttpBrokeredInferenceClient::new(
             base_url,
             static_access_token("cloud-access"),
+            "workspace-tools",
             "desktop-tools",
         )
         .unwrap();
@@ -1053,6 +1066,10 @@ mod tests {
             "W2"
         );
         assert!(requests[1].contains("\"operation_id\":\"op-7\""), "W2");
+        assert!(
+            requests[1].contains("\"workspace_id\":\"workspace-tools\""),
+            "W2"
+        );
         assert!(
             requests[1].contains("authorization: Bearer cloud-access"),
             "W2"
@@ -1214,6 +1231,7 @@ mod tests {
             HttpBrokeredInferenceClient::new(
                 "http://api.awakenworks.com",
                 static_access_token("secret-token"),
+                "workspace-1",
                 "client-1",
             )
             .is_err()
@@ -1221,6 +1239,7 @@ mod tests {
         let client = HttpBrokeredInferenceClient::new(
             "https://api.awakenworks.com/",
             static_access_token("secret-token"),
+            "workspace-1",
             "client-1",
         )
         .unwrap();
@@ -1231,6 +1250,7 @@ mod tests {
             HttpBrokeredInferenceClient::new(
                 "http://127.0.0.1:8080",
                 static_access_token("local-emulator-token"),
+                "workspace-1",
                 "client-1",
             )
             .is_ok()
@@ -1252,6 +1272,7 @@ mod tests {
         let current = HttpBrokeredInferenceClient::new(
             current_url,
             static_access_token("current"),
+            "workspace-1",
             "client-1",
         )
         .unwrap();
@@ -1266,6 +1287,7 @@ mod tests {
         let rotating = HttpBrokeredInferenceClient::new(
             rotating_url,
             scripted_access_tokens([Ok("old"), Ok("old"), Ok("new")]),
+            "workspace-1",
             "client-1",
         )
         .unwrap();
@@ -1280,6 +1302,7 @@ mod tests {
         let unchanged = HttpBrokeredInferenceClient::new(
             unchanged_url,
             static_access_token("same"),
+            "workspace-1",
             "client-1",
         )
         .unwrap();
@@ -1295,6 +1318,7 @@ mod tests {
         let unavailable = HttpBrokeredInferenceClient::new(
             "http://127.0.0.1:9",
             scripted_access_tokens([Ok("initial"), Err("expired")]),
+            "workspace-1",
             "client-1",
         )
         .unwrap();

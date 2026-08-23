@@ -292,6 +292,7 @@ async fn prepare_control_process_with_model_supply(
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role: config::Role::Control,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
+            cloud_developer_key_file: deployment.cloud_iam.developer_key_file.clone(),
             model_supply: awaken_admin_config_api::ModelSupplyCapabilityView {
                 local_catalog_enabled: false,
                 byok_enabled: false,
