@@ -15,9 +15,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::state::{
-    Action, Command, MergePolicy, Scope, StateCell, StateKey, Store,
-};
+use awaken_agent_contract::agent::state::{StateKey, Store};
+use awaken_runtime_contract::compaction::RunCompactionMarker;
 use awaken_runtime_contract::content_fingerprint;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, ContextWindow, Contributions, HookReaction, IdBound,
@@ -40,49 +39,6 @@ fn estimate_tokens(messages: &[Message]) -> u64 {
 
 /// The plugin id under which compaction is activated (G30).
 pub const COMPACT_PLUGIN_ID: &str = "compact";
-
-/// Thread-state key prefix under which a completed fold records its fact
-/// (`compaction/<run_id>`). Neutral runtime vocabulary — the wire event
-/// `agent.thread_context_compacted` is projected from this by a protocol adapter,
-/// never named here (G16). Keyed by `run_id` so each turn's fold is a distinct,
-/// idempotent fact the host reads back exactly once.
-const COMPACTION_KEY_PREFIX: &str = "compaction/";
-
-fn compaction_key(run_id: &str) -> String {
-    format!("{COMPACTION_KEY_PREFIX}{run_id}")
-}
-
-/// The state command a completed fold stages: a presence marker under
-/// `compaction/<run_id>`. The wire event `agent.thread_context_compacted` carries
-/// no payload (aligned to `@anthropic-ai/sdk`), so the marker is a bare `true`.
-fn compaction_marker(run_id: &str) -> Command {
-    StateCell::new(
-        Scope::Thread,
-        MergePolicy::Commutative,
-        compaction_key(run_id),
-    )
-    .write_bool(true)
-}
-
-/// The number of distinct folds recorded in `state` — one `compaction/<run_id>`
-/// key per fold. A protocol adapter projects the compaction event when this count
-/// grows across a turn (compare a turn-start baseline to the terminal-step value).
-/// Run-id-agnostic, so it works identically for direct and durable ingress — the
-/// durable worker mints its own run id, which a run-id match would miss.
-pub fn compaction_count(state: &[Command]) -> usize {
-    state
-        .iter()
-        .filter_map(|cmd| match &cmd.action {
-            Action::Set(_)
-                if cmd.scope == Scope::Thread && cmd.key.0.starts_with(COMPACTION_KEY_PREFIX) =>
-            {
-                Some(cmd.key.0.as_str())
-            }
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-}
 
 /// Contributes the compaction hook. Constructed with the config and — to actually
 /// summarize — an ordinary Agent-backed [`RawTool`]; without one the hook is inert.
@@ -338,7 +294,7 @@ impl PhaseHook for CompactHook {
             Some(block) => HookReaction::state(vec![
                 ContextMessages::write(&BTreeMap::from([(COMPACT_PLUGIN_ID.to_string(), block)])),
                 ContextWindow::write(&Some(self.config.keep_last)),
-                compaction_marker(&ctx.run_id.0),
+                RunCompactionMarker::command(&ctx.run_id.0),
             ]),
             // No fold this step: record the "evaluated, did not fold" decision (an
             // empty entry) so a later step does not re-evaluate the grown
@@ -360,7 +316,13 @@ mod tests {
 
     fn convo(n: usize) -> Vec<Message> {
         (0..n)
-            .map(|i| Message::text(MessageId(format!("m{i}")), Role::User, format!("turn {i}")))
+            .map(|i| {
+                Message::text(
+                    MessageId(format!("m{i}")),
+                    Role::User,
+                    format!("message {i}"),
+                )
+            })
             .collect()
     }
 
@@ -522,6 +484,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn soft_threshold_prefetches_without_blocking_or_marking_a_fold() {
+        // Test design — Causes: conversation crosses only the soft prefetch
+        // threshold. Effects: one prefix is prefetched with no injected summary,
+        // synchronous summarize call, or marker. Constraints/invariants: prefetch
+        // is non-blocking and not a fold authority. Decision rule P1: soft-only=>
+        // one prefetch request and zero committed fold effects.
         let backend = fake_backend(None);
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 10,
@@ -535,7 +502,7 @@ mod tests {
             .await;
 
         assert!(injected(&reaction).is_empty());
-        assert_eq!(compaction_count(&reaction.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
         assert_eq!(backend.summarized.lock().unwrap().len(), 0);
         let prefetched = backend.prefetched.lock().unwrap();
         assert_eq!(prefetched.len(), 1);
@@ -544,6 +511,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn hard_fold_reuses_ready_prefix_and_bridges_every_uncovered_message() {
+        // Test design — Causes: the hard threshold is crossed with a ready cached
+        // summary covering five messages. Effects: cache is reused and every
+        // uncovered pre-tail message is bridged before the marker. Constraints/
+        // invariants: no second summary is generated and message order is exact.
+        // Decision rule H1: ready prefix=>summary+uncovered bridge+one marker.
         let backend = fake_backend(Some(CompactArtifact {
             scope: "thread-a".into(),
             key: "soft".into(),
@@ -568,14 +540,19 @@ mod tests {
                 .iter()
                 .map(Message::text_content)
                 .collect::<Vec<_>>(),
-            ["turn 5", "turn 6", "turn 7"]
+            ["message 5", "message 6", "message 7"]
         );
         assert_eq!(backend.summarized.lock().unwrap().len(), 0);
-        assert_eq!(compaction_count(&reaction.state), 1);
+        assert!(RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn hard_cache_miss_awaits_the_exact_stable_request() {
+        // Test design — Causes: hard threshold is crossed and no prefix is cached.
+        // Effects: the exact eight-message prefix is summarized, injected, and
+        // marked. Constraints/invariants: one stable request owns the fold and
+        // the retained tail is excluded. Decision rule H2: hard+miss=>one await,
+        // one summary block, one run marker.
         let backend = fake_backend(None);
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
@@ -591,7 +568,7 @@ mod tests {
         let summarized = backend.summarized.lock().unwrap();
         assert_eq!(summarized.len(), 1);
         assert_eq!(summarized[0].covered_messages, 8);
-        assert_eq!(compaction_count(&reaction.state), 1);
+        assert!(RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
 
     /// Records the text of the last seed message — the compaction prompt the hook
@@ -647,6 +624,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_fold_stages_a_readable_compaction_marker() {
+        // Test design — Causes: an eligible long conversation produces a summary.
+        // Effects: summary, context window, and one readable Run marker are staged.
+        // Constraints/invariants: the marker shares the same staged state as the
+        // fold and is readable by the canonical helper. Decision rule M1:
+        // successful fold=>three commands, marker=true, retained window=2.
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
@@ -660,7 +642,7 @@ mod tests {
         // The fold stages exactly one thread-scoped compaction marker, which the
         // read-back helper resolves to `true`.
         assert_eq!(reaction.state.len(), 3);
-        assert_eq!(compaction_count(&reaction.state), 1);
+        assert!(RunCompactionMarker::is_recorded(&reaction.state, "r"));
         let mut state = Store::new();
         for command in &reaction.state {
             state.apply(command);
@@ -670,6 +652,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_short_conversation_stages_no_marker() {
+        // Test design — Causes: conversation remains below the hard threshold.
+        // Effects: only the no-fold evaluation is staged and no marker appears.
+        // Constraints/invariants: evaluation alone cannot claim compaction.
+        // Decision rule M2: short input=>zero summary/marker and one no-fold row.
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 40,
             keep_last: 8,
@@ -681,11 +667,16 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(5), &Store::new()).await;
         assert_eq!(reaction.state.len(), 1);
-        assert_eq!(compaction_count(&reaction.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_run_stages_the_fact_at_most_once() {
+        // Test design — Causes: the same Run evaluates an eligible conversation
+        // twice after applying its first staged state. Effects: the first call
+        // folds; replay stages nothing. Constraints/invariants: compaction is
+        // emit-once per Run. Decision rule I1: absent marker=>fold once;
+        // recorded marker=>no messages and no state.
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
@@ -702,7 +693,7 @@ mod tests {
             3,
             "summary block + context window + compaction marker"
         );
-        assert_eq!(compaction_count(&first.state), 1);
+        assert!(RunCompactionMarker::is_recorded(&first.state, "r"));
         // A later step of the same run replays the summary but stages no new fact,
         // gated on the run-scoped compaction state applied here (ADR-0055).
         for command in &first.state {
@@ -717,6 +708,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn token_budget_triggers_the_fold_despite_a_huge_message_threshold() {
+        // Test design — Causes: estimated tokens exceed the configured budget
+        // while message count cannot trigger. Effects: the older slice folds and
+        // records a marker. Constraints/invariants: token and count triggers feed
+        // the same fold path. Decision rule T1: token-over+count-under=>one fold.
         let plugin = CompactPlugin::new(CompactConfig {
             agent_id: crate::COMPACT_AGENT_ID.to_string(),
             agent_instructions: None,
@@ -738,11 +733,15 @@ mod tests {
             1,
             "the token budget folded the older slice"
         );
-        assert_eq!(compaction_count(&reaction.state), 1);
+        assert!(RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_wide_token_window_does_not_fold_a_small_conversation() {
+        // Test design — Causes: both token usage and message count remain below
+        // their thresholds. Effects: no summary and no marker are staged.
+        // Constraints/invariants: configured capacity is not treated as usage.
+        // Decision rule T2: token-under+count-under=>no fold effects.
         let plugin = CompactPlugin::new(CompactConfig {
             agent_id: crate::COMPACT_AGENT_ID.to_string(),
             agent_instructions: None,
@@ -759,7 +758,7 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert!(injected(&reaction).is_empty());
-        assert_eq!(compaction_count(&reaction.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
 
     #[test]
@@ -772,6 +771,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn without_a_runner_the_hook_is_inert() {
+        // Test design — Causes: a long conversation reaches a hook with no
+        // summarizer runner. Effects: it records only a no-fold evaluation.
+        // Constraints/invariants: absence cannot invoke a fallback runner or mark
+        // a fold. Decision rule A1: eligible+no runner=>no summary/marker.
         // No Agent-backed tool wired: even a long conversation folds nothing. The hook
         // still records the "evaluated, did not fold" entry, but stages no marker.
         let plugin = CompactPlugin::new(CompactConfig {
@@ -782,7 +785,7 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert!(injected(&reaction).is_empty());
-        assert_eq!(compaction_count(&reaction.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
         assert_eq!(
             reaction.state.len(),
             1,
@@ -828,6 +831,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_blank_or_missing_or_failed_summary_folds_nothing() {
+        // Test design — Causes: summarization returns blank text, no text, or an
+        // execution error. Effects: each row records no-fold without summary or
+        // marker. Constraints/invariants: only nonblank successful output can
+        // authorize a fold. Decision rule D1-D3: each degenerate result=>same
+        // side-effect-free no-fold projection.
         // Each degenerate runner outcome must yield a no-fold decision: no summary
         // block injected and no compaction marker staged (only the no-fold entry).
         for runner in [
@@ -844,13 +852,21 @@ mod tests {
             let hook = &plugin.resolve().phase_hooks[0];
             let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
             assert!(injected(&reaction).is_empty(), "no summary block");
-            assert_eq!(compaction_count(&reaction.state), 0, "no marker");
+            assert!(
+                !RunCompactionMarker::is_recorded(&reaction.state, "r"),
+                "no marker"
+            );
             assert_eq!(reaction.state.len(), 1, "only the no-fold entry");
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_no_fold_step_gates_a_later_grown_conversation() {
+        // Test design — Causes: a Run first evaluates below threshold, persists
+        // that decision, then its conversation grows past threshold. Effects:
+        // the later call remains inert. Constraints/invariants: evaluation is
+        // emit-once per Run, whether it folded or not. Decision rule G1:
+        // recorded no-fold+later growth=>no late fold.
         // The None branch records an empty ContextMessages entry so a run that once
         // decided not to fold does not fold late when the conversation later grows.
         let plugin = CompactPlugin::new(CompactConfig {
@@ -866,7 +882,7 @@ mod tests {
         // Step 1: short conversation → evaluated, did not fold.
         let first = hook.on_phase(&phase_ctx(), &convo(5), &state).await;
         assert!(injected(&first).is_empty());
-        assert_eq!(compaction_count(&first.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&first.state, "r"));
         assert_eq!(first.state.len(), 1, "the no-fold entry is recorded");
         for command in &first.state {
             state.apply(command);
@@ -875,24 +891,32 @@ mod tests {
         // evaluated compaction → it must not fold late (emit-once per run).
         let second = hook.on_phase(&phase_ctx(), &convo(100), &state).await;
         assert!(second.state.is_empty(), "no late fold once evaluated");
-        assert_eq!(compaction_count(&second.state), 0);
+        assert!(!RunCompactionMarker::is_recorded(&second.state, "r"));
     }
 
     #[test]
-    fn compaction_count_dedups_by_run_id_and_ignores_unrelated_state() {
-        let cmds = vec![
-            compaction_marker("run-a"),
-            compaction_marker("run-b"),
-            compaction_marker("run-a"), // duplicate run id → not double-counted
-            // A thread-scoped set under a different key is not a compaction marker.
-            Command::set(
-                Scope::Thread,
-                MergePolicy::Disjoint,
-                "other/x",
-                serde_json::Value::Bool(true),
-            ),
+    fn compaction_marker_is_scoped_to_the_exact_run() {
+        // Causes: C1 markers for Runs A and B share one Thread; C2 A is staged
+        // twice by replay. Effects: E1 each exact Run remains observable; E2 an
+        // unrelated Run remains absent. Decision rule R1=C1+C2=>E1+E2.
+        // Constraints/invariants: marker membership is exact-Run scoped and
+        // duplicate replay neither aliases nor creates another authority.
+        let commands = vec![
+            RunCompactionMarker::command("run-a"),
+            RunCompactionMarker::command("run-b"),
+            RunCompactionMarker::command("run-a"),
         ];
-        assert_eq!(compaction_count(&cmds), 2);
-        assert_eq!(compaction_count(&[]), 0);
+        assert!(
+            RunCompactionMarker::is_recorded(&commands, "run-a"),
+            "R1/E1"
+        );
+        assert!(
+            RunCompactionMarker::is_recorded(&commands, "run-b"),
+            "R1/E1"
+        );
+        assert!(
+            !RunCompactionMarker::is_recorded(&commands, "run-c"),
+            "R1/E2"
+        );
     }
 }

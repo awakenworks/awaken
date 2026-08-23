@@ -780,11 +780,25 @@ async fn operation_receipt_survives_reconnect() {
 
 #[tokio::test]
 async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_refresh() {
-    // Cause/effect decision table: P1 peer starts before writer commits -> its
-    // compatibility projection remains stale; P2 writer commits the full Run
-    // lifecycle and one message -> peer lifecycle feed, exact Run read, and
-    // transcript read observe committed truth; P3 none of the reads mutates or
-    // refreshes the peer compatibility projection.
+    // Cause/effect graph: C1 peer starts before writer commits; C2 writer commits
+    // lifecycle commits 1..=5 and one message; C3 commit 3 is a reclaimed
+    // Awaiting attempt; C4 the feed pages at two and replays the last cursor.
+    // Effects:
+    // E1 compatibility projection remains stale; E2 authoritative reads see
+    // committed truth; E3 kinds classify
+    // Running/Awaiting/Rescheduled/Resumed/Completed; E4
+    // encoded/source cursor pairs are [(1000,1),(2000,2)] then
+    // [(3000,3),(4000,4),(5000,5)]; E5 the exclusive last cursor is idempotent.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects |
+    // |---|---|---|---|---|---|
+    // | P1 | T | F | - | - | E1 |
+    // | P2 | T | T | T | F | E1,E2,E3,E4 |
+    // | P3 | T | T | T | T | E1,E2,E3,E4 |
+    // | P4 | T | T | T | last | E5 |
+    // Constraint/Invariant: PostgreSQL committed rows, not a process-local
+    // projection, own lifecycle feed truth. Decision rule: P1-P4 cover pre-write
+    // staleness, authoritative paging, replay, and exclusive last-cursor behavior.
     let Some(pool) = schema_pool("t_active_active_lifecycle").await else {
         return;
     };
@@ -821,6 +835,16 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             ))
             .await
             .expect("commit lifecycle transition");
+        if index == 1 {
+            writer
+                .commit(ThreadCommit::rescheduled(
+                    thread.clone(),
+                    RunDisposition::awaiting(ticket(&run.0, &thread.0)),
+                    2,
+                ))
+                .await
+                .expect("commit recovered lifecycle receipt");
+        }
     }
 
     assert!(
@@ -862,6 +886,15 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             RunLifecycleEventKind::Awaiting
         ]
     );
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .map(|event| (event.cursor.0, event.source_commit_cursor))
+            .collect::<Vec<_>>(),
+        vec![(1_000, 1), (2_000, 2)],
+        "P3/E4"
+    );
     let second = peer
         .events_after(first.next_cursor, 8)
         .await
@@ -873,9 +906,19 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
         vec![
+            RunLifecycleEventKind::Rescheduled,
             RunLifecycleEventKind::Resumed,
             RunLifecycleEventKind::Completed
         ]
+    );
+    assert_eq!(
+        second
+            .events
+            .iter()
+            .map(|event| (event.cursor.0, event.source_commit_cursor))
+            .collect::<Vec<_>>(),
+        vec![(3_000, 3), (4_000, 4), (5_000, 5)],
+        "P3/E4"
     );
     assert!(
         second
@@ -884,6 +927,12 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             .all(|event| event.thread_id == thread && event.run_id == run),
         "the authoritative feed retains Run and Thread ownership"
     );
+    let replay = peer
+        .events_after(second.next_cursor, 8)
+        .await
+        .expect("idempotent exclusive replay");
+    assert!(replay.events.is_empty(), "P4/E5");
+    assert_eq!(replay.next_cursor, second.next_cursor, "P4/E5");
 }
 
 /// Regression: concurrent commits must not collide on the commit sequence.

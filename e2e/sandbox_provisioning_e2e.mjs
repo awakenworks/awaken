@@ -5,7 +5,7 @@
 // The existing e2e cover one resource type each. This drives Memory + Repository
 // into a SINGLE session — the real
 // StagedResources → sandbox_spec → provider realization path — then exercises:
-//   • the turn runs with both writable resources mounted (provisioning succeeded),
+//   • the Run executes with both writable resources mounted (provisioning succeeded),
 //   • GET /v1/files?scope_id (read-only artifact projection),
 //   • fail-closed for each resource type (missing file / missing memory_store / bad repo).
 //
@@ -24,7 +24,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { cleanupFixtureTree, pass, withRealServer } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  pass,
+  waitForSessionEventReceipt,
+  withRealServer,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
@@ -59,9 +64,19 @@ async function createRaw(base, body) {
 }
 
 async function main() {
+  // Test design (Workdir resource matrix). Causes: C1=valid/dangling File and
+  // Memory references; C2=reachable/unreachable Repository; C3=a Run executes in
+  // the realized writable Workdir. Effects: E1=valid Memory+Repository co-mount;
+  // E2=C3 commits output and listed artifact bytes; E3=dangling references fail
+  // at create; E4=unresolvable Repository remains in retryable pre-Run custody
+  // with no execution or terminal effect.
+  // Constraints/invariant: the frozen Session resource set owns provisioning and
+  // artifact projection cannot hide or substitute failed resource realization.
+  // Decision rules: S1=valid C1+C2=>E1; S2=S1+C3=>E2;
+  // S3=dangling C1=>E3; S4=unreachable C2=>E4.
   const bare = seedRemote();
 
-  await withRealServer('echo', PORT, async (base) => {
+  await withRealServer('echo', PORT, async (base, upstream) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // ── supply the two writable Workdir resource families ──────────────────────
@@ -88,17 +103,33 @@ async function main() {
     assert.ok(session.id.startsWith('sesn_'), `session with 2 resource types: ${session.id}`);
     pass('one session provisioned memory_store + github_repository together');
 
-    // ── a turn runs with both resources mounted (provisioning succeeded) ───────
-    await client.beta.sessions.events.send(session.id, {
+    // Cause/effect + decision rules for the accepted durable User command:
+    // S1 valid Memory+Repository + agent.message => both resources realized and
+    // the Run completed; S2 receipt admitted but only earlier events visible =>
+    // keep reading committed history; S3 terminal error before agent.message =>
+    // fail rather than treating durable admission as successful execution.
+    const runReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'use the resources' }] }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(ev.type);
-    }
-    assert.ok(events.includes('agent.message'), `turn ran with all resources mounted: ${events}`);
-    pass('a turn ran over the combined writable-resource sandbox');
+    const runReceiptId = runReceipt.data?.[0]?.id;
+    assert.equal(typeof runReceiptId, 'string', 'combined-resource Run exact User receipt');
+    const { delta: runEvents } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      runReceiptId,
+      BETAS,
+      ({ delta }) => delta.some(
+        (event) => event.type === 'agent.message' || event.type === 'session.error',
+      ),
+      'the combined-resource Run to complete or fail durably',
+    );
+    const runTypes = runEvents.map((event) => event.type);
+    assert.ok(
+      runTypes.includes('agent.message'),
+      `Run executed with all resources mounted: ${runTypes}`,
+    );
+    pass('a Run executed over the combined writable-resource sandbox');
 
     // ── read-only artifact projection ─────────────────────────────────────────
     const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
@@ -120,32 +151,62 @@ async function main() {
 
     pass('file + memory_store fail closed at create on a dangling reference');
 
-    // A repo is cloned host-side when the sandbox is REALIZED (first turn), not at
-    // create — so an unresolvable repo fails closed at the turn, not the create. The
-    // session must not run a clean turn believing a repo mounted when it did not.
+    // A repo is cloned host-side when the sandbox is REALIZED, before the first
+    // Run is reserved. Causes: C1=the frozen Repository is structurally valid but
+    // physically unresolvable; C2=the User batch is accepted by the Session root;
+    // C3=pre-Run clone fails; C4=one bounded reconciliation window elapses without
+    // external repair. Effects: E1=the exact receipt remains retained/unprocessed;
+    // E2=the Session remains idle/nonterminal; E3=no Run, model, assistant, tool,
+    // or session.error fact is fabricated; E4=no fallback Repository is used and
+    // the original command remains available to the lifecycle supervisor.
+    // Constraints/invariants: accepted root CAS cannot be revoked by a later
+    // dependency failure; session.error requires a committed Ended(Error) Run;
+    // Repository realization precedes Run reservation; this negative absence
+    // oracle must not use the positive helper that requires a processed receipt.
+    // Decision F1 C1+C2+C3=>E1+E2+E3+E4; F2 F1+C4=>the same effects still hold.
     const repoSession = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [{ type: 'github_repository', url: `${TMP}/no-such-repo.git`, mount_path: '/workspace/repo' }],
       betas: BETAS,
     });
-    let turnFailed = false;
-    try {
-      await client.beta.sessions.events.send(repoSession.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
-        betas: BETAS,
-      });
-      const evs = [];
-      for await (const ev of client.beta.sessions.events.list(repoSession.id, { betas: BETAS })) {
-        evs.push(ev.type);
-      }
-      // Fail-closed: the sandbox never realized, so no clean assistant turn happened.
-      turnFailed = !evs.includes('agent.message');
-    } catch {
-      turnFailed = true; // the send itself surfaced the fail-closed clone error
+    const modelRequestsBeforeRepoFailure = upstream.requests.length;
+    const repoReceipt = await client.beta.sessions.events.send(repoSession.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+      betas: BETAS,
+    });
+    const acceptedRepoEvent = repoReceipt.data?.[0];
+    assert.equal(acceptedRepoEvent?.type, 'user.message', 'unresolvable Repository receipt family');
+    assert.equal(typeof acceptedRepoEvent?.id, 'string', 'unresolvable Repository exact receipt');
+    assert.equal(acceptedRepoEvent.processed_at, null, 'pre-Run clone failure is not processed');
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const repoEvents = [];
+    for await (const event of client.beta.sessions.events.list(repoSession.id, { betas: BETAS })) {
+      repoEvents.push(event);
     }
-    assert.ok(turnFailed, 'an unresolvable repo fails the sandbox realization closed');
-    pass('an unresolvable repo fails closed at sandbox realization (no clean turn)');
+    const acceptedRepoAt = repoEvents.findIndex((event) => event.id === acceptedRepoEvent.id);
+    assert.notEqual(acceptedRepoAt, -1, 'unresolvable Repository receipt remains durable');
+    assert.equal(
+      repoEvents[acceptedRepoAt].processed_at,
+      null,
+      'unresolvable Repository remains in retryable pre-Run custody',
+    );
+    assert.deepEqual(
+      repoEvents.slice(acceptedRepoAt + 1),
+      [],
+      'pre-Run clone failure fabricates no execution or terminal effect',
+    );
+    assert.equal(
+      (await client.beta.sessions.retrieve(repoSession.id, { betas: BETAS })).status,
+      'idle',
+      'pre-Run clone failure leaves the Session idle and nonterminal',
+    );
+    assert.equal(
+      upstream.requests.length,
+      modelRequestsBeforeRepoFailure,
+      'unresolvable Repository never reaches model inference',
+    );
+    pass('an unresolvable Repository remains safely retained before Run reservation');
   });
 
   // The successful arm owns a writable Memory projection, while the failure

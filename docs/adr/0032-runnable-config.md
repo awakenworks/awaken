@@ -53,7 +53,7 @@ out of the runtime.
 ### D4: One-call `run`, gate intact
 
 `Runtime::run(&config, input, ctx)` installs the config's catalog (idempotent) and
-executes one fresh turn — the embedded ergonomic entry. The fingerprint gate still
+executes one fresh Run — the embedded ergonomic entry. The fingerprint gate still
 holds: the snapshot is resolved against the catalog just installed, so a forged or
 mismatched config still fails closed. The low-level `install_catalog` + `execute`
 remain for the durable/distributed path, where the catalog is installed once and

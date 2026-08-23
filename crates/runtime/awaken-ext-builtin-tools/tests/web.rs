@@ -23,7 +23,11 @@ fn call(id: &str, args: serde_json::Value) -> ToolCall {
 
 #[tokio::test]
 async fn web_fetch_returns_the_response_body() {
-    // A one-shot HTTP server on an ephemeral port serves a fixed body.
+    // Cause/effect rule R1: given a reachable URL serving a body below the raw
+    // 1 MiB ceiling (C1), invoking the sole static `web_fetch` owner returns the
+    // complete text with `is_error=false` (E1). Constraint K1: this test owns
+    // raw HTTP transport only; Agent domain/context policy belongs to
+    // `ConfiguredWebToolExecutor` and is not repeated here.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let server = std::thread::spawn(move || {
@@ -51,7 +55,9 @@ async fn web_fetch_returns_the_response_body() {
 
 #[tokio::test]
 async fn web_fetch_unreachable_host_is_a_typed_error() {
-    // Port 0 of the discard range never accepts; the GET fails, not panics.
+    // Cause/effect rule R2: given an unreachable endpoint (C2), raw HTTP
+    // execution returns a typed fetch error rather than panicking (E2).
+    // Constraint K1: no Agent policy is configured on this transport owner.
     let err = tool("web_fetch")
         .invoke(call(
             "web_fetch",
@@ -62,11 +68,13 @@ async fn web_fetch_unreachable_host_is_a_typed_error() {
     assert!(err.to_string().contains("fetch"));
 }
 
-// SECURITY/BOUNDARY: a hostile or runaway server must not blow up the transcript.
-// `WebFetchTool` caps the read at `MAX_BODY` (1 MiB) via `.take(MAX_BODY)`; a body
-// larger than the cap must be truncated to exactly 1 MiB, never returned whole.
 #[tokio::test]
 async fn web_fetch_caps_the_body_at_one_mebibyte() {
+    // Cause/effect rule R3: given a reachable body larger than `MAX_BODY` (C3),
+    // the raw transport reads exactly the 1 MiB prefix (E3), preventing a
+    // hostile server from expanding the transcript. Constraint K1: this fixed
+    // safety ceiling is independent of the Agent context cap owned by the
+    // placement-neutral wrapper.
     const MAX_BODY: usize = 1 << 20; // must match web.rs
     // Serve slightly more than the cap so truncation is observable but the small
     // residual (past what the client drains) fits in the socket buffers.

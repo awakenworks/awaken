@@ -66,7 +66,7 @@ pub enum Fact {
         id: String,
         content: Vec<ContentBlock>,
     },
-    /// The turn produced extended-thinking (reasoning) content — a contentless
+    /// The Step produced extended-thinking (reasoning) content — a contentless
     /// forward-progress marker, emitted before the answer. A protocol adapter
     /// renders it as a contentless reasoning event; the reasoning text itself is
     /// not on any answer-facing wire.

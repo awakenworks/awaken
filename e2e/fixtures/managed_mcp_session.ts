@@ -4,7 +4,10 @@ import type {
   BetaManagedAgentsMCPToolsetParams,
   BetaManagedAgentsURLMCPServerParams,
 } from '@anthropic-ai/sdk/resources/beta/agents/agents';
+import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 import type { BetaManagedAgentsAgentWithOverridesParams } from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
+// @ts-ignore -- the shared JavaScript harness deliberately serves TypeScript fixtures.
+import { waitForSessionEventReceipt } from '../harness.mjs';
 
 export type McpServer = BetaManagedAgentsURLMCPServerParams;
 
@@ -45,11 +48,30 @@ export async function sendManagedMessage(
   sessionId: string,
   text: string,
   betas: string[],
-): Promise<void> {
-  await client.beta.sessions.events.send(sessionId, {
+): Promise<BetaManagedAgentsSessionEvent[]> {
+  // Cause/effect graph: C1=the official SDK returns the exact durable User
+  // Event receipt; C2=the Session lifecycle may process its Run later. Effects:
+  // E1=observe that receipt with processed_at; E2=observe its later committed
+  // idle terminal before any MCP fixture/event assertion. Constraint: listing
+  // committed events is observation only; this helper may not sleep, drive the
+  // Runtime, or accept an older Run's terminal. Decision rules: W1 !E1=>retry;
+  // W2 E1&&!E2=>retry; W3 E1&&E2=>return; W4 deadline=>fail with last history.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas,
   });
+  const acceptedId = receipt.data?.[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'Managed send returns the exact User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    acceptedId,
+    betas,
+    ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta
+      .some((event) => event.type === 'session.status_idle'),
+    `Managed Run for ${JSON.stringify(text)} to commit after its exact receipt`,
+  );
+  return events;
 }
 
 export function replaceMcpServers(

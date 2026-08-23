@@ -874,6 +874,8 @@ mod tests {
         // | H1   | workspace-tenant  | draft is written only in workspace-tenant |
         // | H2   | absent            | fail closed; no process-local fallback |
         // The existing fixed-store test above owns local/self-hosted behavior.
+        // Constraints/invariants: the trusted execution scope is the sole hosted
+        // workspace authority; absence cannot fall back to another tenant/store.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
@@ -887,7 +889,9 @@ mod tests {
         draft.id = "tenant-draft".into();
         let context = awaken_runtime_contract::tool::ToolOperationContext {
             run_id: Some(awaken_agent_contract::agent::run::Id("run-tenant".into())),
+            thread_id: None,
             operation_id: "operation-tenant".into(),
+            call_id: None,
             execution_scope: Some(awaken_tenancy::ExecutionScopeRef(ScopeId::from(
                 "workspace-tenant",
             ))),

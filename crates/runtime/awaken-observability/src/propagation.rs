@@ -4,33 +4,49 @@
 //! dispatch worker — possibly in another process — so the `tracing` span context
 //! does not carry across. To keep it one trace, the admitting side captures the
 //! current context as a `traceparent` string ([`current_traceparent`]) and
-//! persists it on the durable instruction; the worker rebuilds a `wake.dispatch`
-//! span whose remote parent is that context ([`dispatch_span`]) and runs the
-//! execution inside it, so `runtime.run` nests under the admitting request's trace.
+//! persists it on the durable instruction. A worker rebuilds a `wake.dispatch`
+//! span whose remote parent is that context ([`dispatch_span`]) and runs local
+//! execution plus post-commit observation inside it. A registered Worker's
+//! Coordinator instead rebuilds a separately named settlement-observer span from
+//! the same persisted carrier. In both topologies, `runtime.run` and detached
+//! auxiliary work remain under the admitting request's trace.
 //!
 //! Both use the globally-installed `TraceContextPropagator`, so the wire form is
 //! exactly the standard `00-<32hex>-<16hex>-<2hex>` header.
 
 use std::collections::HashMap;
 
-use opentelemetry::propagation::{Extractor, Injector};
+use opentelemetry::propagation::Extractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-struct MapInjector<'a>(&'a mut HashMap<String, String>);
-impl Injector for MapInjector<'_> {
-    fn set(&mut self, key: &str, value: String) {
-        self.0.insert(key.to_string(), value);
-    }
+/// Install the remote context extracted from one canonical carrier on `span`.
+///
+/// Ingress headers and persisted durable instructions are different carriers,
+/// but parent installation must have one owner. Callers supply the carrier while
+/// this function alone owns propagator extraction and best-effort span adoption.
+pub(crate) fn set_remote_parent_from_extractor(span: &tracing::Span, extractor: &dyn Extractor) {
+    let cx =
+        opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(extractor));
+    // A process without an installed OpenTelemetry layer legitimately has no
+    // subscriber extension to receive the parent.
+    let _ = span.set_parent(cx);
 }
 
-struct MapExtractor<'a>(&'a HashMap<String, String>);
-impl Extractor for MapExtractor<'_> {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).map(String::as_str)
+/// Apply a persisted W3C `traceparent` as the remote parent of an existing span.
+///
+/// This is the single durable-carrier adoption primitive. It lets each bounded
+/// consumer retain an accurate span name and kind: [`dispatch_span`] names the
+/// queue consumer `wake.dispatch`, while a downstream settlement observer can
+/// name its own internal continuation without manufacturing a second queue wake.
+/// With no carrier, the span keeps the parent it inherited when it was created.
+#[must_use]
+pub fn span_with_remote_parent(span: tracing::Span, traceparent: Option<&str>) -> tracing::Span {
+    if let Some(traceparent) = traceparent {
+        let mut carrier = HashMap::new();
+        carrier.insert("traceparent".to_string(), traceparent.to_string());
+        set_remote_parent_from_extractor(&span, &carrier);
     }
-    fn keys(&self) -> Vec<&str> {
-        self.0.keys().map(String::as_str).collect()
-    }
+    span
 }
 
 /// Capture the current span's trace context as a W3C `traceparent` string, to be
@@ -40,7 +56,7 @@ pub fn current_traceparent() -> Option<String> {
     let cx = tracing::Span::current().context();
     let mut carrier = HashMap::new();
     opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(&cx, &mut MapInjector(&mut carrier));
+        propagator.inject_context(&cx, &mut carrier);
     });
     carrier.remove("traceparent")
 }
@@ -50,39 +66,98 @@ pub fn current_traceparent() -> Option<String> {
 /// this span (`runtime.run` → …) continues the admitting request's trace across
 /// the queue boundary. `SpanKind::Consumer` marks the queue-consuming side.
 pub fn dispatch_span(traceparent: Option<&str>) -> tracing::Span {
-    let span = tracing::info_span!("wake.dispatch", otel.kind = "consumer");
-    if let Some(traceparent) = traceparent {
-        let mut carrier = HashMap::new();
-        carrier.insert("traceparent".to_string(), traceparent.to_string());
-        let cx = opentelemetry::global::get_text_map_propagator(|propagator| {
-            propagator.extract(&MapExtractor(&carrier))
-        });
-        // A process without an installed OpenTelemetry layer legitimately has
-        // no subscriber extension to receive the parent.
-        let _ = span.set_parent(cx);
+    span_with_remote_parent(
+        tracing::info_span!(parent: None, "wake.dispatch", otel.kind = "consumer"),
+        traceparent,
+    )
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
+    use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Debug)]
+    pub(crate) struct CapturedSpan {
+        pub(crate) name: String,
+        pub(crate) trace_id: String,
+        pub(crate) span_id: String,
+        pub(crate) parent_span_id: Option<String>,
+        pub(crate) attributes: HashMap<String, String>,
     }
-    span
+
+    #[derive(Clone, Debug)]
+    struct CapturingExporter(Arc<Mutex<Vec<CapturedSpan>>>);
+
+    impl SpanExporter for CapturingExporter {
+        fn export(
+            &self,
+            batch: Vec<SpanData>,
+        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+        {
+            use opentelemetry::trace::SpanId;
+            let sink = self.0.clone();
+            let mut out = sink.lock().unwrap();
+            for span in &batch {
+                let parent = span.parent_span_id;
+                out.push(CapturedSpan {
+                    name: span.name.to_string(),
+                    trace_id: format!(
+                        "{:032x}",
+                        u128::from_be_bytes(span.span_context.trace_id().to_bytes())
+                    ),
+                    span_id: format!(
+                        "{:016x}",
+                        u64::from_be_bytes(span.span_context.span_id().to_bytes())
+                    ),
+                    parent_span_id: (parent != SpanId::INVALID)
+                        .then(|| format!("{:016x}", u64::from_be_bytes(parent.to_bytes()))),
+                    attributes: span
+                        .attributes
+                        .iter()
+                        .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+                        .collect(),
+                });
+            }
+            async { Ok(()) }
+        }
+    }
+
+    /// Run one synchronous oracle under the crate's sole collector-free OTel
+    /// harness. Both propagation and HTTP middleware tests consume this helper,
+    /// so exporter behavior cannot drift between the two carrier boundaries.
+    pub(crate) fn capture_spans<T>(
+        name: &'static str,
+        f: impl FnOnce() -> T,
+    ) -> (T, Vec<CapturedSpan>) {
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(CapturingExporter(captured.clone()))
+            .build();
+        let tracer = provider.tracer(name);
+        let subscriber =
+            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let value = tracing::subscriber::with_default(subscriber, f);
+        provider.force_flush().expect("flush captured spans");
+        let spans = captured.lock().unwrap().clone();
+        (value, spans)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::capture_spans;
     use super::*;
-    use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::propagation::TraceContextPropagator;
-    use opentelemetry_sdk::trace::SdkTracerProvider;
-    use tracing_subscriber::Registry;
-    use tracing_subscriber::layer::SubscriberExt;
 
-    /// Run `f` under a scoped subscriber carrying a real (collector-free, in-memory)
-    /// OpenTelemetry layer plus the globally-installed W3C propagator, so `set_parent`
-    /// actually stores an otel context and `current_traceparent` can re-inject it.
     fn with_otel_subscriber<T>(f: impl FnOnce() -> T) -> T {
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-        let provider = SdkTracerProvider::builder().build();
-        let tracer = provider.tracer("awaken-observability-test");
-        let subscriber =
-            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
-        tracing::subscriber::with_default(subscriber, f)
+        capture_spans("awaken-observability-test", f).0
     }
 
     #[test]
@@ -145,6 +220,84 @@ mod tests {
         assert!(out.is_some(), "no inbound context still roots one trace");
     }
 
+    #[test]
+    fn explicit_durable_parent_overrides_an_unrelated_ambient_trace() {
+        // Cause/effect graph: C1 a settlement request has one ambient trace; C2
+        // the guarded RunDispatch carries a different persisted traceparent; C3
+        // the observer continuation adopts C2. E1 its trace id follows C2, not
+        // C1; E2 it mints a child span id. K: the durable instruction is the sole
+        // retry-stable provenance; ambient transport context is diagnostic only.
+        // Decision D1: C1+C2+C3 => E1+E2.
+        let ambient = "00-11111111111111111111111111111111-1111111111111111-01";
+        let durable = "00-22222222222222222222222222222222-2222222222222222-01";
+        let (_, spans) = capture_spans("awaken-observability-parent-priority", || {
+            let ambient = span_with_remote_parent(
+                tracing::info_span!(parent: None, "settle.request.ambient"),
+                Some(ambient),
+            );
+            ambient.in_scope(|| {
+                let settlement = span_with_remote_parent(
+                    tracing::info_span!(
+                        parent: None,
+                        "dispatch.settlement.observe",
+                        otel.kind = "internal"
+                    ),
+                    Some(durable),
+                );
+                settlement.in_scope(|| {});
+            });
+        });
+        let settlement = spans
+            .iter()
+            .find(|span| span.name == "dispatch.settlement.observe")
+            .expect("D1 settlement continuation");
+        assert_eq!(
+            settlement.trace_id, "22222222222222222222222222222222",
+            "D1/E1"
+        );
+        assert_eq!(
+            settlement.parent_span_id.as_deref(),
+            Some("2222222222222222"),
+            "D1/E1"
+        );
+        assert_ne!(settlement.span_id, "2222222222222222", "D1/E2");
+        assert!(
+            spans.iter().all(|span| span.name != "wake.dispatch"),
+            "D1 does not manufacture a second queue-consumer span: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn absent_durable_parent_does_not_adopt_an_unrelated_ambient_trace() {
+        // Cause/effect rule D2: C1 an ambient settle request exists; C2 the
+        // guarded dispatch has no traceparent; C3 the settlement boundary roots
+        // its explicit span. E1 the settlement does not claim C1 as Run
+        // provenance. K: absence never authorizes an ambient transport fallback.
+        let ambient = "00-11111111111111111111111111111111-1111111111111111-01";
+        let (_, spans) = capture_spans("awaken-observability-missing-parent", || {
+            let ambient = span_with_remote_parent(
+                tracing::info_span!(parent: None, "settle.request.ambient"),
+                Some(ambient),
+            );
+            ambient.in_scope(|| {
+                let settlement = span_with_remote_parent(
+                    tracing::info_span!(parent: None, "dispatch.settlement.observe"),
+                    None,
+                );
+                settlement.in_scope(|| {});
+            });
+        });
+        let settlement = spans
+            .iter()
+            .find(|span| span.name == "dispatch.settlement.observe")
+            .expect("D2 settlement continuation");
+        assert_ne!(
+            settlement.trace_id, "11111111111111111111111111111111",
+            "D2/E1"
+        );
+        assert_eq!(settlement.parent_span_id, None, "D2/E1");
+    }
+
     // --- S14: trace-as-oracle. The tests above prove trace-id continuity by
     // re-injecting a traceparent. This one is stronger: it CAPTURES the exported span
     // tree and asserts the real parent→child topology (span-id linkage), the way a
@@ -152,72 +305,13 @@ mod tests {
     // oracle that "the worker's dispatch span nests the execution under the admitting
     // request's trace", not merely "the trace id string matches".
 
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Debug)]
-    struct CapturedSpan {
-        name: String,
-        trace_id: String,
-        span_id: String,
-        parent_span_id: Option<String>,
-    }
-
-    /// A collector-free in-memory `SpanExporter` that records each finished span's
-    /// identity + parentage, so a test can assert the exported trace tree.
-    #[derive(Clone, Debug)]
-    struct CapturingExporter(Arc<Mutex<Vec<CapturedSpan>>>);
-
-    impl opentelemetry_sdk::trace::SpanExporter for CapturingExporter {
-        fn export(
-            &self,
-            batch: Vec<opentelemetry_sdk::trace::SpanData>,
-        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
-        {
-            use opentelemetry::trace::SpanId;
-            let sink = self.0.clone();
-            let mut out = sink.lock().unwrap();
-            for span in &batch {
-                let parent = span.parent_span_id;
-                out.push(CapturedSpan {
-                    name: span.name.to_string(),
-                    trace_id: format!(
-                        "{:032x}",
-                        u128::from_be_bytes(span.span_context.trace_id().to_bytes())
-                    ),
-                    span_id: format!(
-                        "{:016x}",
-                        u64::from_be_bytes(span.span_context.span_id().to_bytes())
-                    ),
-                    parent_span_id: (parent != SpanId::INVALID)
-                        .then(|| format!("{:016x}", u64::from_be_bytes(parent.to_bytes()))),
-                });
-            }
-            async { Ok(()) }
-        }
-    }
-
     #[test]
     fn the_exported_span_tree_nests_execution_under_the_dispatch_span() {
-        use opentelemetry::trace::TracerProvider as _;
-        use opentelemetry_sdk::propagation::TraceContextPropagator;
-        use opentelemetry_sdk::trace::SdkTracerProvider;
-        use tracing_subscriber::Registry;
-        use tracing_subscriber::layer::SubscriberExt;
-
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(CapturingExporter(captured.clone()))
-            .build();
-        let tracer = provider.tracer("awaken-observability-trace-oracle");
-        let subscriber =
-            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
-
         // The admitting request's traceparent (as persisted on the durable instruction).
         let admit_trace = "0af7651916cd43dd8448eb211c80319c";
         let tp = format!("00-{admit_trace}-b7ad6b7169203331-01");
 
-        tracing::subscriber::with_default(subscriber, || {
+        let (_, spans) = capture_spans("awaken-observability-trace-oracle", || {
             // The worker rebuilds the dispatch span from the persisted traceparent, then
             // drives the run (its inference) INSIDE that span — the exact nesting
             // `drive_claimed` performs via `.instrument(dispatch)`.
@@ -227,9 +321,6 @@ mod tests {
                 run.in_scope(|| {});
             });
         });
-        provider.force_flush().expect("flush the captured spans");
-
-        let spans = captured.lock().unwrap().clone();
         let dispatch = spans
             .iter()
             .find(|s| s.name == "wake.dispatch")

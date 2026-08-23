@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitReceipt, commit_payload_hash,
+};
 
-use crate::{ClaimedCommitRequest, DispatchQueue, commit_payload_hash};
+use crate::commit_fence::validate_commit_dispatch_binding;
+use crate::{ClaimedCommitRequest, DispatchQueue, RunDispatch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationErrorKind {
@@ -120,14 +123,24 @@ pub trait DurableRunOperations: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait ClaimedCommitApplier: Send + Sync {
-    async fn apply(&self, operation: CommitOperation) -> Result<CommitReceipt, ApplicationError>;
+    /// Apply through the physical authority selected by the claim-guarded
+    /// dispatch. `dispatch` is trusted queue truth, never Worker input.
+    async fn apply(
+        &self,
+        trusted_dispatch: &RunDispatch,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, ApplicationError>;
 }
 
 struct CoordinatorCommitApplier(Arc<dyn OperationCoordinator>);
 
 #[async_trait::async_trait]
 impl ClaimedCommitApplier for CoordinatorCommitApplier {
-    async fn apply(&self, operation: CommitOperation) -> Result<CommitReceipt, ApplicationError> {
+    async fn apply(
+        &self,
+        _dispatch: &RunDispatch,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, ApplicationError> {
         self.0
             .commit_operation(operation)
             .await
@@ -172,6 +185,16 @@ impl ClaimedCommitService {
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?
             .ok_or_else(|| ApplicationError::invalid("run claim is stale"))?;
+        let trusted_dispatch = guard.request();
+        validate_commit_dispatch_binding(trusted_dispatch, &request.operation.commit)
+            .map_err(ApplicationError::invalid)?;
+        if request.operation.operation_id.run_id != *trusted_dispatch.run_id() {
+            return Err(ApplicationError::invalid(format!(
+                "commit operation run {} does not match claimed dispatch run {}",
+                request.operation.operation_id.run_id.0,
+                trusted_dispatch.run_id().0
+            )));
+        }
         let expected_hash = commit_payload_hash(&request.operation.commit)
             .map_err(|error| ApplicationError::invalid(error.to_string()))?;
         if expected_hash != request.operation.payload_hash {
@@ -179,7 +202,10 @@ impl ClaimedCommitService {
                 "commit operation payload hash does not match ThreadCommit",
             ));
         }
-        let receipt = self.applier.apply(request.operation).await?;
+        let receipt = self
+            .applier
+            .apply(trusted_dispatch, request.operation)
+            .await?;
         drop(guard);
         Ok(receipt)
     }

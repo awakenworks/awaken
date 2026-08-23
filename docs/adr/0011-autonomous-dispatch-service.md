@@ -29,27 +29,29 @@ new work; the nudge is what makes a submit responsive. One loop covers what the
 reference splits across a recover task and a dispatch-signal task. Shutdown
 cancels the loop and awaits the in-flight drain, so stop is clean.
 
-### D2: The clock lives at the edge; the worker stays deterministic
+### D2: The Clock lives at the edge; the Worker stays deterministic
 
-The worker takes "now" as a parameter on every call, so it has no clock and is
-fully deterministic and replayable. Only the daemon reads wall-clock time,
-through a `Clock` port — `SystemClock` in production, `ManualClock` in tests. A
-test drives recovery by hand: hold a lease, advance the clock past it, nudge, and
-assert the run recovered — no sleeps, no flakiness in the logic under test.
+The Worker stores no Clock. The edge passes one `Arc<dyn Clock>` into every
+drive, so claim eligibility and later ownership decisions retain one timeline:
+`SystemClock` in production, `ManualClock` in tests. A test drives recovery by
+hand: hold a lease, advance the clock past it, nudge, and assert the Run
+recovered — no sleeps and no unrelated wall-clock read in the Worker.
 
-### D3: Lease renewal and multi-worker concurrency are deferred
+### D3: Lease renewal and multi-Worker concurrency were deferred here
 
 A single in-process daemon is the only claimant, so an in-flight run's lease is
 never contended and needs no renewal; a generous lease plus poll-driven recovery
 is sufficient. Per-run lease renewal, suspended (HITL) leases, per-thread worker
 pools, and wake signals belong to the distributed milestone, where a second
 claimant makes them necessary. `RunIngressCapabilities.scheduled_wake` stays
-false until a durable timer lands.
+false until a durable timer lands. ADR-0024 now owns the implemented exact-claim
+renewal and Clock propagation; this paragraph records the original slice boundary
+and is not a competing current renewal design.
 
 ## Consequences
 
 - A durable submit is now fire-and-forget: `DispatchService::submit` enqueues and
-  returns; the daemon runs it. `deliver` does the same for an aawaiting run's input.
+  returns; the service runs it. `deliver` does the same for an awaiting Run's input.
 - Crashed leases are recovered automatically on the poll cadence, not only when a
   caller asks.
 - The deterministic worker plus the `Clock` port keep the daemon's tests fast and

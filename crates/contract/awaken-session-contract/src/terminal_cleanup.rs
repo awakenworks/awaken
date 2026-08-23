@@ -7,7 +7,7 @@
 
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Heap-free admission kernel for one terminal cleanup effect receipt. The
 /// typed boundary performs the exact identity and canonical-fingerprint
@@ -76,6 +76,12 @@ pub enum SessionCleanupOperation {
         thread_ids: BTreeSet<String>,
         #[serde(default)]
         delegation_watermark: u64,
+        /// Canonical Runtime completions already admitted for this frozen
+        /// target set. Local execution may settle the whole operation in one
+        /// call; a remote Worker records these one at a time through the same
+        /// operation so process loss never requires a second cleanup queue.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        completions: BTreeMap<String, SessionCleanupCompletion>,
     },
     Completed {
         effect_id: String,
@@ -156,6 +162,7 @@ impl SessionCleanupOperation {
             effect_id,
             thread_ids: durable,
             delegation_watermark,
+            completions: BTreeMap::new(),
         });
         if !advanced {
             return Err(SessionCleanupError::InvalidPhaseAdvance);
@@ -209,6 +216,126 @@ impl SessionCleanupOperation {
         Some(SessionCleanupCommand::new(session_id, thread_id, effect_id))
     }
 
+    /// Commands in the immutable target set that have no verified completion
+    /// yet. This is the sole durable remote-work projection: callers may poll it,
+    /// but cannot add targets or author another cleanup registry.
+    pub fn pending_commands(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionCleanupCommand>, SessionCleanupError> {
+        let Self::Requested {
+            effect_id,
+            thread_ids,
+            completions,
+            ..
+        } = self
+        else {
+            return if self.is_completed() {
+                Ok(Vec::new())
+            } else {
+                Err(SessionCleanupError::NotRequested)
+            };
+        };
+        if *effect_id != cleanup_effect_id(session_id) {
+            return Err(SessionCleanupError::OperationMismatch);
+        }
+        let children = thread_ids
+            .iter()
+            .filter(|thread_id| {
+                thread_id.as_str() != session_id && !completions.contains_key(*thread_id)
+            })
+            .map(|thread_id| SessionCleanupCommand::new(session_id, thread_id, effect_id))
+            .collect::<Vec<_>>();
+        if !children.is_empty() {
+            // The root command disposes the shared Worker projection. Keep it
+            // behind every child receipt so a failed child remains retryable on
+            // the same realization owner instead of losing its poll cursor.
+            return Ok(children);
+        }
+        Ok(thread_ids
+            .contains(session_id)
+            .then(|| {
+                (!completions.contains_key(session_id))
+                    .then(|| SessionCleanupCommand::new(session_id, session_id, effect_id))
+            })
+            .flatten()
+            .into_iter()
+            .collect())
+    }
+
+    /// Verify and durably retain one completion for an already-frozen target.
+    /// Exact replay is a no-op; a conflicting completion fails closed.
+    pub fn record_completion(
+        &mut self,
+        session_id: &str,
+        completion: SessionCleanupCompletion,
+    ) -> Result<bool, SessionCleanupError> {
+        let (effect_id, thread_ids) = match self {
+            Self::Requested {
+                effect_id,
+                thread_ids,
+                ..
+            }
+            | Self::Completed {
+                effect_id,
+                thread_ids,
+                ..
+            } => (effect_id, thread_ids),
+            Self::NotRequested | Self::Fenced { .. } => {
+                return Err(SessionCleanupError::NotRequested);
+            }
+        };
+        if !thread_ids.contains(&completion.thread_id) {
+            return Err(SessionCleanupError::ReceiptMismatch);
+        }
+        let command = SessionCleanupCommand::new(session_id, &completion.thread_id, effect_id);
+        completion.verify(&command)?;
+        if self.is_completed() {
+            return Ok(false);
+        }
+        let Self::Requested { completions, .. } = self else {
+            return Err(SessionCleanupError::NotRequested);
+        };
+        match completions.get(&completion.thread_id) {
+            Some(durable) if durable == &completion => Ok(false),
+            Some(_) => Err(SessionCleanupError::ReceiptMismatch),
+            None => {
+                completions.insert(completion.thread_id.clone(), completion);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Re-verify every durable remote completion against the immutable command
+    /// set before it can become aggregate completion evidence.
+    pub fn recorded_receipts(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<VerifiedSessionCleanupReceipt>, SessionCleanupError> {
+        let Self::Requested {
+            effect_id,
+            thread_ids,
+            completions,
+            ..
+        } = self
+        else {
+            return Err(SessionCleanupError::NotRequested);
+        };
+        if completions.len() != thread_ids.len() {
+            return Err(SessionCleanupError::MissingReceipt);
+        }
+        thread_ids
+            .iter()
+            .map(|thread_id| {
+                let command = SessionCleanupCommand::new(session_id, thread_id, effect_id);
+                completions
+                    .get(thread_id)
+                    .ok_or(SessionCleanupError::MissingReceipt)?
+                    .verify(&command)
+            })
+            .collect()
+    }
+
     /// Commit verified receipt evidence only after every thread effect has
     /// succeeded. Raw Runtime completions cannot cross this boundary.
     pub fn complete(
@@ -220,6 +347,7 @@ impl SessionCleanupOperation {
             effect_id,
             thread_ids,
             delegation_watermark,
+            ..
         } = self
         else {
             return if self.is_completed() {
@@ -296,13 +424,6 @@ pub struct SessionCleanupCommand {
 }
 
 impl SessionCleanupCommand {
-    /// Construct the canonical command when no persisted operation is at hand
-    /// (for example a compatibility call into `SessionRuntime::end_session`).
-    #[must_use]
-    pub fn for_thread(session_id: &str, thread_id: &str) -> Self {
-        Self::new(session_id, thread_id, &cleanup_effect_id(session_id))
-    }
-
     #[must_use]
     pub fn new(session_id: &str, thread_id: &str, root_effect_id: &str) -> Self {
         Self {
@@ -610,6 +731,73 @@ mod tests {
             Err(SessionCleanupError::FrozenTargetsMismatch),
             "T10"
         );
+    }
+
+    #[test]
+    fn remote_completion_progress_is_durable_exact_and_replay_safe() {
+        // Cause/effect graph: C1 targets are frozen; C2 a canonical completion
+        // arrives for a pending target; C3 the exact completion replays; C4 a
+        // conflicting completion is asserted; C5 the operation is serialized
+        // between target completions. Effects: E1 remove only that command from
+        // the pending projection; E2 replay is a no-op; E3 conflict fails closed;
+        // E4 cold recovery retains verified progress and completes from the same
+        // immutable target set.
+        //
+        // | Rule | target | completion | restart | Effect |
+        // | R1 | frozen | canonical new | no | E1 |
+        // | R2 | frozen | exact replay | no | E2 |
+        // | R3 | frozen | conflicting | no | E3 |
+        // | R4 | remaining | canonical | yes | E4 |
+        // Constraints/invariants: the frozen target set and canonical receipt
+        // identity never change across retries or process recovery.
+        let mut state = SessionCleanupOperation::default();
+        state.request("remote-session");
+        state
+            .freeze_targets("remote-session", ["remote-child".to_string()], 17)
+            .unwrap();
+        let child = state.command_for("remote-session", "remote-child").unwrap();
+        let child_completion = SessionCleanupCompletion::new(&child, Vec::new());
+        assert!(
+            state
+                .record_completion("remote-session", child_completion.clone())
+                .unwrap(),
+            "R1/E1"
+        );
+        assert_eq!(state.pending_commands("remote-session").unwrap().len(), 1);
+        assert!(
+            !state
+                .record_completion("remote-session", child_completion.clone())
+                .unwrap(),
+            "R2/E2"
+        );
+        let mut conflicting = child_completion;
+        conflicting.receipt_fingerprint.push_str("-stale");
+        assert_eq!(
+            state.record_completion("remote-session", conflicting),
+            Err(SessionCleanupError::ReceiptMismatch),
+            "R3/E3"
+        );
+
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let mut recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
+        let root = recovered
+            .command_for("remote-session", "remote-session")
+            .unwrap();
+        recovered
+            .record_completion(
+                "remote-session",
+                SessionCleanupCompletion::new(&root, Vec::new()),
+            )
+            .unwrap();
+        assert!(
+            recovered
+                .pending_commands("remote-session")
+                .unwrap()
+                .is_empty(),
+            "R4/E4"
+        );
+        let receipts = recovered.recorded_receipts("remote-session").unwrap();
+        assert!(recovered.complete("remote-session", &receipts).unwrap());
     }
 
     #[test]

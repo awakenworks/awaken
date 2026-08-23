@@ -47,17 +47,21 @@ impl ManagedState {
             DEPLOYMENT_LAUNCH_FINGERPRINT.into(),
             launch_fingerprint.to_owned(),
         );
-        // Deployment initial events have the wider official union (including
+        // Deployment initial Events have the wider official union (including
         // `system.message`) while public Session creation intentionally admits
-        // only user messages and Outcomes. Keep one Session creation path, but
-        // validate the stored Deployment batch at its own wire boundary and
-        // deliver it through the canonical event command after admission.
+        // only User messages and Outcomes. The same create owner validates and
+        // installs this lowered union in the original Session root.
         let initial_events = std::mem::take(&mut req.initial_events);
         let created = self
-            .create_session_with_identity(req, Some(workspace_id.clone()), Some(session_id.clone()))
+            .create_session_with_identity_from(
+                req,
+                Some(workspace_id.clone()),
+                Some(session_id.clone()),
+                Some(initial_events),
+            )
             .await;
-        let mut session = match created {
-            Ok(session) => session,
+        match created {
+            Ok(session) => Ok(session),
             Err(error) => {
                 // A peer may have won the deterministic Session insert between
                 // the read above and our create. Re-read only the same canonical
@@ -73,15 +77,9 @@ impl ManagedState {
                 {
                     return Ok(session);
                 }
-                return Err(error);
+                Err(error)
             }
-        };
-        if !initial_events.is_empty() {
-            self.start_initial_events(&session.id, initial_events)
-                .await?;
-            session.status = SessionStatus::Running;
         }
-        Ok(session)
     }
 
     async fn replay_deployment_session(

@@ -6,6 +6,14 @@
 /// Storage-independent lifecycle of one durable dispatch row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchPhase {
+    /// A complete Run intent whose Session activity has not yet committed.
+    /// Ordinary claims must skip it; only the explicit expired-reservation
+    /// recovery transition may lease it for admission repair.
+    Reserved,
+    /// An expired reservation held by one recovery claim while the Worker
+    /// repairs the exact Session activity admission. It is not executable and
+    /// cannot use ordinary settlement until that admission is resolved.
+    ReservationLeased,
     Pending,
     Leased,
     Awaiting,
@@ -66,6 +74,8 @@ impl crate::DispatchState {
     #[must_use]
     pub fn transition_phase(self) -> DispatchPhase {
         match self {
+            Self::Reserved => DispatchPhase::Reserved,
+            Self::ReservationLeased => DispatchPhase::ReservationLeased,
             Self::Pending => DispatchPhase::Pending,
             Self::Leased => DispatchPhase::Leased,
             Self::Awaiting => DispatchPhase::Awaiting,
@@ -91,6 +101,69 @@ impl DispatchTransition {
             .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
         Ok(Some(Self {
             phase: DispatchPhase::Leased,
+            lease_epoch,
+            cancellation_requested: self.cancellation_requested,
+        }))
+    }
+
+    /// Resolve the exact recovery claim after the Session authority answered.
+    /// `Some(true)` publishes the admitted intent to the ordinary Pending path,
+    /// `Some(false)` returns it to its unclaimable reservation phase, and `None`
+    /// removes a definitively rejected intent without fabricating Run completion
+    /// truth. Recovery never executes directly; the existing Pending claim is
+    /// the only Thread writer/placement/credential admission owner.
+    #[must_use]
+    pub fn resolve_reservation(
+        self,
+        claim_epoch: u64,
+        owner_matches: bool,
+        resolution: Option<bool>,
+    ) -> GuardedTransition {
+        if self.phase != DispatchPhase::ReservationLeased
+            || self.lease_epoch != claim_epoch
+            || !owner_matches
+        {
+            return GuardedTransition::Fenced;
+        }
+        match resolution {
+            Some(true) => GuardedTransition::Applied(Self {
+                phase: DispatchPhase::Pending,
+                ..self
+            }),
+            Some(false) => GuardedTransition::Applied(Self {
+                phase: DispatchPhase::Reserved,
+                ..self
+            }),
+            None => GuardedTransition::Removed,
+        }
+    }
+
+    /// Atomically publish an admitted reservation to the ordinary pending queue.
+    /// Replays after publication are reported as a state stutter.
+    #[must_use]
+    pub fn activate_reservation(self) -> Option<Self> {
+        (self.phase == DispatchPhase::Reserved).then_some(Self {
+            phase: DispatchPhase::Pending,
+            ..self
+        })
+    }
+
+    /// Lease an expired reservation exclusively for admission recovery. This is
+    /// deliberately separate from [`Self::claim`], so a newly persisted intent
+    /// cannot execute before its Session activity CAS has committed.
+    pub fn recover_reservation(self) -> Result<Option<Self>, DispatchTransitionError> {
+        if !matches!(
+            self.phase,
+            DispatchPhase::Reserved | DispatchPhase::ReservationLeased
+        ) {
+            return Ok(None);
+        }
+        let lease_epoch = self
+            .lease_epoch
+            .checked_add(1)
+            .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
+        Ok(Some(Self {
+            phase: DispatchPhase::ReservationLeased,
             lease_epoch,
             cancellation_requested: self.cancellation_requested,
         }))
@@ -130,21 +203,27 @@ impl DispatchTransition {
     /// repeated cancellation of the resulting pending row is a state stutter.
     pub fn cancel(self) -> Result<CancelTransition, DispatchTransitionError> {
         match self.phase {
-            DispatchPhase::Pending | DispatchPhase::Awaiting => Ok(CancelTransition::Applied {
-                state: Self {
-                    cancellation_requested: true,
-                    ..self
-                },
-                revoked_lease: false,
-            }),
-            DispatchPhase::Leased => {
+            DispatchPhase::Reserved | DispatchPhase::Pending | DispatchPhase::Awaiting => {
+                Ok(CancelTransition::Applied {
+                    state: Self {
+                        cancellation_requested: true,
+                        ..self
+                    },
+                    revoked_lease: false,
+                })
+            }
+            DispatchPhase::ReservationLeased | DispatchPhase::Leased => {
                 let lease_epoch = self
                     .lease_epoch
                     .checked_add(1)
                     .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
                 Ok(CancelTransition::Applied {
                     state: Self {
-                        phase: DispatchPhase::Pending,
+                        phase: if self.phase == DispatchPhase::ReservationLeased {
+                            DispatchPhase::Reserved
+                        } else {
+                            DispatchPhase::Pending
+                        },
                         lease_epoch,
                         cancellation_requested: true,
                     },
@@ -176,6 +255,69 @@ mod tests {
         assert_eq!(current.settle(7, true), GuardedTransition::Fenced);
         assert_eq!(current.relinquish(8, false), GuardedTransition::Fenced);
         assert_eq!(current.relinquish(7, true), GuardedTransition::Fenced);
+    }
+
+    #[test]
+    fn reservation_activation_and_recovery_are_distinct_claim_paths() {
+        // Cause/effect graph: C1 a complete dispatch is Reserved or ordinary
+        // Pending; C2 Session admission has committed or the reservation owner
+        // expired. Effects: E1 ordinary claim cannot lease Reserved; E2 admitted
+        // activation publishes Pending without minting a claim epoch; E3 only
+        // explicit recovery leases Reserved and advances the epoch; E4 ordinary
+        // Pending remains governed by the existing claim path.
+        //
+        // | Rule | Phase | Cause | Effect |
+        // |---|---|---|---|
+        // | R1 | Reserved | ordinary claim | E1 none |
+        // | R2 | Reserved | admission commit | E2 Pending/epoch unchanged |
+        // | R3 | Reserved | expired recovery | E3 ReservationLeased/epoch+1 |
+        // | R4 | Pending | ordinary claim | E4 Leased/epoch+1 |
+        // Constraint/Invariant: reservation recovery never enters execution
+        // directly and every resolution is fenced by its exact epoch/owner.
+        // Decision rule: R1-R4 cover each reachable reservation/ordinary-claim
+        // branch; stale resolution branches must remain fenced.
+        let reserved = DispatchTransition {
+            phase: DispatchPhase::Reserved,
+            lease_epoch: 4,
+            cancellation_requested: false,
+        };
+        assert!(reserved.claim().unwrap().is_none(), "R1/E1");
+        let activated = reserved.activate_reservation().expect("R2/E2");
+        assert_eq!(activated.phase, DispatchPhase::Pending, "R2/E2");
+        assert_eq!(activated.lease_epoch, 4, "R2/E2");
+        let recovered = reserved.recover_reservation().unwrap().expect("R3/E3");
+        assert_eq!(recovered.phase, DispatchPhase::ReservationLeased, "R3/E3");
+        assert_eq!(recovered.lease_epoch, 5, "R3/E3");
+        assert_eq!(
+            recovered.resolve_reservation(5, true, Some(true)),
+            GuardedTransition::Applied(DispatchTransition {
+                phase: DispatchPhase::Pending,
+                ..recovered
+            }),
+            "R3/E3 admission publishes through the ordinary claim path"
+        );
+        assert_eq!(
+            recovered.resolve_reservation(5, true, Some(false)),
+            GuardedTransition::Applied(DispatchTransition {
+                phase: DispatchPhase::Reserved,
+                ..recovered
+            }),
+            "R3/E3 transient failure preserves the same intent"
+        );
+        assert_eq!(
+            recovered.resolve_reservation(5, true, None),
+            GuardedTransition::Removed,
+            "R3/E3 deterministic rejection removes only the unstarted intent"
+        );
+        let pending = DispatchTransition {
+            phase: DispatchPhase::Pending,
+            ..reserved
+        };
+        assert_eq!(
+            pending.claim().unwrap().expect("R4/E4").phase,
+            DispatchPhase::Leased,
+            "R4/E4"
+        );
     }
 
     #[test]
@@ -280,11 +422,13 @@ mod proofs {
     use super::*;
 
     fn arbitrary_phase() -> DispatchPhase {
-        match kani::any::<u8>() % 5 {
-            0 => DispatchPhase::Pending,
-            1 => DispatchPhase::Leased,
-            2 => DispatchPhase::Awaiting,
-            3 => DispatchPhase::DeadLetter,
+        match kani::any::<u8>() % 7 {
+            0 => DispatchPhase::Reserved,
+            1 => DispatchPhase::ReservationLeased,
+            2 => DispatchPhase::Pending,
+            3 => DispatchPhase::Leased,
+            4 => DispatchPhase::Awaiting,
+            5 => DispatchPhase::DeadLetter,
             _ => DispatchPhase::Superseded,
         }
     }
@@ -334,6 +478,16 @@ mod proofs {
 
     #[kani::proof]
     fn dispatch_cancel_revokes_old_epoch_and_is_idempotent() {
+        // Causes: C1 the row is terminal, live-leased, or another cancellable
+        // phase; C2 its lease epoch is incrementable; C3 cancellation repeats.
+        // Effects: E1 terminal rows reject cancellation; E2 a live lease returns
+        // to its non-leased phase, advances exactly one epoch, and fences the old
+        // claim; E3 other cancellable phases retain phase/epoch and set the flag;
+        // E4 a repeat is an applied state stutter with no second revocation.
+        // Constraint/invariant: the epoch remains the sole claim fence and
+        // cancellation neither reopens terminal rows nor mints an extra owner.
+        // Decision rules: R1 terminal=>E1; R2 leased+C2=>E2; R3 other=>E3;
+        // R4 any applied result+C3=>E4.
         let state = arbitrary_state();
         kani::assume(state.lease_epoch < u64::MAX);
         let first = state.cancel().unwrap();
@@ -349,9 +503,19 @@ mod proofs {
                 revoked_lease,
             } => {
                 assert!(cancelled.cancellation_requested);
-                if state.phase == DispatchPhase::Leased {
+                if matches!(
+                    state.phase,
+                    DispatchPhase::ReservationLeased | DispatchPhase::Leased
+                ) {
                     assert!(revoked_lease);
-                    assert_eq!(cancelled.phase, DispatchPhase::Pending);
+                    assert_eq!(
+                        cancelled.phase,
+                        if state.phase == DispatchPhase::ReservationLeased {
+                            DispatchPhase::Reserved
+                        } else {
+                            DispatchPhase::Pending
+                        }
+                    );
                     assert_eq!(cancelled.lease_epoch, state.lease_epoch + 1);
                     assert_eq!(
                         cancelled.settle(state.lease_epoch, kani::any()),
@@ -379,11 +543,23 @@ mod proofs {
 
     #[kani::proof]
     fn dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows() {
+        // Causes: C1 the phase is ordinary runnable, excluded
+        // reserved/terminal, or another non-runnable phase; C2 the current epoch
+        // is either incrementable or exhausted. Effects: E1 excluded phases
+        // return no claim; E2 an exhausted runnable row fails closed; E3 an
+        // incrementable runnable row becomes Leased at exactly epoch+1 while
+        // preserving its cancellation intent. Constraint/invariant: ordinary
+        // claim is the only executable lease transition and cannot recover a
+        // reservation or reopen a terminal row. Decision rules: R1 excluded=>E1;
+        // R2 runnable+exhausted=>E2; R3 runnable+incrementable=>E3.
         let state = arbitrary_state();
         let result = state.claim();
         if matches!(
             state.phase,
-            DispatchPhase::DeadLetter | DispatchPhase::Superseded
+            DispatchPhase::Reserved
+                | DispatchPhase::ReservationLeased
+                | DispatchPhase::DeadLetter
+                | DispatchPhase::Superseded
         ) {
             assert_eq!(result, Ok(None));
         } else if state.lease_epoch == u64::MAX {

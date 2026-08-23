@@ -1,57 +1,104 @@
-# ADR-0024: Daemon Lease-Renewal Heartbeat
+# ADR-0024: Exact-Claim Lease-Renewal Ownership
 
 - Status: Accepted
-- Amends: ADR-0019 — schedules the `renew_lease` it introduced; kept as its own
-  number for history, but it is a refinement, not an independent decision.
+- Amended: 2026-08-21 — exact-claim renewal replaces the former owner-wide
+  local heartbeat while retaining the remote Worker transport adapter.
+- Amends: ADR-0019 — schedules the `renew_lease` operation it introduced; kept
+  as its own number for history, but it is a refinement, not an independent
+  decision.
 - Date: 2026-06-30
-- Depends on: ADR-0011, ADR-0019
+- Depends on: ADR-0011, ADR-0019, ADR-0065
 
 ## Context
 
-`renew_lease` (ADR-0019) extends one run's lease, but nothing called it on a
-schedule, so a run that executes longer than its lease could be reclaimed by
-another node's recovery mid-flight. The worker is deliberately clock-free
-(ADR-0011) and drains runs synchronously, so it cannot renew a lease *while* it is
-busy executing one. Renewal therefore belongs to the daemon, which holds the
-clock.
+A Run can execute or resolve for longer than its dispatch lease. Without
+renewal, another Worker can reclaim it and duplicate an external effect.
+
+The original decision assigned an owner-wide `renew_owned_leases` heartbeat to
+`DispatchService`. That description no longer matches the local execution path:
+the service synchronously awaits a drive, process pools resolve a Session Worker
+after claiming, and foreground child execution bypasses both daemons. An
+owner-wide loop also retains unrelated claims after their activity has ended.
+
+`DispatchWorker` remains clock-free in the structural sense: it stores no Clock
+and reads no private SystemClock. The edge that starts a drive owns one
+`Arc<dyn Clock>` and passes that source through the whole claim lifecycle.
 
 ## Decision
 
-### D1: A bulk renew, owned by the lease owner
+### D1: One exact-claim guard owns local renewal
 
-`renew_owned_leases(owner, lease_ms, now_ms)` renews every running dispatch held
-by `owner` to `now_ms + lease_ms`, returning the count. The daemon does not track
-individual in-flight run ids (the synchronous drain hides them), so it renews by
-*owner* — exactly the set of runs this daemon is executing. It is a liveness
-operation, not a claim decision, so it stays out of the deterministic claim path.
+`renew_claim_while_active(store, claim, lease_ms, clock)` creates one renewal
+guard for one fenced claim. Every interval (`lease_ms / 3`) it invokes
+`renew_lease(run_id, owner, lease_ms, clock.now_ms())`. Losing ownership stops
+the task; dropping the guard cancels it.
 
-### D2: A separate heartbeat task, concurrent with the drain
+The guard, not a daemon-wide in-flight registry, is the renewal authority. A
+direct service or foreground drive creates it at the canonical Worker drive. A
+process pool creates it immediately after claim so slow Session/Environment
+resolution is covered, then transfers that same guard into the Worker drive.
+The Worker must not create a second Tokio task at that handoff. Resolution
+failure, retry terminalization, and other Pool-owned non-execution branches keep
+the Pool guard until that exact operation returns and then drop it.
 
-The drain task is busy awaiting a long run, so renewal runs on its own
-`tokio` task spawned beside it, sharing the shutdown token. Each tick it reads the
-daemon's `Clock` and calls `renew_owned_leases`, keeping in-flight leases fresh
-while the drain executes. The two tasks share nothing but the store and the
-shutdown signal, so renewal never blocks the drain or vice versa.
+### D2: One edge Clock spans claim, renewal, verification, and settlement
 
-### D3: Opt-in, well under the lease
+The service, pool, or foreground entry supplies a single `Arc<dyn Clock>` for an
+operation. The same source determines:
 
-`DispatchServiceConfig.lease_renewal_interval` is `None` by default — a single
-in-process daemon has no peer to steal its runs, so it needs no renewal. A
-multi-node deployment sets the interval well under the lease duration (e.g. a
-third) so a renewal always lands before expiry. Renewal failure is swallowed like
-the drain loop's other steps; the next tick retries, and a genuinely dead daemon
-simply stops renewing and is recovered.
+1. claim eligibility and lease deadline;
+2. renewal timestamps;
+3. claim-bound pre-effect ownership verification;
+4. retry deadlines and coordinated settlement fencing.
+
+`DispatchWorker` has no `ownership_clock` field or clock-setting builder. A
+scalar `now_ms` snapshot is insufficient because renewal and verification occur
+later. Tests supply a `ManualClock`; production edges supply `SystemClock`.
+
+### D3: Remote owner heartbeat is a transport adapter, not a local daemon
+
+A database-independent remote Worker cannot transfer a process-local guard into
+the Coordinator. Its signed Worker-control heartbeat therefore adapts the same
+ownership responsibility to the existing `renew_owned_leases` transport verb.
+The Coordinator validates the authenticated owner and reads its own authoritative
+Clock. Local Service/Pool code must not call this bulk verb or run a parallel
+owner-wide heartbeat.
+
+## Dynamic behavior
+
+```text
+local edge claims with Clock C
+  -> one exact guard starts with C
+  -> optional Pool resolution retains that guard
+  -> Pool transfers the guard and C to DispatchWorker
+  -> Worker verifies ownership with C before an external effect
+  -> Worker settles with C
+  -> guard drops and renewal stops
+
+remote Worker heartbeat
+  -> authenticated owner request
+  -> Coordinator Clock supplies now
+  -> existing bulk transport adapter renews that remote owner's claims
+```
+
+If renewal reports lost ownership, no replacement guard is created. The same
+Clock makes the next ownership check fail closed, and claim/commit epoch fencing
+prevents stale settlement.
 
 ## Consequences
 
-- A long in-flight run keeps its lease across a multi-node fleet and is not
-  reclaimed while still executing.
-- The worker stays clock-free and deterministic; only the daemon reads time.
-- Opt-in: single-process daemons are unaffected.
-- `renew_owned_leases` is proven across the three backends against one shared spec.
+- Long local Runs, foreground child Runs, cancellation, and slow resolution all
+  retain their exact leases without an in-flight registry.
+- Pool-to-Worker handoff has one renewal task, not two concurrent writers.
+- Deterministic claims are never compared with an unrelated wall clock.
+- Remote topology retains its signed bulk transport for compatibility, while
+  local execution has no owner-wide renewal loop.
+- `renew_lease` and the remote-only bulk adapter remain covered across backends;
+  cause/effect tests count local renewal writes to enforce task cardinality.
 
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G6 (durable ingress additive over control).
-- ADR-0011 — the clock-free worker / daemon-injects-time split.
-- ADR-0019 — `renew_lease`, the single-run renewal this schedules in bulk.
+- ADR-0011 — edge Clock injection and autonomous draining.
+- ADR-0019 — exact `renew_lease` and distributed claim fencing.
+- ADR-0065 — database-independent remote Worker topology.

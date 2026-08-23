@@ -20,7 +20,9 @@ pub enum DispatchCredentialAdmissionError {
     InvalidSessionMcpCredentialBinding,
     #[error("Session MCP credential usage is unsupported")]
     InvalidSessionMcpCredentialUsage,
-    #[error("Session MCP credentials require a Worker plaintext holder")]
+    #[error(
+        "Session MCP credential delivery is unsupported for the selected holder or ACP backend"
+    )]
     UnsupportedSessionMcpHolder,
     #[error("Session MCP credential admission failed: {0}")]
     SessionAdmission(awaken_runtime_contract::CredentialAdmissionError),
@@ -31,6 +33,42 @@ pub fn worker_credential_realization_capabilities(
 ) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
     CredentialRealizationCapabilities::from_manifest_capabilities(&worker.manifest.capabilities)
         .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)
+}
+
+/// Whether one independently installed credential profile both declares the
+/// exact ACP backend and admits its process-private MCP field. Recursing over
+/// alternatives preserves adapter correlation: evidence from distinct profiles
+/// can never be combined into a synthetic capability.
+fn acp_mcp_client_injection_profile_admits(
+    access: &awaken_runtime_contract::CredentialAccess,
+    holder: &awaken_runtime_contract::PlaintextHolder,
+    backend_ref: &str,
+    installed: &CredentialRealizationCapabilities,
+    now_unix_ms: u64,
+) -> bool {
+    let consumer_id = format!(
+        "{}{}",
+        awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+        backend_ref
+    );
+    (installed.extension_consumers.contains_key(&consumer_id)
+        && access
+            .admit(
+                holder,
+                awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                installed,
+                now_unix_ms,
+            )
+            .is_ok())
+        || installed.alternatives.iter().any(|profile| {
+            acp_mcp_client_injection_profile_admits(
+                access,
+                holder,
+                backend_ref,
+                profile,
+                now_unix_ms,
+            )
+        })
 }
 
 /// Compile all credential-bearing candidates selected for this Run into exact
@@ -66,9 +104,6 @@ pub fn compile_attempt_credential_bindings(
             ) {
                 (None, None) => {}
                 (Some(access), Some(holder)) => {
-                    if holder.boundary != awaken_runtime_contract::PlaintextBoundary::Worker {
-                        return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
-                    }
                     match &access.usage {
                         awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
                             if name.eq_ignore_ascii_case("authorization")
@@ -81,13 +116,63 @@ pub fn compile_attempt_credential_bindings(
                             );
                         }
                     }
+                    let realization = match holder.boundary {
+                        awaken_runtime_contract::PlaintextBoundary::Worker => {
+                            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay
+                        }
+                        awaken_runtime_contract::PlaintextBoundary::Workload => {
+                            let execution_candidates = request
+                                .activation
+                                .snapshot
+                                .resolved_spec
+                                .execution_candidates(
+                                    request.activation.model_ref_override.as_deref(),
+                                );
+                            if execution_candidates.is_empty()
+                                || execution_candidates.iter().any(|candidate| {
+                                    !matches!(
+                                        awaken_runtime_contract::resolved::Backend::from_ref(
+                                            &candidate.binding().backend_ref
+                                        ),
+                                        awaken_runtime_contract::resolved::Backend::Acp(_)
+                                    )
+                                })
+                            {
+                                return Err(
+                                    DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
+                                );
+                            }
+                            access
+                                .admit(
+                                    holder,
+                                    awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                                    installed,
+                                    now_unix_ms,
+                                )
+                                .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
+                            if execution_candidates.iter().any(|candidate| {
+                                !acp_mcp_client_injection_profile_admits(
+                                    access,
+                                    holder,
+                                    &candidate.binding().backend_ref,
+                                    installed,
+                                    now_unix_ms,
+                                )
+                            }) {
+                                return Err(
+                                    DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
+                                );
+                            }
+                            continue;
+                        }
+                        awaken_runtime_contract::PlaintextBoundary::Platform => {
+                            return Err(
+                                DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
+                            );
+                        }
+                    };
                     access
-                        .admit(
-                            holder,
-                            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
-                            installed,
-                            now_unix_ms,
-                        )
+                        .admit(holder, realization, installed, now_unix_ms)
                         .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
                 }
                 _ => {

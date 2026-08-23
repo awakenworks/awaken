@@ -287,7 +287,7 @@ impl SharedHost {
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
     /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
-    /// REPLACES the thread's set (correct at create time, before any first turn).
+    /// REPLACES the Thread's set (correct at create time, before its first Run).
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.session_slots
             .update(thread, |slot| slot.resources = staged);
@@ -641,6 +641,15 @@ mod provisioning_registry_tests {
         SharedHost::new(Arc::new(NoLlm), "test")
     }
 
+    fn root_terminal_cleanup_command(
+        session_id: &str,
+    ) -> awaken_session_contract::SessionCleanupCommand {
+        let mut operation = awaken_session_contract::SessionCleanupOperation::default();
+        assert!(operation.request(session_id));
+        operation.freeze_targets(session_id, [], 0).unwrap();
+        operation.command_for(session_id, session_id).unwrap()
+    }
+
     #[test]
     fn session_and_housekeeping_filesystem_continuity_are_distinct() {
         /* Continuity cause/effect table.
@@ -709,7 +718,7 @@ mod provisioning_registry_tests {
                 repositories: vec![repository_activation("repo-a")],
             },
         );
-        // A second register REPLACES (correct at create time, before any first turn).
+        // A second register REPLACES (correct at create time, before any first Run).
         host.register_thread_resources(
             "t",
             StagedResources {
@@ -844,6 +853,10 @@ mod provisioning_registry_tests {
 
     #[tokio::test]
     async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
         use awaken_session_contract::SessionRuntime;
         // Cause/effect decision table:
         // R1 output present + live Sandbox => harvest creates one scoped File.
@@ -884,7 +897,7 @@ mod provisioning_registry_tests {
         assert!(first[0].record.downloadable);
 
         crate::ManagedHost::new(host.clone())
-            .end_session("session-artifacts")
+            .execute_terminal_cleanup(root_terminal_cleanup_command("session-artifacts"))
             .await
             .unwrap();
         assert!(
@@ -958,8 +971,11 @@ mod provisioning_registry_tests {
     async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         use awaken_session_contract::SessionRuntime;
 
-        // Rule R4: output present + durable catalog write fails → end_session
-        // fails and the environment/output remain available; disposal is forbidden.
+        // Test design. Causes: R4 has terminal output present while its durable
+        // catalog write fails. Effects: end_session fails and preserves both
+        // Environment and output for retry. Constraint/Invariant: sandbox disposal
+        // follows successful durable harvest, never precedes it. Decision rule:
+        // execute R4 and require failure with zero disposal.
         let storage = tempfile::tempdir().unwrap();
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         let catalog = Arc::new(FailingFileCatalog);
@@ -999,7 +1015,7 @@ mod provisioning_registry_tests {
         std::fs::write(&output, b"retry me").unwrap();
 
         let error = crate::ManagedHost::new(host.clone())
-            .end_session("session-harvest-failure")
+            .execute_terminal_cleanup(root_terminal_cleanup_command("session-harvest-failure"))
             .await
             .unwrap_err();
         assert!(error.message.contains("injected catalog failure"));

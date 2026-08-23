@@ -261,6 +261,11 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
 
 #[tokio::test]
 async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
+    // Test design — Causes: duplicate Offerings exist and the Profile disables
+    // one exact endpoint. Effect: the sole enabled Offering resolves with its
+    // exact base URL. Constraints: disabled routes are removed before ambiguity
+    // classification, not used as fallback candidates. Decision rule T7:
+    // duplicate+one disabled=>the remaining exact triple.
     let store = InMemorySecretStore::new();
     let repo = InMemoryCredentialRepo::new();
     let good = enter(&store, &repo, "sk-good").await;

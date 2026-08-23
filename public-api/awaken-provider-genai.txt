@@ -35,7 +35,7 @@ pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::Ch
 pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall
 pub fn awaken_provider_genai::map_assistant_output(&genai::chat::message_content::MessageContent) -> awaken_runtime_contract::llm::AssistantOutput
 pub fn awaken_provider_genai::map_stop_reason(&genai::chat::chat_response::StopReason) -> core::option::Option<awaken_runtime_contract::llm::StopReason>
-pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_runtime_contract::llm::TokenUsage
+pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_agent_contract::audit::model_request::TokenUsage
 pub async fn awaken_provider_genai::probe_credential(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &str) -> awaken_provider_genai::CredentialProbe
 pub fn awaken_provider_genai::to_genai_request(&awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>
 pub fn awaken_provider_genai::to_genai_request_for_adapter(&awaken_runtime_contract::llm::ChatRequest, genai::adapter::adapter_kind::AdapterKind) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>

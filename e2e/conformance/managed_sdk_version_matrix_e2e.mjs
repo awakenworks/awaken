@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import { pass, withRealServer } from '../harness.mjs';
+import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38137);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -91,17 +91,27 @@ async function exercise(version, Client, baseURL, options) {
     const retrieved = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.equal(retrieved.id, session.id, `${version}: retrieve`);
 
-    await client.beta.sessions.events.send(session.id, {
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: `sdk-${version}` }],
       }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(event);
-    }
+    const acceptedId = receipt.data?.[0]?.id;
+    assert.equal(typeof acceptedId, 'string', `${version}: exact accepted User Event id`);
+    // SDK lifecycle rule: C1=the versioned client returns an exact receipt and
+    // C2=message+idle follow it; E=that SDK observes one canonical lifecycle.
+    // K=older history is excluded. R=C1+C2=>E; otherwise retry/fail boundedly.
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      acceptedId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      `${version}: accepted receipt to settle through the canonical lifecycle`,
+    );
     assert.ok(events.some((event) => event.type === 'agent.message'), `${version}: event list`);
     assert.ok(events.some((event) => event.type === 'session.status_idle'), `${version}: lifecycle`);
     pass(`Managed SDK ${version} lifecycle`);
@@ -325,11 +335,15 @@ async function exerciseVersionSelectionBoundary(baseURL, options) {
 
 async function main() {
   // Cause/effect graph: the same public ingress and beta receive requests from
-  // the oldest supported and current SDKs; both must create, retrieve, run and
-  // list a Session without a private version selector.
-  // Decision table: supported SDK + official beta => one canonical behavior;
-  // absent beta => existing protocol guard rejects; User-Agent differences =>
-  // no routing effect.
+  // the oldest supported and current SDKs; both must create, retrieve, return
+  // an exact durable receipt, settle its Run, and list a Session without a
+  // private version selector. Effects include the same receipt id becoming
+  // processed before its message/idle projection; deletion cannot race an
+  // admitted Run. Decision table: supported SDK + official beta => one
+  // canonical async lifecycle; accepted but unsettled => keep polling; absent
+  // beta => existing protocol guard rejects; User-Agent differences => no
+  // routing effect. Constraints/invariant: beta/API headers select the contract,
+  // never User-Agent, and both SDK versions use the same server repositories.
   const remoteBaseURL = process.env.AWAKEN_MANAGED_BASE_URL;
   const options = remoteBaseURL ? {
     apiKey: process.env.AWAKEN_MANAGED_API_KEY,

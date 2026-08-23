@@ -3,16 +3,26 @@ pub enum awaken_acp_contract::AcpCapabilityObservationState
 pub awaken_acp_contract::AcpCapabilityObservationState::ProbeFailed
 pub awaken_acp_contract::AcpCapabilityObservationState::Unavailable
 pub awaken_acp_contract::AcpCapabilityObservationState::Verified
+pub enum awaken_acp_contract::AcpModelSelectionSupport
+pub awaken_acp_contract::AcpModelSelectionSupport::DefaultAndExact
+pub awaken_acp_contract::AcpModelSelectionSupport::DefaultOnly
+impl awaken_acp_contract::AcpModelSelectionSupport
+pub const fn awaken_acp_contract::AcpModelSelectionSupport::admits_exact(self) -> bool
 pub struct awaken_acp_contract::AcpCapabilityObservation
-pub awaken_acp_contract::AcpCapabilityObservation::adapter_version: alloc::string::String
-pub awaken_acp_contract::AcpCapabilityObservation::backend_ref: alloc::string::String
-pub awaken_acp_contract::AcpCapabilityObservation::fingerprint: core::option::Option<alloc::string::String>
-pub awaken_acp_contract::AcpCapabilityObservation::negotiated: core::option::Option<awaken_acp_contract::NegotiatedAcpCapabilities>
-pub awaken_acp_contract::AcpCapabilityObservation::observed_at_ms: u64
-pub awaken_acp_contract::AcpCapabilityObservation::reason_code: core::option::Option<alloc::string::String>
-pub awaken_acp_contract::AcpCapabilityObservation::state: awaken_acp_contract::AcpCapabilityObservationState
 impl awaken_acp_contract::AcpCapabilityObservation
-pub fn awaken_acp_contract::AcpCapabilityObservation::is_coherent(&self) -> bool
+pub fn awaken_acp_contract::AcpCapabilityObservation::adapter_version(&self) -> &str
+pub fn awaken_acp_contract::AcpCapabilityObservation::backend_ref(&self) -> &str
+pub fn awaken_acp_contract::AcpCapabilityObservation::fingerprint(&self) -> core::option::Option<&str>
+pub fn awaken_acp_contract::AcpCapabilityObservation::into_verified_evidence(self) -> core::option::Option<(alloc::string::String, alloc::string::String, awaken_acp_contract::NegotiatedAcpCapabilities)>
+pub fn awaken_acp_contract::AcpCapabilityObservation::negotiated(&self) -> core::option::Option<&awaken_acp_contract::NegotiatedAcpCapabilities>
+pub const fn awaken_acp_contract::AcpCapabilityObservation::observed_at_ms(&self) -> u64
+pub fn awaken_acp_contract::AcpCapabilityObservation::probe_failed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_acp_contract::InvalidAcpCapabilityObservation>
+pub fn awaken_acp_contract::AcpCapabilityObservation::reason_code(&self) -> core::option::Option<&str>
+pub const fn awaken_acp_contract::AcpCapabilityObservation::state(&self) -> awaken_acp_contract::AcpCapabilityObservationState
+pub fn awaken_acp_contract::AcpCapabilityObservation::unavailable(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_acp_contract::InvalidAcpCapabilityObservation>
+pub fn awaken_acp_contract::AcpCapabilityObservation::verified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>, awaken_acp_contract::NegotiatedAcpCapabilities) -> core::result::Result<Self, awaken_acp_contract::InvalidAcpCapabilityObservation>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_acp_contract::AcpCapabilityObservation
+pub fn awaken_acp_contract::AcpCapabilityObservation::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_acp_contract::AcpCapabilityProbeConfig
 pub awaken_acp_contract::AcpCapabilityProbeConfig::auth_method_id: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpCapabilityProbeConfig::session_cwd: core::option::Option<alloc::string::String>
@@ -20,7 +30,7 @@ pub struct awaken_acp_contract::AcpPublicationCapability
 pub awaken_acp_contract::AcpPublicationCapability::backend_ref: alloc::string::String
 pub awaken_acp_contract::AcpPublicationCapability::model_api_dialects: alloc::vec::Vec<alloc::string::String>
 pub awaken_acp_contract::AcpPublicationCapability::model_delivery_credential_environments: core::option::Option<alloc::vec::Vec<alloc::string::String>>
-pub awaken_acp_contract::AcpPublicationCapability::supports_exact_model_selection: bool
+pub awaken_acp_contract::AcpPublicationCapability::model_selection: awaken_acp_contract::AcpModelSelectionSupport
 impl awaken_acp_contract::AcpPublicationCapability
 pub fn awaken_acp_contract::AcpPublicationCapability::credential_usage(&self, core::option::Option<&str>) -> core::result::Result<awaken_credential_contract::CredentialUsage, alloc::string::String>
 pub struct awaken_acp_contract::AcpSessionConfigChoice
@@ -41,6 +51,10 @@ pub awaken_acp_contract::AcpSessionModeDescriptor::current: bool
 pub awaken_acp_contract::AcpSessionModeDescriptor::description: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpSessionModeDescriptor::name: alloc::string::String
 pub awaken_acp_contract::AcpSessionModeDescriptor::native_id: alloc::string::String
+pub struct awaken_acp_contract::InvalidAcpCapabilityObservation(_)
+impl core::error::Error for awaken_acp_contract::InvalidAcpCapabilityObservation
+impl core::fmt::Display for awaken_acp_contract::InvalidAcpCapabilityObservation
+pub fn awaken_acp_contract::InvalidAcpCapabilityObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_acp_contract::NegotiatedAcpCapabilities
 pub awaken_acp_contract::NegotiatedAcpCapabilities::config_options: alloc::vec::Vec<awaken_acp_contract::AcpSessionConfigOptionDescriptor>
 pub awaken_acp_contract::NegotiatedAcpCapabilities::load_session: bool

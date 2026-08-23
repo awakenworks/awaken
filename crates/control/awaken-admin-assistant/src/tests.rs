@@ -871,6 +871,8 @@ async fn draft_environment_assembles_and_persists_the_config() {
     // | R3   | self_hosted | cloud-only        | E4                                   |
     // | R4   | cloud       | malformed/unknown | E4                                   |
     // | R5   | either      | unknown top-level | E4                                   |
+    // Constraints/invariants: typed validation precedes the sole EnvironmentAuthor
+    // port; every rejected row has zero authoring side effects.
     let author = Arc::new(FakeEnvAuthor::default());
     let tool = DraftEnvironment {
         author: author.clone(),

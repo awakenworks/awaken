@@ -401,7 +401,7 @@ pub awaken_eval::Case::expectations: alloc::vec::Vec<awaken_eval::Expectation>
 pub awaken_eval::Case::id: alloc::string::String
 pub awaken_eval::Case::input: alloc::string::String
 pub awaken_eval::Case::instructions: alloc::string::String
-pub awaken_eval::Case::script: alloc::vec::Vec<awaken_eval::ScriptedTurn>
+pub awaken_eval::Case::script: alloc::vec::Vec<awaken_eval::ScriptedResponse>
 pub struct awaken_eval::CaseScore
 pub awaken_eval::CaseScore::case_id: alloc::string::String
 pub awaken_eval::CaseScore::results: alloc::vec::Vec<awaken_eval::ExpectationResult>
@@ -421,10 +421,10 @@ impl awaken_eval::Report
 pub fn awaken_eval::Report::all_passed(&self) -> bool
 pub fn awaken_eval::Report::passed(&self) -> usize
 pub fn awaken_eval::Report::total(&self) -> usize
+pub struct awaken_eval::ScriptedResponse
+pub awaken_eval::ScriptedResponse::text: alloc::string::String
+pub awaken_eval::ScriptedResponse::tool_calls: alloc::vec::Vec<awaken_eval::ScriptedToolCall>
 pub struct awaken_eval::ScriptedToolCall
 pub awaken_eval::ScriptedToolCall::arguments: serde_json::value::Value
 pub awaken_eval::ScriptedToolCall::tool_id: alloc::string::String
-pub struct awaken_eval::ScriptedTurn
-pub awaken_eval::ScriptedTurn::text: alloc::string::String
-pub awaken_eval::ScriptedTurn::tool_calls: alloc::vec::Vec<awaken_eval::ScriptedToolCall>
 pub fn awaken_eval::score_case(&awaken_eval::Case, &str, bool, &[alloc::string::String]) -> awaken_eval::CaseScore

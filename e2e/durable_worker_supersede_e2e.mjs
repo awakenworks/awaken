@@ -17,7 +17,15 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39741);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -51,12 +59,23 @@ async function main() {
     // ticket T in the thread's queue.
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const T = session.id;
-    await client.beta.sessions.events.send(T, {
+    // C1=exact first receipt; C2=Awaiting terminal; C3=supersede. E1=C2 after
+    // C1 identifies the stale Run later checked for drop. K: older Awaiting
+    // history is ineligible. Decision W1 C1&&!C2=>retry; W2 C1+C2=>supersede.
+    const receipt = await client.beta.sessions.events.send(T, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-ON-TICKET-T' }] }],
       betas: BETAS,
     });
-    let events = [];
-    for await (const ev of client.beta.sessions.events.list(T, { betas: BETAS })) events.push(ev);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'W1 exact awaiting User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      T,
+      receiptId,
+      BETAS,
+      ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+      'W1 first durable Run to commit its Awaiting terminal',
+    );
     assert.equal(
       events.find((e) => e.type === 'session.status_idle').stop_reason.type,
       'requires_action',

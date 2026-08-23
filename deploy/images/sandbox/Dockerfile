@@ -14,10 +14,13 @@
 # The bridge binary is built on the worker host and copied in below. Trixie's glibc
 # is new enough for binaries built on current Linux distributions (including Ubuntu
 # 24.04/glibc 2.39); bookworm's 2.36 made the container exit before opening ACP.
-FROM rust:1.96-bookworm AS rust-toolchain
+# Fully qualified sources are the single Docker/Podman contract: Docker may
+# resolve short names implicitly, while a secure Podman host has no ambient
+# unqualified-search registry and must still build these exact public images.
+FROM docker.io/library/rust:1.96-bookworm AS rust-toolchain
 RUN rustup component add clippy rustfmt
 
-FROM node:22-trixie-slim
+FROM docker.io/library/node:22-trixie-slim
 
 # Keep one pinned, complete Rust toolchain in the sandbox base. Debian's `cargo`
 # package does not include rustup components such as Clippy, which makes a

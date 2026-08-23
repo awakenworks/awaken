@@ -155,6 +155,12 @@ async fn shutdown_is_clean_with_no_work() {
 
 #[tokio::test]
 async fn service_fires_a_scheduled_delivery_when_due() {
+    // Test design. Causes: C1 a Run awaits matching input scheduled in the
+    // future; C2 daemon clock is before due time; C3 clock reaches due time.
+    // Effects: E1 C2 keeps Awaiting with zero tool runs; E2 C3 delivers, resumes,
+    // and runs once. Constraint/Invariant: delivery time is evaluated by the
+    // service's injected Clock. Decision rule: cover before-due and at-due
+    // partitions on the same scheduled row.
     // M4 end to end: a delivery scheduled for the future does not resume the run
     // until the daemon's clock reaches it.
     let (runtime, ran) = tool_runtime();
@@ -187,6 +193,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
             correlation_id: TICKET.to_string(),
             available_at_ms: Some(2_000),
             result: ResumeResult::allow(),
+            context_messages: Vec::new(),
         })
         .await
         .expect("deliver");

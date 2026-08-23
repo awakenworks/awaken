@@ -11,7 +11,11 @@
 // H1/H2 Environment and Session creation leave binding null;
 // H3 a dynamic MCP Brain call succeeds and leaves binding null;
 // H4 the first Sandbox call observes no binding before dispatch;
-// H5 successful Hand execution commits one Session-owned binding before result.
+// H5 C=the first built-in Hand call runs under the local on_tool_use policy;
+// E=one nonempty Session-owned sandbox_id and exact local_v1 payload are durable
+// before the successful result; K=the closed payload schema is the sole provider
+// discriminator, so the deleted top-level provider_kind must remain absent.
+// Decision: C with a successful result requires every E while preserving K.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -159,9 +163,21 @@ async function main(): Promise<void> {
           `H5 binding is durable after the first Hand tool: ${JSON.stringify(handEvents)}`,
         );
         assert.ok('binding' in residency && residency.binding);
-        const handle = JSON.parse(residency.binding) as { sandbox_id?: string; provider_kind?: string };
+        const handle = JSON.parse(residency.binding) as {
+          sandbox_id?: unknown;
+          payload?: { schema?: unknown };
+        };
+        assert.ok(
+          typeof handle.sandbox_id === 'string' && handle.sandbox_id.length > 0,
+          'H5 binding has a nonempty Sandbox id',
+        );
         assert.equal(handle.sandbox_id, hand.id, 'H5 Sandbox is Session-owned');
-        assert.ok(handle.provider_kind, 'H5 binding records the selected sandbox provider');
+        assert.equal(handle.payload?.schema, 'local_v1', 'H5 binding records the exact local payload');
+        assert.equal(
+          Object.hasOwn(handle, 'provider_kind'),
+          false,
+          'H5 binding has no legacy top-level provider discriminator',
+        );
         pass('H4/H5 first Hand tool blocks for one Session-owned Sandbox and persists its binding');
       },
       {

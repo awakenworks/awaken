@@ -37,10 +37,12 @@ pub use claimed_session::{ClaimedSessionControl, ClaimedSessionControlError};
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,
-    Dispatch, DispatchCompletion, DispatchCredentialAdmissionError, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, SettleOutcome, SubmitOptions, compile_attempt_credential_bindings,
-    worker_credential_realization_capabilities,
+    ContinuationAdmission, Dispatch, DispatchCompletion, DispatchCredentialAdmissionError,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    compile_attempt_credential_bindings, worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError,
@@ -58,5 +60,6 @@ pub use worker_transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
     ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
     HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
-    RenewRequest, SettleRequest, StreamEventRequest, WorkerIdentityRequest,
+    RenewRequest, SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, WorkerIdentityRequest,
 };

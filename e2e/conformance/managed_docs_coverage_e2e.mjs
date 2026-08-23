@@ -1,7 +1,7 @@
-// Offline completeness gate for the one canonical Managed Agents docs matrix.
-// It deliberately owns no behavior mapping: MANAGED_AGENTS_DOCS_COVERAGE.md owns
-// the contract/evidence/design cells, while this test only pins the official
-// sitemap snapshot and rejects missing, duplicate, or unevidenced rows.
+// Offline completeness gate for the Managed Agents documentation traceability
+// inventory. It owns no behavior or test-design mapping: executable tests own
+// their adjacent cause/effect rules, while this gate pins the official sitemap
+// snapshot and rejects missing, duplicate, or unevidenced rows.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -43,7 +43,7 @@ const officialPages = [
 ];
 
 // Causes: official sitemap membership and one canonical report row per slug.
-// Constraints: each row has contract, executable evidence, design, and explicit
+// Constraints: each row has contract, executable evidence, boundary, and explicit
 // local/external classification; this gate must stay offline and deterministic.
 // Effects: missing/duplicate/extra/empty rows fail CI before coverage can be claimed.
 // Decision rule: DOC1 exact set, DOC2 unique, DOC3 four populated cells, DOC4 status.
@@ -59,7 +59,7 @@ for (const match of rows) {
   const [label, slug, remainder] = [match[1], match[2], match[3]];
   assert.equal(label, slug, `DOC3: ${slug} link label matches slug`);
   const cells = remainder.split('|').map((cell) => cell.trim()).filter(Boolean);
-  assert.equal(cells.length, 3, `DOC3: ${slug} has contract, evidence, and design cells`);
+  assert.equal(cells.length, 3, `DOC3: ${slug} has contract, evidence, and boundary cells`);
   assert.ok(cells.every((cell) => cell.length >= 12), `DOC3: ${slug} cells are substantive`);
   assert.match(cells[1], /`[^`]+\.(?:mjs|ts|rs)`/, `DOC3: ${slug} names executable evidence`);
   assert.match(cells[2], /(?:✅|◇)/, `DOC4: ${slug} states local/external scope`);

@@ -1,14 +1,104 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-export const ACP_RUNTIME_IDS = Object.freeze(['claude', 'codex', 'gemini', 'opencode', 'hermes']);
+const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
+
+function assertRuntimeContract(condition, message) {
+  if (!condition) throw new Error(`ACP runtime contract ${message}`);
+}
+
+export function projectAcpRuntimeContract(contract) {
+  assertRuntimeContract(
+    contract !== null && typeof contract === 'object' && !Array.isArray(contract),
+    'must be a JSON object',
+  );
+  assertRuntimeContract(contract.schema_version === 1, 'has an unsupported schema version');
+  assertRuntimeContract(
+    Array.isArray(contract.runtimes) && contract.runtimes.length > 0,
+    'must contain at least one runtime row',
+  );
+
+  const ids = [];
+  const seenIds = new Set();
+  const versionEntries = [];
+  for (const [index, runtime] of contract.runtimes.entries()) {
+    assertRuntimeContract(
+      runtime !== null && typeof runtime === 'object' && !Array.isArray(runtime),
+      `runtime row ${index} must be an object`,
+    );
+    const { id, discovery } = runtime;
+    assertRuntimeContract(
+      typeof id === 'string' && id.trim() !== '',
+      `runtime row ${index} must have a non-empty id`,
+    );
+    assertRuntimeContract(!seenIds.has(id), `contains duplicate runtime id ${JSON.stringify(id)}`);
+
+    const version = discovery?.version;
+    assertRuntimeContract(
+      version !== null && typeof version === 'object' && !Array.isArray(version),
+      `${id} must have version discovery`,
+    );
+    assertRuntimeContract(
+      typeof version.executable === 'string' && version.executable.trim() !== '',
+      `${id} must have a non-empty version executable`,
+    );
+    assertRuntimeContract(
+      Array.isArray(version.args) && version.args.every((argument) => typeof argument === 'string'),
+      `${id} version arguments must be strings`,
+    );
+
+    const minimum = discovery?.minimum_version;
+    assertRuntimeContract(
+      minimum !== null && typeof minimum === 'object' && !Array.isArray(minimum),
+      `${id} must have a minimum version`,
+    );
+    const minimumTriple = ['major', 'minor', 'patch'].map((component) => minimum[component]);
+    assertRuntimeContract(
+      minimumTriple.every((component) => Number.isSafeInteger(component) && component >= 0),
+      `${id} minimum version components must be non-negative safe integers`,
+    );
+
+    seenIds.add(id);
+    ids.push(id);
+    versionEntries.push([
+      id,
+      Object.freeze({
+        command: Object.freeze([version.executable, ...version.args]),
+        minimum: Object.freeze(minimumTriple),
+      }),
+    ]);
+  }
+
+  return Object.freeze({
+    ids: Object.freeze(ids),
+    versionSpecs: Object.freeze(Object.fromEntries(versionEntries)),
+  });
+}
+
+function loadAcpRuntimeContract() {
+  let raw;
+  try {
+    raw = execFileSync(
+      process.env.CARGO || 'cargo',
+      ['run', '--quiet', '-p', 'awaken-run-executor-acp', '--example', 'image_runtime_contract'],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+    );
+  } catch (cause) {
+    throw new Error('ACP runtime contract generator failed', { cause });
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (cause) {
+    throw new Error('ACP runtime contract generator returned invalid JSON', { cause });
+  }
+}
+
+const runtimeContract = projectAcpRuntimeContract(loadAcpRuntimeContract());
+
+export const ACP_RUNTIME_IDS = runtimeContract.ids;
+export const ACP_RUNTIME_VERSION_SPECS = runtimeContract.versionSpecs;
 export const ACP_DEFAULT_MEMORY_RUNTIMES = Object.freeze(['opencode', 'claude', 'hermes']);
-export const ACP_RUNTIME_VERSION_SPECS = Object.freeze({
-  claude: Object.freeze({ command: ['claude', '--version'], minimum: [2, 1, 221] }),
-  codex: Object.freeze({ command: ['codex', '--version'], minimum: [0, 146, 0] }),
-  gemini: Object.freeze({ command: ['gemini', '--version'], minimum: [0, 53, 1] }),
-  opencode: Object.freeze({ command: ['opencode', '--version'], minimum: [1, 18, 12] }),
-  hermes: Object.freeze({ command: ['hermes', 'version'], minimum: [0, 19, 0] }),
-});
 
 const present = (value) => typeof value === 'string' && value.trim() !== '';
 
@@ -92,6 +182,10 @@ function directProfile(runtime, env) {
   return null;
 }
 
+function runtimeProfileCandidates(runtime, env, kimi) {
+  return [directProfile(runtime, env), kimiProfile(runtime, kimi)].filter(Boolean);
+}
+
 export function parseAcpRuntimes(raw) {
   const selected = (raw ?? ACP_DEFAULT_MEMORY_RUNTIMES.join(','))
     .split(',')
@@ -108,7 +202,7 @@ export function parseAcpRuntimes(raw) {
 
 export function resolveAcpRuntimeProfiles({ runtimes, env = process.env, kimi = null }) {
   return runtimes.map((runtime) => {
-    const profile = directProfile(runtime, env) ?? kimiProfile(runtime, kimi);
+    const profile = runtimeProfileCandidates(runtime, env, kimi)[0];
     assert.ok(
       profile,
       `${runtime} has no compatible real credential profile; `
@@ -164,21 +258,40 @@ export function assertAcpRuntimeVersions({ runtimes, probe }) {
   });
 }
 
-export const ACP_RUNTIME_ENV_KEYS = Object.freeze([
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_MODEL',
-  'OPENAI_BASE_URL',
-  'OPENAI_API_KEY',
-  'OPENAI_MODEL',
-  'OPENCODE_CONFIG_CONTENT',
-  'KIMI_BASE_URL',
-  'KIMI_API_KEY',
-  'HERMES_MODEL',
-  'GEMINI_API_KEY',
-  'GEMINI_MODEL',
-  'GOOGLE_GEMINI_BASE_URL',
-]);
+// Enumerate exact environment inputs and outputs from the same profile factories
+// used above. The recording proxy captures input-only aliases such as
+// GOOGLE_API_KEY; the separate Kimi fixture prevents Kimi object fields from
+// being mistaken for process-environment keys.
+function projectAcpRuntimeEnvKeys() {
+  const inputKeys = new Set();
+  const sentinel = 'awaken-profile-projection';
+  const recordingEnv = new Proxy(Object.create(null), {
+    get: (_target, key) => {
+      if (typeof key === 'string') inputKeys.add(key);
+      return undefined;
+    },
+  });
+  for (const runtime of ACP_RUNTIME_IDS) directProfile(runtime, recordingEnv);
+  const projectionEnv = new Proxy(Object.create(null), {
+    get: () => sentinel,
+  });
+  const projectionKimi = {
+    key: sentinel,
+    anthropicKey: sentinel,
+    anthropicBase: sentinel,
+    anthropicModel: sentinel,
+    openaiBase: sentinel,
+    openaiModel: sentinel,
+  };
+  const outputKeys = ACP_RUNTIME_IDS.flatMap((runtime) => runtimeProfileCandidates(
+    runtime,
+    projectionEnv,
+    projectionKimi,
+  ).flatMap((profile) => Object.keys(profile.env)));
+  return Object.freeze([...new Set([...inputKeys, ...outputKeys])]);
+}
+
+const ACP_RUNTIME_ENV_KEYS = projectAcpRuntimeEnvKeys();
 
 export function applyAcpRuntimeProfile(profile, env = process.env) {
   for (const key of ACP_RUNTIME_ENV_KEYS) delete env[key];

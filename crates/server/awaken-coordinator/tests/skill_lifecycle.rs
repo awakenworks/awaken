@@ -12,6 +12,8 @@
 //! catalog nor the body — ADR-0036 D2/D7), and that the tools are not ambient when
 //! no skill is offered.
 
+mod support;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
@@ -24,6 +26,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use support::wait_for_session_events;
 use tower::ServiceExt;
 
 const SKILL_ID: &str = "deploy";
@@ -70,18 +73,23 @@ async fn create_session(app: &Router) -> String {
 }
 
 async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the skill lifecycle's terminal Session event",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }
@@ -182,6 +190,14 @@ impl LlmExecutor for SkillUserModel {
 
 #[tokio::test]
 async fn offered_skill_is_discovered_activated_and_used() {
+    // Causes: C1 the Session is offered one Skill; C2 the model requests the
+    // catalog; C3 it activates `deploy`; C4 the instructions return to the same
+    // Run. Effects: E1 only the two generic Skill tools are advertised; E2 the
+    // catalog contains metadata but not the body; E3 activation returns the exact
+    // body; E4 the Run commits `USED_SKILL` and an end_turn terminal Event.
+    // Constraints/invariants: descriptors never become a second catalog/body
+    // owner, and the receipt-aware observer never drives Session/Run lifecycle.
+    // Decision rule: L1=C1+C2 -> E1+E2; L2=L1+C3+C4 -> E3+E4.
     let app = build_router_with_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()]);
     let id = create_session(&app).await;
 
@@ -237,11 +253,13 @@ async fn offered_skill_is_discovered_activated_and_used() {
 
 #[tokio::test]
 async fn skill_tools_are_not_ambient_without_offering_a_skill() {
-    // Cause/effect decision rule: the canonical Resources component installs an
-    // empty SkillStore (storage C1=true), while the Agent/Session offers no
-    // static, external, or pinned Skill (capability C2=false). The effects are
-    // no `list_skills`/`Skill` descriptor or invocation and a normal model reply;
-    // store availability alone must never act as a capability grant.
+    // Causes: the canonical Resources component installs an empty SkillStore
+    // (C1), while the Agent/Session offers no static, external, or pinned Skill
+    // (C2=false). Effects: E1 no `list_skills`/`Skill` descriptor or invocation;
+    // E2 a normal `NO_SKILL_ADVERTISED` terminal reply.
+    // Constraints/invariants: store availability alone is never a capability
+    // grant, and completion is observed only after the accepted receipt.
+    // Decision rule: N1=C1+!C2 -> E1+E2.
     let app = build_router(Arc::new(SkillUserModel), "scripted");
     let id = create_session(&app).await;
 

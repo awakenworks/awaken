@@ -660,7 +660,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn handle_extra(
         &self,
         container_id: &str,
-    ) -> Result<Option<crate::ContainerRuntimeHandle>, RuntimeError> {
+    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
         let pod = self.pods().get(container_id).await.map_err(backend)?;
         continuation::handle_extra(&pod)
     }
@@ -919,10 +919,10 @@ impl ContainerRuntime for K8sRuntime {
     async fn remove_with_handle(
         &self,
         container_id: &str,
-        runtime_handle: Option<&crate::ContainerRuntimeHandle>,
+        runtime_handle: Option<&pc::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         let claim_uid = runtime_handle.map(|handle| match handle {
-            crate::ContainerRuntimeHandle::KubernetesContinuation { claim_uid } => {
+            pc::ContainerContinuationHandle::KubernetesContinuation { claim_uid } => {
                 claim_uid.as_str()
             }
         });

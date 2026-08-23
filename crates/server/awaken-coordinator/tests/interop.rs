@@ -10,7 +10,7 @@
 //!
 //! | # | category                    | Managed | AI SDK          | AG-UI          | A2A            |
 //! |---|-----------------------------|---------|-----------------|----------------|----------------|
-//! | 1 | turn / streaming            | server  | echo_turn       | echo_turn      | a2a_turn       |
+//! | 1 | Run / streaming             | server  | echo_run        | echo_run       | a2a_run        |
 //! | 2 | history read-back           | server  | history_reflects| cross-proto    | a2a_history    |
 //! | 3 | client-tool await + resume   | server  | awaits_then_*    | awaits_then_*   | a2a_awaits_*    |
 //! | 4 | driver error → wire format  | server  | driver_error    | driver_error   | router unit    |
@@ -22,19 +22,21 @@
 //!
 //! Cross-protocol causal graph:
 //!
-//! `turn accepted -> stream reaches terminal frame -> committed thread facts`
+//! `Run accepted -> stream reaches terminal frame -> committed Thread facts`
 //! `committed thread facts -> history projection through any adapter`
 //! `client-tool call -> awaiting -> same-thread result -> resume -> committed reply`
 //!
 //! | rule | terminal stream consumed | awaiting tool | same-thread result | effect |
 //! |------|--------------------------|---------------|--------------------|--------|
-//! | X1   | yes                      | no            | -                  | history exposes turn |
+//! | X1   | yes                      | no            | -                  | history exposes Run |
 //! | X2   | yes                      | yes           | no                 | run remains awaiting |
 //! | X3   | yes                      | yes           | yes                | resumed reply is visible cross-protocol |
 //!
 //! The response collector consumes through `[DONE]`, which is emitted only after
-//! the turn future and authoritative commit complete. Consequently X1/X3 need no
+//! the Run future and authoritative commit complete. Consequently X1/X3 need no
 //! timing sleeps or retry loop; the stream terminal is their consistency boundary.
+
+mod support;
 
 use awaken_scenario_host::{build_custom_router, build_echo_router};
 use axum::Router;
@@ -43,6 +45,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+use support::wait_for_session_events;
 
 /// POST/GET returning the raw response body as a string (SSE bodies are not JSON).
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, String) {
@@ -80,8 +84,51 @@ fn ag_user_msg(id: &str, text: &str) -> Value {
     json!({ "id": id, "role": "user", "content": text })
 }
 
+fn assert_ai_sdk_result_precedes_answer(messages: &[Value], body: &str) {
+    let tool_result_index = messages
+        .iter()
+        .position(|message| {
+            message["role"] == "assistant"
+                && message["parts"].as_array().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        part["toolCallId"] == "c1"
+                            && part["state"] == "output-available"
+                            && part["output"] == json!(42)
+                    })
+                })
+        })
+        .unwrap_or_else(|| panic!("same-thread history lacks committed c1=42: {body}"));
+    let answer_index = messages
+        .iter()
+        .position(|message| {
+            message["role"] == "assistant"
+                && message["parts"].as_array().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        part["type"] == "text"
+                            && part["text"]
+                                .as_str()
+                                .is_some_and(|text| text.contains("got: 42"))
+                    })
+                })
+        })
+        .unwrap_or_else(|| panic!("same-thread history lacks the resumed answer: {body}"));
+    assert!(
+        tool_result_index < answer_index,
+        "the committed c1=42 result must causally precede its answer: {body}"
+    );
+}
+
+/// Cause/effect design: C1 one AI SDK Run receives user text `hi` through the
+/// echo agent. Effects: E1 its SSE contains `Echo: hi` as a text delta; E2 the
+/// stream terminates with finish reason `stop`. Decision rule S1=C1=>E1+E2.
 #[tokio::test(flavor = "multi_thread")]
-async fn ai_sdk_echo_turn_streams_text() {
+async fn ai_sdk_echo_run_streams_text() {
+    // Causes: the fixtures below establish `ai sdk echo run streams text` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_echo_router();
     let (status, body) = call(
         &app,
@@ -107,8 +154,19 @@ async fn ai_sdk_echo_turn_streams_text() {
     );
 }
 
+/// Cause/effect design: C1 an AI SDK Run commits user input and the echo reply on
+/// one Thread; C2 history is read afterward. Effect E1: the returned items expose
+/// both committed roles and exact texts. Decision rule H1=C1+C2=>E1.
 #[tokio::test(flavor = "multi_thread")]
-async fn ai_sdk_history_reflects_committed_turn() {
+async fn ai_sdk_history_reflects_committed_run() {
+    // Causes: the fixtures below establish `ai sdk history reflects committed run` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_echo_router();
     call(
         &app,
@@ -133,7 +191,7 @@ async fn ai_sdk_history_reflects_committed_turn() {
         messages
             .iter()
             .any(|m| m["role"] == "user" && m["parts"][0]["text"] == "remember me"),
-        "history should include the user turn: {body}"
+        "history should include the user input: {body}"
     );
     assert!(
         messages
@@ -144,11 +202,19 @@ async fn ai_sdk_history_reflects_committed_turn() {
 }
 
 /// The headline cross-protocol case. A managed session fixes the shared thread id;
-/// the AI SDK adapter drives a turn on that thread which awaits on a client-executed
+/// the AI SDK adapter drives a Run on that Thread which awaits on a client-executed
 /// tool; the Managed adapter delivers the tool result on the *same thread* and the
 /// run resumes; the final answer is visible back through the AI SDK.
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
+    // Causes: C1 AI SDK commits client tool call c1 on one Managed-created
+    // Thread; C2 Managed accepts the exact c1=42 result receipt on that Thread.
+    // Effects: the lifecycle supervisor commits the result, resumes the Run, and
+    // AI SDK history shows output-available c1=42 before the `got: 42` answer.
+    // Constraints/invariants: the POST receipt is acceptance, not completion;
+    // one Thread transcript is the authority shared by both protocol adapters.
+    // Decision rule: X2=C1 without C2 -> awaiting; X3=C1+C2 -> committed result
+    // precedes committed answer in the same Thread history.
     let app = build_custom_router();
 
     // 1. Managed creates the session; its id is the shared thread id.
@@ -165,7 +231,7 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     let session: Value = serde_json::from_str(&created).unwrap();
     let thread = session["id"].as_str().unwrap().to_string();
 
-    // 2. AI SDK drives a turn on that thread; the model calls the client tool
+    // 2. AI SDK drives a Run on that Thread; the model calls the client tool
     //    `submit_answer` and the run awaits.
     let (status, body) = call(
         &app,
@@ -191,7 +257,7 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
 
     // 3. Managed delivers the client tool result on the SAME thread, resuming the
     //    run the AI SDK started.
-    let (status, _) = call(
+    let (status, receipt_body) = call(
         &app,
         "POST",
         &format!("/v1/sessions/{thread}/events"),
@@ -203,6 +269,26 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let receipt = serde_json::from_str::<Value>(&receipt_body).unwrap();
+    wait_for_session_events(
+        &app,
+        &thread,
+        Some(&receipt),
+        "the Managed c1=42 result to commit its same-Thread answer",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "user.custom_tool_result" && event["custom_tool_use_id"] == "c1"
+            }) && events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("got: 42"))
+            }) && events.iter().any(|event| {
+                event["type"] == "session.status_idle" && event["stop_reason"]["type"] == "end_turn"
+            })
+        },
+    )
+    .await;
 
     // 4. The resumed answer is visible back through the AI SDK history.
     let (_, body) = call(
@@ -214,18 +300,20 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     .await;
     let payload: Value = serde_json::from_str(&body).unwrap();
     let messages = payload["items"].as_array().unwrap();
-    assert!(
-        messages.iter().any(|m| m["role"] == "assistant"
-            && m["parts"].as_array().unwrap().iter().any(|p| p["text"]
-                .as_str()
-                .map(|t| t.contains("got: 42"))
-                .unwrap_or(false))),
-        "the answer delivered via Managed should appear in AI SDK history: {body}"
-    );
+    assert_ai_sdk_result_precedes_answer(messages, &body);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ag_ui_echo_turn_streams_run_events() {
+async fn ag_ui_echo_run_streams_run_events() {
+    // Causes: the fixtures below establish `ag ui echo run streams run events` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `ag ui echo run streams run events` is one independent branch selecting
+    // `all output, state, side-effect, error, and terminal assertions below hold together`; a
+    // multi-row decision table is not applicable, and sibling tests own alternate causes.
     let app = build_echo_router();
     let (status, body) = call(
         &app,
@@ -255,11 +343,19 @@ async fn ag_ui_echo_turn_streams_run_events() {
     );
 }
 
-/// The three-protocol case: AG-UI drives a turn that awaits on a client tool, the
+/// The three-protocol case: AG-UI drives a Run that awaits on a client tool, the
 /// Managed adapter delivers the result on the same thread, and the resumed answer
 /// is visible back through the AI SDK — all three over one shared host/thread.
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
+    // Causes: C1 AG-UI commits client tool call c1 on a Managed-created Thread;
+    // C2 Managed accepts the exact c1=42 result receipt on that same Thread.
+    // Effects: committed Managed projection reaches end_turn, then AI SDK history
+    // shows output-available c1=42 before the resumed `got: 42` answer.
+    // Constraints/invariants: AG-UI, Managed, and AI SDK are wire projections of
+    // one committed Thread; no adapter owns a parallel resume or history track.
+    // Decision rule: X2=C1 without C2 -> awaiting; X3=C1+C2 -> result-before-answer
+    // causality remains visible through the third protocol.
     let app = build_custom_router();
 
     let (_, created) = call(
@@ -275,7 +371,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     let session: Value = serde_json::from_str(&created).unwrap();
     let thread = session["id"].as_str().unwrap().to_string();
 
-    // AG-UI drives the turn; the model calls the client tool `submit_answer`.
+    // AG-UI drives the Run; the model calls the client tool `submit_answer`.
     let (status, body) = call(
         &app,
         "POST",
@@ -297,7 +393,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     );
 
     // Managed delivers the client tool result on the SAME thread.
-    let (status, _) = call(
+    let (status, receipt_body) = call(
         &app,
         "POST",
         &format!("/v1/sessions/{thread}/events"),
@@ -309,6 +405,26 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let receipt = serde_json::from_str::<Value>(&receipt_body).unwrap();
+    wait_for_session_events(
+        &app,
+        &thread,
+        Some(&receipt),
+        "the Managed c1=42 result to commit its AG-UI-originated same-Thread answer",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "user.custom_tool_result" && event["custom_tool_use_id"] == "c1"
+            }) && events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("got: 42"))
+            }) && events.iter().any(|event| {
+                event["type"] == "session.status_idle" && event["stop_reason"]["type"] == "end_turn"
+            })
+        },
+    )
+    .await;
 
     // The resumed answer is visible back through the AI SDK history.
     let (_, body) = call(
@@ -320,14 +436,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     .await;
     let payload: Value = serde_json::from_str(&body).unwrap();
     let messages = payload["items"].as_array().unwrap();
-    assert!(
-        messages.iter().any(|m| m["role"] == "assistant"
-            && m["parts"].as_array().unwrap().iter().any(|p| p["text"]
-                .as_str()
-                .map(|t| t.contains("got: 42"))
-                .unwrap_or(false))),
-        "answer delivered via Managed should appear in AI SDK history: {body}"
-    );
+    assert_ai_sdk_result_precedes_answer(messages, &body);
 }
 
 // ── Category 4/5: errors convert to each protocol's wire format ──────────────
@@ -467,7 +576,15 @@ fn a2a_send(context: &str, msg_id: &str, text: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a2a_turn_returns_completed_task() {
+async fn a2a_run_returns_completed_task() {
+    // Causes: the fixtures below establish `a2a run` with the concrete inputs, state, dependencies,
+    // and failure triggers used by this case.
+    // Effects: the observable result `returns completed task` and every asserted state transition
+    // or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_echo_router();
     let (status, body) = call(
         &app,
@@ -481,7 +598,7 @@ async fn a2a_turn_returns_completed_task() {
     assert_eq!(task["contextId"], "a2a-t1");
     assert_eq!(task["status"]["state"], "completed");
     assert_eq!(task["status"]["message"]["parts"][0]["text"], "Echo: hi");
-    // The task history carries both the user turn and the agent reply.
+    // The task history carries both the user input and the agent reply.
     let history = task["history"].as_array().unwrap();
     assert!(
         history
@@ -495,8 +612,20 @@ async fn a2a_turn_returns_completed_task() {
     );
 }
 
+/// Cause/effect design: C1 two A2A sends use the same context id in sequence.
+/// Effect E1: the second Task history retains the first input/reply and current
+/// input instead of resetting the context. Decision rule A1=C1=>E1; this test's
+/// membership assertions cover accumulation, not a separate ordering contract.
 #[tokio::test(flavor = "multi_thread")]
-async fn a2a_history_accumulates_across_turns() {
+async fn a2a_history_accumulates_across_runs() {
+    // Causes: the fixtures below establish `a2a history` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `accumulates across runs` and every asserted state transition
+    // or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_echo_router();
     call(
         &app,
@@ -519,7 +648,7 @@ async fn a2a_history_accumulates_across_turns() {
         .iter()
         .filter_map(|m| m["parts"][0]["text"].as_str().map(str::to_string))
         .collect();
-    // Both turns and both replies are present, oldest first.
+    // The returned history retains the prior exchange plus the current input.
     assert!(texts.contains(&"one".to_string()));
     assert!(texts.contains(&"Echo: one".to_string()));
     assert!(texts.contains(&"two".to_string()));
@@ -544,7 +673,7 @@ async fn a2a_awaits_input_required_then_resumes_completed() {
         .unwrap()
         .to_string();
 
-    // A2A drives a turn; the model calls the client tool and the task awaits.
+    // A2A drives a Run; the model calls the client tool and the task awaits.
     let (status, body) = call(
         &app,
         "POST",

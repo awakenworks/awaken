@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38160);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -67,6 +67,30 @@ async function main() {
     const put = await json('PUT', `/v1/config/agents/${AGENT}`, agentConfig);
     assert.equal(put.status, 200, 'config stored');
     pass('agent config stored');
+
+    // Agent-tool authority cause/effect graph: C1 the draft already contains a
+    // valid config; C2 a replacement names a member outside the closed official
+    // Agent toolset. Effects: E1 C2 returns 400 before normalization; E2 the
+    // prior draft and generation remain byte-for-byte observable. Decision row
+    // A1: C1+C2 => E1+E2. K/Constraint: Config Service reuses the Session-contract
+    // validator and cannot preserve or silently drop a parallel tool identity.
+    const beforeUnknownTool = await json('GET', `/v1/config/agents/${AGENT}`, undefined);
+    assert.equal(beforeUnknownTool.status, 200, 'A1 baseline draft exists');
+    const unknownToolPut = await json('PUT', `/v1/config/agents/${AGENT}`, {
+      ...agentConfig,
+      tools: [{
+        type: 'agent_toolset_20260401',
+        configs: [{ name: 'parallel_web_search' }],
+      }],
+    });
+    assert.equal(unknownToolPut.status, 400, JSON.stringify(unknownToolPut.body));
+    assert.match(unknownToolPut.body.error, /unknown agent tool `parallel_web_search`/u, 'A1/E1');
+    assert.deepEqual(
+      await json('GET', `/v1/config/agents/${AGENT}`, undefined),
+      beforeUnknownTool,
+      'A1/E2 rejected replacement has no draft or generation side effect',
+    );
+    pass('unknown Agent-tool config fails closed before Config draft mutation');
 
     // Validate (compile dry-run).
     const valid = await json('POST', `/v1/config/agents/${AGENT}/validate`, agentConfig);
@@ -190,12 +214,25 @@ async function main() {
 
     // Run: a session for the published agent runs with its own instructions.
     const session = await client.beta.sessions.create({ agent: AGENT, environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=published Agent admits one exact User receipt; C2=its configured
+    // instructions appear in the later Agent reply. E1=C2 is scoped after C1.
+    // K: projection/listing is observation only. Decision P1 C1&&!C2=>retry;
+    // P2 C1+C2=>assert the published instruction marker.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'hi' }] }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'P1 exact published-Agent User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'P1 published Agent Run to commit its reply',
+    );
     const assistant = events.filter((e) => e.type === 'agent.message');
     const text = JSON.stringify(assistant.map((m) => m.content));
     assert.ok(

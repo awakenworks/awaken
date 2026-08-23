@@ -7,7 +7,8 @@ use awaken_session_contract::{
     FailSessionRealization, ManagedLifecycleFact, McpAttachmentState, McpGenerationRef,
     PersistedSession, RunError, SessionExecutionState, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationLease, SessionRepositoryError, SessionRuntime, StageMcpAttachment,
+    SessionRealizationLease, SessionRepositoryError, SessionRuntime,
+    SessionTerminalCleanupAssignment, StageMcpAttachment,
 };
 
 use super::{SessionApplication, SessionMutationError};
@@ -45,27 +46,60 @@ fn mutation_control(error: SessionMutationError) -> SessionRealizationControlFai
     }
 }
 
-fn validate_target(
-    command: &BeginSessionRealization,
+fn validate_realization_target(
+    target: &awaken_session_contract::SessionRealizationTarget,
 ) -> Result<(), SessionRealizationControlFailure> {
-    if command.session_id.trim().is_empty()
-        || command.target.owner.trim().is_empty()
-        || command.target.runtime_incarnation.trim().is_empty()
+    if target.owner.trim().is_empty()
+        || target.runtime_incarnation.trim().is_empty()
         || !awaken_session_contract::realization_lease_is_live_at(
-            command.target.lease_expires_at_unix_ms,
+            target.lease_expires_at_unix_ms,
             now_unix_ms(),
         )
     {
         return Err(SessionRealizationControlFailure::Invalid(
-            "Session id, Runtime owner/incarnation, and a future lease expiry are required".into(),
+            "Runtime owner/incarnation and a future lease expiry are required".into(),
         ));
     }
-    if command.target.renew_existing_lease && command.target.reassign_existing_lease {
+    if target.renew_existing_lease && target.reassign_existing_lease {
         return Err(SessionRealizationControlFailure::Invalid(
             "Session realization renewal and reassignment are mutually exclusive".into(),
         ));
     }
     Ok(())
+}
+
+fn validate_target(
+    command: &BeginSessionRealization,
+) -> Result<(), SessionRealizationControlFailure> {
+    if command.session_id.trim().is_empty() {
+        return Err(SessionRealizationControlFailure::Invalid(
+            "Session id is required".into(),
+        ));
+    }
+    validate_realization_target(&command.target)
+}
+
+fn terminal_cleanup_claim_needs_assignment(
+    current: Option<&SessionRealizationLease>,
+    target: &awaken_session_contract::SessionRealizationTarget,
+    now_unix_ms: u64,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if !awaken_session_contract::realization_lease_is_live_at(
+        current.expires_at_unix_ms,
+        now_unix_ms,
+    ) {
+        return true;
+    }
+    // A restarted process in the same logical Worker slot may immediately
+    // fence its predecessor. An exact current incarnation has already received
+    // this assignment and is skipped so one faulted Session cannot starve the
+    // remaining deterministic recovery scan. A different live owner retains
+    // its authority until expiry because cleanup has no Run claim to prove a
+    // cross-owner topology takeover.
+    current.owner == target.owner && current.runtime_incarnation != target.runtime_incarnation
 }
 
 fn verify_lease(
@@ -142,6 +176,8 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         lease: &SessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), RunError> {
+        self.runtime
+            .install_session_request_context(session_id, projection.request_context.clone())?;
         if !prepare_session {
             return Ok(());
         }
@@ -153,8 +189,6 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         )?;
         self.runtime
             .install_session_baseline(session_id, &projection.baseline)?;
-        self.runtime
-            .install_session_request_context(session_id, projection.request_context.clone())?;
         self.runtime
             .prepare_session(session_id, projection.session_init())
             .await?;
@@ -211,17 +245,58 @@ impl SessionApplication {
                 "reconciled durable Session Runtime projections"
             );
         }
+        let event_batches = self.reconcile_event_batches().await;
+        let event_batch_failure_count = event_batches.failures.len();
+        for (session_id, error) in event_batches.failures {
+            tracing::warn!(
+                session = %session_id,
+                %error,
+                "Session Event reconciliation remains pending"
+            );
+        }
+        if event_batches.settled != 0 {
+            tracing::info!(
+                reconciled_event_batches = event_batches.settled,
+                "reconciled durable Session Event batches"
+            );
+        }
+        let outcomes = self.reconcile_outcome_continuations().await;
+        let outcome_failure_count = outcomes.failures.len();
+        for (session_id, error) in outcomes.failures {
+            tracing::warn!(
+                session = %session_id,
+                %error,
+                "Thread Outcome reconciliation remains pending"
+            );
+        }
+        if outcomes.settled != 0 {
+            tracing::info!(
+                reconciled_outcomes = outcomes.settled,
+                "reconciled durable Thread Outcomes"
+            );
+        }
         tracing::info!(
-            pending_sessions = pending.max(realizations.pending),
-            quarantined_sessions = quarantined.max(realizations.quarantined.len()),
-            retryable_failures =
-                resource_failure_count + continuation_failure_count + realization_failure_count,
+            pending_sessions = pending
+                .max(realizations.pending)
+                .max(event_batches.pending)
+                .max(outcomes.pending),
+            quarantined_sessions = quarantined
+                .max(realizations.quarantined.len())
+                .max(event_batches.quarantined)
+                .max(outcomes.quarantined),
+            retryable_failures = resource_failure_count
+                + continuation_failure_count
+                + realization_failure_count
+                + event_batch_failure_count
+                + outcome_failure_count,
             "Session recovery scan completed"
         );
         SessionRecoveryCycle {
             retryable_failures: resource_failure_count
                 + continuation_failure_count
-                + realization_failure_count,
+                + realization_failure_count
+                + event_batch_failure_count
+                + outcome_failure_count,
         }
     }
 
@@ -250,28 +325,10 @@ impl SessionApplication {
             );
         }
         loop {
-            tokio::select! {
+            let recovery_due = tokio::select! {
                 () = cancellation.cancelled() => break,
-                _ = self.lifecycle_wakeup.notified() => {
-                    let cycle = self.reconcile_pending_session_state().await;
-                    recovery_failure_streak = if cycle.retryable_failures == 0 {
-                        0
-                    } else {
-                        recovery_failure_streak.saturating_add(1)
-                    };
-                    next_recovery = tokio::time::Instant::now()
-                        + session_recovery_delay(recovery_failure_streak);
-                }
-                _ = tokio::time::sleep_until(next_recovery) => {
-                    let cycle = self.reconcile_pending_session_state().await;
-                    recovery_failure_streak = if cycle.retryable_failures == 0 {
-                        0
-                    } else {
-                        recovery_failure_streak.saturating_add(1)
-                    };
-                    next_recovery = tokio::time::Instant::now()
-                        + session_recovery_delay(recovery_failure_streak);
-                }
+                _ = self.lifecycle_wakeup.notified() => true,
+                _ = tokio::time::sleep_until(next_recovery) => true,
                 _ = interval.tick() => {
                     if let Err(error) = self
                         .renew_due_session_realizations(now_unix_ms())
@@ -291,8 +348,33 @@ impl SessionApplication {
                             "Session WorkQueue dispatch remains pending"
                         );
                     }
+                    false
                 }
+            };
+            if !recovery_due {
+                continue;
             }
+
+            // The sole recovery cycle composes Resource, realization,
+            // Event-batch, and Outcome reconciliation. Await it as a distinct
+            // Tokio task so its first poll begins at the scheduler boundary;
+            // nesting the complete state machine in this supervisor can exceed
+            // a default worker stack before the first User batch is admitted.
+            let application = std::sync::Arc::clone(&self);
+            let mut recovery_task = tokio::task::JoinSet::new();
+            recovery_task.spawn(async move { application.reconcile_pending_session_state().await });
+            let cycle = recovery_task
+                .join_next()
+                .await
+                .ok_or_else(|| "Session recovery task disappeared".to_string())?
+                .map_err(|error| format!("Session recovery task failed: {error}"))?;
+            recovery_failure_streak = if cycle.retryable_failures == 0 {
+                0
+            } else {
+                recovery_failure_streak.saturating_add(1)
+            };
+            next_recovery =
+                tokio::time::Instant::now() + session_recovery_delay(recovery_failure_streak);
         }
         Ok(())
     }
@@ -333,11 +415,23 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, SessionRealizationError> {
+        self.refresh_executable_projections()
+            .await
+            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
+        self.realize_session_after_refresh(session_id).await
+    }
+
+    /// Continue realization after the owning application operation refreshed
+    /// every executable projection before its first catalog read or mutation.
+    pub(super) async fn realize_session_after_refresh(
+        &self,
+        session_id: &str,
+    ) -> Result<PersistedSession, SessionRealizationError> {
         let lease_expires_at_unix_ms = now_unix_ms().checked_add(300_000).ok_or_else(|| {
             SessionRealizationError::Effect(RunError::internal("lease expiry overflow"))
         })?;
         let directive = self
-            .begin_session_realization(BeginSessionRealization {
+            .begin_session_realization_after_refresh(BeginSessionRealization {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: self.local_realization_owner().to_string(),
@@ -362,9 +456,10 @@ impl SessionApplication {
         session_id: &str,
         directive: SessionRealizationDirective,
     ) -> Result<(), SessionRealizationError> {
+        let control = RefreshedSessionRealizationControl(self);
         awaken_session_contract::drive_session_realization(
             session_id,
-            self,
+            &control,
             &LocalProjectionSynchronizer {
                 runtime: self.runtime(),
             },
@@ -392,6 +487,9 @@ impl SessionApplication {
     ) -> Result<usize, SessionRealizationError> {
         const RENEW_BEFORE_MS: u64 = 150_000;
         const LEASE_MS: u64 = 300_000;
+        self.refresh_executable_projections()
+            .await
+            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
         let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
         let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
         let sessions = self
@@ -418,7 +516,7 @@ impl SessionApplication {
                 continue;
             }
             let directive = self
-                .begin_session_realization(BeginSessionRealization {
+                .begin_session_realization_after_refresh(BeginSessionRealization {
                     session_id: scoped.session.session_id.clone(),
                     target: awaken_session_contract::SessionRealizationTarget {
                         owner: lease.owner,
@@ -443,6 +541,13 @@ impl SessionApplication {
     /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
     pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
         let mut report = SessionReconciliation::default();
+        if let Err(error) = self.refresh_executable_projections().await {
+            report.failures.push(SessionReconciliationFailure {
+                session_id: "<executable-projections>".to_string(),
+                message: error,
+            });
+            return report;
+        }
         let sessions = match self.session_repository().reconcilable_sessions().await {
             Ok(sessions) => sessions,
             Err(error) => {
@@ -493,7 +598,7 @@ impl SessionApplication {
                 continue;
             }
             let session_id = session.session_id.clone();
-            match self.realize_session(&session_id).await {
+            match self.realize_session_after_refresh(&session_id).await {
                 Ok(session) => report.settled.push(session),
                 Err(error) => report.failures.push(SessionReconciliationFailure {
                     session_id,
@@ -562,13 +667,11 @@ impl SessionApplication {
         action: SessionRealizationAction,
         activate_pending_resources: bool,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        let materialize_request_context = matches!(
-            &action,
-            SessionRealizationAction::Stage {
-                prepare_session: true,
-                ..
-            }
-        );
+        // Context is a lightweight rebuildable projection and must refresh even
+        // when an existing realization lease needs no Environment/Resource
+        // Stage. Otherwise a durable System command accepted between Runs would
+        // remain invisible on a warm local or remote Worker.
+        let materialize_request_context = true;
         let projection = if activate_pending_resources {
             self.frozen_session_projection(owner_scope, session, materialize_request_context)
                 .await
@@ -669,9 +772,8 @@ fn session_recovery_delay(failure_streak: u32) -> std::time::Duration {
     )
 }
 
-#[async_trait::async_trait]
-impl SessionRealizationControl for SessionApplication {
-    async fn begin_session_realization(
+impl SessionApplication {
+    async fn begin_session_realization_after_refresh(
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
@@ -860,7 +962,7 @@ impl SessionRealizationControl for SessionApplication {
         Err(SessionRealizationControlFailure::Conflict)
     }
 
-    async fn activate_session_realization(
+    async fn activate_session_realization_after_refresh(
         &self,
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
@@ -1049,7 +1151,7 @@ impl SessionRealizationControl for SessionApplication {
         .await
     }
 
-    async fn acknowledge_session_realization(
+    async fn acknowledge_session_realization_after_refresh(
         &self,
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
@@ -1144,14 +1246,28 @@ impl SessionRealizationControl for SessionApplication {
                 .finish_drain(&generation.attachment_id, generation.generation)
                 .map_err(unavailable)?;
         }
-        let initial_ready =
-            session.activity_epoch == 0 && session.execution != SessionExecutionState::Idle;
+        let initial_ready = !session.has_active_activities()
+            && session.activity_epoch == 0
+            && session.execution != SessionExecutionState::Idle;
         // Realization publication settles physical readiness, not the activity
-        // fence. A driving event may have opened the authoritative Running
-        // interval while a replacement Worker was rebuilding its projection;
-        // only that activity's settlement may close the interval and return the
-        // Session to Idle.
-        if session.execution != SessionExecutionState::Running {
+        // fence. An initially claimed Worker may acknowledge while the driving
+        // activity is still recorded under Preparing/Activating; promote that
+        // same activity to Running and open its one interval. A replacement may
+        // already observe Running. Only the final activity settlement may close
+        // the interval and return the Session to Idle.
+        if session.has_active_activities() {
+            if session.execution != SessionExecutionState::Running {
+                if session.execution != SessionExecutionState::Idle {
+                    session
+                        .transition_execution(SessionExecutionState::Idle)
+                        .map_err(unavailable)?;
+                }
+                session
+                    .transition_execution(SessionExecutionState::Running)
+                    .map_err(unavailable)?;
+            }
+            session.begin_runtime_interval(now_unix_ms());
+        } else if session.execution != SessionExecutionState::Running {
             session
                 .transition_execution(SessionExecutionState::Idle)
                 .map_err(unavailable)?;
@@ -1182,7 +1298,7 @@ impl SessionRealizationControl for SessionApplication {
         .await
     }
 
-    async fn fail_session_realization(
+    async fn fail_session_realization_after_refresh(
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -1305,6 +1421,312 @@ impl SessionRealizationControl for SessionApplication {
             self.notify_lifecycle_fact();
         }
         Ok(())
+    }
+
+    async fn claim_next_terminal_cleanup_after_refresh(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
+        validate_realization_target(&target)?;
+        if target.renew_existing_lease || target.reassign_existing_lease {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "terminal cleanup recovery claims cannot renew or reassign a live logical owner"
+                    .into(),
+            ));
+        }
+        let mut conflicted_session_id = None;
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let scan = self
+                .session_repository()
+                .reconcilable_sessions()
+                .await
+                .map_err(repository_control)?;
+            let mut first_projection_failure = None;
+            let mut retry_after_conflict = false;
+
+            for scoped in scan.sessions {
+                let owner_scope = scoped.workspace_id;
+                let mut session = scoped.session;
+                if !self.requires_external_realization(&session)
+                    || !session.is_terminal()
+                    || !session.terminal_cleanup.is_requested()
+                {
+                    continue;
+                }
+                let pending_commands = match session
+                    .terminal_cleanup
+                    .pending_commands(&session.session_id)
+                {
+                    Ok(commands) => commands,
+                    Err(error) => {
+                        first_projection_failure.get_or_insert_with(|| {
+                            SessionRealizationControlFailure::Invalid(error.to_string())
+                        });
+                        continue;
+                    }
+                };
+                if pending_commands.is_empty() {
+                    continue;
+                }
+
+                // A storage adapter may lose the successful CAS response. Only
+                // this invocation's exact attempted Session may replay the now
+                // current assignment; ordinary later claim-next calls skip it
+                // so a faulted cleanup cannot starve the remaining scan.
+                let replay_after_conflict = conflicted_session_id.as_deref()
+                    == Some(session.session_id.as_str())
+                    && session.realization.as_ref().is_some_and(|current| {
+                        current.owner == target.owner
+                            && current.runtime_incarnation == target.runtime_incarnation
+                            && current.expires_at_unix_ms >= target.lease_expires_at_unix_ms
+                    });
+                if replay_after_conflict {
+                    let lease = session
+                        .realization
+                        .clone()
+                        .expect("an exact conflict replay lease was checked");
+                    match self
+                        .active_frozen_session_projection(owner_scope, &session, false)
+                        .await
+                    {
+                        Ok(projection) => {
+                            return Ok(Some(SessionTerminalCleanupAssignment {
+                                session_id: session.session_id,
+                                projection,
+                                lease,
+                            }));
+                        }
+                        Err(error) => {
+                            first_projection_failure.get_or_insert_with(|| unavailable(error));
+                            continue;
+                        }
+                    }
+                }
+                if !terminal_cleanup_claim_needs_assignment(
+                    session.realization.as_ref(),
+                    &target,
+                    now_unix_ms(),
+                ) {
+                    continue;
+                }
+
+                let epoch = match session.realization.as_ref() {
+                    Some(current) => match current.epoch.checked_add(1) {
+                        Some(epoch) => epoch,
+                        None => {
+                            first_projection_failure.get_or_insert_with(|| {
+                                SessionRealizationControlFailure::Invalid(
+                                    "Session realization lease epoch is exhausted".into(),
+                                )
+                            });
+                            continue;
+                        }
+                    },
+                    None => 1,
+                };
+                let lease = SessionRealizationLease {
+                    owner: target.owner.clone(),
+                    runtime_incarnation: target.runtime_incarnation.clone(),
+                    epoch,
+                    expires_at_unix_ms: target.lease_expires_at_unix_ms,
+                };
+                let session_id = session.session_id.clone();
+                session.realization = Some(lease.clone());
+                let committed = match self
+                    .commit_session_snapshot(
+                        &owner_scope,
+                        session,
+                        "claim-terminal-cleanup-recovery",
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    Ok(committed) => committed,
+                    Err(SessionMutationError::Conflict)
+                        if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    {
+                        conflicted_session_id = Some(session_id);
+                        retry_after_conflict = true;
+                        break;
+                    }
+                    Err(SessionMutationError::Conflict) => {
+                        return Err(SessionRealizationControlFailure::Conflict);
+                    }
+                    Err(error) => return Err(unavailable(error)),
+                };
+                match self
+                    .active_frozen_session_projection(owner_scope, &committed, false)
+                    .await
+                {
+                    Ok(projection) => {
+                        return Ok(Some(SessionTerminalCleanupAssignment {
+                            session_id,
+                            projection,
+                            lease,
+                        }));
+                    }
+                    Err(error) => {
+                        // The root claim is durable. Skip this exact incarnation
+                        // on the remainder of this scan so an unavailable frozen
+                        // dependency cannot head-of-line block another cleanup;
+                        // expiry makes the failed assignment claimable again.
+                        first_projection_failure.get_or_insert_with(|| unavailable(error));
+                    }
+                }
+            }
+            if retry_after_conflict {
+                continue;
+            }
+            return match first_projection_failure {
+                Some(error) => Err(error),
+                None => Ok(None),
+            };
+        }
+        Err(SessionRealizationControlFailure::Conflict)
+    }
+
+    async fn terminal_cleanup_commands_after_refresh(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        SessionRealizationControlFailure,
+    > {
+        self.external_terminal_cleanup_commands(session_id, lease)
+            .await
+    }
+
+    async fn record_terminal_cleanup_completion_after_refresh(
+        &self,
+        lease: &SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_external_terminal_cleanup_completion(lease, completion)
+            .await
+    }
+}
+
+/// Local application drivers cross an executable-refresh boundary before they
+/// enter the multi-phase protocol. This adapter reuses that proof for the
+/// Stage/Activate/Acknowledge calls without adding a token, cache, or cursor.
+struct RefreshedSessionRealizationControl<'a>(&'a SessionApplication);
+
+#[async_trait::async_trait]
+impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
+    async fn begin_session_realization(
+        &self,
+        command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.0
+            .begin_session_realization_after_refresh(command)
+            .await
+    }
+
+    async fn activate_session_realization(
+        &self,
+        command: ActivateSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.0
+            .activate_session_realization_after_refresh(command)
+            .await
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        command: AcknowledgeSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.0
+            .acknowledge_session_realization_after_refresh(command)
+            .await
+    }
+
+    async fn fail_session_realization(
+        &self,
+        command: FailSessionRealization,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.0.fail_session_realization_after_refresh(command).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRealizationControl for SessionApplication {
+    async fn begin_session_realization(
+        &self,
+        command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        validate_target(&command)?;
+        self.refresh_executable_projections()
+            .await
+            .map_err(unavailable)?;
+        self.begin_session_realization_after_refresh(command).await
+    }
+
+    async fn activate_session_realization(
+        &self,
+        command: ActivateSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.refresh_executable_projections()
+            .await
+            .map_err(unavailable)?;
+        self.activate_session_realization_after_refresh(command)
+            .await
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        command: AcknowledgeSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.refresh_executable_projections()
+            .await
+            .map_err(unavailable)?;
+        self.acknowledge_session_realization_after_refresh(command)
+            .await
+    }
+
+    async fn fail_session_realization(
+        &self,
+        command: FailSessionRealization,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.fail_session_realization_after_refresh(command).await
+    }
+
+    async fn claim_next_terminal_cleanup(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
+        validate_realization_target(&target)?;
+        if target.renew_existing_lease || target.reassign_existing_lease {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "terminal cleanup recovery claims cannot renew or reassign a live logical owner"
+                    .into(),
+            ));
+        }
+        self.refresh_executable_projections()
+            .await
+            .map_err(unavailable)?;
+        self.claim_next_terminal_cleanup_after_refresh(target).await
+    }
+
+    async fn terminal_cleanup_commands(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        SessionRealizationControlFailure,
+    > {
+        self.terminal_cleanup_commands_after_refresh(session_id, lease)
+            .await
+    }
+
+    async fn record_terminal_cleanup_completion(
+        &self,
+        lease: &SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_terminal_cleanup_completion_after_refresh(lease, completion)
+            .await
     }
 }
 

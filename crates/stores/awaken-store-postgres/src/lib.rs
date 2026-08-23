@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
@@ -34,7 +35,8 @@ use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventSco
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
-    RunLifecyclePage, classify_run_lifecycle_event,
+    RunLifecyclePage, classify_run_lifecycle_record, decode_run_lifecycle_cursor,
+    encode_run_lifecycle_cursor,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
@@ -63,12 +65,6 @@ fn increment_authority(value: u64) -> Result<u64, Error> {
     StoredU64::try_from(value)
         .and_then(|value| value.checked_add(1))
         .map(StoredU64::domain_value)
-        .map_err(|error| Error::Rejected(error.to_string()))
-}
-
-fn event_authority(sequence: u64, offset: usize) -> Result<StoredU64, Error> {
-    StoredU64::try_from(sequence)
-        .and_then(|value| value.checked_scale_and_offset(1_000, offset))
         .map_err(|error| Error::Rejected(error.to_string()))
 }
 
@@ -650,11 +646,12 @@ async fn append_commit(
     }
     let mut committed_events = Vec::with_capacity(commit.events.len());
     for (offset, draft) in commit.events.iter().enumerate() {
-        let sequence = event_authority(next, offset)?;
+        let sequence = encode_run_lifecycle_cursor(next, offset)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         sqlx::query(&format!(
             "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
         ))
-        .bind(sequence.database_value())
+        .bind(encode_authority(sequence.0)?)
         .bind(&run_id.0)
         .bind(Json(&draft.kind))
         .bind(Json(&draft.payload))
@@ -662,7 +659,7 @@ async fn append_commit(
         .await
         .map_err(reject)?;
         committed_events.push(EventRecord {
-            sequence: sequence.domain_value(),
+            sequence: sequence.0,
             run_id: run_id.clone(),
             kind: draft.kind.clone(),
             payload: draft.payload.clone(),
@@ -893,6 +890,37 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             committed_state.push(command);
         }
 
+        let event_rows = sqlx::query(&format!(
+            "SELECT event.sequence, event.run_id, event.kind, event.payload \
+             FROM {p}_event AS event \
+             JOIN {p}_run_record AS run ON run.run_id = event.run_id \
+             WHERE run.thread_id = $1 ORDER BY event.sequence"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(recovery_reject)?;
+        let mut events = Vec::with_capacity(event_rows.len());
+        for row in event_rows {
+            let sequence = row.try_get::<i64, _>("sequence").map_err(recovery_reject)?;
+            let run_id = row
+                .try_get::<String, _>("run_id")
+                .map_err(recovery_reject)?;
+            let Json(kind) = row
+                .try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")
+                .map_err(recovery_reject)?;
+            let Json(payload) = row
+                .try_get::<Json<serde_json::Value>, _>("payload")
+                .map_err(recovery_reject)?;
+            events.push(EventRecord {
+                sequence: decode_authority(sequence)
+                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+                run_id: RunId(run_id),
+                kind,
+                payload,
+            });
+        }
+
         let ticket_rows = sqlx::query(&format!(
             "SELECT waiting.run_id, waiting.ticket \
              FROM {p}_waiting AS waiting \
@@ -922,6 +950,7 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             latest_run_id,
             messages,
             state: committed_state,
+            events,
             resume_tickets,
             thread_version: decode_authority(thread_version)
                 .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
@@ -958,15 +987,19 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
         let prefix = NS;
         let rows = sqlx::query(&format!(
             "WITH lifecycle AS (\
-                 SELECT event.sequence, event.run_id, run.thread_id, event.payload, \
-                        lag(event.payload) OVER (\
-                            PARTITION BY event.run_id ORDER BY event.sequence\
-                        ) AS previous_payload \
+                 SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
+                        (SELECT prior.payload FROM {prefix}_event AS prior \
+                         WHERE prior.run_id = event.run_id \
+                           AND prior.sequence < event.sequence \
+                           AND prior.kind::text IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"') \
+                         ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
                  FROM {prefix}_event AS event \
                  JOIN {prefix}_run_record AS run ON run.run_id = event.run_id \
-                 WHERE event.kind::text IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"')\
+                 WHERE event.kind::text IN (\
+                     '\"RunStateChanged\"', '\"RunPhaseChanged\"', '\"RunRescheduled\"'\
+                 )\
              ) \
-             SELECT sequence, run_id, thread_id, payload, previous_payload \
+             SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
              FROM lifecycle WHERE sequence > $1 ORDER BY sequence LIMIT $2"
         ))
         .bind(after)
@@ -992,6 +1025,12 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                 payload.get("state").cloned().unwrap_or_default(),
             )
             .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
+            let await_reason = payload
+                .get("await_reason")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
             let previous = row
                 .try_get::<Option<Json<serde_json::Value>>, _>("previous_payload")
                 .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?
@@ -1002,8 +1041,12 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                     .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })
                 })
                 .transpose()?;
+            let Json(audit_kind): Json<AuditKind> = row
+                .try_get("kind")
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
             events.push(RunLifecycleEvent {
                 cursor: RunLifecycleCursor(sequence),
+                source_commit_cursor: decode_run_lifecycle_cursor(RunLifecycleCursor(sequence)).0,
                 thread_id: ThreadId(
                     row.try_get("thread_id")
                         .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
@@ -1012,8 +1055,14 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                     row.try_get("run_id")
                         .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
                 ),
-                kind: classify_run_lifecycle_event(&state, previous.as_ref()),
+                kind: classify_run_lifecycle_record(&audit_kind, &state, previous.as_ref())
+                    .ok_or_else(|| {
+                        RunLifecycleFeedError::Rejected(format!(
+                            "persisted lifecycle event {sequence} has a non-lifecycle kind"
+                        ))
+                    })?,
                 state,
+                await_reason,
             });
         }
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);

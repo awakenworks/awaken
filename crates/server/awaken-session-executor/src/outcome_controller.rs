@@ -1,15 +1,35 @@
 //! Managed Host adapter for the extension-owned Outcome controller.
 
-use awaken_ext_goal::controller::{Controller, Error as ControllerError};
+use awaken_ext_goal::controller::{CommittedOutcome, Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
+use awaken_session_contract::OUTCOME_BUSY_CODE;
 
 use crate::host::{
     HostError, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SharedHost,
 };
 use crate::judge::HostAgentGrader;
 use crate::run_exec::BoundRunExecutor;
+
+enum OutcomeCommand<'a> {
+    Prepare {
+        outcome_id: &'a str,
+        description: &'a str,
+        rubric: &'a str,
+        max_iterations: u32,
+    },
+    Resume,
+    Read {
+        outcome_id: &'a str,
+    },
+}
+
+enum OutcomeCommandResult {
+    Prepared,
+    Driven(Option<HostOutcomeDrive>),
+    Projected(Option<CommittedOutcome>),
+}
 
 impl SharedHost {
     /// Translate Managed's request into the extension application service. Host
@@ -22,9 +42,51 @@ impl SharedHost {
         rubric: &str,
         max_iterations: u32,
     ) -> Result<HostOutcomeDrive, HostError> {
-        self.drive_outcome_command(thread, Some((description, rubric, max_iterations)))
+        self.prepare_outcome(
+            thread,
+            &awaken_session_contract::session_outcome_convenience_id(
+                thread,
+                description,
+                rubric,
+                max_iterations,
+            ),
+            description,
+            rubric,
+            max_iterations,
+        )
+        .await?;
+        self.continue_outcome(thread)
             .await?
             .ok_or_else(|| HostError::internal("defined Outcome aggregate was not persisted"))
+    }
+
+    /// Persist only the extension-owned Outcome aggregate. No Worker or Grader
+    /// Run executes before the caller admits Session activity.
+    pub(crate) async fn prepare_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<(), HostError> {
+        match self
+            .execute_outcome_command(
+                thread,
+                OutcomeCommand::Prepare {
+                    outcome_id,
+                    description,
+                    rubric,
+                    max_iterations,
+                },
+            )
+            .await?
+        {
+            OutcomeCommandResult::Prepared => Ok(()),
+            OutcomeCommandResult::Driven(_) | OutcomeCommandResult::Projected(_) => {
+                unreachable!("prepare command result")
+            }
+        }
     }
 
     /// Continue only the sole durable active Outcome aggregate.
@@ -32,24 +94,54 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Option<HostOutcomeDrive>, HostError> {
-        self.drive_outcome_command(thread, None).await
+        match self
+            .execute_outcome_command(thread, OutcomeCommand::Resume)
+            .await?
+        {
+            OutcomeCommandResult::Driven(progress) => Ok(progress),
+            OutcomeCommandResult::Prepared | OutcomeCommandResult::Projected(_) => {
+                unreachable!("resume command result")
+            }
+        }
     }
 
-    async fn drive_outcome_command(
+    /// Read one exact terminal projection through the existing Outcome
+    /// controller composition. The Host adds no cache and performs no Outcome
+    /// transition.
+    pub(crate) async fn committed_outcome_projection(
         &self,
         thread: &str,
-        definition: Option<(&str, &str, u32)>,
-    ) -> Result<Option<HostOutcomeDrive>, HostError> {
-        let definition = definition
-            .map(|(description, rubric, max_iterations)| {
-                Definition::new(description, rubric, max_iterations)
-                    .map_err(|error| HostError::bad_request(error.to_string()))
-            })
-            .transpose()?;
-        let ctx = self.ctx_for(thread, None).await?;
-        let _outcome = ctx.outcome.lock().await;
-        let _execution = ctx.execution.lock().await;
+        outcome_id: &str,
+    ) -> Result<Option<CommittedOutcome>, HostError> {
+        match self
+            .execute_outcome_command(thread, OutcomeCommand::Read { outcome_id })
+            .await?
+        {
+            OutcomeCommandResult::Projected(report) => Ok(report),
+            OutcomeCommandResult::Prepared | OutcomeCommandResult::Driven(_) => {
+                unreachable!("read command result")
+            }
+        }
+    }
 
+    async fn execute_outcome_command(
+        &self,
+        thread: &str,
+        command: OutcomeCommand<'_>,
+    ) -> Result<OutcomeCommandResult, HostError> {
+        let definition = match &command {
+            OutcomeCommand::Prepare {
+                description,
+                rubric,
+                max_iterations,
+                ..
+            } => Some(
+                Definition::new(*description, *rubric, *max_iterations)
+                    .map_err(|error| HostError::bad_request(error.to_string()))?,
+            ),
+            OutcomeCommand::Resume | OutcomeCommand::Read { .. } => None,
+        };
+        let ctx = self.ctx_for(thread, None).await?;
         let binding = outcome_binding(&ctx.config, self.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
             host: self,
@@ -60,30 +152,49 @@ impl SharedHost {
             &ctx.thread_id,
             ctx.commit.as_ref(),
             ctx.commit.as_ref(),
+            ctx.commit.as_ref(),
             &executor,
             awaken_runtime_contract::RuntimeRunContext::new(),
             &host_grader,
         );
-        let report = match definition {
-            Some(definition) => {
+        match command {
+            OutcomeCommand::Prepare { outcome_id, .. } => {
+                let _outcome = ctx.outcome.lock().await;
+                let _execution = ctx.execution.lock().await;
                 controller
-                    .define_or_resume(
-                        Id(awaken_runtime::fresh_process_id("outc")),
-                        definition,
+                    .prepare(
+                        Id(outcome_id.to_string()),
+                        definition.expect("prepare definition"),
                         binding,
                     )
                     .await
+                    .map(|()| OutcomeCommandResult::Prepared)
+                    .map_err(controller_error)
             }
-            None => match controller.resume_active().await {
-                Ok(Some(report)) => Ok(report),
-                Ok(None) => return Ok(None),
-                Err(error) => Err(error),
-            },
-        };
-        match report {
-            Ok(report) => Ok(Some(HostOutcomeDrive::Completed(project_report(report)))),
-            Err(ControllerError::WorkerAwaiting { .. }) => Ok(Some(HostOutcomeDrive::Awaiting)),
-            Err(error) => Err(controller_error(error)),
+            OutcomeCommand::Resume => {
+                let _outcome = ctx.outcome.lock().await;
+                let _execution = ctx.execution.lock().await;
+                match controller.resume_active().await {
+                    Ok(Some(report)) => Ok(OutcomeCommandResult::Driven(Some(
+                        HostOutcomeDrive::Completed(project_report(report)),
+                    ))),
+                    Ok(None) => Ok(OutcomeCommandResult::Driven(None)),
+                    Err(ControllerError::WorkerAwaiting { .. }) => Ok(
+                        OutcomeCommandResult::Driven(Some(HostOutcomeDrive::Awaiting)),
+                    ),
+                    Err(error) => Err(controller_error(error)),
+                }
+            }
+            // The committed Outcome projection is a pure snapshot read. It
+            // must not join the execution mutexes used to serialize Worker and
+            // Grader effects: inbound receipt admission refreshes this query,
+            // and an interrupt must be durably accepted while those effects
+            // are still running.
+            OutcomeCommand::Read { outcome_id } => controller
+                .committed_projection(&Id(outcome_id.to_string()))
+                .await
+                .map(OutcomeCommandResult::Projected)
+                .map_err(controller_error),
         }
     }
 }
@@ -100,7 +211,7 @@ fn outcome_binding(
     }
 }
 
-fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeReport {
+pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeReport {
     HostOutcomeReport {
         iterations: report
             .iterations
@@ -119,6 +230,9 @@ fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeRep
 
 fn controller_error(error: ControllerError) -> HostError {
     match error {
+        ControllerError::Busy { .. } => {
+            HostError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
+        }
         ControllerError::ActiveDefinitionConflict { .. }
         | ControllerError::WorkerAwaiting { .. }
         | ControllerError::Domain(_) => HostError::bad_request(error.to_string()),
@@ -228,6 +342,74 @@ mod tests {
         assert_eq!(report.iterations[0].iteration, 0);
         assert_eq!(report.iterations[0].result, "satisfied");
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Host phase decision table: H1 new stable Outcome command prepares one
+    /// aggregate with zero model calls; H2 exact replay returns the same id with
+    /// zero model calls; H3 explicit continuation alone drives Worker/Grader
+    /// Runs. Effects: E1 durability precedes Session activity, E2 idempotency,
+    /// E3 ordinary execution. Causes: H1 new prepare, H2 exact replay, H3 explicit
+    /// continuation. Constraint/Invariant: prepare never executes a Run.
+    /// Decision rule: execute H1-H3 and require E1-E3 at their separate phases.
+    #[tokio::test]
+    async fn outcome_prepare_is_stable_and_does_not_execute_runs() {
+        // Decision rule: execute H1-H3 across prepare, replay, and continuation.
+        let model = Arc::new(SequenceModel::new(&[
+            "contains FINAL",
+            r#"{"result":"satisfied","explanation":"rubric met"}"#,
+        ]));
+        let host = SharedHost::new(model.clone(), "stub");
+        host.prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
+            .await
+            .expect("H1 prepare");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0, "H1/E1");
+
+        host.prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
+            .await
+            .expect("H2 replay");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0, "H2/E2");
+
+        let report = completed(
+            host.continue_outcome("prepared")
+                .await
+                .expect("H3 continue")
+                .expect("H3 active"),
+        );
+        assert_eq!(report.iterations.len(), 1, "H3/E3");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2, "H3/E3");
+    }
+
+    /// Cause/effect graph: C1 an Outcome Worker/Judge command owns both Host
+    /// execution locks; C2 a concurrent adapter refresh asks only for an exact
+    /// committed Outcome projection. Effects: E1 C2 completes from committed
+    /// truth without waiting for C1; E2 no model call or Outcome transition is
+    /// introduced. Constraint: mutating Prepare/Resume commands remain
+    /// serialized by both locks.
+    ///
+    /// | Rule | C1 locks held | C2 read | Effect |
+    /// | R1   | yes           | yes     | E1 + E2 |
+    /// Decision rule: R1 must complete within the timeout while both mutation
+    /// locks remain held, proving the committed read is lock-independent.
+    #[tokio::test]
+    async fn committed_outcome_read_does_not_wait_for_execution_locks() {
+        let model = Arc::new(SequenceModel::new(&[]));
+        let host = SharedHost::new(model.clone(), "stub");
+        let ctx = host
+            .ctx_for("concurrent-read", None)
+            .await
+            .expect("R1 Session context");
+        let _outcome = ctx.outcome.lock().await;
+        let _execution = ctx.execution.lock().await;
+
+        let report = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            host.committed_outcome_projection("concurrent-read", "outcome-missing"),
+        )
+        .await
+        .expect("R1/E1 committed read must not join execution locks")
+        .expect("R1/E1 committed read");
+        assert!(report.is_none(), "R1/E1 absent committed Outcome");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0, "R1/E2");
     }
 
     #[tokio::test]

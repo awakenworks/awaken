@@ -69,6 +69,7 @@ fn stream_checkpoint(run_id: &str, text: &str) -> StreamCheckpoint {
             tool_id: "tool-1".to_owned(),
             raw_arguments: "{\"incomplete\":".to_owned(),
         }],
+        retry_count: 0,
     }
 }
 
@@ -263,6 +264,12 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 
 #[tokio::test]
 async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
+    // Test design. Causes: C1 PostgreSQL is reachable; C2 a submitted Run commits
+    // Awaiting; C3 a matching decision is delivered. Effects: E1 C2 persists the
+    // ticket without running the tool; E2 C3 resumes once and settles terminal;
+    // E3 restart-visible dispatch/input state is cleared. Constraint/Invariant:
+    // queue and committed Thread truth remain separate authorities joined by the
+    // exact ticket. Decision rule: when C1, exercise C2 before and after C3.
     let Some(pool) = harness::schema_pool("t_e2e").await else {
         return;
     };
@@ -298,8 +305,9 @@ async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
                 correlation_id: TICKET.to_string(),
                 available_at_ms: None,
                 result: ResumeResult::allow(),
+                context_messages: Vec::new(),
             },
-            0,
+            harness::clock(0),
         )
         .await
         .expect("resume");
@@ -395,6 +403,12 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
 
 #[tokio::test]
 async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
+    // Test design. Causes: C1 PostgreSQL is reachable; C2 the same message id and
+    // payload is appended twice; C3 input carries a stale correlation; C4 matching
+    // input follows. Effects: E1 C2 stores once; E2 C3 does not resume; E3 C4
+    // resumes once. Constraint/Invariant: message idempotency cannot weaken exact
+    // ticket correlation. Decision rule: when C1, cover exact replay plus stale
+    // and current correlation partitions.
     let Some(pool) = harness::schema_pool("t_pg_stale").await else {
         return;
     };
@@ -437,7 +451,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
 
     // Stale input (wrong correlation) is dropped without resuming the run.
     let state = ingress
-        .deliver_resume(pending("stale", "old-ticket", true), 0)
+        .deliver_resume(pending("stale", "old-ticket", true), harness::clock(0))
         .await
         .expect("stale delivery");
     assert_eq!(state, RunState::Awaiting);
@@ -445,7 +459,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
 
     // The correctly-correlated input (the earlier "dup") now resumes the run.
     let state = ingress
-        .deliver_resume(pending("good", TICKET, true), 0)
+        .deliver_resume(pending("good", TICKET, true), harness::clock(0))
         .await
         .expect("good delivery");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -735,6 +749,12 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     // B therefore observes Running and applies NeverReplay, while A refreshes
     // terminal truth after losing its fenced commit. No decision may depend on
     // either coordinator's stale process-start projection.
+    // Causes: C1 owner A is blocked after committing tool Executing; C2 its lease
+    // expires; C3 owner B reclaims through a second coordinator. Effects: E1 B
+    // reads current Running truth and applies NeverReplay; E2 the external tool
+    // runs once; E3 one terminal log survives A's fenced late commit. Constraint/
+    // Invariant: every claim installs an authoritative snapshot before policy.
+    // Decision rule: execute C1+C2+C3 with two coordinators and assert E1-E3.
     const LEASE: u64 = 1_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
@@ -772,7 +792,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     );
     let a_handle = {
         let worker_a = worker_a.clone();
-        tokio::spawn(async move { worker_a.tick(0).await })
+        tokio::spawn(async move { worker_a.tick(harness::clock(0)).await })
     };
 
     // Wait until A is frozen inside the tool.
@@ -795,7 +815,10 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     // completes the run without entering the non-recoverable tool again.
     let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
         .with_lease_ms(LEASE);
-    let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
+    let processed = worker_b
+        .tick(harness::clock(LEASE + 1))
+        .await
+        .expect("B drives");
     assert_eq!(
         processed,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -831,7 +854,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
             .count();
     assert_eq!(
         all_done, 1,
-        "exactly one final assistant message — no duplicate terminal turn"
+        "exactly one final assistant message — no duplicate terminal Step"
     );
     let record = CommittedThreadView::run(&*commit_b, &run).expect("terminal record");
     assert_eq!(

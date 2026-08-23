@@ -46,6 +46,7 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
@@ -88,14 +89,18 @@ const listEvents = async (c, sid) => {
 
 // Release every gated (`ask`) tool call not yet approved — each `write` awaits for a
 // confirmation, so approving lets the run advance to its terminal message.
-async function approveGated(c, sid, evs, approved) {
+async function approveGated(c, sid, evs, approved, receiptIds) {
   for (const e of evs) {
     if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
       approved.add(e.id);
-      await c.beta.sessions.events.send(sid, {
+      // Intermediate permission admission is intentionally not a terminal
+      // oracle: the owning prompt receipt below gates the whole turn after all
+      // confirmations. This send only releases C4 and the loop observes state.
+      const response = await c.beta.sessions.events.send(sid, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
         betas: BETAS,
       });
+      receiptIds.push(response.data[0].id);
     }
   }
 }
@@ -161,13 +166,17 @@ async function main() {
     pass('one session binds memory_store + github_repository and is offered the skill');
 
     // 3) A single natural-language turn drives the whole chain.
-    await c.beta.sessions.events.send(session.id, {
+    // Receipt rule F6: C6 exact full-chain prompt receipt; E6 that receipt is
+    // processed only with the terminal `done` effect. K1 old history and C4
+    // intermediate approvals cannot complete F1. Decision F6=F1+C6=>E1-E6.
+    const chainReceipt = (await c.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'do the full chain' }] }],
       betas: BETAS,
-    });
+    })).data[0];
 
     // Drive await→approve until the turn ends. Artifact GET remains read-only.
     const approved = new Set();
+    const approvalReceiptIds = [];
     let evs = [];
     let files = null;
     let memContent = '';
@@ -175,10 +184,31 @@ async function main() {
     for (let i = 0; i < 60; i += 1) {
       await sleep(400);
       evs = await listEvents(c, session.id);
-      await approveGated(c, session.id, evs, approved);
+      await approveGated(c, session.id, evs, approved, approvalReceiptIds);
       files = await listArtifacts(c, session.id);
       const done = evs.some((e) => e.type === 'agent.message' && (e.content ?? []).some((b) => (b.text ?? '').includes('done')));
       if (done) break;
+    }
+    ({ events: evs } = await waitForSessionEventReceipt(
+      c,
+      session.id,
+      chainReceipt.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message'
+        && (event.content ?? []).some((content) => (content.text ?? '').includes('done'))),
+      'full-chain prompt to process into its terminal done message',
+      { timeoutMs: 30_000, pollMs: 200 },
+    ));
+    for (const receiptId of approvalReceiptIds) {
+      await waitForSessionEventReceipt(
+        c,
+        session.id,
+        receiptId,
+        BETAS,
+        () => true,
+        'full-chain permission receipt to process',
+        { timeoutMs: 30_000, pollMs: 200 },
+      );
     }
 
     assert.equal(
@@ -275,20 +305,45 @@ async function main() {
         resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
         betas: BETAS,
       });
-      await c.beta.sessions.events.send(authored.id, {
+      // Authoring rule A1: C1 exact authoring receipt and C2 gated writes release;
+      // E1 processed receipt with the matching authored marker. K1 a marker from
+      // another Session/version cannot satisfy this turn. D1=C1+C2=>E1.
+      const authoredReceipt = (await c.beta.sessions.events.send(authored.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
         betas: BETAS,
-      });
+      })).data[0];
       const approved = new Set();
+      const approvalReceiptIds = [];
       let authoredEvents = [];
       for (let attempt = 0; attempt < 30; attempt += 1) {
         await sleep(200);
         authoredEvents = await listEvents(c, authored.id);
-        await approveGated(c, authored.id, authoredEvents, approved);
+        await approveGated(c, authored.id, authoredEvents, approved, approvalReceiptIds);
         if (authoredEvents.some((event) =>
           event.type === 'agent.message' &&
           (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
         )) break;
+      }
+      ({ events: authoredEvents } = await waitForSessionEventReceipt(
+        c,
+        authored.id,
+        authoredReceipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'
+          && (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`))),
+        `authored Skill turn ${prompt}`,
+        { timeoutMs: 30_000, pollMs: 200 },
+      ));
+      for (const receiptId of approvalReceiptIds) {
+        await waitForSessionEventReceipt(
+          c,
+          authored.id,
+          receiptId,
+          BETAS,
+          () => true,
+          `authored Skill permission receipt for ${prompt}`,
+          { timeoutMs: 30_000, pollMs: 200 },
+        );
       }
       assert.ok(
         authoredEvents.some((event) =>

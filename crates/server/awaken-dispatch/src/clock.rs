@@ -1,10 +1,9 @@
 //! The clock at the edge of the durable host.
 //!
-//! The worker stays clock-free: every method that needs "now" takes it as a
-//! parameter, so the core is deterministic and replayable. Only the long-running
-//! [`DispatchService`](crate::DispatchService) reads a real clock, through this
-//! port — so a test can drive time by hand with [`ManualClock`] while production
-//! uses [`SystemClock`].
+//! The worker stays clock-free: an edge passes one clock source into each drive,
+//! so queue claims, lease renewal, pre-effect ownership checks, and settlement
+//! fencing share a timeline. Long-running services and pools own that source;
+//! direct tests pass [`ManualClock`] while production uses [`SystemClock`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

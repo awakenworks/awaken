@@ -169,12 +169,12 @@ adapter:
 ```text
 neutral tool request
   -> agent.custom_tool_use { id, name, input, session_thread_id? }
-  -> user.custom_tool_result { custom_tool_use_id, content, is_error?, session_thread_id? }
+  -> user.custom_tool_result { custom_tool_use_id, content, is_error? }
   -> neutral tool result / run resume
 ```
 
-The public `id` is only a correlation key. It maps to the neutral pending tool
-call id used to resume execution. Public `name` and `input` map to the selected
+The public `id` is the correlation and Session Thread routing key. It maps to the
+neutral pending tool call id used to resume execution. Public `name` and `input` map to the selected
 tool descriptor and arguments. Capability, deadline, fingerprint, permission, and
 policy metadata are derived from resolved config and runtime context; they are
 not accepted from the public event and are not projected back onto the public
@@ -189,6 +189,13 @@ Inbound `user.custom_tool_result` must fail closed when the referenced pending
 tool call is unknown, already answered, expired, mismatched by thread/session, or
 not owned by a client-executed tool. Successful results and error results are
 both normalized into the same neutral result path before the runtime continues.
+For multiagent replies, the qualified public tool-use event id is the routing
+authority; the SDK input does not accept a separate Session Thread selector.
+Outbound events may echo `session_thread_id`, but clients reply with the event
+id. Legacy unqualified ids are accepted only when the committed pending call and
+reply kind identify exactly one Session Thread. Validation carries that one
+resolved target through activity admission and execution rather than resolving
+again or keeping a protocol-side tool registry.
 
 This support does not imply support for Managed Agents management endpoints.
 Clients may provide per-run client tool descriptors when an adapter explicitly

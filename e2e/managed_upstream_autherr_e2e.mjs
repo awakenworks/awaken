@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -20,16 +20,37 @@ async function main() {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       let sendError = null;
+      let receiptId;
       try {
-        await client.beta.sessions.events.send(session.id, {
+        const receipt = await client.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'unauthorized' }] }],
           betas: BETAS,
         });
+        receiptId = receipt.data[0]?.id;
+        assert.equal(typeof receiptId, 'string', 'A1 exact auth-fault User Event receipt');
       } catch (err) {
         sendError = err;
       }
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      // C1=synchronous rejection; C2=accepted receipt; C3=401 terminal error.
+      // E1=C1 remains an HTTP oracle; E2=C2+C3 commits session.error after the
+      // exact receipt. K: never wait for a rejected receipt. Decision A1 C1=>use
+      // rejection; A2 C2&&!C3=>retry; A3 C2+C3=>inspect committed fault.
+      let events = [];
+      if (receiptId === undefined) {
+        for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+          events.push(event);
+        }
+      } else {
+        ({ events } = await waitForSessionEventReceipt(
+          client,
+          session.id,
+          receiptId,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'session.error'),
+          'A2 accepted auth-fault Run to commit session.error',
+          { timeoutMs: 30_000 },
+        ));
+      }
       const fabricated = events
         .filter((e) => e.type === 'agent.message')
         .some((e) => (e.content ?? []).some((b) => (b.text ?? '').startsWith('FAKE:')));

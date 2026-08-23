@@ -84,4 +84,53 @@ mod tests {
         ];
         awaken_scoped_migration::lint(&bundles).expect("resource bundles lint");
     }
+
+    #[test]
+    fn resource_registry_bundle_preserves_published_v2_identity() {
+        // Test design — cause/effect graph: C1 an installed database may carry
+        // the published `awaken.resource_catalog` V1+V2 receipts; C2 the Rust
+        // owner is now named Registry while the durable identity remains the
+        // published Catalog-era value; C3 the runner validates version,
+        // SQL-derived checksum, and description. Effects: E1 retain
+        // the same bundle/table namespace and ordered versions; E2 retain V2's
+        // exact SQL, checksum, and Registry-era description. Constraint: C2
+        // cannot create another namespace or rewrite a receipt. Decision rule
+        // R1: C1+C2+C3 => E1+E2; any drift must fail this static contract test.
+        let bundle = resource_registry_bundle().expect("Registry bundle builds");
+        assert_eq!(bundle.bundle_id(), "awaken.resource_catalog", "R1/E1");
+        assert_eq!(REGISTRY_NS, "resource_catalog", "R1/E1");
+        assert_eq!(
+            bundle
+                .migrations()
+                .iter()
+                .map(Migration::version)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "R1/E1"
+        );
+
+        let v2 = &bundle.migrations()[1];
+        assert_eq!(
+            v2.description(),
+            "add Resource Registry aggregate revision",
+            "R1/E2"
+        );
+        assert_eq!(
+            v2.sql_for(awaken_scoped_migration::Dialect::Sqlite),
+            "-- add backend-neutral optimistic concurrency to Resource Registry aggregates\n\
+             ALTER TABLE {prefix}_entry\n\
+             ADD COLUMN revision BIGINT NOT NULL DEFAULT 1",
+            "R1/E2"
+        );
+        assert_eq!(
+            v2.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
+            "89410ffca9fa20adc47741fd36923b27dd3f1824ee1b35a58c91ad7c7bd903b6",
+            "R1/E2"
+        );
+        assert_eq!(
+            v2.checksum_for(awaken_scoped_migration::Dialect::Postgres),
+            v2.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
+            "R1/E2 portable checksum"
+        );
+    }
 }

@@ -3,6 +3,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
+use awaken_runtime_contract::tool::{RawTool, ToolOutputSpiller};
 
 fn spec(instructions: &str) -> ResolvedSpec {
     ResolvedSpec {
@@ -163,6 +164,9 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
     // | MCP   | true    | always_allow  | yes           |
     // | MCP server absent from normalized toolsets | - | no          |
     // | legacy publication (no toolsets) | -       | yes            |
+    // Effects: only enabled, declared static/dynamic descriptors reach the model.
+    // Constraints/invariants: visibility has one assembly seam; permission does
+    // not change visibility and undeclared dynamic sources cannot leak.
     use awaken_runtime_contract::agent_bindings::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -183,20 +187,20 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
             source: ToolsetSource::Agent,
             default: ToolExecutionPolicy::default(),
             overrides: vec![
-                ToolPolicyOverride {
-                    name: "alpha".into(),
-                    policy: ToolExecutionPolicy {
+                ToolPolicyOverride::new(
+                    "alpha",
+                    ToolExecutionPolicy {
                         enabled: false,
                         permission: ToolPermissionRequirement::AlwaysAllow,
                     },
-                },
-                ToolPolicyOverride {
-                    name: "omega".into(),
-                    policy: ToolExecutionPolicy {
+                ),
+                ToolPolicyOverride::new(
+                    "omega",
+                    ToolExecutionPolicy {
                         enabled: true,
                         permission: ToolPermissionRequirement::AlwaysAsk,
                     },
-                },
+                ),
             ],
         },
         ToolsetPolicy {
@@ -204,13 +208,13 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
                 server_name: "docs".into(),
             },
             default: ToolExecutionPolicy::default(),
-            overrides: vec![ToolPolicyOverride {
-                name: "search".into(),
-                policy: ToolExecutionPolicy {
+            overrides: vec![ToolPolicyOverride::new(
+                "search",
+                ToolExecutionPolicy {
                     enabled: false,
                     permission: ToolPermissionRequirement::AlwaysAllow,
                 },
-            }],
+            )],
         },
     ];
     let dynamic = vec![
@@ -303,13 +307,13 @@ fn a_live_dynamic_tool_replaces_its_publication_selection_placeholder() {
         awaken_runtime_contract::agent_bindings::ToolsetPolicy {
             source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
             default: Default::default(),
-            overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride {
-                name: "evidence_lookup".into(),
-                policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+            overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
+                "evidence_lookup",
+                awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
                     enabled: false,
                     permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
                 },
-            }],
+            )],
         },
     ];
     let hidden = build_chat_request(
@@ -558,9 +562,14 @@ fn request_pairing_is_local_for_multiple_partial_and_reused_calls() {
 
 #[test]
 fn every_keep_last_cut_preserves_systems_hard_limit_and_tool_pairing() {
-    // CE-CP1..CP10 exhaustive bounded expansion: for every cut of a transcript
-    // containing a two-call round, all system messages survive, conversational
-    // count stays <= N, and uses/results remain occurrence-paired.
+    // Test design — Causes: every KeepLast boundary 0..=6 cuts a transcript
+    // containing pinned System context and a two-call/two-result round. Effects:
+    // all System rows survive, conversational rows never exceed the requested
+    // limit, and retained tool uses/results remain occurrence-paired.
+    // Constraints/invariants: compaction cannot orphan either half of a tool
+    // exchange or count System rows against the conversational hard limit.
+    // Decision rationale: exhaustive bounded expansion covers every possible
+    // cut of this minimal transcript and therefore CE-CP1..CP10 interactions.
     let transcript = vec![
         numbered(0),
         Message::text(MessageId("s-mid".into()), Role::System, "pinned"),
@@ -596,6 +605,88 @@ fn every_keep_last_cut_preserves_systems_hard_limit_and_tool_pairing() {
         let (uses, results) = request_tool_ids(&request);
         assert_eq!(uses, results, "keep_last={keep_last}: {request:?}");
     }
+}
+
+#[test]
+fn system_context_between_tool_use_and_result_preserves_the_exact_pair() {
+    // Cause/effect graph: C1 one assistant tool use is followed by C2 stable
+    // System context and C3 its exact Tool result. Effects: E1 the System row is
+    // retained, E2 the correlated use/result pair is retained, and E3 neither
+    // half can be borrowed across a later conversational boundary.
+    //
+    // | Rule | System between use/result | matching result | Effect |
+    // |---|---|---|---|
+    // | R1 | yes | yes | E1 + E2 |
+    // | R2 | yes | no | E1; incomplete use removed |
+    // | R3 | yes | only after later User | E1 + E3; both halves removed |
+    // Constraints/invariants: correlation cannot cross a conversational boundary
+    // and System context is retained independently of an incomplete tool pair.
+    let system = Message::text(MessageId("s-reply".into()), Role::System, "reply context");
+    let exact = vec![
+        assistant_with_tools("a1", &[("c1", "tool-a")]),
+        system.clone(),
+        results("t1", &["c1"]),
+    ];
+    let exact = build_chat_request(
+        &spec_with(ContextPolicy::KeepAll),
+        &[],
+        &exact,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(
+        request_tool_ids(&exact),
+        (vec!["c1".into()], vec!["c1".into()])
+    );
+    assert!(
+        exact
+            .messages
+            .iter()
+            .any(|message| { message.role == Role::System && message.content == system.content })
+    );
+
+    let missing = vec![
+        assistant_with_tools("a1", &[("c1", "tool-a")]),
+        system.clone(),
+    ];
+    let missing = build_chat_request(
+        &spec_with(ContextPolicy::KeepAll),
+        &[],
+        &missing,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(
+        request_tool_ids(&missing),
+        (Vec::new(), Vec::new()),
+        "R2/E2"
+    );
+    assert!(
+        missing
+            .messages
+            .iter()
+            .any(|message| message.role == Role::System),
+        "R2/E1"
+    );
+
+    let crossed = vec![
+        assistant_with_tools("a1", &[("c1", "tool-a")]),
+        system,
+        numbered(7),
+        results("t1", &["c1"]),
+    ];
+    let crossed = build_chat_request(
+        &spec_with(ContextPolicy::KeepAll),
+        &[],
+        &crossed,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(
+        request_tool_ids(&crossed),
+        (Vec::new(), Vec::new()),
+        "R3/E3"
+    );
 }
 
 #[test]
@@ -652,6 +743,72 @@ struct FlakyStreamLlm {
     first_partial: &'static str,
     first_tool: Option<(&'static str, &'static str, &'static str)>,
     continuation: &'static str,
+}
+
+/// Claim authority that becomes stale at one configured verification. The
+/// counter is process-local test instrumentation; production authority remains
+/// the dispatch claim verifier carried by RuntimeRunContext.
+struct SequencedOwnership {
+    verifications: std::sync::atomic::AtomicUsize,
+    lose_at: usize,
+}
+
+struct UnavailableOwnership;
+
+#[async_trait]
+impl awaken_runtime_contract::AttemptOwnershipVerifier for UnavailableOwnership {
+    async fn verify_current(
+        &self,
+    ) -> std::result::Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+        Err(awaken_runtime_contract::AttemptOwnershipError::Unavailable(
+            "authority down".into(),
+        ))
+    }
+}
+
+struct CountingRawTool(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl RawTool for CountingRawTool {
+    fn id(&self) -> &str {
+        "ownership-probe"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> std::result::Result<ToolOutput, ToolError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ToolOutput::ok(&call.call_id, "executed"))
+    }
+}
+
+struct CountingSpiller(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl ToolOutputSpiller for CountingSpiller {
+    async fn spill(
+        &self,
+        _run_id: &RunId,
+        _call_id: &str,
+        _content: String,
+    ) -> std::result::Result<String, ToolError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("spilled".into())
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::AttemptOwnershipVerifier for SequencedOwnership {
+    async fn verify_current(
+        &self,
+    ) -> std::result::Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+        let current = self
+            .verifications
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if current >= self.lose_at {
+            Err(awaken_runtime_contract::AttemptOwnershipError::Lost)
+        } else {
+            Ok(())
+        }
+    }
 }
 #[async_trait]
 impl LlmExecutor for FlakyStreamLlm {
@@ -851,6 +1008,10 @@ fn content_gate_is_closed_by_default_and_open_at_full() {
 
 #[tokio::test]
 async fn a_provider_stream_has_a_total_attempt_deadline() {
+    // Test design — Causes: a provider stream never produces a terminal response
+    // and the attempt budget is 10ms. Effects: inference returns a Timeout naming
+    // that budget. Constraints/invariants: one attempt cannot remain pending past
+    // its configured deadline. Decision rule D1: hanging+10ms=>typed 10ms timeout.
     let llm: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
     let mut timeout_policy = policy(0);
     timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
@@ -865,7 +1026,6 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await
     .unwrap_err();
@@ -876,12 +1036,18 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
 async fn logical_model_request_observations_cover_success_without_usage_and_failure() {
     use awaken_runtime_contract::llm::ModelRequestObservation;
 
-    let observations = Arc::new(std::sync::Mutex::new(Vec::<ModelRequestObservation>::new()));
+    // Causes: C1 success/failure; C2 provider usage absent; C3 no transparent
+    // retry. Effects: E1 exactly one observation per logical request; E2 the
+    // failure bit follows the final result; E3 omitted usage remains zero.
+    // Rules: R1=success+C2+C3=>E1+!E2+E3;
+    // R2=failure+C2+C3=>E1+E2+E3.
+    // Constraints/invariants: each logical request emits exactly one observation;
+    // absent provider usage is zero rather than unknown parallel state.
     let success: Arc<dyn LlmExecutor> = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "ok",
     });
-    infer_with_retry_observed(
+    let success = infer_with_retry_observed(
         &success,
         one_step_request(),
         &policy(0),
@@ -893,40 +1059,286 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         None,
-        Some(&observations),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
+    assert!(success.result.is_ok(), "R1/E1");
+    assert_eq!(
+        success.observation,
+        ModelRequestObservation::default(),
+        "R1/E2-E3"
+    );
 
     let failure: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
     let mut timeout_policy = policy(0);
     timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
-    assert!(
-        infer_with_retry_observed(
-            &failure,
-            one_step_request(),
-            &timeout_policy,
-            &crate::circuit_breaker::CircuitBreaker::default(),
-            &recording(),
-            None,
-            None,
-            &awaken_runtime_contract::CaptureDecision::default(),
-            None,
-            &awaken_runtime_contract::metrics::NoopRecorder,
-            None,
-            Some(&observations),
-            None,
-        )
-        .await
-        .is_err()
+    let failure = infer_with_retry_observed(
+        &failure,
+        one_step_request(),
+        &timeout_policy,
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
+    )
+    .await;
+    assert!(failure.result.is_err(), "R2/E1");
+    assert!(failure.observation.is_error, "R2/E2");
+    assert_eq!(failure.observation.usage, Default::default(), "R2/E3");
+}
+
+#[tokio::test]
+async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
+    // Provider-attempt ownership cause/effect table. C1 ownership is absent,
+    // current, or lost; C2 the logical request is on its first attempt or a
+    // transparent retry. E1 call provider; E2 fail Unauthorized before the
+    // provider side effect. Rules: O1 absent/current+first => E1; O2
+    // lost+first => E2 and zero calls; O3 current+first then lost+retry => the
+    // first call occurs, but retry is fenced (one total call); O4 a synchronous
+    // child inherits a lost parent authority => E2 and zero calls. Logical
+    // request budget admission is intentionally orthogonal and remains outside
+    // this per-attempt fence.
+    //
+    // | Rule | Context | Authority sequence | Provider calls |
+    // | O1   | direct  | absent/current     | one            |
+    // | O2   | direct  | lost               | zero           |
+    // | O3   | direct  | current,lost       | one            |
+    // | O4   | child   | lost parent        | zero           |
+    // Constraints/invariants: ownership is verified immediately before every
+    // provider attempt, and synchronous children share the parent verifier.
+    let stale_provider = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "must not run",
+    });
+    let stale_llm: Arc<dyn LlmExecutor> = stale_provider.clone();
+    let stale = SequencedOwnership {
+        verifications: Default::default(),
+        lose_at: 0,
+    };
+    let error = infer_with_retry_observed(
+        &stale_llm,
+        one_step_request(),
+        &policy(0),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        Some(&stale),
+    )
+    .await
+    .result
+    .expect_err("O2 stale claim fails closed");
+    assert!(matches!(error, LlmError::Unauthorized(_)), "O2/E2");
+    assert!(stale_provider.requests.lock().unwrap().is_empty(), "O2/E2");
+
+    let child_provider = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "must not run",
+    });
+    let child_llm: Arc<dyn LlmExecutor> = child_provider.clone();
+    let child_context = RuntimeRunContext::new()
+        .with_ownership(Arc::new(SequencedOwnership {
+            verifications: Default::default(),
+            lose_at: 0,
+        }))
+        .for_child_run();
+    let error = infer_with_retry_observed(
+        &child_llm,
+        one_step_request(),
+        &policy(0),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        child_context.ownership.as_deref(),
+    )
+    .await
+    .result
+    .expect_err("O4 child observes the parent's lost authority");
+    assert!(matches!(error, LlmError::Unauthorized(_)), "O4/E2");
+    assert!(child_provider.requests.lock().unwrap().is_empty(), "O4/E2");
+
+    let retrying_provider = Arc::new(FlakyStreamLlm {
+        requests: Default::default(),
+        first_partial: "",
+        first_tool: None,
+        continuation: "must not run",
+    });
+    let retrying_llm: Arc<dyn LlmExecutor> = retrying_provider.clone();
+    let loses_during_backoff = SequencedOwnership {
+        verifications: Default::default(),
+        lose_at: 1,
+    };
+    let error = infer_with_retry_observed(
+        &retrying_llm,
+        one_step_request(),
+        &policy(2),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        Some(&loses_during_backoff),
+    )
+    .await
+    .result
+    .expect_err("O3 retry observes lost claim");
+    assert!(matches!(error, LlmError::Unauthorized(_)), "O3/E2");
+    assert_eq!(
+        retrying_provider.requests.lock().unwrap().len(),
+        1,
+        "O3/E1+E2"
+    );
+}
+
+#[tokio::test]
+async fn native_child_tool_effects_require_the_parent_attempt_authority() {
+    // Cause/effect graph: C1=authority is absent/current/lost/down; C2=the
+    // native tool runs directly or through a synchronous child context; C3=the
+    // authority is lost after tool invocation but before output materialization.
+    // Effects: E1=invoke exactly once; E2=zero tool calls and an attempt error;
+    // E3=preserve the completed invocation but issue zero external spill calls.
+    // The child must inherit the parent verifier because it has no independent
+    // dispatch claim; a separately dispatched child receives its own verifier
+    // from ingress.
+    //
+    // | Rule | Context       | Authority sequence | Effect |
+    // | O1   | direct        | absent             | E1     |
+    // | O2   | child         | current            | E1     |
+    // | O3   | child         | lost/down          | E2     |
+    // | O4   | child+spiller | current,lost       | E3     |
+    // Constraints/invariants: every external effect rechecks the same attempt
+    // authority; a completed tool result cannot authorize a later stale spill.
+    let call = ToolCall {
+        call_id: "tool-call".into(),
+        tool_id: "ownership-probe".into(),
+        arguments: serde_json::json!({}),
+    };
+    let run_id = RunId("ownership-run".into());
+    let thread_id = ThreadId("ownership-thread".into());
+
+    let absent_tool = Arc::new(CountingRawTool(Default::default()));
+    execute_tool(
+        &Runtime::new().with_tool(absent_tool.clone()),
+        None,
+        &call,
+        &RuntimeRunContext::new(),
+        &run_id,
+        &thread_id,
+        "operation-absent".into(),
+    )
+    .await
+    .expect("O1 absent authority stays compatible");
+    assert_eq!(
+        absent_tool.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "O1/E1"
     );
 
-    let observed = observations.lock().unwrap();
-    assert_eq!(observed.len(), 2);
-    assert_eq!(observed[0], ModelRequestObservation::default());
-    assert!(observed[1].is_error);
-    assert_eq!(observed[1].usage, Default::default());
+    let current_tool = Arc::new(CountingRawTool(Default::default()));
+    let current_child = RuntimeRunContext::new()
+        .with_ownership(Arc::new(SequencedOwnership {
+            verifications: Default::default(),
+            lose_at: usize::MAX,
+        }))
+        .for_child_run();
+    execute_tool(
+        &Runtime::new().with_tool(current_tool.clone()),
+        None,
+        &call,
+        &current_child,
+        &run_id,
+        &thread_id,
+        "operation-current".into(),
+    )
+    .await
+    .expect("O2 current parent authority permits the child effect");
+    assert_eq!(
+        current_tool.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "O2/E1"
+    );
+
+    for (label, authority) in [
+        (
+            "lost",
+            Arc::new(SequencedOwnership {
+                verifications: Default::default(),
+                lose_at: 0,
+            }) as Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+        ),
+        (
+            "down",
+            Arc::new(UnavailableOwnership)
+                as Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+        ),
+    ] {
+        let stale_tool = Arc::new(CountingRawTool(Default::default()));
+        let stale_child = RuntimeRunContext::new()
+            .with_ownership(authority)
+            .for_child_run();
+        execute_tool(
+            &Runtime::new().with_tool(stale_tool.clone()),
+            None,
+            &call,
+            &stale_child,
+            &run_id,
+            &thread_id,
+            format!("operation-{label}"),
+        )
+        .await
+        .expect_err("O3 stale parent authority fences the child tool");
+        assert_eq!(
+            stale_tool.0.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "O3/E2 {label}"
+        );
+    }
+
+    let invoked_tool = Arc::new(CountingRawTool(Default::default()));
+    let stale_spiller = Arc::new(CountingSpiller(Default::default()));
+    let child = RuntimeRunContext::new()
+        .with_tool_output_spiller(stale_spiller.clone())
+        .with_ownership(Arc::new(SequencedOwnership {
+            verifications: Default::default(),
+            lose_at: 1,
+        }))
+        .for_child_run();
+    let output = execute_tool(
+        &Runtime::new().with_tool(invoked_tool.clone()),
+        None,
+        &call,
+        &child,
+        &run_id,
+        &thread_id,
+        "operation-spill".into(),
+    )
+    .await
+    .expect("O4 tool starts while authority is current");
+    spill_tool_output(&child, &run_id, output)
+        .await
+        .expect_err("O4 lost authority fences the later spill");
+    assert_eq!(
+        invoked_tool.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "O4/E3"
+    );
+    assert_eq!(
+        stale_spiller.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "O4/E3"
+    );
 }
 
 #[tokio::test]
@@ -940,12 +1352,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     let llm: Arc<dyn LlmExecutor> = flaky.clone();
     let breaker = crate::circuit_breaker::CircuitBreaker::default();
     let sink = recording();
-    // The transient-retry counter the host reads to surface session.status_rescheduled.
-    let reschedules = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let rescheduled_runs = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let run_id = RunId("child-run-retried".into());
-
-    let response = infer_with_retry_observed(
+    let observed = infer_with_retry_observed(
         &llm,
         one_step_request(),
         &policy(2),
@@ -956,27 +1363,19 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        Some(&reschedules),
         None,
-        Some((&rescheduled_runs, &run_id)),
     )
-    .await
-    .expect("continues past the drop");
+    .await;
+    let response = observed.result.expect("continues past the drop");
 
     // The committed step is the whole text: prefix + continuation, stitched once.
     assert_eq!(response.output.text_content(), "The answer is 42");
-    // The single transparent retry was counted, so the host reports a reschedule.
-    assert_eq!(
-        reschedules.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "one transparent retry is counted for session.status_rescheduled"
-    );
-    assert_eq!(
-        *rescheduled_runs.lock().unwrap(),
-        std::collections::BTreeSet::from(["child-run-retried".to_string()]),
-        "the retry is attributed only to the exact Run"
-    );
-
+    // Cause P1: the first provider attempt drops and one transparent retry
+    // succeeds. Effect E1: the one logical observation carries retry_count=1;
+    // no process-local Host counter participates. Rule R1=P1=>E1.
+    // Constraints/invariants: confirmed partial text is injected once and never
+    // re-emitted; the retry belongs to the same logical request.
+    assert_eq!(observed.observation.retry_count, 1, "R1/E1");
     let requests = flaky.requests.lock().unwrap();
     assert_eq!(requests.len(), 2, "one drop, one successful retry");
     // The first attempt was a clean initial call — no injected prefix.
@@ -1003,7 +1402,11 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
 
 #[tokio::test]
 async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() {
-    // R2: the model finished a tool call (its args parse) before the drop.
+    // Test design — Causes: the model completes parseable tool arguments before
+    // its stream drops. Effects: inference salvages text+ToolUse without another
+    // provider call. Constraints/invariants: only complete JSON calls are
+    // executable and salvage keeps the original call identity. Decision rule R2:
+    // completed call+drop=>ToolUse response and provider count one.
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "Let me search ",
@@ -1025,7 +1428,6 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await
     .expect("salvages the completed tool call");
@@ -1043,10 +1445,13 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
 
 #[tokio::test]
 async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent() {
-    // R2 preempts budget exhaustion: a mid-stream drop that left a COMPLETE tool
+    // Causes: R2 preempts budget exhaustion—a mid-stream drop left a COMPLETE tool
     // call (its args parse) executes the salvaged call without re-inference, even
     // though `max_retries == 0` leaves no budget for a text continuation. The
     // completed-tools short-circuit (inference.rs B8) sits before the budget gate.
+    // Effects: the complete ToolUse succeeds with one provider call.
+    // Constraints/invariants: retry budget governs re-inference, not recovery of
+    // an already complete call. Decision rule R2b: complete+drop+zero budget=>salvage.
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "searching ",
@@ -1068,7 +1473,6 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await
     .expect("salvages the completed tool call despite a spent budget");
@@ -1083,7 +1487,11 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
 
 #[tokio::test]
 async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
-    // R3: text plus a tool whose args were still streaming (unparseable).
+    // Test design — Causes: a drop leaves confirmed text plus unparseable in-flight
+    // tool arguments. Effects: the tool is discarded and retry continues only
+    // from text. Constraints/invariants: incomplete tool syntax is never executed
+    // or replayed. Decision rule R3: partial tool+text=>two calls, stitched text,
+    // zero committed ToolUse.
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "Calling ",
@@ -1105,7 +1513,6 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await
     .expect("continues the text past the in-flight tool");
@@ -1126,6 +1533,8 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
 /// C3=checkpoint store configured. Effects: E1=partial checkpoint is written,
 /// E2=normal function return clears it. Rule R1: C1+C2+C3 -> E1+E2; the
 /// following persisted-partial tests cover crash-before-clear recovery.
+/// Constraints/invariants: the checkpoint is Run-scoped and survives only a
+/// crash before the unconditional return-path deletion.
 #[tokio::test]
 async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return() {
     // A text-only drop with no retry budget: the boundary flush persists the
@@ -1159,7 +1568,6 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await;
     assert!(result.is_err(), "no retry budget: the drop stands");
@@ -1179,8 +1587,12 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
 
 #[tokio::test]
 async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
-    // Cross-process R1: a checkpoint left by a crash mid-recovery seeds the
-    // next call, which continues from the partial rather than restarting.
+    // Causes: C1 a checkpoint is left by a crash after one transparent retry
+    // was scheduled; C2 a fresh process completes that same logical request.
+    // Effects: E1 it continues from the partial rather than restarting; E2 the
+    // final observation preserves retry_count=1. Rule R1=C1+C2=>E1+E2.
+    // Constraints/invariants: recovery continues the same logical request,
+    // injects the confirmed prefix once, and preserves the durable retry count.
     let succeeding = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "world",
@@ -1194,9 +1606,10 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         model: "m".to_string(),
         partial_text: "Hello ".to_string(),
         partial_tools: Vec::new(),
+        retry_count: 1,
     };
 
-    let response = infer_with_retry(
+    let observed = infer_with_retry_observed(
         &llm,
         one_step_request(),
         &policy(2),
@@ -1209,10 +1622,11 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         &awaken_runtime_contract::metrics::NoopRecorder,
         None,
     )
-    .await
-    .expect("resumes from the persisted partial");
+    .await;
+    let response = observed.result.expect("resumes from the persisted partial");
 
     assert_eq!(response.output.text_content(), "Hello world");
+    assert_eq!(observed.observation.retry_count, 1, "R1/E2");
     let requests = succeeding.requests.lock().unwrap();
     // The very first call already carried the recovered prefix + continuation.
     assert_eq!(requests.len(), 1);
@@ -1221,8 +1635,11 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
 
 #[tokio::test]
 async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
-    // Cross-process R2: the crash happened after the tool call completed, so
-    // resume executes it directly — the provider is never invoked.
+    // Test design — Causes: a crash checkpoint contains one complete parseable
+    // ToolUse. Effects: recovery returns that call with zero provider invocations.
+    // Constraints/invariants: persisted complete tool truth outranks re-inference
+    // and preserves id/name/arguments. Decision rule R2: complete checkpoint=>
+    // direct ToolUse response, model-call count zero.
     let llm_impl = Arc::new(NeverCalledLlm {
         calls: Default::default(),
     });
@@ -1239,6 +1656,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
             tool_id: "search".to_string(),
             raw_arguments: r#"{"q":"rust"}"#.to_string(),
         }],
+        retry_count: 0,
     };
 
     let response = infer_with_retry(
@@ -1252,7 +1670,6 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
-        None,
     )
     .await
     .expect("resumes the completed tool call");
@@ -1312,6 +1729,11 @@ fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
 
 #[tokio::test]
 async fn attempt_resume_without_committed_history_fails_closed() {
+    // Test design — Causes: RunAttemptExecutor::resume has an exact activation
+    // and command but no committed-history reader. Effects: it returns the typed
+    // execution error before resuming. Constraints/invariants: durable history is
+    // the sole recovery authority; inputs cannot reconstruct it. Decision rule
+    // F1: missing reader=>fail closed with the pinned diagnostic.
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("snapshot-1")
         .model(ModelBinding::new("test", "model", "native"))
         .fingerprint("fingerprint-1")
@@ -1329,6 +1751,7 @@ async fn attempt_resume_without_committed_history_fails_closed() {
         snapshot_id: snapshot.id,
         catalog_fingerprint: snapshot.fingerprint,
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms: 0,
     };
 

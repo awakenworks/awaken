@@ -63,7 +63,7 @@ authority. No projection type is materialized until a consumer exists for it
 
 ### D4: One terminal exit
 
-Every way a run ends — a natural text turn, the step ceiling, a cancellation, a
+Every way a Run ends — a natural text response, the Step ceiling, a cancellation, a
 fault — funnels through a single commit boundary that writes the one `RunState`
 authority and emits the finish event exactly once. There is no second
 terminal-commit path that could double-emit or record a conflicting end.

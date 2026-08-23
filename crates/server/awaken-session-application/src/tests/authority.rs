@@ -1,4 +1,180 @@
 use super::*;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+
+fn coordinated_session(id: &str) -> PersistedSession {
+    let mut session = persisted(id, false, "idle");
+    let environment = session
+        .frozen_baseline()
+        .expect("fixture baseline")
+        .environment
+        .clone();
+    session.baseline = awaken_session_contract::SessionBaselineState::Frozen(
+        awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement: SessionRuntimePlacement::Local,
+                mcp_authoring: Default::default(),
+                agent_id: "coord-root".into(),
+                agent_revision: Some(1),
+                model_override: None,
+                model: "coord-model".into(),
+                runtime: None,
+                delegate_ids: vec!["coord-child".into()],
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
+        ),
+    );
+    session
+}
+
+fn coordination_spawn_command(
+    session_id: &str,
+) -> awaken_session_contract::SessionAgentMessageCommand {
+    awaken_session_contract::SessionAgentMessageCommand {
+        session_id: session_id.into(),
+        source_thread_id: ThreadId(session_id.into()),
+        source_run_id: RunId(format!("{session_id}-parent-run")),
+        source_call_id: "send-call".into(),
+        operation_id: "send-operation".into(),
+        target: awaken_session_contract::SessionAgentTarget::Spawn {
+            agent_id: "coord-child".into(),
+        },
+        message: "investigate".into(),
+    }
+}
+
+fn configured_admission_application(
+    repo: Arc<dyn ManagedSessionRepository>,
+    runtime: Arc<RecordingAgentAdmissionRuntime>,
+) -> SessionApplication {
+    let mut app = application_with_runtime(
+        runtime,
+        repo,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    app.set_config_source(Arc::new(CoordinatedAgentSource));
+    app
+}
+
+fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceInput {
+    SessionRepositoryResourceInput {
+        id: "repo-replay".into(),
+        workspace_id: "workspace".into(),
+        name: name.into(),
+        description: "Session source".into(),
+        remote_url: remote_url.into(),
+        authorization_token: None,
+        credential: None,
+        mount_path: "/workspace/source".into(),
+        initial_branch: Some("main".into()),
+        initial_commit: None,
+    }
+}
+
+#[tokio::test]
+async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Registration crash/retry cause-effect graph: C1 the Repository is absent
+    // or already registered; C2 the stored Workspace/id definition exactly
+    // matches the intended definition; C3 stored INITIAL config exactly matches
+    // the intended config. Effects: E1 register/return the Repository id; E2
+    // accept an exact post-registration crash replay without another authority;
+    // E3 reject definition or config drift and retain the original aggregate.
+    // Decision rules: R1 absent=>E1; R2 present+C2+C3=>E2; R3
+    // present+!C2+C3=>E3; R4 present+C2+!C3=>E3. Registry inventory is the one
+    // replay receipt; the Session application creates no side store or cache.
+    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
+    let registry = resources.authorities().resource_registry();
+    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+
+    let mut original = application(
+        sessions.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    original.set_resource_registry(registry.clone());
+    assert_eq!(
+        original
+            .configure_session_repository(repository_input(
+                "Repository",
+                "https://example.test/source.git",
+            ))
+            .await
+            .expect("R1 registers"),
+        awaken_resource_contract::RepositoryId::from("repo-replay"),
+        "R1/E1"
+    );
+    drop(original);
+
+    let mut restarted = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
+    restarted.set_resource_registry(registry.clone());
+    assert_eq!(
+        restarted
+            .configure_session_repository(repository_input(
+                "Repository",
+                "https://example.test/source.git",
+            ))
+            .await
+            .expect("R2 exact replay"),
+        awaken_resource_contract::RepositoryId::from("repo-replay"),
+        "R2/E2"
+    );
+
+    let definition_mismatch = restarted
+        .configure_session_repository(repository_input(
+            "Different Repository",
+            "https://example.test/source.git",
+        ))
+        .await
+        .expect_err("R3 definition mismatch");
+    assert_eq!(
+        definition_mismatch.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "R3/E3"
+    );
+    let config_mismatch = restarted
+        .configure_session_repository(repository_input(
+            "Repository",
+            "https://example.test/other.git",
+        ))
+        .await
+        .expect_err("R4 config mismatch");
+    assert_eq!(
+        config_mismatch.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "R4/E3"
+    );
+    assert_eq!(
+        registry
+            .find_repository("workspace", "repo-replay")
+            .expect("inventory")
+            .expect("registered definition")
+            .name,
+        "Repository",
+        "R3-R4 preserve original Registry truth"
+    );
+    assert_eq!(
+        registry
+            .find_repository_config(
+                "workspace",
+                "repo-replay",
+                awaken_resource_contract::ConfigVersion::INITIAL,
+            )
+            .expect("inventory")
+            .expect("registered config")
+            .remote_url,
+        "https://example.test/source.git",
+        "R3-R4 preserve original Registry truth"
+    );
+}
 
 #[tokio::test]
 async fn root_mutation_cause_effect_decision_table() {
@@ -156,30 +332,65 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     );
 }
 
-/// Terminal-transition cause/effect graph. C1 the durable Session is live;
-/// C2 two archive commands race; C3 the same archive is replayed; C4 delete
-/// targets a live Session; C5 delete targets an archived or failed Session. Effects:
-/// E1 exactly one archive CAS/fact and one idempotent observation; E2 replay
-/// does not advance revision; E3 delete atomically records hidden terminal
-/// disposition plus recoverable cleanup classification; E4 retention remains
-/// orthogonal and both terminal execution states remain deletable.
+/// Terminal-transition cause/effect graph. C1 execution is Idle or Running; C2
+/// Running belongs to an ordinary root activity or an admitted child activity
+/// (including a not-yet-settled requires-action boundary); C3 two public archive
+/// commands race; C4 activity admission races public archive at the root CAS; C5
+/// the Session is already Archived; C6 the caller is the internal force-terminal
+/// owner; C7 delete targets a live, archived, or failed Session. Effects: E1 an
+/// Idle public archive commits one fence/fact and cleanup; E2 Running public
+/// archive is rejected without changing revision or active epochs; E3 a CAS race
+/// commits either Running or Archived, never a mixed state; E4 terminal replay is
+/// an exact no-op; E5 forced termination clears activity and uses the same cleanup;
+/// E6 delete records hidden terminal truth with recoverable cleanup.
 ///
 /// | Rule | Durable state | Command | Race/replay | Effect |
 /// |---|---|---|---|---|
-/// | L1 | idle | archive | race | E1 |
-/// | L2 | terminated | archive | replay | E2 |
-/// | L3 | idle | delete | none | E3 |
-/// | L4 | archived | delete | none | E4 |
-/// | L5 | activation_failed | delete | none | E4 |
+/// | L1 | Idle | public archive | duplicate race | E1 |
+/// | L2 | Archived | public archive | replay | E4 |
+/// | L3 | Running(root activity) | public archive | none | E2 |
+/// | L4 | Running(active child/requires-action) | public archive | none | E2 |
+/// | L5 | Idle | public archive vs activity | CAS race | E3 |
+/// | L6 | Running | internal force terminate | none | E5 |
+/// | L7 | Idle | delete | none | E6 |
+/// | L8 | Archived | delete | none | E6 |
+/// | L9 | ActivationFailed | delete | none | E6 |
 #[tokio::test]
 async fn terminal_transition_decision_table_is_durable_and_idempotent() {
-    let repo = Arc::new(
+    // Constraint/Invariant: the Session repository CAS and terminal lifecycle are
+    // the only transition authority; replays cannot create another terminal fact.
+    // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
+    // forced, and delete effect in the table above.
+    let durable_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
+    let repo = Arc::new(FaultingSessionRepository::new(durable_repo));
     create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
-    create(repo.as_ref(), persisted("delete-live", true, "idle")).await;
-    create(repo.as_ref(), persisted("archive-work", true, "idle")).await;
+    create(repo.as_ref(), persisted("archive-running", false, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("archive-child-active", false, "idle"),
+    )
+    .await;
+    create(
+        repo.as_ref(),
+        persisted("archive-activity-race", false, "idle"),
+    )
+    .await;
+    create(repo.as_ref(), persisted("archive-force", false, "idle")).await;
+    for session_id in ["delete-live", "archive-work"] {
+        let mut session = persisted(session_id, true, "idle");
+        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+        else {
+            unreachable!("fixture baseline")
+        };
+        // L1/L7 exercise the synchronous local cleanup receipt while retaining
+        // a self-hosted Work projection. Remote receipt transport has its own
+        // exact-lease decision table in realization tests.
+        baseline.runtime_placement = SessionRuntimePlacement::Local;
+        create(repo.as_ref(), session).await;
+    }
     create(
         repo.as_ref(),
         persisted("delete-failed", false, "activation_failed"),
@@ -195,11 +406,12 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         timestamp: 1,
         runtime_interval: None,
     };
+    let app = Arc::new(app);
 
     let archive_fact = fact("archive-race", "session.terminated");
     let (first, second) = tokio::join!(
-        app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact.clone()),
-        app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact)
+        app.terminate_session("archive-race", "2026-08-06T00:00:00Z", archive_fact.clone()),
+        app.terminate_session("archive-race", "2026-08-06T00:00:00Z", archive_fact)
     );
     let first = first.expect("L1 first");
     let second = second.expect("L1 second");
@@ -208,7 +420,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     assert_eq!(archived.execution.as_str(), "terminated", "L1");
     let revision = archived.revision;
     let replay = app
-        .begin_archive(
+        .terminate_session(
             "archive-race",
             "another-timestamp",
             fact("archive-race", "session.terminated"),
@@ -218,20 +430,118 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     assert!(!replay.transitioned, "L2");
     assert_eq!(replay.session.revision, revision, "L2");
 
-    let app = Arc::new(app);
+    let root_running = app
+        .begin_activity("archive-running")
+        .await
+        .expect("L3 open root activity");
+    let root_rejected = app
+        .terminate_session(
+            "archive-running",
+            "2026-08-06T00:00:00Z",
+            fact("archive-running", "session.terminated"),
+        )
+        .await;
+    assert!(
+        matches!(
+            root_rejected,
+            Err(SessionPreparationError::Rejected(ref error))
+                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+                    && error.message == "only an idle Session may be archived"
+        ),
+        "L3/E2: {root_rejected:?}"
+    );
+    assert_eq!(
+        repo.get("archive-running").await.expect("L3 durable"),
+        root_running,
+        "L3/E2 rejection preserves the exact activity receipt"
+    );
+
+    // The Session root intentionally stores no child registry. This exact
+    // operation-scoped activity epoch is the authoritative aggregate evidence
+    // that an admitted child/requires-action boundary is still active.
+    let (child_running, child_epoch) = app
+        .begin_activity_for_operation("archive-child-active", "child-requires-action")
+        .await
+        .expect("L4 open child activity");
+    let child_rejected = app
+        .terminate_session(
+            "archive-child-active",
+            "2026-08-06T00:00:00Z",
+            fact("archive-child-active", "session.terminated"),
+        )
+        .await;
+    assert!(
+        matches!(
+            child_rejected,
+            Err(SessionPreparationError::Rejected(ref error))
+                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+        ),
+        "L4/E2: {child_rejected:?}"
+    );
+    let child_after = repo.get("archive-child-active").await.expect("L4 durable");
+    assert_eq!(child_after, child_running, "L4/E2");
+    assert!(
+        child_after.active_activity_epochs.contains(&child_epoch),
+        "L4/E2 active child completion owner remains durable"
+    );
+
+    repo.commit_running_activity_then_conflict_once("archive");
+    let race_archive = app
+        .terminate_session(
+            "archive-activity-race",
+            "2026-08-06T00:00:00Z",
+            fact("archive-activity-race", "session.terminated"),
+        )
+        .await;
+    assert!(
+        matches!(
+            race_archive,
+            Err(SessionPreparationError::Rejected(ref error))
+                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+        ),
+        "L5/E3: {race_archive:?}"
+    );
+    let race_running = repo
+        .get("archive-activity-race")
+        .await
+        .expect("L5 Running CAS winner");
+    assert_eq!(race_running.execution.as_str(), "running", "L5/E3");
+    assert_eq!(race_running.active_activity_epochs.len(), 1, "L5/E3");
+    assert!(
+        !race_running.needs_resource_reconciliation(),
+        "L5/E3 archive retry must not apply terminal cleanup to the Running winner"
+    );
+
+    let forced_running = app
+        .begin_activity("archive-force")
+        .await
+        .expect("L6 open internal activity");
+    assert!(forced_running.has_active_activities(), "L6 precondition");
+    let forced = app
+        .force_terminate_session(
+            "archive-force",
+            "2026-08-06T00:00:00Z",
+            fact("archive-force", "session.terminated"),
+        )
+        .await
+        .expect("L6 force terminal");
+    assert!(forced.transitioned, "L6/E5");
+    assert!(forced.session.is_terminal(), "L6/E5");
+    assert!(forced.session.active_activity_epochs.is_empty(), "L6/E5");
+
     let deleted = app
         .delete_session(SessionDeleteCommand::new("delete-live"))
         .await
-        .expect("L3");
+        .expect("L7");
     let transition = deleted.clone();
     app.release_terminal_resources(&transition.owner_scope, "delete-live")
         .await
-        .expect("L3 reconciliation");
-    assert!(transition.transitioned, "L3");
-    assert_eq!(transition.session.execution.as_str(), "terminated", "L3");
-    assert!(transition.session.is_hidden(), "L3");
-    assert!(transition.session.needs_resource_reconciliation(), "L3");
-    let tombstone = repo.get("delete-live").await.expect_err("L3 tombstone");
+        .expect("L7 reconciliation");
+    assert!(transition.transitioned, "L7");
+    assert_eq!(transition.session.execution.as_str(), "terminated", "L7");
+    assert!(transition.session.is_hidden(), "L7");
+    assert!(transition.session.needs_resource_reconciliation(), "L7");
+    let tombstone = repo.get("delete-live").await.expect_err("L7 tombstone");
     assert!(matches!(
         tombstone,
         awaken_session_contract::SessionRepositoryError::NotFound
@@ -243,7 +553,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
             .unwrap()
             .iter()
             .any(|session_id| session_id == "delete-live"),
-        "L3 terminal truth retires its one Work projection"
+        "L7 terminal truth retires its one Work projection"
     );
     app.terminate_session(
         "archive-work",
@@ -251,14 +561,14 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         fact("archive-work", "session.terminated"),
     )
     .await
-    .expect("L3a archive cleanup");
+    .expect("L1 archive cleanup");
     app.terminate_session(
         "archive-work",
         "2026-08-06T00:00:00Z",
         fact("archive-work", "session.terminated"),
     )
     .await
-    .expect("L3a archive replay");
+    .expect("L2 archive replay");
     assert_eq!(
         environments
             .retired
@@ -268,23 +578,23 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
             .filter(|session_id| session_id.as_str() == "archive-work")
             .count(),
         1,
-        "L3a completed archive cleanup does not retire Work twice"
+        "L1/L2 completed archive cleanup does not retire Work twice"
     );
     let archived_delete = app
         .commit_delete_intent(SessionDeleteCommand::new("archive-race"))
         .await
-        .expect("L4 archived Session is deletable");
-    assert!(archived_delete.transitioned, "L4");
-    assert!(archived_delete.session.is_hidden(), "L4");
+        .expect("L8 archived Session is deletable");
+    assert!(archived_delete.transitioned, "L8");
+    assert!(archived_delete.session.is_hidden(), "L8");
     let failed_delete = app
         .commit_delete_intent(SessionDeleteCommand::new("delete-failed"))
         .await
-        .expect("L5 failed Session is deletable");
-    assert!(failed_delete.transitioned, "L5");
+        .expect("L9 failed Session is deletable");
+    assert!(failed_delete.transitioned, "L9");
     assert_eq!(
         failed_delete.session.execution,
         SessionExecutionState::ActivationFailed,
-        "L5 execution failure remains audit truth"
+        "L9 execution failure remains audit truth"
     );
 }
 
@@ -437,112 +747,198 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     );
 }
 
-/// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
-/// C2 it is ready (idle/running/rescheduling or Worker-owned preparing); C3 the epoch can advance; C4 settlement presents
-/// the current epoch; C5 a later admission or terminal transition has
-/// fenced that settlement; C6 initial realization is still preparing.
-/// Effects: E1 an idle admission commits `running` with one unique monotonic
-/// epoch and opens one interval; E2 only the current running completion commits
-/// `idle` and the matching interval fact; E3 stale or terminal completions are
-/// no-ops; E4 missing, terminal, not-ready, and exhausted-epoch admissions do
-/// not mutate durable truth; E5 terminal intent closes the same open interval;
-/// E6 a Worker-owned initial event advances the epoch but preserves Preparing
-/// until the claimed Worker acknowledges realization.
+/// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists; C2 it
+/// is ready (idle/running or Worker-owned preparing); C3 the epoch can advance;
+/// C4 settlement names an admitted active epoch; C5 other active epochs remain;
+/// C6 completion is duplicate/unknown; C7 a terminal transition races. Effects: E1 every
+/// admission advances the monotonic environment fence and joins one interval;
+/// E2 settlement removes exactly its epoch regardless of completion order; E3
+/// only the last active settlement commits Idle and the one interval fact; E4
+/// duplicate/stale/terminal completions are no-ops; E5 invalid admissions do not
+/// mutate truth; E6 terminal intent clears all active epochs and closes the same
+/// interval; E7 a Worker-owned initial activity stays Preparing until realization.
 ///
-/// | Rule | Exists | Status | Epoch available | Current settle | Fence | Effect |
-/// |---|---|---|---|---|---|---|
-/// | A1 | yes | idle | yes | n/a | concurrent admit | E1, distinct epochs |
-/// | A2 | yes | running | n/a | no | newer epoch | E3, remains running |
-/// | A3 | yes | running | n/a | yes | none | E2, idle + one interval fact |
-/// | A4 | yes | running | n/a | n/a | terminal command | E5, terminal + interval fact |
-/// | A5 | yes | terminal | any | n/a | n/a | E4, reject admission |
-/// | A6 | yes | idle | no | n/a | n/a | E4, reject exhaustion |
-/// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
-/// | A8 | yes | local preparing | yes | n/a | realization pending | E4, reject admission |
-/// | A9 | yes | activation_failed | n/a | any | realization failed | E3, preserve failed |
-/// | A10 | yes | Worker preparing | yes | n/a | event triggers claim | E6, admit |
+/// | Rule | Active before | Completion/admission | Terminal | Effect |
+/// |---|---|---|---|---|
+/// | A1 | none | two admissions | no | E1, two distinct active epochs |
+/// | A2 | oldest+newest | oldest completes first | no | E2, newest remains Running |
+/// | A3 | newest | newest completes last | no | E3, Idle + one fact |
+/// | A4 | oldest+newest | newest completes first | no | E2, oldest remains Running |
+/// | A5 | oldest | oldest completes last | no | E3, Idle + one fact |
+/// | A6 | any | duplicate/unknown completion | no | E4, exact no-op |
+/// | A7 | any | completion/admission | terminal | E4/E5/E6 |
+/// | A8 | none | admission | exhausted/missing/not-ready | E5 |
+/// | A9 | none | Worker admission | preparing | E1/E7 |
 #[tokio::test]
 async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
+    // Constraint/Invariant: one monotonic root activity epoch fences all
+    // admission/completion and terminal truth dominates every replay. Decision rule:
+    // execute A1-A9 to cover completion order, duplicates, terminal state,
+    // policy rejection, and Worker preparation.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    create(repo.as_ref(), persisted("activity", false, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("activity-oldest-first", false, "idle"),
+    )
+    .await;
+    create(
+        repo.as_ref(),
+        persisted("activity-newest-first", false, "idle"),
+    )
+    .await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
     let (first, second) = tokio::join!(
-        app.begin_activity("activity"),
-        app.begin_activity("activity")
+        app.begin_activity("activity-oldest-first"),
+        app.begin_activity("activity-oldest-first")
     );
     let first = first.expect("A1 first admission");
     let second = second.expect("A1 concurrent admission");
     let mut epochs = [first.activity_epoch, second.activity_epoch];
     epochs.sort_unstable();
     assert_eq!(epochs, [1, 2], "A1");
-    let active = repo.get("activity").await.expect("A1 durable Session");
+    let active = repo
+        .get("activity-oldest-first")
+        .await
+        .expect("A1 durable Session");
     assert_eq!(active.execution.as_str(), "running", "A1");
+    assert_eq!(
+        active.active_activity_epochs,
+        std::collections::BTreeSet::from(epochs),
+        "A1"
+    );
     let first_interval = active
         .running_interval
         .clone()
         .expect("A1 one durable interval");
     assert_eq!(first_interval.activity_epoch, epochs[0], "A1 joins overlap");
 
-    let stale = app
-        .settle_activity("activity", epochs[0])
+    let oldest_settled = app
+        .settle_activity("activity-oldest-first", epochs[0])
         .await
-        .expect("A2 stale settlement");
-    assert_eq!(stale.execution.as_str(), "running", "A2");
-    assert_eq!(stale.activity_epoch, epochs[1], "A2");
-    assert_eq!(stale.running_interval, Some(first_interval.clone()), "A2");
+        .expect("A2 oldest completion");
+    assert_eq!(oldest_settled.execution.as_str(), "running", "A2");
+    assert_eq!(oldest_settled.activity_epoch, epochs[1], "A2");
+    assert_eq!(
+        oldest_settled.active_activity_epochs,
+        std::collections::BTreeSet::from([epochs[1]]),
+        "A2"
+    );
+    assert_eq!(
+        oldest_settled.running_interval,
+        Some(first_interval.clone()),
+        "A2"
+    );
 
     let idle = app
-        .settle_activity("activity", epochs[1])
+        .settle_activity("activity-oldest-first", epochs[1])
         .await
-        .expect("A3 current settlement");
+        .expect("A3 newest completes last");
     assert_eq!(idle.execution.as_str(), "idle", "A3");
+    assert!(idle.active_activity_epochs.is_empty(), "A3");
     assert!(idle.running_interval.is_none(), "A3");
     let pending = repo.pending_lifecycle().await.expect("A3 outbox");
-    assert_eq!(pending.len(), 1, "A3 one interval fact");
-    let closed = pending[0]
+    let closed = pending
+        .iter()
+        .find(|fact| fact.object_id == "activity-oldest-first")
+        .expect("A3 one interval fact")
         .runtime_interval
         .as_ref()
         .expect("A3 typed interval");
     assert_eq!(closed.interval_id, first_interval.interval_id, "A3");
     assert!(closed.ended_at_unix_ms >= closed.started_at_unix_ms, "A3");
 
-    let running = app
-        .begin_activity("activity")
+    let (first, second) = tokio::join!(
+        app.begin_activity("activity-newest-first"),
+        app.begin_activity("activity-newest-first")
+    );
+    let mut reverse_epochs = [
+        first.expect("A4 first admission").activity_epoch,
+        second.expect("A4 second admission").activity_epoch,
+    ];
+    reverse_epochs.sort_unstable();
+    let newest_settled = app
+        .settle_activity("activity-newest-first", reverse_epochs[1])
         .await
-        .expect("A4 activity before terminal transition");
-    let terminated = app
-        .begin_archive(
-            "activity",
-            "2026-08-11T00:00:00Z",
-            awaken_session_contract::ManagedLifecycleFact {
-                id: "activity-terminal".into(),
-                object_id: "activity".into(),
-                workspace_id: Some("workspace".into()),
-                event_type: "session.status_terminated".into(),
-                timestamp: 1,
-                runtime_interval: None,
-            },
-        )
-        .await
-        .expect("A4 terminal transition")
-        .session;
-    assert!(terminated.running_interval.is_none(), "A4/E5");
-    let fenced = app
-        .settle_activity("activity", running.activity_epoch)
-        .await
-        .expect("A4 terminal settlement is idempotent");
-    assert_eq!(fenced, terminated, "A4");
+        .expect("A4 newest completion");
     assert_eq!(
-        app.begin_activity("activity").await,
+        newest_settled.execution,
+        SessionExecutionState::Running,
+        "A4"
+    );
+    assert_eq!(
+        newest_settled.active_activity_epochs,
+        std::collections::BTreeSet::from([reverse_epochs[0]]),
+        "A4"
+    );
+    let duplicate = app
+        .settle_activity("activity-newest-first", reverse_epochs[1])
+        .await
+        .expect("A6 duplicate completion");
+    assert_eq!(duplicate, newest_settled, "A6 duplicate is an exact no-op");
+    let unknown = app
+        .settle_activity("activity-newest-first", u64::MAX)
+        .await
+        .expect("A6 unknown completion");
+    assert_eq!(unknown, newest_settled, "A6 unknown is an exact no-op");
+    let reverse_idle = app
+        .settle_activity("activity-newest-first", reverse_epochs[0])
+        .await
+        .expect("A5 oldest completes last");
+    assert_eq!(reverse_idle.execution, SessionExecutionState::Idle, "A5");
+    assert!(reverse_idle.active_activity_epochs.is_empty(), "A5");
+    assert!(reverse_idle.running_interval.is_none(), "A5");
+    let pending = repo.pending_lifecycle().await.expect("A5 outbox");
+    assert_eq!(
+        pending
+            .iter()
+            .filter(
+                |fact| fact.object_id == "activity-newest-first" && fact.runtime_interval.is_some()
+            )
+            .count(),
+        1,
+        "A5 exactly one interval fact"
+    );
+
+    let running = app
+        .begin_activity("activity-oldest-first")
+        .await
+        .expect("A7 activity before terminal transition");
+    app.force_terminate_session(
+        "activity-oldest-first",
+        "2026-08-11T00:00:00Z",
+        awaken_session_contract::ManagedLifecycleFact {
+            id: "activity-terminal".into(),
+            object_id: "activity-oldest-first".into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.status_terminated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        },
+    )
+    .await
+    .expect("A7 terminal transition");
+    let terminated = repo
+        .get("activity-oldest-first")
+        .await
+        .expect("A7 durable terminal cleanup");
+    assert!(terminated.active_activity_epochs.is_empty(), "A7/E6");
+    assert!(terminated.running_interval.is_none(), "A7/E6");
+    let fenced = app
+        .settle_activity("activity-oldest-first", running.activity_epoch)
+        .await
+        .expect("A7 terminal settlement is idempotent");
+    assert_eq!(fenced, terminated, "A7");
+    assert_eq!(
+        app.begin_activity("activity-oldest-first").await,
         Err(SessionActivityError::Terminal),
-        "A5"
+        "A7"
     );
 
     let mut exhausted = persisted("activity-exhausted", false, "idle");
@@ -551,23 +947,23 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     let exhausted_before = repo
         .get("activity-exhausted")
         .await
-        .expect("A6 durable Session before admission");
+        .expect("A8 durable Session before admission");
     assert_eq!(
         app.begin_activity("activity-exhausted").await,
         Err(SessionActivityError::EpochExhausted),
-        "A6"
+        "A8"
     );
     assert_eq!(
         repo.get("activity-exhausted")
             .await
-            .expect("A6 durable Session"),
+            .expect("A8 durable Session"),
         exhausted_before,
-        "A6"
+        "A8"
     );
     assert_eq!(
         app.begin_activity("missing").await,
         Err(SessionActivityError::NotFound),
-        "A7"
+        "A8"
     );
 
     create(
@@ -578,11 +974,11 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     assert_eq!(
         app.begin_activity("activity-preparing").await,
         Err(SessionActivityError::NotReady),
-        "A8/E4"
+        "A8/E5"
     );
     let still_preparing = repo.get("activity-preparing").await.expect("A8 durable");
-    assert_eq!(still_preparing.activity_epoch, 0, "A8/E4");
-    assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E4");
+    assert_eq!(still_preparing.activity_epoch, 0, "A8/E5");
+    assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
 
     let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
@@ -595,12 +991,17 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     let admitted = app
         .begin_activity("activity-worker-preparing")
         .await
-        .expect("A10 Worker claim must be triggered by the driving event");
-    assert_eq!(admitted.activity_epoch, 1, "A10/E6");
+        .expect("A9 Worker claim must be triggered by the driving event");
+    assert_eq!(admitted.activity_epoch, 1, "A9/E1");
+    assert_eq!(
+        admitted.active_activity_epochs,
+        std::collections::BTreeSet::from([1]),
+        "A9/E7"
+    );
     assert_eq!(
         admitted.execution,
         SessionExecutionState::Preparing,
-        "A10/E6"
+        "A9/E7"
     );
 
     let mut failed = still_preparing;
@@ -613,14 +1014,1910 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
             Vec::new(),
         )
         .await
-        .expect("A9 terminal realization");
+        .expect("A7 terminal realization");
     assert_eq!(
         app.settle_activity("activity-preparing", 0)
             .await
-            .expect("A9 stale settlement"),
+            .expect("A7 stale settlement"),
         failed,
-        "A9/E3"
+        "A7/E4"
     );
+}
+
+#[tokio::test]
+async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_truth() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Recovery cause/effect graph: C1 a Running aggregate has a monotonic scalar
+    // epoch and an explicitly empty active set; C2 its current epoch settles;
+    // C3 a successor is admitted first; C4 the predecessor/successor completion
+    // arrives. Effects: E1 C2 treats the scalar as one recoverable activity and
+    // closes Idle; E2 C3 installs only the successor in the active set; E3 the
+    // predecessor completion is fenced; E4 the successor closes Idle. Rules:
+    // A10=C1+C2=>E1; A11=C1+C3+C4(old)=>E2+E3; A12=C1+C3+C4(new)=>E4.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let app = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let mut recovered = persisted("activity-recovered-settle", false, "running");
+    recovered.activity_epoch = 7;
+    assert!(recovered.begin_runtime_interval(1), "A10 fixture");
+    assert!(recovered.active_activity_epochs.is_empty(), "A10/C1");
+    create(repo.as_ref(), recovered).await;
+    let idle = app
+        .settle_activity("activity-recovered-settle", 7)
+        .await
+        .expect("A10 settle");
+    assert_eq!(idle.execution, SessionExecutionState::Idle, "A10/E1");
+    assert!(idle.running_interval.is_none(), "A10/E1");
+
+    let mut recovered = persisted("activity-recovered-successor", false, "running");
+    recovered.activity_epoch = 9;
+    assert!(recovered.begin_runtime_interval(1), "A11 fixture");
+    create(repo.as_ref(), recovered).await;
+    let successor = app
+        .begin_activity("activity-recovered-successor")
+        .await
+        .expect("A11 successor");
+    assert_eq!(successor.activity_epoch, 10, "A11/E2");
+    assert_eq!(
+        successor.active_activity_epochs,
+        std::collections::BTreeSet::from([10]),
+        "A11/E2"
+    );
+    assert_eq!(
+        app.settle_activity("activity-recovered-successor", 9)
+            .await
+            .expect("A11 predecessor fenced"),
+        successor,
+        "A11/E3"
+    );
+    let idle = app
+        .settle_activity("activity-recovered-successor", 10)
+        .await
+        .expect("A12 successor completion");
+    assert_eq!(idle.execution, SessionExecutionState::Idle, "A12/E4");
+    assert!(idle.running_interval.is_none(), "A12/E4");
+}
+
+#[tokio::test]
+async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_authority() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 operation receipt absent/present; C2 its epoch is
+    // active/already settled; C3 concurrent exact retry; C4 distinct operation.
+    // Effects: E1 first admission uses its target root revision as epoch; E2 an
+    // exact retry returns that receipt revision without another mutation; E3 a
+    // retry after settlement never reopens activity; E4 a distinct operation
+    // gets a later monotonic epoch. The repository receipt is the only
+    // operation→epoch mapping—there is no companion map to reconcile.
+    //
+    // | Rule | Receipt | Activity | Request | Effect |
+    // | O1 | absent | idle | first op-a | E1 |
+    // | O2 | races absent/present | active | concurrent op-a | E2 |
+    // | O3 | present | settled | retry op-a | E3 |
+    // | O4 | absent | idle | op-b | E4 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repo.as_ref(),
+        persisted("activity-operation", false, "idle"),
+    )
+    .await;
+    let app = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let (left, right) = tokio::join!(
+        app.begin_activity_for_operation("activity-operation", "op-a"),
+        app.begin_activity_for_operation("activity-operation", "op-a")
+    );
+    let (left_session, left_epoch) = left.expect("O1/O2 left");
+    let (right_session, right_epoch) = right.expect("O1/O2 right");
+    assert_eq!(left_epoch, right_epoch, "O2/E2 exact concurrent replay");
+    let active = repo.get("activity-operation").await.expect("O1 state");
+    assert_eq!(
+        active.active_activity_epochs,
+        std::collections::BTreeSet::from([left_epoch]),
+        "O1/O2 one durable activity"
+    );
+    assert!(
+        left_session.revision.0 == left_epoch || right_session.revision.0 == right_epoch,
+        "O1/E1 first committed target revision is the epoch"
+    );
+
+    let settled = app
+        .settle_activity("activity-operation", left_epoch)
+        .await
+        .expect("O3 settle");
+    let settled_revision = settled.revision;
+    let (replayed, replayed_epoch) = app
+        .begin_activity_for_operation("activity-operation", "op-a")
+        .await
+        .expect("O3 exact replay");
+    assert_eq!(replayed_epoch, left_epoch, "O3/E3");
+    assert_eq!(replayed.revision, settled_revision, "O3/E3 no mutation");
+    assert!(replayed.active_activity_epochs.is_empty(), "O3/E3");
+
+    let (next, next_epoch) = app
+        .begin_activity_for_operation("activity-operation", "op-b")
+        .await
+        .expect("O4 distinct operation");
+    assert!(next_epoch > left_epoch, "O4/E4");
+    assert_eq!(next.revision.0, next_epoch, "O4/E4");
+}
+
+#[tokio::test]
+async fn coordinated_agent_admission_preserves_activity_across_ambiguous_delivery() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 Runtime admission is accepted, definitively rejected,
+    // ambiguously unavailable, or returns a mismatched receipt; C2 an ambiguous
+    // operation is retried with the same identity; C3 its committed child boundary
+    // later arrives; C4 a terminal child atomically admits its deterministic
+    // primary report continuation; C5 that report Run later reaches its committed
+    // boundary. Effects: E1 accepted work retains one active epoch; E2 only a
+    // BadRequest settles immediately; E3 unavailable/internal outcomes retain the
+    // epoch as durable recovery evidence; E4 exact retry reuses the same child Run
+    // and epoch; E5 Awaiting settles that one epoch exactly; E6 C4 transfers the
+    // same epoch without an intermediate Idle; E7 C5 settles it exactly once;
+    // E8 admission reserves 24 ordinary-child slots because the public 25-Thread
+    // limit includes the primary Thread (Advisor consultations are exempt).
+    //
+    // | Rule | Runtime result | Exact retry | Boundary | Effect |
+    // |---|---|---|---|---|
+    // | S1 | accepted | no | pending | E1+E8 |
+    // | S2 | BadRequest | no | none | E2 |
+    // | S3 | Unavailable | accepted | pending | E3+E4 |
+    // | S4 | mismatched receipt | no | unknown | E3 |
+    // | S5 | S3 accepted retry | yes | Awaiting | E5 |
+    // | S6 | accepted | no | child Ended | E6 |
+    // | S7 | report accepted | no | primary Ended | E7 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Agent admission repository"),
+    );
+    for id in [
+        "send-accepted",
+        "send-rejected",
+        "send-ambiguous",
+        "send-mismatch",
+    ] {
+        create(repo.as_ref(), coordinated_session(id)).await;
+    }
+
+    let accepted_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+        AgentAdmissionOutcome::Accepted,
+    ]));
+    let accepted = configured_admission_application(repo.clone(), accepted_runtime.clone());
+    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        &accepted,
+        coordination_spawn_command("send-accepted"),
+    )
+    .await
+    .expect("S1 accepted");
+    let accepted_epoch = accepted_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
+    assert_eq!(
+        accepted_runtime.admissions.lock().unwrap()[0].max_unarchived_threads,
+        24,
+        "S1/E8 primary plus ordinary children cannot exceed 25 Threads"
+    );
+    assert_eq!(
+        repo.get("send-accepted")
+            .await
+            .expect("S1 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([accepted_epoch]),
+        "S1/E1"
+    );
+
+    let rejected_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+        AgentAdmissionOutcome::BadRequest,
+    ]));
+    let rejected = configured_admission_application(repo.clone(), rejected_runtime);
+    let rejected_error =
+        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            &rejected,
+            coordination_spawn_command("send-rejected"),
+        )
+        .await
+        .expect_err("S2 definitive rejection");
+    assert_eq!(
+        rejected_error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest
+    );
+    assert!(
+        repo.get("send-rejected")
+            .await
+            .expect("S2 state")
+            .active_activity_epochs
+            .is_empty(),
+        "S2/E2"
+    );
+
+    let ambiguous_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+        AgentAdmissionOutcome::Unavailable,
+        AgentAdmissionOutcome::Accepted,
+    ]));
+    let ambiguous = configured_admission_application(repo.clone(), ambiguous_runtime.clone());
+    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        &ambiguous,
+        coordination_spawn_command("send-ambiguous"),
+    )
+    .await
+    .expect_err("S3 ambiguous response");
+    let ambiguous_epoch = ambiguous_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
+    assert_eq!(
+        repo.get("send-ambiguous")
+            .await
+            .expect("S3 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([ambiguous_epoch]),
+        "S3/E3"
+    );
+    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        &ambiguous,
+        coordination_spawn_command("send-ambiguous"),
+    )
+    .await
+    .expect("S3/S4 exact retry accepted");
+    let (child, run) = {
+        let admissions = ambiguous_runtime.admissions.lock().unwrap();
+        assert_eq!(admissions.len(), 2, "S3/S4 two delivery attempts");
+        assert_eq!(admissions[0].thread_id, admissions[1].thread_id, "S4/E4");
+        assert_eq!(admissions[0].run_id, admissions[1].run_id, "S4/E4");
+        assert_eq!(
+            admissions[0].session_activity_epoch, admissions[1].session_activity_epoch,
+            "S4/E4"
+        );
+        (
+            admissions[0].thread_id.clone(),
+            admissions[0].run_id.clone(),
+        )
+    };
+
+    let mismatch_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+        AgentAdmissionOutcome::MismatchedReceipt,
+    ]));
+    let mismatch = configured_admission_application(repo.clone(), mismatch_runtime.clone());
+    let mismatch_error =
+        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            &mismatch,
+            coordination_spawn_command("send-mismatch"),
+        )
+        .await
+        .expect_err("S4 mismatched receipt");
+    assert_eq!(
+        mismatch_error.kind,
+        awaken_session_contract::RunErrorKind::Internal
+    );
+    let mismatch_epoch = mismatch_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
+    assert_eq!(
+        repo.get("send-mismatch")
+            .await
+            .expect("S4 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([mismatch_epoch]),
+        "S4/E3"
+    );
+
+    ambiguous_runtime.commit_boundary("send-ambiguous", &child, &run, RunState::Awaiting, "");
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &ambiguous,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "send-ambiguous".into(),
+            source_thread_id: child,
+            source_run_id: run,
+            source_agent_id: "coord-child".into(),
+            session_activity_epoch: ambiguous_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("S5 committed Awaiting boundary");
+    assert!(
+        repo.get("send-ambiguous")
+            .await
+            .expect("S5 state")
+            .active_activity_epochs
+            .is_empty(),
+        "S5/E5"
+    );
+
+    let accepted_admission = accepted_runtime.admissions.lock().unwrap()[0].clone();
+    accepted_runtime.commit_boundary(
+        "send-accepted",
+        &accepted_admission.thread_id,
+        &accepted_admission.run_id,
+        RunState::Ended(EndCause::NaturalEnd),
+        "research complete",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &accepted,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "send-accepted".into(),
+            source_thread_id: accepted_admission.thread_id,
+            source_run_id: accepted_admission.run_id,
+            source_agent_id: "coord-child".into(),
+            session_activity_epoch: accepted_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("S6 terminal child hands off to the report continuation");
+    {
+        let continuations = accepted_runtime.continuations.lock().unwrap();
+        assert_eq!(continuations.len(), 1, "S6/E6 one report continuation");
+        assert_eq!(
+            continuations[0].session_activity_epoch, accepted_epoch,
+            "S6/E6 transfers the exact child epoch"
+        );
+        assert!(
+            continuations[0]
+                .message
+                .text_content()
+                .contains("research complete"),
+            "S6/E6 report is derived from the committed child snapshot"
+        );
+    }
+    let handed_off = repo.get("send-accepted").await.expect("S6 state");
+    assert_eq!(
+        handed_off.active_activity_epochs,
+        std::collections::BTreeSet::from([accepted_epoch]),
+        "S6/E6 no intermediate aggregate Idle"
+    );
+    assert_eq!(
+        handed_off.execution,
+        SessionExecutionState::Running,
+        "S6/E6"
+    );
+
+    accepted_runtime.commit_boundary(
+        "send-accepted",
+        &ThreadId("send-accepted".into()),
+        &RunId("coord-report-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "coordinator acknowledged report",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &accepted,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "send-accepted".into(),
+            source_thread_id: ThreadId("send-accepted".into()),
+            source_run_id: RunId("coord-report-run".into()),
+            source_agent_id: "coord-root".into(),
+            session_activity_epoch: accepted_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("S7 primary report boundary settles the transferred epoch");
+    let completed = repo.get("send-accepted").await.expect("S7 state");
+    assert!(completed.active_activity_epochs.is_empty(), "S7/E7");
+    assert_eq!(completed.execution, SessionExecutionState::Idle, "S7/E7");
+    assert_eq!(
+        accepted_runtime.continuations.lock().unwrap().len(),
+        1,
+        "S7/E7 primary boundary must not recurse into another report"
+    );
+}
+
+#[tokio::test]
+async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_parent_link() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 a child has a committed Completed Run and non-empty
+    // report; C2 the crash-frozen claimed dispatch identifies an Agent that is
+    // in the Session's exact roster, unknown, the Advisor sentinel, or blank;
+    // C3 the process stopped after child enqueue but before the parent
+    // send_to_agent result committed, so the rebuildable relationship query is
+    // empty. Effects: E1 C1+C2(roster)+C3 admits one deterministic primary
+    // report and retains the exact activity until that Run settles; E2 every
+    // non-roster identity fails closed, admits no report, and retains its
+    // activity for exact settlement retry. Constraint: the claimed dispatch
+    // snapshot is execution identity; this test creates no link fallback or
+    // second child registry.
+    //
+    // | Rule | Parent link | Dispatch Agent | Frozen roster | Effect |
+    // |---|---|---|---|---|
+    // | R1 | absent | coord-child | member | E1 |
+    // | R2 | absent | foreign-agent | absent | E2 |
+    // | R3 | absent | __awaken_advisor__ | absent | E2 |
+    // | R4 | absent | blank/legacy | absent | E2 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("child settlement recovery repository"),
+    );
+    let cases = [
+        ("R1", "coord-child", true),
+        ("R2", "foreign-agent", false),
+        ("R3", "__awaken_advisor__", false),
+        ("R4", "", false),
+    ];
+    for (rule, _, _) in cases {
+        create(
+            repo.as_ref(),
+            coordinated_session(&format!("settlement-{rule}")),
+        )
+        .await;
+    }
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let app = configured_admission_application(repo.clone(), runtime.clone());
+
+    for (rule, source_agent_id, accepted) in cases {
+        let session_id = format!("settlement-{rule}");
+        let child = ThreadId(format!("settlement-child-{rule}"));
+        let run = RunId(format!("settlement-run-{rule}"));
+        let (_, epoch) = app
+            .begin_activity_for_operation(&session_id, &format!("settlement-operation-{rule}"))
+            .await
+            .expect("activity precondition");
+        runtime.commit_boundary(
+            &session_id,
+            &child,
+            &run,
+            RunState::Ended(EndCause::NaturalEnd),
+            format!("recovered report {rule}"),
+        );
+        assert!(
+            awaken_session_contract::SessionRuntime::coordinated_threads(
+                runtime.as_ref(),
+                &session_id,
+            )
+            .await
+            .expect("relationship projection")
+            .is_empty(),
+            "{rule}/C3"
+        );
+
+        let result =
+            awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+                &app,
+                awaken_session_contract::SessionAgentBoundaryCommand {
+                    session_id: session_id.clone(),
+                    source_thread_id: child,
+                    source_run_id: run,
+                    source_agent_id: source_agent_id.into(),
+                    session_activity_epoch: epoch,
+                    cancellation_requested: false,
+                },
+            )
+            .await;
+        let session = repo.get(&session_id).await.expect("settled Session");
+        if accepted {
+            result.expect("R1/E1 frozen dispatch Agent is admitted");
+            assert_eq!(runtime.continuations.lock().unwrap().len(), 1, "R1/E1");
+            assert!(session.active_activity_epochs.contains(&epoch), "R1/E1");
+        } else {
+            let error = result.expect_err("R2-R4/E2 unknown identity fails closed");
+            assert_eq!(
+                error.kind,
+                awaken_session_contract::RunErrorKind::BadRequest,
+                "{rule}/E2"
+            );
+            assert_eq!(runtime.continuations.lock().unwrap().len(), 1, "{rule}/E2");
+            assert!(session.active_activity_epochs.contains(&epoch), "{rule}/E2");
+        }
+    }
+}
+
+#[tokio::test]
+async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    use awaken_agent_contract::agent::run::Failure;
+
+    // Cause/effect graph: C1 an ordinary coordinated Thread exists; C2 its
+    // latest committed Run Completed, Cancelled, or Failed; C3 a follow-up is
+    // submitted after that durable boundary; C4 the target relationship is an
+    // ordinary Agent, Advisor, or absent; C5 the ordinary Thread disposition is
+    // Active/Archived. Effects: E1 Completed/Cancelled ordinary Agents admit a
+    // fresh Run on the same Thread; E2 Failed, Advisor, unknown, and Archived
+    // targets reject before opening a Session activity or calling Runtime
+    // admission. Constraints: RunState and ThreadDisposition remain the only
+    // failure/archive authorities, and the committed relationship projection is
+    // the only target-kind authority; the application stores no parallel flag.
+    //
+    // | Rule | Latest lifecycle | Follow-up | Effects |
+    // |---|---|---|---|
+    // | A1 | Completed | submitted | E1 accepted |
+    // | A2 | Cancelled | submitted | E1 accepted |
+    // | A3 | Failed(Error) | submitted | E2 BadRequest/no admission |
+    // | A4 | any | unknown relationship | E2 BadRequest/no admission |
+    // | A5 | any | Advisor relationship | E2 BadRequest/no admission |
+    // | A6 | any | Archived ordinary Thread | E2 BadRequest/no admission |
+    for (rule, state, accepted) in [
+        ("A1", RunState::Ended(EndCause::NaturalEnd), true),
+        ("A2", RunState::Ended(EndCause::Cancelled), true),
+        (
+            "A3",
+            RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "unauthorized".into(),
+                message: "terminal child failure".into(),
+            })),
+            false,
+        ),
+    ] {
+        let session_id = format!("follow-up-{rule}");
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("follow-up repository"),
+        );
+        create(repo.as_ref(), coordinated_session(&session_id)).await;
+        let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+            AgentAdmissionOutcome::Accepted,
+            AgentAdmissionOutcome::Accepted,
+        ]));
+        let app = configured_admission_application(repo.clone(), runtime.clone());
+        let receipt =
+            awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+                &app,
+                coordination_spawn_command(&session_id),
+            )
+            .await
+            .expect("spawn precondition");
+        let first = runtime.admissions.lock().unwrap()[0].clone();
+        runtime.commit_boundary(
+            &session_id,
+            &receipt.thread_id,
+            &first.run_id,
+            state,
+            "terminal transcript",
+        );
+        let active_before = repo
+            .get(&session_id)
+            .await
+            .expect("activity before follow-up")
+            .active_activity_epochs;
+        let follow_up = awaken_session_contract::SessionAgentMessageCommand {
+            session_id: session_id.clone(),
+            source_thread_id: ThreadId(session_id.clone()),
+            source_run_id: RunId(format!("{session_id}-parent-follow-up")),
+            source_call_id: format!("{rule}-follow-up-call"),
+            operation_id: format!("{rule}-follow-up-operation"),
+            target: awaken_session_contract::SessionAgentTarget::ExistingThread {
+                thread_id: receipt.thread_id.clone(),
+            },
+            message: "continue".into(),
+        };
+        let result = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            &app, follow_up,
+        )
+        .await;
+        if accepted {
+            let accepted_receipt = result.expect(rule);
+            assert_eq!(accepted_receipt.thread_id, receipt.thread_id, "{rule}/E1");
+            let admissions = runtime.admissions.lock().unwrap();
+            assert_eq!(admissions.len(), 2, "{rule}/E1");
+            assert_eq!(
+                admissions[1].intent,
+                awaken_session_contract::CoordinatedRunIntent::FollowUp,
+                "{rule}/E1"
+            );
+        } else {
+            let error = result.expect_err("A3 Failed must reject");
+            assert_eq!(
+                error.kind,
+                awaken_session_contract::RunErrorKind::BadRequest,
+                "A3/E2"
+            );
+            assert_eq!(runtime.admissions.lock().unwrap().len(), 1, "A3/E2");
+            assert_eq!(
+                repo.get(&session_id)
+                    .await
+                    .expect("A3 activity after rejection")
+                    .active_activity_epochs,
+                active_before,
+                "A3/E2 admission rejection opens no activity"
+            );
+        }
+    }
+
+    for rule in ["A4", "A5", "A6"] {
+        let session_id = format!("follow-up-{rule}");
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("follow-up target repository"),
+        );
+        create(repo.as_ref(), coordinated_session(&session_id)).await;
+        let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+        let thread_id = ThreadId(format!("{session_id}-target"));
+        match rule {
+            "A4" => {}
+            "A5" => runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
+                session_id: session_id.clone(),
+                thread_id: thread_id.clone(),
+                target: awaken_session_contract::CoordinatedThreadTarget::Advisor {
+                    model: "advisor-model".into(),
+                },
+                created_by_operation_id: "advisor-operation".into(),
+                latest_run_id: Some(RunId("advisor-run".into())),
+            }),
+            "A6" => {
+                runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
+                    session_id: session_id.clone(),
+                    thread_id: thread_id.clone(),
+                    target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                        agent_id: "coord-child".into(),
+                    },
+                    created_by_operation_id: "archived-agent-operation".into(),
+                    latest_run_id: Some(RunId("archived-agent-run".into())),
+                });
+                runtime.archive_thread(&session_id, &thread_id);
+            }
+            _ => unreachable!("closed decision table"),
+        }
+        let app = configured_admission_application(repo.clone(), runtime.clone());
+        let active_before = repo
+            .get(&session_id)
+            .await
+            .expect("target state before rejection")
+            .active_activity_epochs;
+        let error = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            &app,
+            awaken_session_contract::SessionAgentMessageCommand {
+                session_id: session_id.clone(),
+                source_thread_id: ThreadId(session_id.clone()),
+                source_run_id: RunId(format!("{session_id}-parent-run")),
+                source_call_id: format!("{rule}-call"),
+                operation_id: format!("{rule}-operation"),
+                target: awaken_session_contract::SessionAgentTarget::ExistingThread { thread_id },
+                message: "must reject before activity".into(),
+            },
+        )
+        .await
+        .expect_err("non-ordinary/closed target must reject");
+        assert_eq!(
+            error.kind,
+            awaken_session_contract::RunErrorKind::BadRequest,
+            "{rule}/E2"
+        );
+        assert!(
+            runtime.admissions.lock().unwrap().is_empty(),
+            "{rule}/E2 no Runtime admission"
+        );
+        assert_eq!(
+            repo.get(&session_id)
+                .await
+                .expect("target state after rejection")
+                .active_activity_epochs,
+            active_before,
+            "{rule}/E2 no leaked Session activity"
+        );
+    }
+}
+
+#[tokio::test]
+async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_table() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the Runtime accepts/rejects/ambiguously fails reply
+    // delivery; C2 the same reply operation is first/replayed; C3 its committed
+    // child boundary is pending/arrives. Effects: E1 acceptance leaves exactly
+    // the attached epoch active; E2 exact replay reuses that epoch without a
+    // second active entry; E3 an explicit caller rejection settles it; E4 a
+    // dependency failure retains it as retry evidence; E5 the later committed
+    // Awaiting boundary settles the accepted epoch and returns Session to Idle;
+    // E6 Primary skips child topology validation but uses the same fence,
+    // transfer, and delivery path.
+    //
+    // | Rule | Runtime | Operation | Boundary | Effect |
+    // |---|---|---|---|---|
+    // | P1 | accepted | first | pending | E1 |
+    // | P2 | accepted | exact replay | pending | E2 |
+    // | P3 | bad request | first | none | E3 |
+    // | P4 | unavailable | first | unknown | E4 |
+    // | P4R | unavailable | exact retry after CAS | unknown | E2+E4 |
+    // | P5 | accepted | first/replay | Awaiting | E5 |
+    // | P6 | accepted Primary | first | pending | E6 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("reply activity repository"),
+    );
+    for session_id in [
+        "reply-accepted",
+        "reply-rejected",
+        "reply-ambiguous",
+        "reply-primary",
+    ] {
+        create(repo.as_ref(), persisted(session_id, false, "idle")).await;
+    }
+    let command = |session_id: &str| awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: session_id.to_string(),
+        target: awaken_session_contract::SessionThreadTarget::Child(ThreadId("reply-child".into())),
+        expected_run_id: RunId("reply-run".into()),
+        expected_correlation_id: "reply-correlation".into(),
+        tool_use_id: "reply-tool".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+            awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+        ),
+        accompanying_system: None,
+    };
+
+    let accepted_runtime = Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted));
+    let accepted = application_with_runtime(
+        accepted_runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        &accepted,
+        command("reply-accepted"),
+    )
+    .await
+    .expect("P1 accepted reply");
+    let first_epoch = accepted_runtime.deliveries.lock().unwrap()[0].session_activity_epoch;
+    let active = repo.get("reply-accepted").await.expect("P1 state");
+    assert_eq!(
+        active.active_activity_epochs,
+        std::collections::BTreeSet::from([first_epoch]),
+        "P1/E1"
+    );
+
+    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        &accepted,
+        command("reply-accepted"),
+    )
+    .await
+    .expect("P2 exact accepted replay");
+    {
+        let deliveries = accepted_runtime.deliveries.lock().unwrap();
+        assert_eq!(
+            deliveries.len(),
+            2,
+            "P2 Runtime receives an idempotent retry"
+        );
+        assert_eq!(
+            deliveries[1].session_activity_epoch, first_epoch,
+            "P2/E2 same receipt-backed epoch"
+        );
+    }
+    assert_eq!(
+        repo.get("reply-accepted")
+            .await
+            .expect("P2 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([first_epoch]),
+        "P2/E2 one active membership"
+    );
+
+    let mut primary_command = command("reply-primary");
+    primary_command.target = awaken_session_contract::SessionThreadTarget::Primary;
+    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        &accepted,
+        primary_command,
+    )
+    .await
+    .expect("P6 accepted Primary reply");
+    let primary_delivery = accepted_runtime
+        .deliveries
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("P6 delivery");
+    assert_eq!(
+        primary_delivery.command.target,
+        awaken_session_contract::SessionThreadTarget::Primary,
+        "P6/E6"
+    );
+    assert_eq!(
+        repo.get("reply-primary")
+            .await
+            .expect("P6 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([primary_delivery.session_activity_epoch]),
+        "P6/E6"
+    );
+
+    let rejected = application_with_runtime(
+        Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::BadRequest)),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+            &rejected,
+            command("reply-rejected"),
+        )
+        .await
+        .is_err(),
+        "P3 rejection surfaces"
+    );
+    let rejected_state = repo.get("reply-rejected").await.expect("P3 state");
+    assert!(rejected_state.active_activity_epochs.is_empty(), "P3/E3");
+    assert_eq!(
+        rejected_state.execution,
+        SessionExecutionState::Idle,
+        "P3/E3"
+    );
+
+    let ambiguous_runtime = Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::Unavailable));
+    let ambiguous = application_with_runtime(
+        ambiguous_runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+            &ambiguous,
+            command("reply-ambiguous"),
+        )
+        .await
+        .is_err(),
+        "P4 ambiguity surfaces for retry"
+    );
+    let ambiguous_epoch = ambiguous_runtime.deliveries.lock().unwrap()[0].session_activity_epoch;
+    let ambiguous_state = repo.get("reply-ambiguous").await.expect("P4 state");
+    assert_eq!(
+        ambiguous_state.active_activity_epochs,
+        std::collections::BTreeSet::from([ambiguous_epoch]),
+        "P4/E4"
+    );
+    assert_eq!(
+        ambiguous_state.execution,
+        SessionExecutionState::Running,
+        "P4/E4"
+    );
+    assert!(
+        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+            &ambiguous,
+            command("reply-ambiguous"),
+        )
+        .await
+        .is_err(),
+        "P4R ambiguity remains retryable"
+    );
+    {
+        let ambiguous_deliveries = ambiguous_runtime.deliveries.lock().unwrap();
+        assert_eq!(ambiguous_deliveries.len(), 2, "P4R/E2");
+        assert_eq!(
+            ambiguous_deliveries[1].session_activity_epoch, ambiguous_epoch,
+            "P4R/E2 exact crash retry reuses the receipt-backed epoch"
+        );
+    }
+    assert_eq!(
+        repo.get("reply-ambiguous")
+            .await
+            .expect("P4R state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([ambiguous_epoch]),
+        "P4R/E4 one retained activity"
+    );
+
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &accepted,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "reply-accepted".into(),
+            source_thread_id: ThreadId("reply-child".into()),
+            source_run_id: RunId("reply-run".into()),
+            source_agent_id: "reply-agent".into(),
+            session_activity_epoch: first_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("P5 committed Awaiting boundary");
+    let settled = repo.get("reply-accepted").await.expect("P5 state");
+    assert!(settled.active_activity_epochs.is_empty(), "P5/E5");
+    assert_eq!(settled.execution, SessionExecutionState::Idle, "P5/E5");
+}
+
+#[tokio::test]
+async fn reached_budget_allows_only_the_exact_required_action_continuation() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the one Session budget is reached; C2 a command is
+    // ordinary new coordination or a child tool reply; C3 the reply does/does
+    // not match Runtime's exact committed Awaiting ticket. Effects: E1 ordinary
+    // activity admission remains budget-blocked; E2 the exact reply opens one
+    // receipt-backed activity to finish the already-started Run; E3 a forged
+    // reply is rejected before any activity mutation. The exception is therefore
+    // continuation of one unfinished Run, not a second budget admission path.
+    //
+    // | Rule | Budget | Command | Exact ticket | Effect |
+    // |---|---|---|---|---|
+    // | A1 | reached | new operation | n/a | E1 |
+    // | A2 | reached | tool reply | yes | E2 |
+    // | A3 | reached | tool reply | no | E3 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("required-action budget repository"),
+    );
+    for session_id in ["reached-valid-reply", "reached-invalid-reply"] {
+        let mut session = persisted(session_id, false, "idle");
+        session.budget = awaken_session_contract::SessionBudgetState::Active {
+            max_list_cost_minor: 1,
+            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+            usage_cursor: Default::default(),
+            snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+                snapshot_id: "required-action-price-v1".into(),
+                version: 1,
+                effective_at_unix_ms: 1,
+                arithmetic_version: 1,
+                model_rates: Default::default(),
+                runtime_rates: Default::default(),
+                fingerprint: "required-action-price-v1-fingerprint".into(),
+            },
+            reach_transitions: Vec::new(),
+        };
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert!(
+        matches!(
+            app.begin_activity_for_operation("reached-valid-reply", "new-run")
+                .await,
+            Err(SessionActivityError::BudgetReached)
+        ),
+        "A1/E1"
+    );
+    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        &app,
+        awaken_session_contract::SessionThreadToolReplyCommand {
+            session_id: "reached-valid-reply".into(),
+            target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
+                "reply-child".into(),
+            )),
+            expected_run_id: RunId("reply-run".into()),
+            expected_correlation_id: "reply-correlation".into(),
+            tool_use_id: "reply-tool".into(),
+            reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+                awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+            ),
+            accompanying_system: None,
+        },
+    )
+    .await
+    .expect("A2 exact Awaiting continuation");
+    let admitted = repo.get("reached-valid-reply").await.expect("A2 state");
+    assert_eq!(admitted.active_activity_epochs.len(), 1, "A2/E2");
+    assert_eq!(runtime.deliveries.lock().unwrap().len(), 1, "A2/E2");
+
+    let before = repo
+        .get("reached-invalid-reply")
+        .await
+        .expect("A3 state before");
+    let error = awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        &app,
+        awaken_session_contract::SessionThreadToolReplyCommand {
+            session_id: "reached-invalid-reply".into(),
+            target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
+                "reply-child".into(),
+            )),
+            expected_run_id: RunId("reply-run".into()),
+            expected_correlation_id: "reply-correlation".into(),
+            tool_use_id: "forged-tool".into(),
+            reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+                awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+            ),
+            accompanying_system: None,
+        },
+    )
+    .await
+    .expect_err("A3 forged reply");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "A3/E3"
+    );
+    assert_eq!(
+        repo.get("reached-invalid-reply")
+            .await
+            .expect("A3 state after"),
+        before,
+        "A3/E3"
+    );
+}
+
+#[tokio::test]
+async fn root_activity_cas_is_the_only_budget_admission_choke() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the shared budget is reached; C2 the caller only
+    // reads the frozen Agent roster or submits a new child Run; C3 the root CAS
+    // has/not opened an activity. Effects: E1 read-only roster access remains
+    // available; E2 the new Run fails at the authoritative activity CAS; E3 no
+    // Runtime admission or activity epoch is produced. Removing the earlier
+    // coordination preflight avoids two competing check-then-act gates while
+    // retaining one source of truth and one serialized admission decision.
+    //
+    // | Rule | Budget | Operation | Root CAS | Effects |
+    // |---|---|---|---|---|
+    // | G1 | reached | list roster | none | E1 |
+    // | G2 | reached | spawn child | rejects | E2+E3 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("budget choke repository"),
+    );
+    let mut session = coordinated_session("budget-admission-choke");
+    session.budget = awaken_session_contract::SessionBudgetState::Active {
+        max_list_cost_minor: 1,
+        consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+        usage_cursor: Default::default(),
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "budget-choke-price-v1".into(),
+            version: 1,
+            effective_at_unix_ms: 1,
+            arithmetic_version: 1,
+            model_rates: Default::default(),
+            runtime_rates: Default::default(),
+            fingerprint: "budget-choke-price-v1-fingerprint".into(),
+        },
+        reach_transitions: Vec::new(),
+    };
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
+        AgentAdmissionOutcome::Accepted,
+    ]));
+    let app = configured_admission_application(repo.clone(), runtime.clone());
+
+    let roster = awaken_session_contract::SessionAgentCoordination::list_session_agents(
+        &app,
+        "budget-admission-choke",
+    )
+    .await
+    .expect("G1 read-only roster remains visible");
+    assert_eq!(roster.len(), 1, "G1/E1");
+
+    let error = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        &app,
+        coordination_spawn_command("budget-admission-choke"),
+    )
+    .await
+    .expect_err("G2 reached budget");
+    assert_eq!(error.code, "budget_reached", "G2/E2");
+    assert!(runtime.admissions.lock().unwrap().is_empty(), "G2/E3");
+    assert!(
+        repo.get("budget-admission-choke")
+            .await
+            .expect("G2 state")
+            .active_activity_epochs
+            .is_empty(),
+        "G2/E3"
+    );
+}
+
+#[tokio::test]
+async fn child_boundary_settlement_separates_activity_from_terminal_continuation() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 boundary is Awaiting/Ended/Running; C2 Session is
+    // live/terminal; C3 roster/runtime continuation dependencies are absent;
+    // C4 trusted dispatch provenance marks/does not mark cancellation; C5 a
+    // child commits Failed while a later continuation may already be queued.
+    // Effects: E1 live Awaiting durably settles the exact activity and never
+    // calls the primary continuation; E2 terminal Session accepts late exact or
+    // unknown completion as a no-op without reopening publication dependencies;
+    // E3 Running is rejected before activity mutation; E4 a cancelled terminal
+    // child settles directly and emits no primary continuation; E5 Failed first
+    // interrupts the Thread's existing Dispatch queue, then settles directly
+    // without manufacturing a successful primary report. Normal Completed
+    // report admission remains covered by S6 in the admission decision table.
+    //
+    // | Rule | Boundary | Session | Dependencies | Effect |
+    // | B1 | Awaiting | live | absent | E1 |
+    // | B2 | Ended | terminal | absent | E2 |
+    // | B3 | Running | live | absent | E3 |
+    // | B4 | Ended + cancelled | live | absent | E4 |
+    // | B5 | Failed | live | interrupt port | E5 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("boundary repository"),
+    );
+    create(repo.as_ref(), persisted("boundary-awaiting", false, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("boundary-terminal", false, "terminated"),
+    )
+    .await;
+    create(repo.as_ref(), persisted("boundary-running", false, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("boundary-interrupted", false, "idle"),
+    )
+    .await;
+    create(repo.as_ref(), persisted("boundary-failed", false, "idle")).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let (_, awaiting_epoch) = app
+        .begin_activity_for_operation("boundary-awaiting", "boundary-op")
+        .await
+        .expect("B1 activity");
+    runtime.commit_boundary(
+        "boundary-awaiting",
+        &ThreadId("boundary-child".into()),
+        &RunId("boundary-child-run".into()),
+        RunState::Awaiting,
+        "pending",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "boundary-awaiting".into(),
+            source_thread_id: ThreadId("boundary-child".into()),
+            source_run_id: RunId("boundary-child-run".into()),
+            source_agent_id: "unused-awaiting-agent".into(),
+            session_activity_epoch: awaiting_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("B1 settles without roster or continuation");
+    let awaiting = repo.get("boundary-awaiting").await.expect("B1 state");
+    assert!(awaiting.active_activity_epochs.is_empty(), "B1/E1");
+    assert_eq!(awaiting.execution, SessionExecutionState::Idle, "B1/E1");
+
+    let terminal_before = repo.get("boundary-terminal").await.expect("B2 before");
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "boundary-terminal".into(),
+            source_thread_id: ThreadId("boundary-terminal-child".into()),
+            source_run_id: RunId("boundary-terminal-run".into()),
+            source_agent_id: "unused-terminal-agent".into(),
+            session_activity_epoch: 99,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("B2 terminal late settlement");
+    assert_eq!(
+        repo.get("boundary-terminal").await.expect("B2 after"),
+        terminal_before,
+        "B2/E2"
+    );
+
+    let (_, running_epoch) = app
+        .begin_activity_for_operation("boundary-running", "boundary-op")
+        .await
+        .expect("B3 activity");
+    runtime.commit_boundary(
+        "boundary-running",
+        &ThreadId("boundary-running-child".into()),
+        &RunId("boundary-running-run".into()),
+        RunState::Running,
+        "",
+    );
+    let rejected =
+        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            &app,
+            awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: "boundary-running".into(),
+                source_thread_id: ThreadId("boundary-running-child".into()),
+                source_run_id: RunId("boundary-running-run".into()),
+                source_agent_id: "unused-running-agent".into(),
+                session_activity_epoch: running_epoch,
+                cancellation_requested: false,
+            },
+        )
+        .await;
+    assert!(rejected.is_err(), "B3/E3");
+    assert!(
+        repo.get("boundary-running")
+            .await
+            .expect("B3 state")
+            .active_activity_epochs
+            .contains(&running_epoch),
+        "B3/E3"
+    );
+
+    let (_, interrupted_epoch) = app
+        .begin_activity_for_operation("boundary-interrupted", "boundary-op")
+        .await
+        .expect("B4 activity");
+    runtime.commit_boundary(
+        "boundary-interrupted",
+        &ThreadId("boundary-interrupted-child".into()),
+        &RunId("boundary-interrupted-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "must not become a primary report",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "boundary-interrupted".into(),
+            source_thread_id: ThreadId("boundary-interrupted-child".into()),
+            source_run_id: RunId("boundary-interrupted-run".into()),
+            source_agent_id: "unused-cancelled-agent".into(),
+            session_activity_epoch: interrupted_epoch,
+            cancellation_requested: true,
+        },
+    )
+    .await
+    .expect("B4 cancellation settles without roster/report dependencies");
+    let interrupted = repo.get("boundary-interrupted").await.expect("B4 state");
+    assert!(interrupted.active_activity_epochs.is_empty(), "B4/E4");
+    assert_eq!(interrupted.execution, SessionExecutionState::Idle, "B4/E4");
+    assert!(runtime.continuations.lock().unwrap().is_empty(), "B4/E4");
+
+    let (_, failed_epoch) = app
+        .begin_activity_for_operation("boundary-failed", "boundary-op")
+        .await
+        .expect("B5 activity");
+    let failed_child = ThreadId("boundary-failed-child".into());
+    let failed_run = RunId("boundary-failed-run".into());
+    runtime.commit_boundary(
+        "boundary-failed",
+        &failed_child,
+        &failed_run,
+        RunState::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::StateConflict,
+        )),
+        "must not become a primary report",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "boundary-failed".into(),
+            source_thread_id: failed_child.clone(),
+            source_run_id: failed_run,
+            source_agent_id: "unused-failed-agent".into(),
+            session_activity_epoch: failed_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("B5 Failed settles after queue interruption");
+    let failed = repo.get("boundary-failed").await.expect("B5 state");
+    assert!(failed.active_activity_epochs.is_empty(), "B5/E5");
+    assert_eq!(failed.execution, SessionExecutionState::Idle, "B5/E5");
+    assert_eq!(
+        runtime.interruptions.lock().unwrap().as_slice(),
+        &[("boundary-failed".into(), failed_child)],
+        "B5/E5 one existing Dispatch cancellation path"
+    );
+    assert!(runtime.continuations.lock().unwrap().is_empty(), "B5/E5");
+}
+
+#[tokio::test]
+async fn completed_child_without_a_committed_reply_settles_without_a_report_run() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the trusted child boundary is Completed; C2 its
+    // authoritative recovery snapshot has/has-not a non-empty reply selected by
+    // the shared report classifier. Effects: E1 C1+C2 transfers the activity to
+    // exactly one root report Run (covered by admission rule S6); E2 C1+!C2
+    // settles the exact activity directly and admits zero root report Runs.
+    //
+    // | Rule | Completed | committed selected reply | Effect |
+    // | M1   | yes       | yes                      | E1 (S6) |
+    // | M2   | yes       | no                       | E2      |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("missing-report repository"),
+    );
+    create(
+        repo.as_ref(),
+        persisted("completed-without-report", false, "idle"),
+    )
+    .await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let (_, activity_epoch) = app
+        .begin_activity_for_operation("completed-without-report", "missing-report-operation")
+        .await
+        .expect("M2 activity");
+    let child = ThreadId("completed-without-report-child".into());
+    let run = RunId("completed-without-report-run".into());
+    runtime.commit_boundary(
+        "completed-without-report",
+        &child,
+        &run,
+        RunState::Ended(EndCause::NaturalEnd),
+        "",
+    );
+
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "completed-without-report".into(),
+            source_thread_id: child,
+            source_run_id: run,
+            source_agent_id: "unused-empty-report-agent".into(),
+            session_activity_epoch: activity_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("M2 direct settlement");
+
+    assert!(runtime.continuations.lock().unwrap().is_empty(), "M2/E2");
+    let settled = repo
+        .get("completed-without-report")
+        .await
+        .expect("M2 settled Session");
+    assert!(settled.active_activity_epochs.is_empty(), "M2/E2");
+    assert_eq!(settled.execution, SessionExecutionState::Idle, "M2/E2");
+}
+
+#[tokio::test]
+async fn advisor_thread_usage_is_folded_once_into_session_usage() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the primary and one first-class Advisor Thread own
+    // distinct committed usage; C2 the Advisor appears once in the Runtime's
+    // coordinated links; C3 the model-request gate may also supply that same
+    // Thread while its link races projection. Effects: E1 each Thread keeps its
+    // own usage attribution; E2 Session usage includes the Advisor exactly once;
+    // E3 neither target-kind handling nor the racing coordinate creates a second
+    // accounting rule beside the coordinated-Thread fold.
+    //
+    // | Rule | Child target | Link count | Additional id | Effect |
+    // |---|---|---:|---|---|
+    // | A1 | Advisor | 1 | none | E1+E2+E3 |
+    // | A2 | Advisor | 1 | same child | E1+E2+E3 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Advisor usage repository"),
+    );
+    create(repo.as_ref(), persisted("advisor-usage", false, "idle")).await;
+    let runtime = Arc::new(
+        RecordingBoundaryBudgetRuntime::new(awaken_session_contract::SessionUsage {
+            output_tokens: 7,
+            ..Default::default()
+        })
+        .with_child_target(awaken_session_contract::CoordinatedThreadTarget::Advisor {
+            model: "advisor-model".into(),
+        }),
+    );
+    runtime.set_root_usage(awaken_session_contract::SessionUsage {
+        output_tokens: 14,
+        ..Default::default()
+    });
+    runtime.commit_boundary(
+        "advisor-usage",
+        &ThreadId("advisor-thread".into()),
+        &RunId("advisor-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "advice",
+    );
+    let app = application_with_runtime(
+        runtime,
+        repo,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert_eq!(
+        app.session_thread_usage("advisor-usage", "advisor-usage")
+            .await
+            .expect("A1 primary usage")
+            .output_tokens,
+        14,
+        "A1/E1 primary attribution"
+    );
+    assert_eq!(
+        app.session_thread_usage("advisor-usage", "advisor-thread")
+            .await
+            .expect("A1 Advisor usage")
+            .output_tokens,
+        7,
+        "A1/E1 Advisor attribution"
+    );
+    let usage = app
+        .session_usage("advisor-usage")
+        .await
+        .expect("A1 Session usage");
+    assert_eq!(usage.output_tokens, 21, "A1/E2");
+    let gated_usage = app
+        .session_usage_for_model_request("advisor-usage", "advisor-thread")
+        .await
+        .expect("A2 gated Session usage");
+    assert_eq!(gated_usage.output_tokens, 21, "A2/E2+E3");
+}
+
+#[tokio::test]
+async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the latest committed root or child Run is live; C2
+    // cumulative Session usage is below or at the active cap; C3 the same gate
+    // check is replayed. Effects: E1 C2-below admits without provenance; E2
+    // C2-at-cap reconciles the root cursor, appends one reach generation, and
+    // denies the next Provider request; E3 C3 remains denied without a second
+    // transition. Runtime supplies only exact Run/Thread coordinates and never
+    // owns a budget copy.
+    //
+    // | Rule | Thread | Usage | Replay | Effect |
+    // |---|---|---|---|---|
+    // | G1 | root | below | no | E1 |
+    // | G2 | root | reaches | no/yes | E2+E3 |
+    // | G3 | child | below | no | E1 |
+    // | G4 | child | reaches | no/yes | E2+E3 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("request gate repository"),
+    );
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot_id: "request-gate-prices-v1".into(),
+        version: 1,
+        effective_at_unix_ms: 1,
+        arithmetic_version: 1,
+        model_rates: std::collections::BTreeMap::from([(
+            "model".into(),
+            awaken_session_contract::ManagedTokenListRates {
+                input_micros_per_million: 1_000_000,
+                ..Default::default()
+            },
+        )]),
+        runtime_rates: Default::default(),
+        fingerprint: "request-gate-prices-v1-fingerprint".into(),
+    };
+    for id in ["request-gate-root", "request-gate-child"] {
+        let mut session = persisted(id, false, "idle");
+        session.budget = awaken_session_contract::SessionBudgetState::active(1, snapshot.clone());
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(Default::default()));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reached_usage = awaken_session_contract::SessionUsage {
+        input_tokens: 10_000,
+        by_model: std::collections::BTreeMap::from([(
+            "model".into(),
+            awaken_session_contract::SessionModelUsage {
+                input_tokens: 10_000,
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let root_thread = ThreadId("request-gate-root".into());
+    let root_run = RunId("request-gate-root-run".into());
+    runtime.commit_boundary(
+        "request-gate-root",
+        &root_thread,
+        &root_run,
+        RunState::Running,
+        "",
+    );
+    assert!(
+        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            &app,
+            "request-gate-root",
+            &root_thread,
+            &root_run,
+        )
+        .await
+        .expect("G1 root admission"),
+        "G1/E1"
+    );
+    runtime.set_root_usage(reached_usage.clone());
+    for replay in [false, true] {
+        assert!(
+            !awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+                &app,
+                "request-gate-root",
+                &root_thread,
+                &root_run,
+            )
+            .await
+            .expect("G2 root denial"),
+            "G2/E2 replay={replay}"
+        );
+    }
+    assert_eq!(
+        repo.get("request-gate-root")
+            .await
+            .unwrap()
+            .budget
+            .reach_transitions()
+            .len(),
+        1,
+        "G2/E2+E3"
+    );
+
+    runtime.set_root_usage(Default::default());
+    let child_thread = ThreadId("request-gate-child-thread".into());
+    let child_run = RunId("request-gate-child-run".into());
+    runtime.commit_boundary(
+        "request-gate-child",
+        &child_thread,
+        &child_run,
+        RunState::Running,
+        "",
+    );
+    assert!(
+        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            &app,
+            "request-gate-child",
+            &child_thread,
+            &child_run,
+        )
+        .await
+        .expect("G3 child admission"),
+        "G3/E1"
+    );
+    runtime.set_child_usage(reached_usage);
+    for replay in [false, true] {
+        assert!(
+            !awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+                &app,
+                "request-gate-child",
+                &child_thread,
+                &child_run,
+            )
+            .await
+            .expect("G4 child denial"),
+            "G4/E2 replay={replay}"
+        );
+    }
+    assert_eq!(
+        repo.get("request-gate-child")
+            .await
+            .unwrap()
+            .budget
+            .reach_transitions()
+            .len(),
+        1,
+        "G4/E2+E3"
+    );
+}
+
+#[tokio::test]
+async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the child boundary is Awaiting or terminal; C2 an
+    // active budget is below or reaches its exact cap; C3 the same committed
+    // boundary is redelivered after a crash. Effects: E1 aggregate child usage
+    // advances the one Session budget cursor and appends one generic cap
+    // transition with its exact usage/price coordinate; E2 Awaiting settles its
+    // activity without starting a primary continuation; E3 a terminal child
+    // hands its exact activity to the deterministic durable report Run, whose
+    // next logical model request is paused by the Runtime gate rather than being
+    // discarded at this boundary; E4 redelivery neither charges, duplicates
+    // provenance, nor emits budget_reached twice. The Host atomic report test
+    // proves exact delivery retries still own one Dispatch/input, and the Runtime
+    // request-gate table proves a denied request makes zero Provider calls.
+    //
+    // | Rule | Boundary | Cost vs cap | Delivery | Effect |
+    // |---|---|---|---|---|
+    // | B1 | Awaiting | reaches | first | E1 + E2 |
+    // | B2 | Ended | reaches | first | E1 + E3 |
+    // | B3 | Ended | already reached | replay | E4 + same E3 delivery |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("boundary budget repository"),
+    );
+    let price_snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot_id: "boundary-price-v1".into(),
+        version: 1,
+        effective_at_unix_ms: 1,
+        arithmetic_version: 1,
+        model_rates: std::collections::BTreeMap::from([(
+            "model".into(),
+            awaken_session_contract::ManagedTokenListRates {
+                input_micros_per_million: 1_000_000,
+                ..Default::default()
+            },
+        )]),
+        runtime_rates: Default::default(),
+        fingerprint: "boundary-price-v1-fingerprint".into(),
+    };
+    for id in ["boundary-budget-awaiting", "boundary-budget-ended"] {
+        let mut session = coordinated_session(id);
+        session.budget =
+            awaken_session_contract::SessionBudgetState::active(1, price_snapshot.clone());
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
+        awaken_session_contract::SessionUsage {
+            input_tokens: 10_000,
+            by_model: std::collections::BTreeMap::from([(
+                "model".into(),
+                awaken_session_contract::SessionModelUsage {
+                    input_tokens: 10_000,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        },
+    ));
+    let mut app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    app.set_config_source(Arc::new(CoordinatedAgentSource));
+
+    let settle =
+        |session_id: &str, epoch: u64| -> awaken_session_contract::SessionAgentBoundaryCommand {
+            awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: session_id.into(),
+                source_thread_id: ThreadId("budget-child".into()),
+                source_run_id: RunId("budget-child-run".into()),
+                source_agent_id: "coord-child".into(),
+                session_activity_epoch: epoch,
+                cancellation_requested: false,
+            }
+        };
+
+    let (_, awaiting_epoch) = app
+        .begin_activity_for_operation("boundary-budget-awaiting", "awaiting-op")
+        .await
+        .expect("B1 activity");
+    runtime.commit_boundary(
+        "boundary-budget-awaiting",
+        &ThreadId("budget-child".into()),
+        &RunId("budget-child-run".into()),
+        RunState::Awaiting,
+        "budget report",
+    );
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        settle("boundary-budget-awaiting", awaiting_epoch),
+    )
+    .await
+    .expect("B1 boundary");
+    let awaiting = repo
+        .get("boundary-budget-awaiting")
+        .await
+        .expect("B1 state");
+    assert!(!awaiting.budget.can_admit_model_request(), "B1/E1");
+    assert_eq!(
+        awaiting.budget.reach_transitions().len(),
+        1,
+        "B1/E1 one aggregate transition"
+    );
+    let awaiting_transition = &awaiting.budget.reach_transitions()[0];
+    assert_eq!(awaiting_transition.generation, 1, "B1/E1 generation");
+    assert_eq!(
+        awaiting_transition.price_snapshot_id, "boundary-price-v1",
+        "B1/E1 frozen price coordinate"
+    );
+    assert_eq!(
+        awaiting_transition.usage_cursor.by_model["model"].input_tokens, 10_000,
+        "B1/E1 exact cumulative usage"
+    );
+    assert_eq!(runtime.continuations.load(Ordering::SeqCst), 0, "B1/E2");
+
+    let (_, ended_epoch) = app
+        .begin_activity_for_operation("boundary-budget-ended", "ended-op")
+        .await
+        .expect("B2 activity");
+    runtime.commit_boundary(
+        "boundary-budget-ended",
+        &ThreadId("budget-child".into()),
+        &RunId("budget-child-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "budget report",
+    );
+    let ended_command = settle("boundary-budget-ended", ended_epoch);
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        ended_command.clone(),
+    )
+    .await
+    .expect("B2 boundary");
+    let ended = repo.get("boundary-budget-ended").await.expect("B2 state");
+    assert!(!ended.budget.can_admit_model_request(), "B2/E1");
+    assert_eq!(
+        ended.budget.reach_transitions().len(),
+        1,
+        "B2/E1 terminal keeps the same aggregate provenance shape"
+    );
+    assert_eq!(runtime.continuations.load(Ordering::SeqCst), 1, "B2/E3");
+    assert_eq!(
+        ended.active_activity_epochs,
+        std::collections::BTreeSet::from([ended_epoch]),
+        "B2/E3 the durable report Run inherits the child activity"
+    );
+    assert_eq!(ended.execution, SessionExecutionState::Running, "B2/E3");
+    let revision = ended.revision;
+
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        ended_command,
+    )
+    .await
+    .expect("B3 replay");
+    let replayed = repo.get("boundary-budget-ended").await.expect("B3 state");
+    assert_eq!(replayed.revision, revision, "B3/E4");
+    assert_eq!(replayed.budget.reach_transitions().len(), 1, "B3/E4");
+    assert_eq!(
+        runtime.continuations.load(Ordering::SeqCst),
+        2,
+        "B3/E4 the application retries delivery; the Host owner deduplicates its Dispatch"
+    );
+    let reached = repo
+        .pending_lifecycle()
+        .await
+        .expect("B3 lifecycle")
+        .into_iter()
+        .filter(|fact| {
+            fact.object_id == "boundary-budget-ended" && fact.event_type == "session.budget_reached"
+        })
+        .count();
+    assert_eq!(reached, 1, "B3/E4");
+}
+
+#[tokio::test]
+async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_ledger() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 two ordinary children are simultaneously in flight;
+    // C2 both terminal commits are already part of the cumulative usage which
+    // exactly reaches the shared cap; C3 their settlement observers race. Effects:
+    // E1 root usage is charged once; E2 the transition winner appends one generic
+    // aggregate transition while both Thread terminals remain in lifecycle; E3
+    // only the actual cap transition emits budget_reached; E4 both activity
+    // epochs transfer to their deterministic durable report Runs, whose logical
+    // model requests remain fenced by the one Runtime gate.
+    //
+    // | Rule | In-flight | Aggregate cost | Settlement | Effects |
+    // |---|---:|---|---|---|
+    // | C1 | 2 | reaches cap | concurrent | E1+E2+E3+E4 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("concurrent budget repository"),
+    );
+    let mut session = coordinated_session("concurrent-child-budget");
+    session.budget = awaken_session_contract::SessionBudgetState::active(
+        1,
+        awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "concurrent-price-v1".into(),
+            version: 1,
+            effective_at_unix_ms: 1,
+            arithmetic_version: 1,
+            model_rates: std::collections::BTreeMap::from([(
+                "model".into(),
+                awaken_session_contract::ManagedTokenListRates {
+                    input_micros_per_million: 1_000_000,
+                    ..Default::default()
+                },
+            )]),
+            runtime_rates: Default::default(),
+            fingerprint: "concurrent-price-v1-fingerprint".into(),
+        },
+    );
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
+        awaken_session_contract::SessionUsage {
+            input_tokens: 5_000,
+            by_model: std::collections::BTreeMap::from([(
+                "model".into(),
+                awaken_session_contract::SessionModelUsage {
+                    input_tokens: 5_000,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        },
+    ));
+    let mut app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    app.set_config_source(Arc::new(CoordinatedAgentSource));
+    let child_a = ThreadId("budget-child-a".into());
+    let child_b = ThreadId("budget-child-b".into());
+    let run_a = RunId("budget-run-a".into());
+    let run_b = RunId("budget-run-b".into());
+    runtime.commit_boundary(
+        "concurrent-child-budget",
+        &child_a,
+        &run_a,
+        RunState::Ended(EndCause::NaturalEnd),
+        "a",
+    );
+    runtime.commit_boundary(
+        "concurrent-child-budget",
+        &child_b,
+        &run_b,
+        RunState::Ended(EndCause::NaturalEnd),
+        "b",
+    );
+    let (_, epoch_a) = app
+        .begin_activity_for_operation("concurrent-child-budget", "child-a-op")
+        .await
+        .expect("C1 child A activity");
+    let (_, epoch_b) = app
+        .begin_activity_for_operation("concurrent-child-budget", "child-b-op")
+        .await
+        .expect("C1 child B activity");
+    let command = |thread_id, run_id, session_activity_epoch| {
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: "concurrent-child-budget".into(),
+            source_thread_id: thread_id,
+            source_run_id: run_id,
+            source_agent_id: "coord-child".into(),
+            session_activity_epoch,
+            cancellation_requested: false,
+        }
+    };
+    let (settled_a, settled_b) = tokio::join!(
+        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            &app,
+            command(child_a.clone(), run_a.clone(), epoch_a),
+        ),
+        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            &app,
+            command(child_b.clone(), run_b.clone(), epoch_b),
+        )
+    );
+    settled_a.expect("C1 child A settlement");
+    settled_b.expect("C1 child B settlement");
+
+    let settled = repo
+        .get("concurrent-child-budget")
+        .await
+        .expect("C1 settled Session");
+    assert!(!settled.budget.can_admit_model_request(), "C1/E1");
+    assert_eq!(settled.budget.reach_transitions().len(), 1, "C1/E2");
+    assert_eq!(
+        settled.budget.reach_transitions()[0].generation,
+        1,
+        "C1/E2 serialized root CAS has one transition winner"
+    );
+    assert_eq!(
+        settled.active_activity_epochs,
+        std::collections::BTreeSet::from([epoch_a, epoch_b]),
+        "C1/E4 both durable report Runs inherit their exact child activity"
+    );
+    assert_eq!(runtime.continuations.load(Ordering::SeqCst), 2, "C1/E4");
+    let reached = repo
+        .pending_lifecycle()
+        .await
+        .expect("C1 lifecycle")
+        .into_iter()
+        .filter(|fact| fact.event_type == "session.budget_reached")
+        .count();
+    assert_eq!(reached, 1, "C1/E3");
 }
 
 /// Message-execution FMECA and cause/effect graph. Failure modes are FM1 a
@@ -785,11 +3082,16 @@ async fn update_admission_uses_only_durable_session_status() {
 
 #[tokio::test]
 async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 budget absent/active/removed; C2 requested limit
     // absent/present; C3 a present limit is greater than exact consumed cost.
-    // Effects: E1 absent cannot acquire a budget; E2 active+C3 changes the cap;
-    // E3 active+!C3 rejects; E4 active+removal preserves snapshot/cursor and
-    // disables admission enforcement; E5 removed cannot become active again.
+    // Effects: E1 absent cannot acquire a budget; E2 active+C3 changes the cap
+    // without erasing prior cap-transition history; E3 active+!C3 rejects; E4
+    // active+removal preserves snapshot/cursor/transitions and disables admission
+    // enforcement; E5 removed cannot become active again.
     // Decision table: B1 absent+present=>E1; B2 active+present+C3=>E2; B3
     // active+present+!C3=>E3; B4 active+absent=>E4; B5 removed+present=>E5.
     let repo = Arc::new(
@@ -813,7 +3115,14 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
             * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
         snapshot,
-        reached_event_emitted: false,
+        reach_transitions: vec![awaken_session_contract::BudgetReachTransition {
+            generation: 1,
+            max_list_cost_minor: 1,
+            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+            usage_cursor: Default::default(),
+            price_snapshot_id: "prices-v1".into(),
+        }],
     };
     create(repo.as_ref(), active).await;
     create(repo.as_ref(), persisted("budget-absent", false, "idle")).await;
@@ -851,6 +3160,11 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         Some(3),
         "B2/E2"
     );
+    assert_eq!(
+        updated.session.budget.reach_transitions().len(),
+        1,
+        "B2/E2 append-only history"
+    );
     assert!(
         matches!(
             app.update_session("budget-active", command(Some(2))).await,
@@ -870,6 +3184,11 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         "B4/E4"
     );
     assert!(removed.session.budget.can_admit_model_request(), "B4/E4");
+    assert_eq!(
+        removed.session.budget.reach_transitions().len(),
+        1,
+        "B4/E4 append-only history"
+    );
     assert!(
         matches!(
             app.update_session("budget-active", command(Some(4))).await,
@@ -877,6 +3196,206 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         ),
         "B5/E5"
     );
+}
+
+#[tokio::test]
+async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 a reached budget is raised or removed; C2 the
+    // committed BudgetReached ticket belongs to the root or a child Thread; C3
+    // an exact idempotent update races its replay; C4 Runtime reports the ticket
+    // stale before dispatch. Effects: E1 the existing Run/correlation/generation
+    // are delivered unchanged; E2 root CAS opens one deterministic continuation
+    // activity and transfers the child's prior epoch without a second ledger;
+    // E3 concurrent exact updates share that epoch; E4 stale delivery closes its
+    // newly opened epoch and restores Idle. The Host test owns exactly-once
+    // Dispatch staging; this test owns only Session root mutation and fencing.
+    //
+    // | Rule | Budget update | Ticket owner | Runtime result | Effect |
+    // |---|---|---|---|---|
+    // | R1 | raise | root | dispatched | E1+E2 |
+    // | R2 | remove | child | dispatched | E1+E2 |
+    // | R3 | exact concurrent raise | root | dispatched/replay | E1+E3 |
+    // | R4 | raise | root | stale | E4 |
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
+    use awaken_session_contract::{
+        SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionBudgetState,
+    };
+
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("budget resume repository"),
+    );
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot_id: "resume-prices-v1".into(),
+        version: 1,
+        effective_at_unix_ms: 1,
+        arithmetic_version: 1,
+        model_rates: Default::default(),
+        runtime_rates: Default::default(),
+        fingerprint: "resume-prices-v1-fingerprint".into(),
+    };
+    let reached = |id: &str| {
+        let mut session = persisted(id, false, "idle");
+        session.budget = SessionBudgetState::Active {
+            max_list_cost_minor: 1,
+            consumed_numerator: SessionBudgetState::MICROS_PER_MINOR_USD
+                * SessionBudgetState::COST_DENOMINATOR,
+            usage_cursor: Default::default(),
+            snapshot: snapshot.clone(),
+            reach_transitions: Vec::new(),
+        };
+        session
+    };
+    for id in [
+        "resume-budget-root",
+        "resume-budget-child",
+        "resume-budget-concurrent",
+        "resume-budget-stale",
+    ] {
+        create(repo.as_ref(), reached(id)).await;
+    }
+    let pause = |thread: &str, run: &str, generation: u64, prior_epoch: Option<u64>| {
+        SessionBudgetResumeTicket {
+            ticket: ResumeTicket::new(
+                run,
+                RunId(run.into()),
+                ThreadId(thread.into()),
+                format!("{run}-snapshot"),
+                format!("{run}-catalog"),
+                AwaitTarget::Pause(PauseReason::BudgetReached),
+            ),
+            pause_generation: generation,
+            prior_session_activity_epoch: prior_epoch,
+        }
+    };
+    let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(Default::default()));
+    runtime.set_budget_resume_tickets(
+        "resume-budget-root",
+        vec![pause("resume-budget-root", "root-run", 7, None)],
+    );
+    runtime.set_budget_resume_tickets(
+        "resume-budget-child",
+        vec![pause("child-thread", "child-run", 9, Some(41))],
+    );
+    runtime.set_budget_resume_tickets(
+        "resume-budget-concurrent",
+        vec![pause(
+            "resume-budget-concurrent",
+            "concurrent-run",
+            11,
+            None,
+        )],
+    );
+    runtime.set_budget_resume_tickets(
+        "resume-budget-stale",
+        vec![pause("resume-budget-stale", "stale-run", 13, None)],
+    );
+    let app = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let command = |budget: Option<u64>, key: &str| SessionUpdateCommand {
+        title: None,
+        metadata: None,
+        budget: Some(match budget {
+            Some(value) => SessionFieldUpdate::Replace(value),
+            None => SessionFieldUpdate::Clear,
+        }),
+        tools: None,
+        mcp_candidates: None,
+        idempotency_key: Some(key.into()),
+        request_fingerprint: awaken_session_contract::stable_fingerprint(&(budget, key)),
+        if_match: None,
+    };
+
+    let raised = app
+        .update_session("resume-budget-root", command(Some(2), "raise-root"))
+        .await
+        .expect("R1 raise resumes root");
+    assert_eq!(raised.session.budget.max_list_cost_minor(), Some(2), "R1");
+    let removed = app
+        .update_session("resume-budget-child", command(None, "remove-child"))
+        .await
+        .expect("R2 removal resumes child");
+    assert!(
+        matches!(removed.session.budget, SessionBudgetState::Removed { .. }),
+        "R2"
+    );
+    let initial_deliveries = runtime.budget_resume_deliveries.lock().unwrap().clone();
+    assert_eq!(initial_deliveries.len(), 2, "R1/R2 one delivery each");
+    assert_eq!(
+        initial_deliveries[0].run_id,
+        RunId("root-run".into()),
+        "R1/E1"
+    );
+    assert_eq!(initial_deliveries[0].pause_generation, 7, "R1/E1");
+    assert_eq!(
+        initial_deliveries[0].prior_session_activity_epoch, None,
+        "R1/E2"
+    );
+    assert_eq!(
+        initial_deliveries[1].run_id,
+        RunId("child-run".into()),
+        "R2/E1"
+    );
+    assert_eq!(
+        initial_deliveries[1].thread_id,
+        ThreadId("child-thread".into()),
+        "R2/E1"
+    );
+    assert_eq!(initial_deliveries[1].pause_generation, 9, "R2/E1");
+    assert_eq!(
+        initial_deliveries[1].prior_session_activity_epoch,
+        Some(41),
+        "R2/E2"
+    );
+
+    let concurrent = command(Some(2), "concurrent-exact");
+    let (left, right) = tokio::join!(
+        app.update_session("resume-budget-concurrent", concurrent.clone()),
+        app.update_session("resume-budget-concurrent", concurrent),
+    );
+    left.expect("R3 left exact update");
+    right.expect("R3 right exact update");
+    let concurrent_deliveries = runtime
+        .budget_resume_deliveries
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|delivery| delivery.session_id == "resume-budget-concurrent")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        concurrent_deliveries.len(),
+        2,
+        "R3 recovery reaches Runtime twice"
+    );
+    assert_eq!(
+        concurrent_deliveries[0], concurrent_deliveries[1],
+        "R3/E1+E3"
+    );
+    let concurrent_session = repo.get("resume-budget-concurrent").await.unwrap();
+    assert_eq!(concurrent_session.active_activity_epochs.len(), 1, "R3/E3");
+    assert!(
+        concurrent_session
+            .active_activity_epochs
+            .contains(&concurrent_deliveries[0].session_activity_epoch),
+        "R3/E3"
+    );
+
+    runtime.set_budget_resume_dispositions([SessionBudgetResumeDisposition::Stale]);
+    app.update_session("resume-budget-stale", command(Some(2), "stale-raise"))
+        .await
+        .expect("R4 stale resume is a successful update");
+    let stale = repo.get("resume-budget-stale").await.unwrap();
+    assert_eq!(stale.execution, SessionExecutionState::Idle, "R4/E4");
+    assert!(stale.active_activity_epochs.is_empty(), "R4/E4");
+    assert!(stale.running_interval.is_none(), "R4/E4");
 }
 
 /// Cause/effect graph: C1 the Runtime presents the exact durable realization

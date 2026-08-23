@@ -1,7 +1,7 @@
 //! Neutral projection events and the protocol `Transcoder` seam.
 //!
 //! This is the single shape every public protocol adapter projects from. A
-//! committed step (the messages committed during a turn or resume, plus the
+//! committed Step (the messages committed during a new Run or resume, plus the
 //! terminal state) is folded into a sequence of neutral [`AgentEvent`]s by
 //! [`fold_messages`] / [`fold_step`]; each protocol then implements one
 //! [`Transcoder`] that maps those events to its own wire vocabulary. The fold is
@@ -147,7 +147,7 @@ pub trait HistorySink {
     /// A user or system message; `content` is its blocks (never all-empty — an
     /// empty message is skipped by the fold). The adapter extracts text/parts.
     fn user_or_system(&mut self, id: &str, role: Role, content: &[ContentBlock]);
-    /// An assistant turn: its `content` blocks (text; tool-use blocks live here
+    /// An assistant Step message: its `content` blocks (text; tool-use blocks live here
     /// too) and the tool calls pre-extracted. Skipped by the fold only when the
     /// text is empty *and* there are no tool calls.
     fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]);
@@ -516,7 +516,7 @@ mod tests {
 
     /// Cause/effect rule R1: a payloadless redaction is visible protocol content
     /// even though `extract_text` is empty, so both projections must preserve the
-    /// turn. FMECA: dropping it can reorder later tool correlation/history replay
+    /// Step message. FMECA: dropping it can reorder later tool correlation/history replay
     /// (high severity); the shared visibility predicate is the mitigation.
     #[test]
     fn assistant_redaction_only_is_preserved_by_both_projections() {

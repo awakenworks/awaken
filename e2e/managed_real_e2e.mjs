@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -31,15 +31,25 @@ async function main() {
       assert.equal(session.type, 'session');
       pass(`session created: ${session.id}`);
 
-      await client.beta.sessions.events.send(session.id, {
+      // Test design: C1 exact SDK command receipt and C2 live model reply;
+      // E1 processed receipt, nonempty agent.message, and terminal idle. K1 old
+      // history cannot satisfy this new Session turn. D1=C1+C2=>E1.
+      const receipt = (await client.beta.sessions.events.send(session.id, {
         events: [
           { type: 'user.message', content: [{ type: 'text', text: 'Reply with exactly the single word: pong' }] },
         ],
         betas: BETAS,
-      });
-
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      })).data[0];
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'real model reply and terminal idle',
+        { timeoutMs: 180_000 },
+      );
       const types = events.map((e) => e.type);
       assert.ok(types.includes('agent.message'), `expected agent.message, got ${types}`);
       assert.ok(types.includes('session.status_idle'), `expected status_idle, got ${types}`);

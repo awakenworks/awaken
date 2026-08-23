@@ -36,11 +36,18 @@ impl InitialEventSpec for DeploymentInitialEvent {
         match self {
             Self::UserMessage { .. } => InitialEventClass::UserMessage,
             Self::SystemMessage { .. } => InitialEventClass::SystemMessage,
-            Self::UserDefineOutcome { max_iterations, .. } => {
-                InitialEventClass::UserDefineOutcome {
-                    max_iterations: *max_iterations,
-                }
-            }
+            Self::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            } => InitialEventClass::UserDefineOutcome {
+                max_iterations: *max_iterations,
+                description_nonempty: !description.trim().is_empty(),
+                rubric_nonempty: match rubric {
+                    OutcomeRubric::Text { content } => !content.trim().is_empty(),
+                    OutcomeRubric::File { file_id } => !file_id.trim().is_empty(),
+                },
+            },
         }
     }
 }

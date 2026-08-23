@@ -12,19 +12,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38176);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-supersede-e2e-${process.pid}`;
 const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
-
-const listEvents = async (sessionId) => {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-};
 
 const post = async (path, body) => {
   const res = await fetch(`${BASE}${path}`, {
@@ -44,11 +46,24 @@ async function main() {
   try {
     // A first turn awaits on a tool confirmation — its dispatch is `awaiting`.
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact first receipt; C2=its Awaiting terminal; C3=supersede wins.
+    // E1=only C2 after C1 establishes the stale dispatch. K: supersede HTTP
+    // remains its own durable-ops oracle. Decision S1 C1&&!C2=>retry; S2 C1+C2
+    // =>issue C3 and assert newest-wins.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-FIRST' }] }],
       betas: BETAS,
     });
-    const awaiting = await listEvents(session.id);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'S1 exact awaiting User Event receipt');
+    const { delta: awaiting } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+      'S1 first durable Run to commit its Awaiting terminal',
+    );
     assert.equal(
       awaiting.find((e) => e.type === 'session.status_idle').stop_reason.type,
       'requires_action',

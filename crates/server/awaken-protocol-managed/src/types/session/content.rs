@@ -34,6 +34,44 @@ enum ContentUse {
     ToolResult,
 }
 
+fn is_message_content(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::Text { .. }
+            | ContentBlock::Image { .. }
+            | ContentBlock::Document { .. }
+            | ContentBlock::Redacted
+    )
+}
+
+/// Project neutral agent-to-agent content onto the Managed message-content
+/// union. Provider reasoning, tool protocol, and search-result blocks remain in
+/// the authoritative Thread transcript but cannot cross this public wire.
+pub(crate) fn project_thread_message_content(blocks: &[ContentBlock]) -> Vec<ContentBlock> {
+    blocks
+        .iter()
+        .filter(|block| is_message_content(block))
+        .cloned()
+        .collect()
+}
+
+/// Apply the Managed advisor client's visibility policy after the ordinary
+/// message-content closed-union projection. Runtime keeps the plaintext child
+/// transcript so the coordinator can consume it; this wire boundary is the
+/// sole place where redacted advisor families replace readable content.
+pub(crate) fn project_advisor_thread_message_content(
+    model: &str,
+    blocks: &[ContentBlock],
+) -> Vec<ContentBlock> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    if crate::types::agent::managed_advisor_result_is_redacted(model) {
+        return vec![ContentBlock::Redacted];
+    }
+    project_thread_message_content(blocks)
+}
+
 fn validate_content_blocks(
     blocks: &[ContentBlock],
     usage: ContentUse,
@@ -169,5 +207,115 @@ mod tests {
         };
         assert!(create_with(100).validate_initial_events().is_ok(), "M1/M5");
         assert!(create_with(101).validate_initial_events().is_err(), "M4/M6");
+    }
+
+    #[test]
+    fn thread_message_projection_preserves_only_the_public_closed_union() {
+        // Causes: the fixtures below establish `thread message projection` with the concrete
+        // inputs, state, dependencies, and failure triggers used by this case.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 neutral content is text/image/document/redacted;
+        // C2 it is provider reasoning, tool protocol, or search-result content;
+        // C3 valid and invalid blocks are interleaved. Effects: E1 preserve every
+        // C1 block in exact order; E2 omit every C2 block without exposing hidden
+        // reasoning or inventing replacement text. Decision rules: P1=C1=>E1,
+        // P2=C2=>E2, P3=C1+C2+C3=>E1+E2.
+        let blocks = vec![
+            ContentBlock::thinking("private chain of thought"),
+            ContentBlock::text("public answer"),
+            ContentBlock::tool_use("call", "lookup", serde_json::json!({})),
+            ContentBlock::Redacted,
+            ContentBlock::SearchResult {
+                source: "https://example.test".into(),
+                title: "result".into(),
+                content: vec![
+                    awaken_agent_contract::agent::content::SearchResultContent::text("tool-only"),
+                ],
+                citations: awaken_agent_contract::agent::content::SearchResultCitations {
+                    enabled: true,
+                },
+            },
+        ];
+        assert_eq!(
+            project_thread_message_content(&blocks),
+            vec![ContentBlock::text("public answer"), ContentBlock::Redacted],
+            "P1-P3/E1-E2"
+        );
+    }
+
+    #[test]
+    fn advisor_message_projection_applies_the_model_visibility_decision_table() {
+        // Causes: the fixtures below establish `advisor message projection applies the model
+        // visibility decision table` with the concrete inputs, state, dependencies, and failure
+        // triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 a plaintext advisor family returns public
+        // content; C2 a redacted family (canonical, dated, or route-qualified)
+        // returns that same private advice; C3 a plaintext transcript Message
+        // has only provider-private blocks; C4 a redacted transcript Message has
+        // only provider-private blocks; C5 the model is unknown. E1 preserves
+        // the legal plaintext union without thinking; E2 emits exactly one
+        // payloadless redacted block; E3 emits no client message; E4 fails closed
+        // to E2. Runtime transcript plaintext is intentionally unchanged, and
+        // the sibling ordinary-Thread test owns the unaffected child path.
+        //
+        // | Rule | Family | Public block exists | Effect |
+        // |---|---|---|---|
+        // | V1 | plaintext | yes | E1 |
+        // | V2 | redacted alias | yes | E2 |
+        // | V3 | plaintext | no | E3 |
+        // | V4 | redacted | no | E2 |
+        // | V5 | unknown | any | E4 |
+        let advice = vec![
+            ContentBlock::thinking("private reasoning"),
+            ContentBlock::text("readable advice"),
+        ];
+        assert_eq!(
+            project_advisor_thread_message_content("claude-opus-4-8", &advice),
+            vec![ContentBlock::text("readable advice")],
+            "V1/E1"
+        );
+        for model in [
+            "claude-opus-5",
+            "claude-opus-5-20260701",
+            "claude-mythos-5;provider=anthropic",
+            "claude-fable-5-20260701",
+        ] {
+            assert_eq!(
+                project_advisor_thread_message_content(model, &advice),
+                vec![ContentBlock::Redacted],
+                "V2/E2 {model}"
+            );
+        }
+        assert!(
+            project_advisor_thread_message_content(
+                "claude-opus-4-8",
+                &[ContentBlock::thinking("private only")]
+            )
+            .is_empty(),
+            "V3/E3"
+        );
+        assert_eq!(
+            project_advisor_thread_message_content(
+                "claude-opus-5",
+                &[ContentBlock::thinking("private only")]
+            ),
+            vec![ContentBlock::Redacted],
+            "V4/E2"
+        );
+        assert_eq!(
+            project_advisor_thread_message_content("unknown-advisor", &advice),
+            vec![ContentBlock::Redacted],
+            "V5/E4"
+        );
     }
 }

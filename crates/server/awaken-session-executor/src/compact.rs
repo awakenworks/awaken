@@ -9,7 +9,7 @@
 //!
 //! Compaction is non-destructive: the committed transcript is never rewritten (G13).
 //! The summary is injected request-only and activates a Run-scoped request window;
-//! no raw turn is hidden before the summary covers it. Durable truth is never erased.
+//! no raw Step is hidden before the summary covers it. Durable truth is never erased.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

@@ -6,26 +6,34 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 
-async function reply(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events
-    .filter((e) => e.type === 'agent.message')
-    .map((e) => e.content.map((b) => b.text ?? '').join(''))
-    .join('\n');
-}
-
 async function turn(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact User receipt; C2=memory-aware reply+terminal. E1=post-C1 reply.
+  // K: background extraction/recall remains independently durable. Decision
+  // M1 C1&&!C2=>retry; M2 C1+C2=>return this Run's reply.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
-  return reply(client, sessionId);
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'M1 exact memory Run User Event receipt');
+  const { delta } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta: later }) => later.some((event) => event.type === 'agent.message')
+      && later.some((event) => event.type === 'session.status_idle'),
+    `M1 memory Run for ${JSON.stringify(text)} to commit`,
+  );
+  return delta
+    .filter((event) => event.type === 'agent.message')
+    .map((event) => event.content.map((block) => block.text ?? '').join(''))
+    .join('\n');
 }
 
 async function main() {

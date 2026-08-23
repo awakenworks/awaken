@@ -1,12 +1,14 @@
 // Complete phase-one application-authentication flow over the production
 // management composition: service credential -> short-lived application token
-// -> explicit Managed Session binding -> official Vercel AI SDK client.
+// -> explicit Managed Session binding -> official Anthropic and Vercel AI SDK
+// clients.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Chat } from '@ai-sdk/react';
+import Anthropic from '@anthropic-ai/sdk';
 import { DefaultChatTransport } from 'ai';
 import {
   deploymentEnv,
@@ -20,6 +22,7 @@ import {
 
 const PORT = Number(process.env.E2E_PORT ?? 38642);
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
+const BETAS = ['managed-agents-2026-04-01'];
 
 async function request(base, method, route, body, token) {
   const headers = {};
@@ -27,7 +30,7 @@ async function request(base, method, route, body, token) {
   // required protocol version keeps credential-negative rules on the intended
   // authentication boundary instead of faulting earlier on wire negotiation.
   if (route.startsWith('/v1/sessions')) {
-    headers['anthropic-beta'] = 'managed-agents-2026-04-01';
+    headers['anthropic-beta'] = BETAS.join(',');
   }
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token) headers.authorization = `Bearer ${token}`;
@@ -42,19 +45,6 @@ async function request(base, method, route, body, token) {
     body: text ? JSON.parse(text) : null,
     text,
   };
-}
-
-async function createSession(base, serviceToken, title) {
-  const response = await request(
-    base,
-    'POST',
-    '/v1/sessions',
-    { agent: 'assistant', title },
-    serviceToken,
-  );
-  assert.equal(response.status, 200, `create Managed Session: ${response.text}`);
-  assert.ok(response.body.id.startsWith('sesn_'));
-  return response.body;
 }
 
 async function mint(base, serviceToken, scope, managedSessionId, externalThreadId = 'shared') {
@@ -182,18 +172,28 @@ async function main() {
   try {
     await waitForPort(PORT, 180_000, server);
     const serviceToken = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
+    const managed = new Anthropic({ authToken: serviceToken, baseURL: base, maxRetries: 0 });
 
+    // Managed credential transport rules. C1=credential omitted; C2=workspace
+    // service credential supplied through the pinned SDK. Effects: C1 -> the
+    // raw wire oracle observes 401; C2 -> SDK list/create succeed and preserve
+    // the server-owned Session identities. These are the two applicable rules;
+    // application-token substitution remains covered below by its raw oracle.
     let response = await request(base, 'GET', '/v1/sessions');
     assert.equal(response.status, 401, response.text);
-    response = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
-    assert.equal(response.status, 200, response.text);
+    await managed.beta.sessions.list({ betas: BETAS });
     pass('Managed Agents requires and accepts the workspace service credential');
 
-    const sessionA = await createSession(base, serviceToken, 'project A');
-    const sessionB = await createSession(base, serviceToken, 'project B');
-    const beforeRuns = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
-    assert.equal(beforeRuns.status, 200, beforeRuns.text);
-    const sessionIdsBeforeRuns = beforeRuns.body.data.map((session) => session.id).sort();
+    const sessionA = await managed.beta.sessions.create({
+      agent: 'assistant', environment_id: 'env_local', title: 'project A', betas: BETAS,
+    });
+    const sessionB = await managed.beta.sessions.create({
+      agent: 'assistant', environment_id: 'env_local', title: 'project B', betas: BETAS,
+    });
+    assert.ok(sessionA.id.startsWith('sesn_'));
+    assert.ok(sessionB.id.startsWith('sesn_'));
+    const beforeRuns = await managed.beta.sessions.list({ betas: BETAS });
+    const sessionIdsBeforeRuns = beforeRuns.data.map((session) => session.id).sort();
 
     const projectA = await mint(base, serviceToken, 'project-a', sessionA.id);
     response = await request(
@@ -250,14 +250,13 @@ async function main() {
     assert.doesNotMatch(historyB.text, /message from project A/);
     pass('the same external thread id resolves to each token\'s explicit Managed Session binding');
 
-    const afterRuns = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
-    assert.equal(afterRuns.status, 200, afterRuns.text);
+    const afterRuns = await managed.beta.sessions.list({ betas: BETAS });
     assert.deepEqual(
-      afterRuns.body.data.map((session) => session.id).sort(),
+      afterRuns.data.map((session) => session.id).sort(),
       sessionIdsBeforeRuns,
       'application protocol runs must not create a second Session',
     );
-    assert.ok(afterRuns.body.data.every((session) => !session.id.startsWith('app_')));
+    assert.ok(afterRuns.data.every((session) => !session.id.startsWith('app_')));
     pass('AI SDK runs reuse the two pre-existing Managed Sessions without app_* duplicates');
 
     response = await request(

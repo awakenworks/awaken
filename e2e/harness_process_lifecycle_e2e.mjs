@@ -6,6 +6,7 @@ import {
   stopServer,
   trackSpawnedServer,
   waitForPort,
+  waitForSessionEventReceipt,
 } from './harness.mjs';
 
 async function main() {
@@ -68,6 +69,80 @@ async function main() {
   } finally {
     await stopServer(listening);
   }
+
+  // Receipt-observation cause/effect table: C1=exact receipt absent, C2=present
+  // but unprocessed, C3=processed with an older terminal only, C4=later scenario
+  // effect committed; C5=the caller omits beta and supplies SDK list params.
+  // Effects: E1=C1|C2|C3 retries; E2=C4 returns full history, exact receipt,
+  // and the post-receipt delta; E3=C5 forwards list params while leaving beta
+  // absent. Constraint: the adapter must use the caller predicate, cannot
+  // prescribe a terminal, and cannot manufacture a beta default. Decision
+  // rules: W1 C1=>E1; W2 C2=>E1; W3 C3=>E1; W4 C4=>E2; W5 invalid id=>fail
+  // before IO; W6 C4+C5=>E2+E3.
+  const snapshots = [
+    [{ id: 'old-idle', type: 'session.status_idle', processed_at: 't0' }],
+    [
+      { id: 'old-idle', type: 'session.status_idle', processed_at: 't0' },
+      { id: 'receipt', type: 'user.message', processed_at: null },
+    ],
+    [
+      { id: 'old-idle', type: 'session.status_idle', processed_at: 't0' },
+      { id: 'receipt', type: 'user.message', processed_at: 't1' },
+    ],
+    [
+      { id: 'old-idle', type: 'session.status_idle', processed_at: 't0' },
+      { id: 'receipt', type: 'user.message', processed_at: 't1' },
+      { id: 'new-idle', type: 'session.status_idle', processed_at: 't2' },
+    ],
+  ];
+  let reads = 0;
+  const listRequests = [];
+  const fakeClient = {
+    beta: {
+      sessions: {
+        events: {
+          list: async function* list(sessionId, params) {
+            assert.equal(sessionId, 'session');
+            listRequests.push(params);
+            const snapshot = snapshots[Math.min(reads, snapshots.length - 1)];
+            reads += 1;
+            yield* snapshot;
+          },
+        },
+      },
+    },
+  };
+  const observed = await waitForSessionEventReceipt(
+    fakeClient,
+    'session',
+    'receipt',
+    ['managed-agents-test'],
+    ({ delta }) => delta.some((event) => event.id === 'new-idle'),
+    'W1-W4 fake receipt lifecycle',
+    { timeoutMs: 1_000, pollMs: 1 },
+  );
+  assert.equal(reads, 4, 'W1-W4 every incomplete observation retried exactly once');
+  assert.equal(observed.receiptEvent.id, 'receipt');
+  assert.deepEqual(observed.delta.map((event) => event.id), ['new-idle']);
+  assert.deepEqual(observed.events.map((event) => event.id), ['old-idle', 'receipt', 'new-idle']);
+  assert.ok(listRequests.every((params) => params.betas?.[0] === 'managed-agents-test'));
+
+  reads = snapshots.length - 1;
+  listRequests.length = 0;
+  await waitForSessionEventReceipt(
+    fakeClient,
+    'session',
+    'receipt',
+    undefined,
+    ({ delta }) => delta.some((event) => event.id === 'new-idle'),
+    'W6 SDK-owned beta with caller pagination',
+    { timeoutMs: 1_000, pollMs: 1, listParams: { limit: 1 } },
+  );
+  assert.deepEqual(listRequests, [{ limit: 1 }], 'W6 beta stays absent and limit is forwarded');
+  await assert.rejects(
+    waitForSessionEventReceipt(fakeClient, 'session', '', [], () => true, 'W5'),
+    /exact Managed Event receipt id/u,
+  );
 
   await Promise.all([stopServer(trackedExit), stopServer(explicitExit)]);
   console.log('E2E PASS: harness child lifecycle readiness decision table.');

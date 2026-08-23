@@ -43,4 +43,4 @@ pub use extraction::{
 pub use localfs::{Entry, MemoryDir, MemoryStoreHandle, sanitize_stem};
 pub use recall::{RecallBounds, recall_block};
 pub use select::{RecallSelector, parse_indices, select_input};
-pub use tool::{WriteMemoryArgs, WriteMemoryTool, accepts_memory_content, write_memory_descriptor};
+pub use tool::{WriteMemoryTool, accepts_memory_content, write_memory_descriptor};

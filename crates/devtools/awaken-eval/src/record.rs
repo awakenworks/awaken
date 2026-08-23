@@ -1,8 +1,8 @@
 //! Record a real run into a replayable [`Case`] (#4b).
 //!
-//! Turns a completed run's committed transcript into a fixture: the user input
-//! starts the case and each assistant turn becomes a [`ScriptedTurn`] (its text
-//! plus any tool calls), so replaying the case reproduces the same model turns
+//! Converts a completed Run's committed transcript into a fixture: the user input
+//! starts the case and each assistant message becomes a [`ScriptedResponse`] (its
+//! text plus any tool calls), so replay reproduces the same model responses
 //! through the real engine. Expectations are left empty for an author to add.
 //!
 //! This is the mechanism for the `Purpose::EvalRecording` consent purpose
@@ -13,11 +13,11 @@
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
 
-use crate::{Case, ScriptedToolCall, ScriptedTurn};
+use crate::{Case, ScriptedResponse, ScriptedToolCall};
 
-/// Reconstruct a replayable [`Case`] from a run's committed `transcript`. Each
-/// assistant message becomes one [`ScriptedTurn`]; a user message is not needed
-/// beyond `input` (the transcript's own user turns are the run's inputs). The
+/// Reconstruct a replayable [`Case`] from a Run's committed `transcript`. Each
+/// assistant message becomes one [`ScriptedResponse`]; a user message is not
+/// needed beyond `input` because committed user messages are the Run inputs. The
 /// case starts empty of expectations — an author asserts what the replay must
 /// satisfy.
 #[must_use]
@@ -29,7 +29,7 @@ pub fn case_from_run(
     let script = transcript
         .iter()
         .filter(|m| m.role == Role::Assistant)
-        .map(assistant_turn)
+        .map(assistant_response)
         .collect();
     Case {
         id: id.into(),
@@ -40,8 +40,8 @@ pub fn case_from_run(
     }
 }
 
-/// One recorded assistant message → a scripted turn: its text and any tool calls.
-fn assistant_turn(message: &Message) -> ScriptedTurn {
+/// One recorded assistant message becomes its text and any tool calls.
+fn assistant_response(message: &Message) -> ScriptedResponse {
     let tool_calls = message
         .content
         .iter()
@@ -53,7 +53,7 @@ fn assistant_turn(message: &Message) -> ScriptedTurn {
             _ => None,
         })
         .collect();
-    ScriptedTurn {
+    ScriptedResponse {
         text: extract_text(&message.content),
         tool_calls,
     }
@@ -74,26 +74,32 @@ mod tests {
 
     #[test]
     fn a_transcript_records_assistant_text_and_tool_calls_in_order() {
+        // Test design — Causes: a transcript contains one User input followed by
+        // an assistant tool call and final assistant text. Effects: recording
+        // excludes the User row and preserves both assistant script entries in
+        // order with no invented expectations. Constraints/invariants: committed
+        // assistant order is the sole replay script authority. Decision rule R1:
+        // User+tool+text=>two ordered assistant entries and empty expectations.
         let transcript = vec![
             Message {
                 id: MessageId("u".to_string()),
                 role: Role::User,
                 content: vec![ContentBlock::text("go")],
             },
-            // Turn 1: a tool call.
+            // Response 1: a tool call.
             assistant(vec![ContentBlock::tool_use(
                 "c1",
                 "search",
                 serde_json::json!({"q": "x"}),
             )]),
-            // Turn 2: the final text.
+            // Response 2: the final text.
             assistant(vec![ContentBlock::text("done: 42")]),
         ];
 
         let case = case_from_run("recorded", "go", &transcript);
         assert_eq!(case.id, "recorded");
         assert_eq!(case.input, "go");
-        // Only assistant turns become script entries — the user turn is not one.
+        // Only assistant messages become script entries; the user message does not.
         assert_eq!(case.script.len(), 2);
         assert_eq!(case.script[0].tool_calls.len(), 1);
         assert_eq!(case.script[0].tool_calls[0].tool_id, "search");

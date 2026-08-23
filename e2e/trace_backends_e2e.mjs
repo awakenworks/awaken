@@ -11,7 +11,16 @@
 // Run: (from e2e/)  node trace_backends_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import Anthropic from '@anthropic-ai/sdk';
+import {
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const COLLECTOR = 'http://127.0.0.1:4318/v1/traces';
 const JAEGER = 'http://127.0.0.1:16686';
@@ -64,20 +73,33 @@ async function driveTraffic() {
   });
   await waitForPort(PORT);
   // A turn drives invoke_agent -> chat + execute_tool (glob, inline).
-  const create = await fetch(`${BASE}/v1/sessions`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-    body: JSON.stringify({ agent: 'assistant', environment_id: 'env_local' }),
+  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0 });
+  const session = await client.beta.sessions.create({
+    agent: 'assistant',
+    environment_id: 'env_local',
+    betas: BETAS,
   });
-  const session = await create.json();
-  const send = await fetch(`${BASE}/v1/sessions/${session.id}/events`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-    body: JSON.stringify({
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
-    }),
+  const receipt = await client.beta.sessions.events.send(session.id, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+    betas: BETAS,
   });
-  assert.equal(send.status, 200, 'turn accepted');
+  const acceptedId = receipt.data?.[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'SDK send returns the exact accepted User Event id');
+  // Cause/effect graph: C1=official SDK Session create/send returns one exact receipt id;
+  // C2=that receipt becomes processed; C3=a new Agent reply and idle edge follow
+  // it. E1=the turn's chat/tool spans are complete before export is flushed.
+  // Constraint K1: SDK admission proves no terminal effect, while an older
+  // reply/idle pair cannot satisfy this turn. Decision rules: T1 !C1=>fail; T2 C1+!C2=>
+  // retry; T3 C1+C2+!C3=>retry; T4 C1+C2+C3=>E1.
+  await waitForSessionEventReceipt(
+    client,
+    session.id,
+    acceptedId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    'the traced tool Run to commit its reply and idle edge',
+  );
   // Propagation probe: an inbound traceparent we control, so both backends can be
   // keyed on TID and the continuation asserted.
   const models = await fetch(`${BASE}/v1/models`, {

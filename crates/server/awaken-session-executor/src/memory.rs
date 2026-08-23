@@ -5,7 +5,7 @@
 //! (a bounded context). This module wires those onto the host's aux-agent
 //! substrate: it runs the extractor as an ordinary sub-agent through
 //! the shared Agent Run substrate, fire-and-forget via [`BackgroundRuns`], triggered by
-//! the host after a turn, and reads memories back for recall.
+//! the host after a Run, and reads memories back for recall.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,192 +13,38 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
-use awaken_ext_builtin_tools::{AuxiliaryAgentInput, erase, invoke_auxiliary_agent};
+use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
     EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController, MemoryExtractionDriver,
     MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
     MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
     MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
-    RecallSelector, WriteMemoryTool, accepts_memory_content, parse_indices, sanitize_stem,
-    select_input,
+    WriteMemoryTool, accepts_memory_content, sanitize_stem,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::run_configured_agent_with_id;
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
-use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
+
+mod platform;
+mod selector;
+pub(crate) use platform::PlatformMemoryHandle;
+pub(crate) use selector::AgentSelector;
 
 // The config pieces the host wires (registering the default extractor agent).
 use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
-/// tool-free, plugin-free run driven through the shared aux-run port
-/// through the same ordinary Agent-backed tool used by the compactor.
-/// Its configuration activates no plugins, so memory
-/// recall cannot recursively invoke itself; the port keeps its usage outside the
-/// user session's accounting projection (housekeeping, not delegated work).
-pub(crate) struct AgentSelector {
-    agent_tool: Arc<dyn RawTool>,
-    agent_id: String,
-}
-
-impl AgentSelector {
-    pub(crate) fn new(
-        llm: Arc<dyn LlmExecutor>,
-        snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-        execution: Arc<HostCommit>,
-    ) -> Self {
-        let agent_id = snapshot.root_agent_id.0.clone();
-        let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
-        let base = std::env::temp_dir()
-            .join("awaken-coordinator")
-            .join(format!("{}-mem-select", std::process::id()));
-        Self {
-            agent_tool: Arc::new(AuxAgentTool {
-                llm,
-                provider: LocalProvider::new(base),
-                catalog,
-                execution,
-            }),
-            agent_id,
-        }
-    }
-}
-
-#[async_trait]
-impl RecallSelector for AgentSelector {
-    async fn select(&self, query: &str, manifest: &[(usize, String)], max: usize) -> Vec<usize> {
-        let input = select_input(query, manifest, max);
-        // Fire the selector through the shared port; a runner error degrades to
-        // "select nothing" (recall falls back to no memories rather than failing the
-        // turn). The port surfaces only the reply text, its usage stays isolated.
-        let reply = invoke_auxiliary_agent(
-            self.agent_tool.as_ref(),
-            "memory-selector-agent-run",
-            AuxiliaryAgentInput {
-                agent_id: self.agent_id.clone(),
-                seed: vec![Message {
-                    id: MessageId("mem-select".into()),
-                    role: Role::User,
-                    content: vec![ContentBlock::text(input)],
-                }],
-            },
-            None,
-        )
-        .await
-        .ok()
-        .filter(|output| !output.is_error)
-        .map(|output| output.content)
-        .unwrap_or_default();
-        parse_indices(&extract_text(&reply), manifest.len(), max)
-    }
-}
-
-/// Runtime adapter over one already-authorized platform MemoryStore. It carries
-/// only data-plane identity and maximum access; authorization policy remains at
-/// the edge that constructs it.
-pub(crate) struct PlatformMemoryHandle {
-    fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
-    store_id: String,
-    writable: bool,
-}
-
-impl PlatformMemoryHandle {
-    pub(crate) fn new(
-        fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
-        store_id: String,
-        writable: bool,
-    ) -> Self {
-        Self {
-            fs,
-            store_id,
-            writable,
-        }
-    }
-
-    async fn plan_mutations(
-        &self,
-        writes: BTreeMap<String, String>,
-    ) -> Result<Vec<MemoryExtractionMutation>, String> {
-        let mut mutations = Vec::with_capacity(writes.len());
-        for (path, content) in writes {
-            let current = self
-                .fs
-                .get_by_path(&self.store_id, &path)
-                .await
-                .map_err(|error| error.to_string())?;
-            mutations.push(MemoryExtractionMutation {
-                path,
-                target_sha256: awaken_resource_contract::memory_sha256_hex(&content),
-                content,
-                observed_sha256: current.map(|memory| memory.content_sha256),
-            });
-        }
-        Ok(mutations)
-    }
-
-    async fn apply_mutation(
-        &self,
-        mutation: &MemoryExtractionMutation,
-    ) -> Result<MemoryMutationReceipt, String> {
-        if !self.writable {
-            return Err("memory store binding is read-only".into());
-        }
-        let current = self
-            .fs
-            .get_by_path(&self.store_id, &mutation.path)
-            .await
-            .map_err(|error| error.to_string())?;
-        if current
-            .as_ref()
-            .is_some_and(|memory| memory.content_sha256 == mutation.target_sha256)
-        {
-            return Ok(MemoryMutationReceipt {
-                path: mutation.path.clone(),
-                target_sha256: mutation.target_sha256.clone(),
-                already_applied: true,
-            });
-        }
-        match (current, mutation.observed_sha256.as_deref()) {
-            (None, None) => {
-                self.fs
-                    .create(&self.store_id, &mutation.path, &mutation.content)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            (Some(current), Some(expected)) if current.content_sha256 == expected => {
-                self.fs
-                    .update(&self.store_id, &current.id, &mutation.content, expected)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            _ => {
-                return Err(format!(
-                    "memory `{}` changed after extraction planning",
-                    mutation.path
-                ));
-            }
-        }
-        Ok(MemoryMutationReceipt {
-            path: mutation.path.clone(),
-            target_sha256: mutation.target_sha256.clone(),
-            already_applied: false,
-        })
-    }
-}
 
 #[derive(Default)]
 struct CapturedMemoryWrites {
@@ -249,66 +95,6 @@ impl MemoryStoreHandle for CapturedMemoryWrites {
     }
 }
 
-#[async_trait]
-impl MemoryStoreHandle for PlatformMemoryHandle {
-    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        if !self.writable {
-            return Err("memory store binding is read-only".into());
-        }
-        let path = format!("/{}.md", sanitize_stem(name));
-        match self
-            .fs
-            .get_by_path(&self.store_id, &path)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            Some(current) => self
-                .fs
-                .update(
-                    &self.store_id,
-                    &current.id,
-                    content,
-                    &current.content_sha256,
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-            None => self
-                .fs
-                .create(&self.store_id, &path, content)
-                .await
-                .map_err(|error| error.to_string())?,
-        };
-        Ok(path)
-    }
-
-    async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        let mut entries = Vec::new();
-        for memory in self
-            .fs
-            .snapshot_heads(&self.store_id)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
-                continue;
-            };
-            let nanos = u64::try_from(memory.updated_unix_nanos).unwrap_or(u64::MAX);
-            entries.push(awaken_ext_memory::Entry {
-                path: std::path::PathBuf::from(memory.path),
-                content: content.trim().to_string(),
-                modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
-            });
-        }
-        entries.sort_by(|left, right| {
-            right
-                .modified
-                .cmp(&left.modified)
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        Ok(entries)
-    }
-}
-
 /// Host-level extraction/selection capability. It owns the auxiliary-agent
 /// machinery but deliberately owns no MemoryStore identity or content handle.
 /// A Session must create a [`BoundMemory`] from its resolved resource manifest.
@@ -326,7 +112,9 @@ pub struct MemoryRuntime {
 #[derive(Clone)]
 pub struct BoundMemory {
     runtime: Arc<MemoryRuntime>,
-    session_id: String,
+    /// Physical Session/commit partition that owns extraction execution. A
+    /// delegated child's logical Thread remains in its transcript snapshot.
+    session_thread_id: String,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
@@ -455,12 +243,7 @@ impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
         transcript: TranscriptSnapshot,
     ) -> Result<(), String> {
         self.memory
-            .trigger(
-                &terminal.thread_id.0,
-                &terminal.run_id.0,
-                transcript,
-                self.extractor.clone(),
-            )
+            .trigger(&terminal.run_id.0, transcript, self.extractor.clone())
             .await
             .map_err(|error| error.to_string())
     }
@@ -489,7 +272,7 @@ impl MemoryRuntime {
 
     pub(crate) fn bind(
         self: &Arc<Self>,
-        session_id: impl Into<String>,
+        session_thread_id: impl Into<String>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
         resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
@@ -498,7 +281,7 @@ impl MemoryRuntime {
     ) -> BoundMemory {
         BoundMemory {
             runtime: self.clone(),
-            session_id: session_id.into(),
+            session_thread_id: session_thread_id.into(),
             store: platform.clone(),
             platform,
             resource_validator,
@@ -633,8 +416,13 @@ impl BoundMemory {
             .expect("Memory execution context lock poisoned") = Some(commit);
     }
 
+    async fn bind_recovery(&self, commit: Arc<HostCommit>) -> Result<bool, MemoryExtractionError> {
+        self.bind_execution(commit);
+        self.reconcile().await
+    }
+
     fn matches_intent(&self, intent: &MemoryExtractionIntent) -> bool {
-        intent.session_id == self.session_id
+        intent.session_id == self.session_thread_id
             && intent.workspace_id == self.workspace_id
             && intent.memory_store_id == self.memory_store_id
             && intent.memory_config_version == self.memory_config_version
@@ -659,7 +447,6 @@ impl BoundMemory {
     /// not that extraction has completed.
     pub async fn trigger(
         &self,
-        thread: &str,
         terminal_commit_id: &str,
         committed: TranscriptSnapshot,
         extractor: MemoryExtractorSnapshot,
@@ -668,7 +455,7 @@ impl BoundMemory {
             .extraction_controller()
             .enqueue_terminal(MemoryTerminalExtractionRequest {
                 workspace_id: self.workspace_id.clone(),
-                session_id: thread.to_string(),
+                session_id: self.session_thread_id.clone(),
                 terminal_run_id: terminal_commit_id.to_string(),
                 memory_store_id: self.memory_store_id.clone(),
                 memory_config_version: self.memory_config_version,
@@ -676,49 +463,40 @@ impl BoundMemory {
                 extractor,
             })
             .await?;
-        self.reconcile(thread).await;
+        self.reconcile().await?;
         Ok(())
     }
 
-    /// RunResume every non-terminal intent for this exact frozen binding. Invoked
-    /// after enqueue and after Session rehydration, so a process crash cannot lose
-    /// the remaining extraction/store/receipt work.
-    pub async fn reconcile(&self, thread: &str) -> bool {
+    /// RunResume every non-terminal intent for this exact physical Session and
+    /// frozen resource binding. Invoked after enqueue and after parent Session
+    /// rehydration, so a process crash cannot lose a delegated child's remaining
+    /// extraction/store/receipt work.
+    pub async fn reconcile(&self) -> Result<bool, MemoryExtractionError> {
         if self
             .execution
             .read()
             .expect("Memory execution context lock poisoned")
             .is_none()
         {
-            return false;
+            return Ok(false);
         }
-        let Ok(candidates) = self
-            .runtime
-            .extraction_repository()
-            .recoverable_extractions(64)
-            .await
-        else {
-            return false;
-        };
-        if !candidates
-            .iter()
-            .any(|intent| intent.session_id == thread && self.matches_intent(intent))
-        {
-            return false;
+        let controller = self.runtime.extraction_controller();
+        if !controller.has_recoverable(self).await? {
+            return Ok(false);
         }
         let bound = self.clone();
         self.runtime
             .background
             .spawn(
                 BackgroundWorkClass::ExternalDurable {
-                    durable_intent_id: format!("memory-extraction:{thread}"),
+                    durable_intent_id: format!("memory-extraction:{}", self.session_thread_id),
                 },
                 async move {
                     bound.drive_recoverable().await;
                 },
             )
             .await;
-        true
+        Ok(true)
     }
 
     async fn drive_recoverable(&self) {
@@ -931,19 +709,81 @@ impl crate::host::SharedHost {
             .flatten()
     }
 
+    /// Attach the one physical Session commit authority to every writable
+    /// MemoryStore binding restored from its frozen manifest, then resume any
+    /// matching durable intent. Recovery is resource-binding-owned rather than
+    /// dependent on whether the parent Agent selects the Memory plugin: a child
+    /// may have selected extraction even when its parent did not.
+    pub(crate) async fn bind_thread_memory_recovery(
+        &self,
+        session_thread: &str,
+        commit: Arc<HostCommit>,
+    ) -> Result<usize, crate::HostError> {
+        // A database-less execution Worker owns only the frozen Memory data-plane
+        // binding. The Coordinator's guarded settlement observer is the sole
+        // owner of remote terminal observation and its durable extraction outbox;
+        // probing the Worker's fail-closed repository here would duplicate that
+        // authority and prevent an otherwise valid claimed Runtime from starting.
+        if self.upstream.is_some() {
+            return Ok(0);
+        }
+        let bindings = self
+            .session_slots
+            .read(session_thread, |slot| {
+                let mut bindings: Vec<Arc<BoundMemory>> = Vec::new();
+                for memory in slot
+                    .memory_bindings
+                    .values()
+                    .cloned()
+                    .chain(slot.memory.iter().cloned())
+                {
+                    if !bindings
+                        .iter()
+                        .any(|existing| Arc::ptr_eq(existing, &memory))
+                    {
+                        bindings.push(memory);
+                    }
+                }
+                bindings
+            })
+            .unwrap_or_default();
+        let mut scheduled = 0;
+        for memory in bindings {
+            if memory.extraction_enabled()
+                && memory
+                    .bind_recovery(commit.clone())
+                    .await
+                    .map_err(|error| {
+                        crate::HostError::internal(format!(
+                            "recover Memory extraction for physical Session `{session_thread}`: {error}"
+                        ))
+                    })?
+            {
+                scheduled += 1;
+            }
+        }
+        Ok(scheduled)
+    }
+
     pub(crate) async fn memory_terminal_observer(
         &self,
-        thread: &str,
+        session_thread: &str,
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+        effective_model_ref: &str,
+        dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
+        frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
-    ) -> Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>> {
+    ) -> Result<
+        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
+        crate::HostError,
+    > {
         if !snapshot
             .resolved_spec
             .plugin_ids
             .iter()
             .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
         {
-            return None;
+            return Ok(None);
         }
         let config = awaken_ext_memory::MemoryConfig::from_value(
             snapshot
@@ -951,39 +791,63 @@ impl crate::host::SharedHost {
                 .plugin_config
                 .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
         )
-        .unwrap_or_default();
+        .map_err(|error| {
+            crate::HostError::internal(format!(
+                "invalid frozen Memory plugin configuration: {error}"
+            ))
+        })?;
         if !config.extraction_enabled {
-            return None;
+            return Ok(None);
         }
-        let memory = self
-            .memory_for_thread(thread)
-            .filter(|memory| memory.extraction_enabled())?;
-        memory.bind_execution(commit.clone());
-        memory.reconcile(thread).await;
-        let model_ref = self
-            .inference_routing
-            .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
+        let memory = if let Some(manifest) = dispatched_resources {
+            let binding_id = config.binding_id.as_deref().ok_or_else(|| {
+                crate::HostError::internal(
+                    "the frozen Memory plugin requires an explicit `memory.binding_id`",
+                )
+            })?;
+            let memory = self
+                .compile_dispatched_memory_binding(session_thread, manifest, binding_id)
+                .await
+                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            if !memory.extraction_enabled() {
+                return Ok(None);
+            }
+            memory
+                .bind_recovery(commit.clone())
+                .await
+                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            memory
+        } else {
+            let Some(memory) = self.memory_for_thread(session_thread) else {
+                return Ok(None);
+            };
+            // Resident Session construction has already attached `commit` to
+            // every writable frozen binding through
+            // `bind_thread_memory_recovery`, including this selected one.
+            memory
+        };
+        if !memory.extraction_enabled() {
+            return Ok(None);
+        }
         let model = snapshot
             .resolved_spec
-            .candidate_for_model(&model_ref)
-            .cloned();
-        let Some(model) = model else {
-            tracing::error!(
-                thread,
-                model_ref,
-                snapshot_id = %snapshot.id.0,
-                "memory extraction rejected: snapshot has no published model candidate"
-            );
-            return None;
-        };
+            .candidate_for_model(effective_model_ref)
+            .cloned()
+            .ok_or_else(|| {
+                crate::HostError::internal(format!(
+                    "memory extraction model `{effective_model_ref}` is absent from frozen snapshot `{}`",
+                    snapshot.id.0
+                ))
+        })?;
         let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
         let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
-            self.agent_publications.as_deref(),
+            Some(frozen_publications),
             &memory.workspace_id,
             agent_id,
             default_memory_agent(model, DEFAULT_MEMORY_INSTRUCTIONS),
             config.instructions.as_deref(),
-        );
+        )
+        .map_err(crate::HostError::internal)?;
         let extraction = Arc::new(BoundMemoryTerminalExtraction {
             memory,
             extractor: MemoryExtractorSnapshot {
@@ -992,7 +856,9 @@ impl crate::host::SharedHost {
             },
         });
         let reader: Arc<dyn CommittedThreadView> = commit;
-        Some(Arc::new(MemoryTerminalObserver::new(reader, extraction)))
+        Ok(Some(Arc::new(MemoryTerminalObserver::new(
+            reader, extraction,
+        ))))
     }
 
     pub(crate) fn platform_memory_handle(
@@ -1046,14 +912,15 @@ impl crate::host::SharedHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SharedHost;
     use async_trait::async_trait;
-    use awaken_ext_memory::MemoryExtractionStatus;
+    use awaken_ext_memory::{MemoryExtractionStatus, RecallSelector as _};
     use awaken_memory_store::MemoryRepository as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
     };
 
-    /// A stub extractor model: first turn emits a write_memory call; once it sees
+    /// A stub extractor model: first Step emits a write_memory call; once it sees
     /// the tool result, it replies done.
     struct ExtractorModel;
 
@@ -1078,6 +945,69 @@ mod tests {
                 usage: None,
                 stop_reason: None,
             })
+        }
+    }
+
+    struct FailFirstRecoverableRead {
+        inner: Arc<dyn MemoryExtractionRepository>,
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FailFirstRecoverableRead {
+        fn new(inner: Arc<dyn MemoryExtractionRepository>) -> Self {
+            Self {
+                inner,
+                remaining: std::sync::atomic::AtomicUsize::new(1),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MemoryExtractionRepository for FailFirstRecoverableRead {
+        async fn put_extraction_if_absent(
+            &self,
+            intent: MemoryExtractionIntent,
+        ) -> Result<awaken_ext_memory::PutMemoryExtractionOutcome, MemoryExtractionError> {
+            self.inner.put_extraction_if_absent(intent).await
+        }
+
+        async fn get_extraction(
+            &self,
+            intent_id: &str,
+        ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
+            self.inner.get_extraction(intent_id).await
+        }
+
+        async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
+            self.inner.extraction_cursor(thread_id).await
+        }
+
+        async fn recoverable_extractions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
+            if self
+                .remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(MemoryExtractionError::Storage(
+                    "transient recovery read".into(),
+                ));
+            }
+            self.inner.recoverable_extractions(limit).await
+        }
+
+        async fn compare_and_swap_extraction(
+            &self,
+            expected_revision: u64,
+            intent: MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            self.inner
+                .compare_and_swap_extraction(expected_revision, intent)
+                .await
         }
     }
 
@@ -1186,7 +1116,7 @@ mod tests {
             session_id,
             "ws-test",
             platform,
-            Some(Arc::new(TestLiveResourceBindingVerifier)),
+            Some(crate::host::test_resource_validator()),
             &config,
             true,
         );
@@ -1196,28 +1126,6 @@ mod tests {
             ),
         ))));
         (runtime, bound, repository, extractions)
-    }
-
-    struct TestLiveResourceBindingVerifier;
-
-    impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
-        fn verify_memory_binding(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-            _version: awaken_resource_contract::ConfigVersion,
-        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-            Ok(())
-        }
-
-        fn verify_repository_binding(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-            _version: awaken_resource_contract::ConfigVersion,
-        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-            Ok(())
-        }
     }
 
     struct RecallSnapshotRepository {
@@ -1379,12 +1287,11 @@ mod tests {
         );
 
         assert!(
-            !extraction.reconcile("thread-1").await,
+            !extraction.reconcile().await.unwrap(),
             "an empty recovery scan must not create a background run"
         );
         extraction
             .trigger(
-                "thread-1",
                 "terminal-1",
                 snapshot("thread-1", vec![user("I really like rust")]),
                 extractor(None, None),
@@ -1512,6 +1419,12 @@ mod tests {
 
     #[tokio::test]
     async fn extraction_seed_excludes_recalled_memory_messages() {
+        // Test design. Causes: C1 committed history contains a recalled-memory
+        // System message plus real Run messages; C2 extraction builds its seed.
+        // Effects: E1 C2 excludes the recalled payload; E2 genuine conversation
+        // remains eligible. Constraint/Invariant: recalled context is read-only
+        // input, never new memory evidence. Decision rule: seed both classes and
+        // assert only genuine history reaches extraction.
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1521,7 +1434,7 @@ mod tests {
         let (runtime, extraction, repository, _extractions) =
             bound_test_memory(Arc::new(SeedEchoModel), "t", &sandbox_base, &mem_root);
 
-        // A committed history with a recalled-memory system message + a real turn.
+        // A committed history with a recalled-memory system message + a real Run.
         let recall = Message::text(
             MessageId(format!("{}-1", awaken_ext_memory::RECALL_MESSAGE_ID_PREFIX)),
             Role::System,
@@ -1529,7 +1442,6 @@ mod tests {
         );
         extraction
             .trigger(
-                "t",
                 "terminal-1",
                 snapshot("t", vec![recall, user("please note this")]),
                 extractor(None, None),
@@ -1545,7 +1457,7 @@ mod tests {
             .unwrap()
             .content
             .unwrap();
-        assert!(seen.contains("please note this"), "real turn seen: {seen}");
+        assert!(seen.contains("please note this"), "real Run seen: {seen}");
         assert!(
             !seen.contains("RECALLED SECRET"),
             "recalled content must not reach the extractor: {seen}"
@@ -1569,7 +1481,6 @@ mod tests {
 
         extraction
             .trigger(
-                "t-custom",
                 "terminal-1",
                 snapshot("t-custom", vec![user("remember this")]),
                 extractor(Some("CUSTOM MEMORY SYSTEM"), Some("CUSTOM EXTRACTION TASK")),
@@ -1613,7 +1524,6 @@ mod tests {
         for _ in 0..2 {
             extraction
                 .trigger(
-                    "thread-redelivery",
                     "terminal-7",
                     snapshot("thread-redelivery", vec![user("I really like rust")]),
                     extractor(None, None),
@@ -1688,7 +1598,7 @@ mod tests {
             .await
             .unwrap();
 
-        extraction.reconcile("thread-crash").await;
+        extraction.reconcile().await.unwrap();
         assert!(runtime.drain(Duration::from_secs(10)).await);
         let recovered = extractions
             .get_extraction("memory-extraction:thread-crash:terminal-8")
@@ -1700,6 +1610,279 @@ mod tests {
         assert_eq!(
             repository.list_versions("test-store").await.unwrap().len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
+        // Cause/effect graph: C1 the terminal transcript belongs to a logical
+        // child; C2 its extraction binding and commit authority belong to the
+        // parent physical Session; C3 the first process dies after durable
+        // enqueue but before any claim; C4 the parent binding is rehydrated from
+        // the same Workspace/Store/config; C5 the selected direct binding is/is
+        // not already in the binding map and one Arc may appear under two binding
+        // ids; C6 a read-only sibling binding exists; C7 the first recovery read
+        // fails transiently. Effects: E1 the intent
+        // persists the parent Session and logical child without a third identity;
+        // E2 no work starts without a commit binding; E3 parent rehydration
+        // accepts and completes the child intent independently of plugin
+        // selection; E4 the stable auxiliary Run commits through the parent
+        // authority; E5 one governed Memory version is written; E6 identical
+        // Arcs are driven once, the direct-only writable binding receives the
+        // commit authority, and the read-only binding does not drive recovery;
+        // E7 the first rehydrate fails closed and the same recovery entry
+        // converges on its next resident/cold wake.
+        // Constraints: no child Session slot or physical commit partition exists;
+        // recovery reuses the ordinary BoundMemory/controller/repository path.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5       | C6 | C7        | effects          |
+        // | R1   | T  | T  | T  | F  | -        | -  | F         | E1,E2           |
+        // | R2   | T  | T  | T  | T  | duplicate| T  | F         | E1,E3,E4,E5,E6 |
+        // | R3   | T  | T  | T  | T  | direct   | T  | F         | E3,E6           |
+        // | R4   | T  | T  | T  | T  | either   | T  | once      | E3,E6,E7        |
+        let storage = tempfile::tempdir().expect("Memory recovery tempdir");
+        let extraction_db = storage.path().join("sessions.db");
+        let extraction_db = extraction_db.to_string_lossy().to_string();
+        let parent = "memory-parent-session";
+        let child = "memory-logical-child";
+        let terminal = "memory-child-terminal";
+        let intent_id = format!("memory-extraction:{child}:{terminal}");
+        let config = awaken_resource_contract::MemoryStoreConfigVersion {
+            memory_store_id: "test-store".into(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            retention_policy: Default::default(),
+        };
+        let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+        let platform = Arc::new(PlatformMemoryHandle::new(
+            content.clone(),
+            "test-store".into(),
+            true,
+        ));
+
+        let first_repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&extraction_db)
+                .expect("R1 open extraction repository"),
+        );
+        let first_runtime = Arc::new(MemoryRuntime::new(
+            Arc::new(ExtractorModel),
+            Arc::new(LocalProvider::new(storage.path().join("first-sandbox"))),
+            Arc::new(BackgroundRuns::new()),
+            first_repository.clone(),
+        ));
+        let child_binding = first_runtime.bind(
+            parent,
+            "ws-test",
+            platform.clone(),
+            Some(crate::host::test_resource_validator()),
+            &config,
+            true,
+        );
+        child_binding
+            .trigger(
+                terminal,
+                snapshot(child, vec![user("remember child recovery")]),
+                extractor(None, None),
+            )
+            .await
+            .expect("R1 durable enqueue");
+        let pending = first_repository
+            .get_extraction(&intent_id)
+            .await
+            .expect("R1 query pending intent")
+            .expect("R1 pending intent exists");
+        assert_eq!(pending.session_id, parent, "R1/E1 physical Session");
+        assert_eq!(pending.logical_thread_id(), child, "R1/E1 logical child");
+        assert_eq!(pending.status, MemoryExtractionStatus::Pending, "R1/E2");
+        assert!(first_runtime.drain(Duration::from_secs(1)).await, "R1/E2");
+        drop(child_binding);
+        drop(first_runtime);
+        drop(first_repository);
+
+        let recovered_repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&extraction_db)
+                .expect("R2 reopen extraction repository"),
+        );
+        let recovered_host = Arc::new(SharedHost::new(Arc::new(ExtractorModel), "stub"));
+        recovered_host.install_memory_extraction_repository(Arc::new(
+            FailFirstRecoverableRead::new(recovered_repository.clone()),
+        ));
+        let parent_commit = Arc::new(HostCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new()),
+        )));
+        let parent_binding = Arc::new(recovered_host.memory.bind(
+            parent,
+            "ws-test",
+            platform.clone(),
+            Some(crate::host::test_resource_validator()),
+            &config,
+            true,
+        ));
+        let read_only_binding = Arc::new(recovered_host.memory.bind(
+            parent,
+            "ws-test",
+            platform.clone(),
+            Some(crate::host::test_resource_validator()),
+            &config,
+            false,
+        ));
+        let direct_config = awaken_resource_contract::MemoryStoreConfigVersion {
+            memory_store_id: "direct-store".into(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            retention_policy: Default::default(),
+        };
+        let direct_binding = Arc::new(recovered_host.memory.bind(
+            parent,
+            "ws-test",
+            Arc::new(PlatformMemoryHandle::new(
+                content.clone(),
+                "direct-store".into(),
+                true,
+            )),
+            Some(crate::host::test_resource_validator()),
+            &direct_config,
+            true,
+        ));
+        recovered_host.register_thread_memory_bindings(
+            parent,
+            std::collections::HashMap::from([
+                ("child-memory".into(), parent_binding.clone()),
+                ("duplicate-alias".into(), parent_binding.clone()),
+                ("read-only".into(), read_only_binding.clone()),
+            ]),
+        );
+        recovered_host
+            .session_slots
+            .update(parent, |slot| slot.memory = Some(direct_binding.clone()));
+        let first_recovery = recovered_host
+            .bind_thread_memory_recovery(parent, parent_commit.clone())
+            .await;
+        assert!(
+            first_recovery
+                .unwrap_err()
+                .to_string()
+                .contains("transient recovery read"),
+            "R4/E7 first wake exposes the repository failure"
+        );
+        assert_eq!(
+            recovered_host
+                .bind_thread_memory_recovery(parent, parent_commit.clone())
+                .await
+                .unwrap(),
+            1,
+            "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
+        );
+        assert!(
+            recovered_host.drain_memory(Duration::from_secs(10)).await,
+            "R2/E3 recovery drained"
+        );
+        assert!(
+            parent_binding.execution.read().unwrap().is_some(),
+            "R2/E6 mapped writable binding receives commit"
+        );
+        assert!(
+            direct_binding.execution.read().unwrap().is_some(),
+            "R3/E6 direct-only selected binding receives commit"
+        );
+        assert!(
+            read_only_binding.execution.read().unwrap().is_none(),
+            "R2/R3 E6 read-only binding never drives extraction"
+        );
+
+        let completed = recovered_repository
+            .get_extraction(&intent_id)
+            .await
+            .expect("R2 query recovered intent")
+            .expect("R2 recovered intent exists");
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed, "R2/E3");
+        assert_eq!(completed.session_id, parent, "R2/E1");
+        assert_eq!(completed.logical_thread_id(), child, "R2/E1");
+        let auxiliary_thread = ThreadId(completed.auxiliary_thread_id());
+        assert!(
+            parent_commit.latest_run(&auxiliary_thread).is_some(),
+            "R2/E4 auxiliary Run uses parent commit authority"
+        );
+        assert_eq!(
+            content.list_versions("test-store").await.unwrap().len(),
+            1,
+            "R2/E5"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
+        // Cause/effect graph: C1 the Host owns local durable extraction authority
+        // or is a database-less upstream Worker; C2 a frozen Memory binding is
+        // writable or read-only; C3 the extraction repository is available or is
+        // the Worker's fail-closed port; C4 a matching durable intent exists or
+        // does not; C5 no automatic Memory binding is selected. Effects: E1 a
+        // local writable owner schedules matching work;
+        // E2 a local repository failure remains visible; E3 a read-only binding
+        // never receives recovery execution; E4 an upstream Worker neither probes
+        // the outbox nor binds a commit and returns normally; E5 direct Worker
+        // authority access still fails closed. Constraints: the Coordinator's
+        // guarded settlement observer remains the sole remote terminal/extraction
+        // owner; no Worker repository, role flag, or second reconciler is added.
+        //
+        // | Rule | role     | binding/use          | repository  | intent | C5 | effects |
+        // | R1   | local    | RW                   | available   | yes    | any | E1      |
+        // | R2   | local    | RW                   | fails       | any    | any | E2      |
+        // | R3   | local    | RO                   | any         | any    | any | E3      |
+        // | R4   | upstream | RW                   | unavailable | any    | yes | E4      |
+        // | R5   | upstream | direct authority call| unavailable | any   | any | E5      |
+        // R1-R3 are exercised by
+        // `parent_rehydration_recovers_a_child_intent_after_enqueue_crash`;
+        // R5 is owned by `every_worker_extraction_authority_operation_fails_closed`.
+        let session = "database-less-worker-memory-session";
+        let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+        let host = Arc::new(
+            SharedHost::new_worker_with_deployment(
+                Arc::new(ExtractorModel),
+                "stub",
+                Arc::new(awaken_resource_contract::UnavailableFileContentSource),
+                content.clone(),
+                crate::DeploymentConfig::ephemeral(),
+            )
+            .with_worker_upstream(
+                awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid"),
+            ),
+        );
+        let config = awaken_resource_contract::MemoryStoreConfigVersion {
+            memory_store_id: "worker-memory-store".into(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            retention_policy: Default::default(),
+        };
+        let binding = Arc::new(host.memory.bind(
+            session,
+            "worker-memory-workspace",
+            Arc::new(PlatformMemoryHandle::new(
+                content,
+                config.memory_store_id.to_string(),
+                true,
+            )),
+            Some(crate::host::test_resource_validator()),
+            &config,
+            true,
+        ));
+        host.register_thread_memory_bindings(
+            session,
+            std::collections::HashMap::from([("memory".into(), binding.clone())]),
+        );
+        assert!(
+            host.memory_for_thread(session).is_none(),
+            "R4/C5 no automatic Memory binding is selected"
+        );
+        let commit = Arc::new(host.build_commit(session).await.expect("R4 Worker commit"));
+
+        assert_eq!(
+            host.bind_thread_memory_recovery(session, commit)
+                .await
+                .expect("R4 skips Coordinator-owned extraction recovery"),
+            0,
+            "R4/E4 no Worker recovery is scheduled"
+        );
+        assert!(
+            binding.execution.read().unwrap().is_none(),
+            "R4/E4 the Worker does not bind Coordinator extraction execution"
         );
     }
 }

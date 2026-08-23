@@ -499,6 +499,12 @@ async fn b3_enabled_cloud_supply_without_login_is_typed_and_non_mutating() {
 
 #[tokio::test]
 async fn discovery_reconciles_through_the_existing_catalog_truth() {
+    // Test design — Causes: C1 a first complete listing contains A+B at T1; C2
+    // a later complete listing contains B but omits A at T2. Effects: C1 stamps
+    // active facts with T1; C2 marks A unavailable while retaining A's T1 and
+    // records a later observation boundary. Constraints: only a complete
+    // successful listing advances freshness, and unavailable rows cannot resolve
+    // into publication. Decision rules F1=C1=>activate; F2=C1+C2=>retain/stale.
     let harness = harness();
     let credential_id = author_prerequisites(&harness.app).await;
     let request = connection_request("workspace-a", &credential_id);
@@ -1186,6 +1192,11 @@ async fn connection_summaries_separate_connected_from_needs_attention() {
 
 #[tokio::test]
 async fn failed_refresh_does_not_advance_last_seen_or_change_availability() {
+    // Test design — Causes: C1 a successful listing has committed catalog and
+    // freshness; C2 the next provider transport fails while returning no models.
+    // Effects: the API returns typed 502 and the entire catalog remains byte
+    // equivalent to C1. Constraints: failure is not a complete empty listing and
+    // cannot mark every model unavailable. Decision rule F6=C1+C2=>error+no write.
     let harness = harness();
     let credential_id = author_prerequisites(&harness.app).await;
     let request = connection_request("workspace-a", &credential_id);
@@ -1215,6 +1226,11 @@ async fn failed_refresh_does_not_advance_last_seen_or_change_availability() {
 
 #[tokio::test]
 async fn discovery_fails_closed_across_workspace() {
+    // Test design — Cause: a discovery request names Workspace B while its
+    // credential belongs to Workspace A. Effects: admission returns 404 and no
+    // provider discovery/catalog fact is created. Constraints: Workspace fencing
+    // precedes secret exposure and provider I/O. Decision rule F7=mismatch=>deny
+    // before discovery with the prior catalog unchanged.
     let harness = harness();
     let credential_id = author_prerequisites(&harness.app).await;
     let (status, _) = call(

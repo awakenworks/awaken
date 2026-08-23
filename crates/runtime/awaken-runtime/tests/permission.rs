@@ -222,6 +222,11 @@ async fn per_run_deny_all_cannot_be_widened_by_an_allowing_platform_policy() {
 
 #[tokio::test]
 async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
+    // Test design — Causes: permission gate returns RequireConfirmation and an
+    // exact correlated allow later resumes it. Effects: execution first awaits
+    // with zero tool calls, then commits approval and runs once. Constraints/
+    // invariants: approval precedes the effect and must match the durable ticket.
+    // Decision rule P1: ask=>Awaiting/zero; exact allow=>approved/one/NaturalEnd.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
         ran.clone(),
@@ -252,6 +257,7 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms: 0,
     };
     let state = runtime

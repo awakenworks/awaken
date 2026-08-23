@@ -294,6 +294,29 @@ pub(crate) fn spawn_heartbeat(
                     // protocol. The Control endpoint caps the requested expiry
                     // by the freshly-heartbeated registry lease.
                     let now = wall_clock_ms();
+                    let cleanup_target = awaken_session_contract::SessionRealizationTarget {
+                        owner: lifecycle.identity.worker_id.clone(),
+                        runtime_incarnation: lifecycle.identity.lease_owner(),
+                        lease_expires_at_unix_ms: now.saturating_add(20_000),
+                        renew_existing_lease: false,
+                        reassign_existing_lease: false,
+                    };
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(8),
+                        lifecycle
+                            .host
+                            .recover_terminal_cleanup_assignments(cleanup_target),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => eprintln!(
+                            "cold Session terminal cleanup recovery remained pending; Worker heartbeat continues: {error}"
+                        ),
+                        Err(_) => eprintln!(
+                            "cold Session terminal cleanup recovery exceeded 8s; durable assignments remain retryable and Worker heartbeat continues"
+                        ),
+                    }
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(3),
                         lifecycle.host.renew_due_session_realizations(

@@ -8,22 +8,30 @@ use tokio::sync::broadcast;
 
 use awaken_session_application::SessionApplication;
 
-use crate::types::StreamFrame;
+use crate::types::Event;
 
 use super::SessionRecord;
 
 /// Disposable Managed wire projections over the canonical Session application.
 pub struct ManagedState {
     pub(super) application: Arc<SessionApplication>,
+    /// Exact Coordinator Environment application shared by Session compilation
+    /// and the authenticated Worker warmup projection. Keeping the concrete
+    /// application Arc here lets process composition expose the existing owner;
+    /// it does not introduce a second catalog, queue, or warmup state.
+    pub(super) environments:
+        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Edge-owned Session-to-Workspace wire projection.
     pub(super) owners: Mutex<HashMap<String, String>>,
     pub(super) session_seq: AtomicU64,
-    /// Shared by preview and committed wire-event allocation.
+    /// Disposable ids for committed wire events that have no deterministic
+    /// durable coordinate.
     pub(super) event_seq: Arc<AtomicU64>,
-    /// Per-Session live wire stream channels.
-    pub(super) live: Mutex<HashMap<String, broadcast::Sender<StreamFrame>>>,
+    /// Per-Session committed wire-event channels. Runtime live observations use
+    /// the ThreadEventHub subscription and never enter this map.
+    pub(super) live: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     /// Current Workspace geography policy. Hosted composition supplies this
     /// authority; self-managed mode leaves it absent and retains local policy.
     pub(super) inference_geo_policy: Option<Arc<dyn crate::ManagedInferenceGeoPolicy>>,

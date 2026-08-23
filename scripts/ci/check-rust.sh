@@ -45,8 +45,12 @@ step() {
   if out=$("$@" 2>&1); then
     echo "✓ $label"
     return 0
+  else
+    # Capture the command status while the failed `if` condition is still the
+    # immediately preceding command.  Reading `$?` after the `if` statement
+    # would observe the statement's own zero status and falsely continue.
+    rc=$?
   fi
-  rc=$?
   {
     echo ""
     echo "✗ $label"
@@ -57,6 +61,34 @@ step() {
   fail=1
   return "$rc"
 }
+
+if [ "$mode" = "--self-test" ]; then
+  # Causes: S1 the wrapped command succeeds; F1 it fails while a later step is
+  # eligible. Effects: S1 returns zero and leaves the failure aggregate clear;
+  # F1 returns the exact nonzero status, marks the aggregate, and prevents the
+  # caller's success branch. Constraint: the probe must exercise this same
+  # `step` function without invoking Cargo. Decision rules: S1 -> continue;
+  # F1 -> fail and skip dependent work.
+  if ! (
+    fail=0
+    step "self-test-success" "not applicable" true >/dev/null 2>&1
+    [ "$fail" -eq 0 ]
+  ); then
+    echo "check-rust self-test: a successful step did not remain successful" >&2
+    exit 1
+  fi
+  if ! (
+    fail=0
+    rc=0
+    step "self-test-failure" "not applicable" sh -c 'exit 23' >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 23 ] && [ "$fail" -eq 1 ]
+  ); then
+    echo "check-rust self-test: a failed step lost its status or failure aggregate" >&2
+    exit 1
+  fi
+  echo "check-rust self-test: success and failure branches are exact"
+  exit 0
+fi
 
 step "fmt" "cargo fmt --all" \
   cargo fmt --all -- --check

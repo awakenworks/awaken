@@ -12,8 +12,9 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecyclePage};
 use awaken_session_contract::{
-    AgentCapabilities, DelegatedRun, OutcomeDrive, Pending, PersistedSession, ResolvedSkillBinding,
-    RunError, SessionRepositoryError, SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, CommittedOutcomeProjection, DelegatedRun, OutcomeDrive, Pending,
+    PersistedSession, ResolvedSkillBinding, RunError, SessionRepositoryError, SessionUsage,
+    StepOutcome, ToolPermissionDecision,
 };
 
 /// Application command payload for a Repository attached as a Session input.
@@ -31,6 +32,38 @@ pub struct SessionRepositoryResourceInput {
 }
 
 use crate::SessionApplication;
+
+fn merge_session_usage(total: &mut SessionUsage, child: SessionUsage) {
+    total.input_tokens = total.input_tokens.saturating_add(child.input_tokens);
+    total.output_tokens = total.output_tokens.saturating_add(child.output_tokens);
+    total.cache_read_tokens = total
+        .cache_read_tokens
+        .saturating_add(child.cache_read_tokens);
+    total.cache_creation_tokens = total
+        .cache_creation_tokens
+        .saturating_add(child.cache_creation_tokens);
+    total.web_fetch_requests = total
+        .web_fetch_requests
+        .saturating_add(child.web_fetch_requests);
+    total.web_search_requests = total
+        .web_search_requests
+        .saturating_add(child.web_search_requests);
+    for (model, child_model) in child.by_model {
+        let model_usage = total.by_model.entry(model).or_default();
+        model_usage.input_tokens = model_usage
+            .input_tokens
+            .saturating_add(child_model.input_tokens);
+        model_usage.output_tokens = model_usage
+            .output_tokens
+            .saturating_add(child_model.output_tokens);
+        model_usage.cache_read_tokens = model_usage
+            .cache_read_tokens
+            .saturating_add(child_model.cache_read_tokens);
+        model_usage.cache_creation_tokens = model_usage
+            .cache_creation_tokens
+            .saturating_add(child_model.cache_creation_tokens);
+    }
+}
 
 impl SessionApplication {
     /// Validate that one published Agent can start new Sessions in this scope.
@@ -272,38 +305,62 @@ impl SessionApplication {
             }
             (None, None) => None,
         };
-        catalog
-            .register_repository(awaken_resource_contract::RegisterRepository {
-                definition: awaken_resource_contract::RepositoryDefinition {
-                    id: input.id.clone().into(),
-                    workspace_id: input.workspace_id,
-                    name: input.name,
-                    description: input.description,
-                    metadata: Default::default(),
-                    state: awaken_resource_contract::ResourceState::Active,
-                    current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
-                    timestamps: Default::default(),
-                },
-                initial_config: awaken_resource_contract::RepositoryConfigVersion {
-                    repository_id: input.id.clone().into(),
-                    version: awaken_resource_contract::ConfigVersion::INITIAL,
-                    remote_url: input.remote_url,
-                    credential_binding,
-                    initial_branch: input.initial_branch,
-                    initial_commit: input.initial_commit,
-                    clone_policy: awaken_resource_contract::ClonePolicy::default(),
-                },
-            })
-            .map_err(|error| {
-                RunError::bad_request(format!(
-                    "repository resource could not be configured: {error}"
-                ))
-            })?;
-        Ok(awaken_resource_contract::RepositoryId::from(input.id))
+        let repository_id = awaken_resource_contract::RepositoryId::from(input.id);
+        let definition = awaken_resource_contract::RepositoryDefinition {
+            id: repository_id.clone(),
+            workspace_id: input.workspace_id,
+            name: input.name,
+            description: input.description,
+            metadata: Default::default(),
+            state: awaken_resource_contract::ResourceState::Active,
+            current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
+            timestamps: Default::default(),
+        };
+        let initial_config = awaken_resource_contract::RepositoryConfigVersion {
+            repository_id: repository_id.clone(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            remote_url: input.remote_url,
+            credential_binding,
+            initial_branch: input.initial_branch,
+            initial_commit: input.initial_commit,
+            clone_policy: awaken_resource_contract::ClonePolicy::default(),
+        };
+        let map_registry_error = |error| {
+            RunError::bad_request(format!(
+                "repository resource could not be configured: {error}"
+            ))
+        };
+        match catalog.register_repository(awaken_resource_contract::RegisterRepository {
+            definition: definition.clone(),
+            initial_config: initial_config.clone(),
+        }) {
+            Ok(()) => {}
+            Err(awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(_)) => {
+                let stored_definition = catalog
+                    .find_repository(&definition.workspace_id, definition.id.as_str())
+                    .map_err(map_registry_error)?;
+                let stored_config = catalog
+                    .find_repository_config(
+                        &definition.workspace_id,
+                        definition.id.as_str(),
+                        awaken_resource_contract::ConfigVersion::INITIAL,
+                    )
+                    .map_err(map_registry_error)?;
+                if stored_definition.as_ref() != Some(&definition)
+                    || stored_config.as_ref() != Some(&initial_config)
+                {
+                    return Err(RunError::bad_request(
+                        "repository resource could not be configured: existing Repository does not exactly match the requested definition and initial config",
+                    ));
+                }
+            }
+            Err(error) => return Err(map_registry_error(error)),
+        }
+        Ok(repository_id)
     }
 
     pub fn notify_lifecycle_fact(&self) {
-        if let Some(notifier) = &self.lifecycle_notifier {
+        if let Some(notifier) = self.lifecycle_notifier.get() {
             notifier.notify();
         }
     }
@@ -314,6 +371,86 @@ impl SessionApplication {
 
     pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         self.runtime.committed_messages(thread).await
+    }
+
+    /// Derived Managed child links; the Runtime reconstructs these from the
+    /// parent tool facts and ordinary child Thread/dispatch facts.
+    pub async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        self.runtime.coordinated_threads(session_id).await
+    }
+
+    /// Read cumulative accounting for one logical Thread through its parent
+    /// Session partition. This is the same neutral Runtime authority used by
+    /// Session totals; the application does not cache or re-aggregate it.
+    pub async fn session_thread_usage(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<SessionUsage, RunError> {
+        self.runtime
+            .session_thread_usage(session_id, thread_id)
+            .await
+    }
+
+    /// Open the Runtime's existing Thread-scoped live observer. The application
+    /// adds no buffer or subscription registry; it only preserves the
+    /// server/runtime boundary for protocol adapters.
+    pub async fn subscribe_session_thread_live(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, RunError>
+    {
+        self.runtime
+            .subscribe_session_thread_live(session_id, thread_id)
+            .await
+    }
+
+    /// Read the Runtime's one consistent recovery prefix for a logical child
+    /// through the parent Session partition. This is a direct query wrapper;
+    /// the application owns no snapshot cache or reconstructed projection.
+    pub async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        self.runtime
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await
+    }
+
+    pub async fn session_thread_disposition(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
+        self.runtime
+            .session_thread_disposition(session_id, thread_id)
+            .await
+    }
+
+    pub async fn archive_session_thread(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<(), RunError> {
+        let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
+        let links = self.runtime.coordinated_threads(session_id).await?;
+        if !links
+            .iter()
+            .any(|link| link.session_id == session_id && link.thread_id == child)
+        {
+            return Err(RunError::bad_request(
+                "Agent Thread was not found in this Session",
+            ));
+        }
+        self.runtime
+            .archive_session_thread(session_id, thread_id)
+            .await
     }
 
     pub async fn committed_run_lifecycle(
@@ -383,10 +520,6 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError> {
-        self.runtime.add_system(agent, thread, text).await
-    }
-
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.runtime.interrupt(thread).await
     }
@@ -403,8 +536,33 @@ impl SessionApplication {
             .await
     }
 
+    pub async fn prepare_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<(), RunError> {
+        self.runtime
+            .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
+            .await
+    }
+
     pub async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
         self.runtime.continue_outcome(thread).await
+    }
+
+    /// Project an exact terminal Outcome through the sole Runtime query port.
+    /// The application owns no Outcome cache or continuation state.
+    pub async fn committed_outcome_projection(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+    ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
+        self.runtime
+            .committed_outcome_projection(thread, outcome_id)
+            .await
     }
 
     pub async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
@@ -412,18 +570,55 @@ impl SessionApplication {
     }
 
     pub async fn session_usage(&self, thread: &str) -> Result<SessionUsage, RunError> {
+        self.session_usage_with_additional_thread(thread, None)
+            .await
+    }
+
+    /// Include the currently executing logical Thread exactly once even if its
+    /// deterministic coordination receipt is still racing an already-admitted
+    /// dispatch. The committed Thread usage and ordinary link projection remain
+    /// the only authorities; this method creates no relationship cache.
+    pub(crate) async fn session_usage_for_model_request(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<SessionUsage, RunError> {
+        self.session_usage_with_additional_thread(session_id, Some(thread_id))
+            .await
+    }
+
+    async fn session_usage_with_additional_thread(
+        &self,
+        thread: &str,
+        additional_thread: Option<&str>,
+    ) -> Result<SessionUsage, RunError> {
         let mut usage = self.runtime.session_usage(thread).await?;
+        let mut included = std::collections::BTreeSet::from([thread.to_string()]);
+        for link in self.runtime.coordinated_threads(thread).await? {
+            included.insert(link.thread_id.0.clone());
+            let child = self
+                .runtime
+                .session_thread_usage(thread, &link.thread_id.0)
+                .await?;
+            merge_session_usage(&mut usage, child);
+        }
+        if let Some(additional_thread) = additional_thread
+            && included.insert(additional_thread.to_string())
+        {
+            let current = self
+                .runtime
+                .session_thread_usage(thread, additional_thread)
+                .await?;
+            merge_session_usage(&mut usage, current);
+        }
         let session = self
             .session_repository()
             .get(thread)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
-        usage.active_seconds = session.runtime_active_millis / 1_000;
+        usage.active_seconds =
+            session.effective_runtime_active_millis(super::activity::now_unix_ms()) / 1_000;
         Ok(usage)
-    }
-
-    pub async fn end_runtime_session(&self, thread: &str) -> Result<(), RunError> {
-        self.runtime.end_session(thread).await
     }
 
     #[must_use]

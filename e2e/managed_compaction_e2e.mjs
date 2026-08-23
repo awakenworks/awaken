@@ -1,15 +1,15 @@
 // Context compaction e2e: once a session's transcript passes the (low)
-// threshold, the compaction plugin folds the older turns into a summary via
+// threshold, the compaction plugin folds the older Runs into a summary via
 // the `compactor` sub-agent and injects that summary request-only on later
-// turns. The `compaction` mode's model reports the context it received, so the
+// Runs. The `compaction` mode's model reports the context it received, so the
 // fold → summarize → inject loop is observable on the wire — AND the fold is
 // projected as an `agent.thread_context_compacted` event (ADR-0047 D3),
-// asserted below to precede the folded turn's message and to carry a
+// asserted below to precede the folded Run's message and to carry a
 // `pre_compaction_tokens` estimate.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -19,18 +19,29 @@ async function allEvents(client, sessionId) {
   return events;
 }
 
-async function reply(client, sessionId) {
-  return (await allEvents(client, sessionId))
+function replies(events) {
+  return events
     .filter((e) => e.type === 'agent.message')
     .map((e) => e.content.map((b) => b.text ?? '').join(''));
 }
 
-async function turn(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+async function sendRun(client, sessionId, text) {
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
-  return reply(client, sessionId);
+  const acceptedId = receipt.data[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'compaction Run returns its exact User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    acceptedId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `the Run for ${text} to commit its reply and terminal Session status`,
+  );
+  return replies(events);
 }
 
 async function main() {
@@ -38,19 +49,28 @@ async function main() {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
-    // Drive enough turns to cross the threshold (2) so the older slice folds.
-    await turn(client, s.id, 'turn one');
-    await turn(client, s.id, 'turn two');
-    await turn(client, s.id, 'turn three');
-    const last = await turn(client, s.id, 'turn four');
+    // Cause/effect graph: C0=each accepted User Event is initially only a durable
+    // receipt and later commits its own Run; C1=committed context crosses the configured threshold;
+    // C2=the deterministic compactor returns its summary; C3=a later Run reaches
+    // BeforeInference. Effects: E1=the summary is request-only context visible to
+    // the model; E2=one exact SDK-shaped thread_context_compacted marker commits;
+    // E3=the marker precedes the following agent.message. Decision rule R1:
+    // C0 && C1 && C2 && C3 => E1-E3. Below-threshold behavior has its focused owner.
+    // Constraints/invariant: compaction is request context plus one committed
+    // marker; it never rewrites or duplicates the authoritative Event history.
+    // Drive enough Runs to cross the threshold (2) so the older slice folds.
+    await sendRun(client, s.id, 'Run one');
+    await sendRun(client, s.id, 'Run two');
+    await sendRun(client, s.id, 'Run three');
+    const last = await sendRun(client, s.id, 'Run four');
 
     // The compactor summary is injected request-only; the model surfaces the
     // context it saw, so the folded summary shows up in a later reply.
     assert.ok(
-      last.some((m) => m.includes('SUMMARY: earlier turns folded')),
-      `a later turn sees the folded summary in its injected context: ${JSON.stringify(last)}`,
+      last.some((m) => m.includes('SUMMARY: earlier Runs folded')),
+      `a later Run sees the folded summary in its injected context: ${JSON.stringify(last)}`,
     );
-    pass('compaction: older turns fold into a summary injected on later turns');
+    pass('compaction: older Runs fold into a summary injected on later Runs');
 
     // The fold is projected onto the event stream, decoded by the official SDK as
     // BetaManagedAgentsAgentThreadContextCompactedEvent (`{id, type, processed_at}`).
@@ -69,15 +89,15 @@ async function main() {
       `no fields beyond the SDK type: ${JSON.stringify(ev)}`,
     );
 
-    // It runs at BeforeInference, so the marker precedes its turn's agent.message.
+    // It runs at BeforeInference, so the marker precedes its Run's agent.message.
     const followingMessage = types.indexOf('agent.message', at + 1);
     assert.ok(
       followingMessage > at,
       `the compaction marker precedes a following agent.message: ${types.join(',')}`,
     );
-    pass('compaction: agent.thread_context_compacted (SDK shape) precedes the folded turn message');
+    pass('compaction: agent.thread_context_compacted (SDK shape) precedes the folded Run message');
   });
-  console.log('E2E PASS: context compaction (fold + summarize + inject) across turns.');
+  console.log('E2E PASS: context compaction (fold + summarize + inject) across Runs.');
 }
 
 main().catch((err) => {

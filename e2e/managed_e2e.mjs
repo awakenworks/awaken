@@ -9,19 +9,13 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38099);
 const BETAS = ['managed-agents-2026-04-01'];
 
-async function listTypes(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
 async function sendMessage(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  return client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
@@ -43,26 +37,55 @@ async function main() {
     pass('create + retrieve');
 
     // --- single message: the reply came back through the real provider wire ---
-    await sendMessage(client, session.id, 'hi there');
-    let events = await listTypes(client, session.id);
-    // Event-ledger decision rule: admitted user input is the durable cause, then
-    // running/reply/idle are its ordered effects; listing omits none of them.
+    // Receipt observation graph: C1=the SDK returns an exact durable User
+    // receipt; C2=the Run later commits its complete ordered wire sequence.
+    // Effects: E1=the receipt owns the opening User Event; E2=the primary
+    // Thread bracket and model span close before usage and aggregate idle.
+    // Constraint: the Session event ledger is authoritative and this fresh
+    // Session has no older history. Decision rules: M1 C1&&!C2=>observe;
+    // M2 C1+C2=>assert the exact full-history sequence E1+E2.
+    const firstReceipt = await sendMessage(client, session.id, 'hi there');
+    const firstReceiptId = firstReceipt.data[0]?.id;
+    assert.equal(typeof firstReceiptId, 'string', 'M1 exact first User Event receipt');
+    let { events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      firstReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.usage')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'M1 first Run to commit its complete wire sequence',
+    );
     assert.deepEqual(events.map((e) => e.type), [
       'user.message',
       'session.status_running',
+      'session.thread_status_running',
       'span.model_request_start',
       'span.model_request_end',
       'agent.message',
-      'session.status_idle',
+      'session.thread_status_idle',
       'session.usage',
+      'session.status_idle',
     ]);
     assert.equal(events.find((e) => e.type === 'agent.message').content[0].text, 'Echo: hi there');
     assert.equal(events.find((e) => e.type === 'session.status_idle').stop_reason.type, 'end_turn');
     pass('single message + list');
 
     // --- multi-turn conversation ---
-    await sendMessage(client, session.id, 'second');
-    events = await listTypes(client, session.id);
+    const secondReceipt = await sendMessage(client, session.id, 'second');
+    const secondReceiptId = secondReceipt.data[0]?.id;
+    assert.equal(typeof secondReceiptId, 'string', 'M2 exact second User Event receipt');
+    const second = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      secondReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle')
+        && delta.some((event) => event.type === 'session.usage'),
+      'M2 second Run to commit its complete wire sequence',
+    );
+    events = second.events;
     const messages = events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
     assert.deepEqual(messages, ['Echo: hi there', 'Echo: second']);
     pass('multi-turn conversation');

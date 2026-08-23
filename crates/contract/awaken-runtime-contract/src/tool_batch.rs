@@ -32,6 +32,10 @@ impl ToolBatchId {
             .and_then(|value| value.rsplit_once(':'))
             .is_some_and(|(owner, step)| owner == run_id.0.as_str() && step.parse::<u64>().is_ok())
     }
+
+    fn operation_id(&self, call_id: &str) -> String {
+        format!("{}:{call_id}", self.0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,6 +264,13 @@ fn next_execution_attempt(
 }
 
 impl ToolBatch {
+    /// Reconstruct the canonical operation identity for one call from its
+    /// durable Run/step coordinate without exposing a constructible batch id.
+    #[must_use]
+    pub fn operation_id_for_step(run_id: &RunId, step: usize, call_id: &str) -> String {
+        ToolBatchId::for_step(run_id, step).operation_id(call_id)
+    }
+
     pub fn for_step(
         run_id: RunId,
         step: usize,
@@ -299,6 +310,12 @@ impl ToolBatch {
     #[must_use]
     pub fn id(&self) -> &ToolBatchId {
         &self.id
+    }
+
+    /// Canonical identity of one call already owned by this durable batch.
+    #[must_use]
+    pub fn operation_id(&self, call_id: &str) -> String {
+        self.id.operation_id(call_id)
     }
 
     #[must_use]
@@ -606,6 +623,38 @@ mod tests {
             )],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn operation_identity_is_owned_by_the_batch_coordinate() {
+        // Cause/effect graph: C1 Run and step select one durable batch; C2 the
+        // provider call id is equal or different. Effects: E1 exact recovery
+        // reconstructs the same deterministic operation id; E2 another call
+        // cannot collide.
+        // Decision table: O1(same C1+C2)->E1; O2(same C1,!C2)->E2.
+        // Constraints/invariants: Run+Step+call form the sole operation coordinate;
+        // reconstruction is deterministic and call ids remain collision-free.
+        let batch = ToolBatch::for_step(
+            RunId("run-7".into()),
+            3,
+            [(
+                ToolCall {
+                    call_id: "call-1".into(),
+                    tool_id: "tool".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolRecoveryPolicy::replay_safe(),
+            )],
+        )
+        .unwrap();
+        let operation_id = batch.operation_id("call-1");
+        assert_eq!(operation_id, "tool-batch:run-7:3:call-1", "O1/E1");
+        assert_eq!(
+            operation_id,
+            ToolBatch::operation_id_for_step(&RunId("run-7".into()), 3, "call-1"),
+            "O1/E1 deterministic reconstruction from the durable coordinate"
+        );
+        assert_ne!(operation_id, batch.operation_id("call-2"), "O2/E2");
     }
 
     #[test]

@@ -74,7 +74,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
-    --harness observability_decorators_cannot_change_step_authority \
+    --harness settled_step_has_no_parallel_observation_authority \
     --harness only_queued_work_is_claimable \
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
@@ -205,7 +205,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-protocol-ai-sdk \
     --harness ai_sdk_terminal_category_mapping_is_total_and_exact
   run_kani awaken-provider-genai \
-    --harness reasoning_replay_projection_preserves_reasoning_and_complete_turns \
+    --harness reasoning_replay_projection_preserves_reasoning_and_complete_responses \
     --harness reasoning_fold_prepends_exactly_once_and_is_transport_independent
   run_kani awaken-ext-mcp \
     --harness sensitive_marker_never_projects_payload_publicly \
@@ -282,7 +282,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness durable_dispatch_admission_is_monotonic_in_persistence_evidence \
     --harness sandbox_support_projection_is_total_exact_and_evidence_bound \
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
-    --harness settled_step_projection_cannot_invent_pending_or_observation_flags
+    --harness settled_step_projection_cannot_invent_pending_or_observations
   run_kani awaken-config-service \
     --harness only_the_reserved_scope_selects_admin_catalog_membership \
     --harness every_non_reserved_scope_selects_strictly_global_membership
@@ -294,6 +294,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deployment_backing_selects_only_exact_resources_database_and_files_object_roles \
     --harness resource_config_publication_is_exact_and_never_wraps \
     --harness exhausted_resource_config_versions_fail_closed \
+    --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
     --harness resource_lifecycle_timestamps_project_the_exact_transition
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \

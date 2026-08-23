@@ -32,6 +32,7 @@ fn allow_resume() -> ResumeCommand {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms: 0,
     }
 }

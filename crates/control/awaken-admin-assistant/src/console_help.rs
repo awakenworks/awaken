@@ -78,7 +78,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         key: "plugins",
         title: "Behaviors (plugins): compaction, memory, state machine",
-        what: "Named runtime behaviors composed onto an agent: auto-compaction (summarize old turns), memory recall, and a state machine (constrain tool-call order + emit system reminders).",
+        what: "Named runtime behaviors composed onto an agent: auto-compaction (summarize old Steps), memory recall, and a state machine (constrain tool-call order + emit system reminders).",
         why: "They add durable, background behavior without touching the prompt — e.g. keep a long agent within its context budget, or force read-before-write.",
         location: "Common behaviors live in Build by intent; state machine and generic plugin configuration live in Advanced.",
         how: "Configure compaction with Instructions, Memory with Memory & resources, and state-machine transitions under Advanced ▸ Orchestration.",

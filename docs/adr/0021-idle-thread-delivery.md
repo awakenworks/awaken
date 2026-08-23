@@ -41,13 +41,21 @@ are settled away with the run's other consumed input once the run commits
 leaves the unbound input in place, so the next attempt re-delivers it — at-least
 -once with an exactly-once committed effect, exactly as bound pending input.
 
-### D4: Auto-activation stays deferred
+### D4: Generic auto-activation stays deferred
 
 This binds an idle-thread message to the *next* run someone starts on the thread.
 Spawning a new run *immediately* from an idle-thread message needs the thread's
 last executable snapshot (its agent/config), which the after-commit
 `ThreadReader` does not expose. That continuation-activation path — and the
-config seam it needs — remains a named, deferred extension.
+config seam it needs — remains a named, deferred extension for generic
+`send_message`.
+
+A higher-level owner that already holds a complete deterministic `RunDispatch`
+may atomically admit that explicit continuation with the Outbox message. That
+input is bound to the exact new Run, rather than left Thread-unbound, so multiple
+continuations on one Thread cannot be coalesced by the first fresh claimant. This
+does not infer configuration in the Outbox and does not change ordinary
+`send_message` semantics.
 
 ## Consequences
 
@@ -55,8 +63,9 @@ config seam it needs — remains a named, deferred extension.
   input; nothing is lost and nothing is mis-delivered as a resume.
 - No new table or commit field: an unbound `PendingInput` reuses the pending
   inbox, and the worker's fresh-run path drains it.
-- Auto-activating a run from an idle-thread message remains deferred (needs the
-  thread-snapshot/config seam).
+- Inferring and auto-activating a run from a generic idle-thread message remains
+  deferred (needs the thread-snapshot/config seam); an explicit caller-supplied
+  continuation can reuse the same Outbox/Inbox and dispatch authorities.
 
 ## References
 

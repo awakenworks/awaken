@@ -25,8 +25,6 @@ impl RunApplication for UsageRuntime {
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "hi")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -121,8 +119,6 @@ impl RunApplication for ResumeUsageRuntime {
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

@@ -4,6 +4,8 @@
 //! crate. Repository adapters persist opaque encodings of these application
 //! records, so neither storage nor this owner depends on Axum or Managed DTOs.
 
+mod scheduler;
+
 pub use awaken_deployment_contract::{
     AgentSelector, CreateDeploymentCommand, DeploymentAgent, DeploymentLaunch,
     DeploymentLaunchOutcome, DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
@@ -18,26 +20,20 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_deployment_contract::{
-    AgentArchiveCascade, Cron, DeploymentLifecycleFact, DeploymentRepository,
-    DeploymentRepositoryError, DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION,
-    ScheduledRunClaimOutcome,
+    AgentArchiveCascade, DeploymentLifecycleFact, DeploymentRepository, DeploymentRepositoryError,
+    DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION,
 };
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
 };
-use chrono_tz::Tz;
+use scheduler::{next_occurrence, validate_schedule};
+
+#[cfg(test)]
+use awaken_deployment_contract::ScheduledRunClaimOutcome;
+#[cfg(test)]
+use scheduler::{MAX_JITTER_BOUND_MS, execution_jitter_ms};
 
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
-const MIN_JITTER_BOUND_MS: u64 = 5_000;
-const MAX_JITTER_BOUND_MS: u64 = 9 * 60_000;
-
-type ScheduledCandidate = (
-    String,
-    DeploymentLaunch,
-    DeploymentRunRecord,
-    DeploymentRecord,
-    u64,
-);
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -83,6 +79,8 @@ pub struct DeploymentApplication {
     launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
     repository: Option<Arc<dyn DeploymentRepository>>,
     executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
+    executable_projection_refresh:
+        Mutex<Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>>,
     scheduled_limit: usize,
 }
 
@@ -105,6 +103,7 @@ impl DeploymentApplication {
             launcher: Mutex::new(None),
             repository: None,
             executable_agents: Mutex::new(None),
+            executable_projection_refresh: Mutex::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
         }
     }
@@ -120,6 +119,7 @@ impl DeploymentApplication {
             launcher: Mutex::new(None),
             repository: Some(repository),
             executable_agents: Mutex::new(None),
+            executable_projection_refresh: Mutex::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
         })
     }
@@ -133,6 +133,31 @@ impl DeploymentApplication {
             .executable_agents
             .lock()
             .expect("executable Agent source lock") = Some(source);
+    }
+
+    pub fn bind_executable_projection_refresh(
+        &self,
+        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+    ) {
+        *self
+            .executable_projection_refresh
+            .lock()
+            .expect("executable projection refresh lock") = Some(refresh);
+    }
+
+    async fn refresh_executable_projections(&self) -> Result<(), DeploymentApplicationError> {
+        let refresh = self
+            .executable_projection_refresh
+            .lock()
+            .expect("executable projection refresh lock")
+            .clone();
+        match refresh {
+            Some(refresh) => refresh
+                .refresh()
+                .await
+                .map_err(DeploymentApplicationError::Unavailable),
+            None => Ok(()),
+        }
     }
 
     async fn refresh(&self) -> Result<(), DeploymentApplicationError> {
@@ -198,6 +223,7 @@ impl DeploymentApplication {
     ) -> Result<DeploymentView, DeploymentApplicationError> {
         self.refresh().await?;
         validate_schedule(command.schedule.as_ref())?;
+        self.refresh_executable_projections().await?;
         let agent = self
             .resolve_agent(&command.workspace_id, &command.agent)
             .await?;
@@ -306,6 +332,9 @@ impl DeploymentApplication {
         let mut candidate = current.clone();
         if candidate.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
+        }
+        if command.agent.is_some() {
+            self.refresh_executable_projections().await?;
         }
         if let Some(agent) = command.agent {
             candidate.agent = self.resolve_agent(workspace_id, &agent).await?;
@@ -495,6 +524,7 @@ impl DeploymentApplication {
         if deployment.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
         }
+        self.refresh_executable_projections().await?;
         let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
         let launch = launch_for(&deployment, id, &run_id);
         let run = DeploymentRunRecord {
@@ -512,6 +542,13 @@ impl DeploymentApplication {
             .expect("DeploymentRun projection lock")
             .insert(run_id.clone(), run);
         self.launch_run(&run_id, launch).await
+    }
+
+    pub async fn tick_and_launch(
+        &self,
+        now: u64,
+    ) -> Result<Vec<DeploymentRunView>, DeploymentApplicationError> {
+        self.tick_and_launch_scheduled(now).await
     }
 
     pub async fn get_run(
@@ -591,141 +628,6 @@ impl DeploymentApplication {
             deployments.insert(id.clone(), candidate.clone());
         }
         Ok(candidates.len())
-    }
-
-    pub async fn tick_and_launch(
-        &self,
-        now: u64,
-    ) -> Result<Vec<DeploymentRunView>, DeploymentApplicationError> {
-        self.refresh().await?;
-        let candidates = self.tick(now)?;
-        let mut completed = Vec::with_capacity(candidates.len());
-        for (run_id, launch, run, deployment, expected_revision) in candidates {
-            if self
-                .primary_agent_missing(&launch.workspace_id, &launch.agent.id)
-                .await?
-            {
-                self.runs
-                    .lock()
-                    .expect("DeploymentRun projection lock")
-                    .remove(&run_id);
-                // `tick` speculatively advances the working cursor. Restore the
-                // durable revision before the Agent cascade performs its CAS.
-                self.refresh().await?;
-                self.archive_for_agent(&launch.workspace_id, &launch.agent.id)
-                    .await?;
-                continue;
-            }
-            if let Some(repository) = &self.repository {
-                let DeploymentTrigger::Schedule { scheduled_at } = &run.trigger else {
-                    return Err(DeploymentApplicationError::Invalid(
-                        "scheduler produced a non-scheduled run".into(),
-                    ));
-                };
-                let claim_id = format!("{}:{scheduled_at}", run.deployment_id);
-                match repository
-                    .claim_scheduled_run(
-                        &claim_id,
-                        expected_revision,
-                        stored_deployment(&run.deployment_id, &deployment)?,
-                        stored_run(&run_id, &run)?,
-                        lifecycle_fact(
-                            format!("deployment_run:{run_id}:deployment_run.started"),
-                            &run_id,
-                            &run.workspace_id,
-                            "deployment_run.started",
-                        ),
-                    )
-                    .await?
-                {
-                    ScheduledRunClaimOutcome::Claimed => {
-                        // `tick` may calculate several overdue occurrences at
-                        // once. Publish only this transaction's committed
-                        // revision before launch so an auto-pause is fenced by
-                        // the database revision it actually follows.
-                        self.deployments
-                            .lock()
-                            .expect("Deployment projection lock")
-                            .insert(run.deployment_id.clone(), deployment.clone());
-                    }
-                    ScheduledRunClaimOutcome::AlreadyClaimed
-                    | ScheduledRunClaimOutcome::StaleDeployment => {
-                        self.runs
-                            .lock()
-                            .expect("DeploymentRun projection lock")
-                            .remove(&run_id);
-                        self.refresh().await?;
-                        continue;
-                    }
-                }
-            }
-            completed.push(self.launch_run(&run_id, launch).await?);
-        }
-        Ok(completed)
-    }
-
-    fn tick(&self, now: u64) -> Result<Vec<ScheduledCandidate>, DeploymentApplicationError> {
-        let mut result = Vec::new();
-        let mut deployments = self.deployments.lock().expect("Deployment projection lock");
-        let mut runs = self.runs.lock().expect("DeploymentRun projection lock");
-        for (deployment_id, deployment) in deployments.iter_mut() {
-            let Some((cron, timezone)) = active_cron(deployment) else {
-                continue;
-            };
-            let mut cursor = match deployment.next_fire_ms {
-                Some(cursor) => cursor,
-                None => match cron.next_after_in(now, timezone) {
-                    Some(cursor) => cursor,
-                    None => continue,
-                },
-            };
-            loop {
-                let next = cron.next_after_in(cursor, timezone);
-                let interval_ms = next.unwrap_or(cursor).saturating_sub(cursor);
-                let due =
-                    cursor.saturating_add(execution_jitter_ms(deployment_id, cursor, interval_ms));
-                if due > now {
-                    break;
-                }
-                let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
-                let scheduled_at = timestamp(cursor);
-                let expected_revision = deployment.revision;
-                let advanced_revision = next_revision(expected_revision)?;
-                let run = DeploymentRunRecord {
-                    created_at: timestamp(now),
-                    deployment_id: deployment_id.clone(),
-                    workspace_id: deployment.workspace_id.clone(),
-                    agent: deployment.agent.clone(),
-                    trigger: DeploymentTrigger::Schedule {
-                        scheduled_at: scheduled_at.clone(),
-                    },
-                    session_id: None,
-                    error: None,
-                };
-                runs.insert(run_id.clone(), run.clone());
-                deployment.last_run_at = Some(scheduled_at);
-                deployment.next_fire_ms = Some(next.unwrap_or(cursor));
-                deployment.revision = advanced_revision;
-                result.push((
-                    run_id.clone(),
-                    launch_for(deployment, deployment_id, &run_id),
-                    run,
-                    deployment.clone(),
-                    expected_revision,
-                ));
-                cursor = match next {
-                    Some(cursor) => cursor,
-                    None => break,
-                };
-                if deployment.revision == MAX_DEPLOYMENT_REVISION {
-                    break;
-                }
-            }
-            if deployment.next_fire_ms.is_none() {
-                deployment.next_fire_ms = Some(cursor);
-            }
-        }
-        Ok(result)
     }
 
     async fn launch_run(
@@ -1039,21 +941,6 @@ fn lifecycle_fact(
     }
 }
 
-fn validate_schedule(
-    schedule: Option<&DeploymentSchedule>,
-) -> Result<(), DeploymentApplicationError> {
-    let Some(schedule) = schedule else {
-        return Ok(());
-    };
-    Cron::parse(schedule.expression()).map_err(|error| {
-        DeploymentApplicationError::Invalid(format!("invalid cron schedule: {error}"))
-    })?;
-    schedule.timezone().parse::<Tz>().map_err(|error| {
-        DeploymentApplicationError::Invalid(format!("invalid IANA timezone: {error}"))
-    })?;
-    Ok(())
-}
-
 fn validate_record(record: &DeploymentRecord) -> Result<(), DeploymentApplicationError> {
     if record.name.trim().is_empty() {
         return Err(DeploymentApplicationError::Invalid(
@@ -1102,42 +989,6 @@ fn ensure_scheduled_capacity(
     Ok(())
 }
 
-fn parsed_schedule(schedule: &DeploymentSchedule) -> Option<(Cron, Tz)> {
-    Some((
-        Cron::parse(schedule.expression()).ok()?,
-        schedule.timezone().parse().ok()?,
-    ))
-}
-
-fn next_occurrence(schedule: &DeploymentSchedule, after_ms: u64) -> Option<u64> {
-    let (cron, timezone) = parsed_schedule(schedule)?;
-    cron.next_after_in(after_ms, timezone)
-}
-
-fn active_cron(record: &DeploymentRecord) -> Option<(Cron, Tz)> {
-    if record.status != DeploymentStatus::Active || record.archived_at.is_some() {
-        return None;
-    }
-    parsed_schedule(record.schedule.as_ref()?)
-}
-
-fn execution_jitter_bound_ms(interval_ms: u64) -> u64 {
-    interval_ms
-        .saturating_mul(15)
-        .checked_div(100)
-        .unwrap_or_default()
-        .clamp(MIN_JITTER_BOUND_MS, MAX_JITTER_BOUND_MS)
-}
-
-fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in deployment_id.bytes().chain(scheduled_ms.to_le_bytes()) {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash % (execution_jitter_bound_ms(interval_ms) + 1)
-}
-
 fn launch_for(record: &DeploymentRecord, deployment_id: &str, run_id: &str) -> DeploymentLaunch {
     DeploymentLaunch {
         deployment_id: deployment_id.to_string(),
@@ -1158,7 +1009,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn command(schedule: bool) -> CreateDeploymentCommand {
+    pub(crate) fn command(schedule: bool) -> CreateDeploymentCommand {
         CreateDeploymentCommand {
             workspace_id: "workspace-a".into(),
             agent: AgentSelector {
@@ -1273,40 +1124,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn jitter_is_stable_and_obeys_all_interval_bounds() {
-        // Cause/effect graph: identity + exact scheduled instant select a stable
-        // point within the interval-derived bound. Interval <33.34s reaches the
-        // 5s floor; ordinary intervals use 15%; intervals >60m reach the 9m cap;
-        // extreme timestamps/intervals saturate without wrap.
-        //
-        // Decision table:
-        // | Rule | interval       | bound | effects                         |
-        // | J1   | 10s            | 5s    | stable delay in 0..=5s          |
-        // | J2   | 15m            | 135s  | stable delay in 0..=15%         |
-        // | J3   | 24h            | 9m    | stable delay in 0..=9m          |
-        // | J4   | u64::MAX       | 9m    | no arithmetic/due-time wrap     |
-        for (rule, interval, bound) in [
-            ("J1", 10_000, MIN_JITTER_BOUND_MS),
-            ("J2", 15 * 60_000, 135_000),
-            ("J3", 24 * 60 * 60_000, MAX_JITTER_BOUND_MS),
-            ("J4", u64::MAX, MAX_JITTER_BOUND_MS),
-        ] {
-            assert_eq!(execution_jitter_bound_ms(interval), bound, "{rule}");
-            let delay = execution_jitter_ms("depl-a", u64::MAX, interval);
-            assert_eq!(
-                delay,
-                execution_jitter_ms("depl-a", u64::MAX, interval),
-                "{rule}"
-            );
-            assert!(delay <= bound, "{rule}");
-            assert_eq!(u64::MAX.saturating_add(delay), u64::MAX, "{rule}");
-        }
-    }
-
-    struct OutcomeLauncher {
-        outcome: DeploymentLaunchOutcome,
-        calls: Arc<AtomicUsize>,
+    pub(crate) struct OutcomeLauncher {
+        pub(crate) outcome: DeploymentLaunchOutcome,
+        pub(crate) calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1468,66 +1288,6 @@ mod tests {
 
         let (_, deployment) = exercise(DeploymentTrigger::Manual, persistent).await;
         assert_eq!(deployment.status, DeploymentStatus::Active, "P3");
-    }
-
-    #[tokio::test]
-    async fn schedule_cursor_is_future_only_and_pause_suppresses_execution() {
-        // Cursor graph: S1 first tick with no cursor -> seed strictly after now;
-        // S2 before stable jitter due -> no run; S3 at due -> one run carrying
-        // the unjittered cron instant; S4 paused -> no later runs; S5 unpause ->
-        // reseed after unpause time and never backfill missed occurrences.
-        const MONDAY_0900: u64 = 1_767_603_600_000;
-        let application = DeploymentApplication::new();
-        let mut create = command(true);
-        create.schedule = Some(DeploymentSchedule::Cron {
-            expression: "*/15 * * * *".into(),
-            timezone: "UTC".into(),
-        });
-        let deployment = application.create(create).await.unwrap();
-        {
-            let mut records = application.deployments.lock().unwrap();
-            records.get_mut(&deployment.id).unwrap().next_fire_ms = None;
-        }
-        assert!(application.tick(MONDAY_0900).unwrap().is_empty(), "S1");
-        let scheduled = MONDAY_0900 + 15 * 60_000;
-        let due =
-            scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled, 15 * 60_000));
-        assert!(application.tick(due - 1).unwrap().is_empty(), "S2");
-        let fired = application.tick(due).unwrap();
-        assert_eq!(fired.len(), 1, "S3");
-        assert!(
-            matches!(
-                &fired[0].2.trigger,
-                DeploymentTrigger::Schedule { scheduled_at }
-                    if scheduled_at == "2026-01-05T09:15:00Z"
-            ),
-            "S3"
-        );
-        application
-            .pause("workspace-a", &deployment.id)
-            .await
-            .unwrap();
-        assert!(
-            application
-                .tick(MONDAY_0900 + 2 * 60 * 60_000)
-                .unwrap()
-                .is_empty(),
-            "S4"
-        );
-        application
-            .unpause("workspace-a", &deployment.id)
-            .await
-            .unwrap();
-        assert!(
-            application
-                .get("workspace-a", &deployment.id)
-                .await
-                .unwrap()
-                .record
-                .next_fire_ms
-                .is_some_and(|cursor| cursor > now_ms()),
-            "S5"
-        );
     }
 
     #[tokio::test]

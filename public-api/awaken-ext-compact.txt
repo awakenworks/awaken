@@ -50,7 +50,6 @@ pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runt
 pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
 pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 pub const awaken_ext_compact::plugin::COMPACT_PLUGIN_ID: &str
-pub fn awaken_ext_compact::plugin::compaction_count(&[awaken_agent_contract::agent::state::Command]) -> usize
 pub fn awaken_ext_compact::plugin::config_schema() -> serde_json::value::Value
 pub struct awaken_ext_compact::CompactArtifact
 pub awaken_ext_compact::CompactArtifact::covered_messages: usize
@@ -94,6 +93,5 @@ pub fn awaken_ext_compact::CompactBackend::latest_ready<'life0, 'life1, 'async_t
 pub fn awaken_ext_compact::CompactBackend::prefetch<'life0, 'async_trait>(&'life0 self, awaken_ext_compact::backend::CompactRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_compact::CompactBackend::summarize<'life0, 'async_trait>(&'life0 self, awaken_ext_compact::backend::CompactRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_ext_compact::backend::CompactArtifact>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_compact::compact_config_schema() -> serde_json::value::Value
-pub fn awaken_ext_compact::compaction_count(&[awaken_agent_contract::agent::state::Command]) -> usize
 pub fn awaken_ext_compact::default_compact_agent(&str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_compact::fold_point(usize, usize, usize) -> core::option::Option<usize>

@@ -27,6 +27,7 @@ tokio = { workspace = true, features = ["rt", "time"] }
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros"] }
 tempfile = "3"

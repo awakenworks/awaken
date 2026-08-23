@@ -104,11 +104,14 @@ def main() -> None:
         in sandbox_build
     )
     assert sandbox_build.count("  build_image ") == 2
-    # C7 the catalog changes package/argv/auth facts; C8 Docker consumes an ACP
-    # contract. E4 build.sh generates the contract from the Rust catalog and
-    # passes that exact ephemeral file to Docker; E5 the installer/verifier consume
-    # all generated requirements/executables. I6 C7+C8=>E4+E5. Exact row content
-    # is owned by the Rust generator test, avoiding a second JSON source of truth.
+    # C7 the catalog changes package/argv/auth/version facts; C8 Docker consumes
+    # an ACP contract; C9 the Node runtime matrix consumes ids/version probes.
+    # E4 build.sh generates the contract from the Rust catalog and passes that
+    # exact ephemeral file to Docker; E5 installer/verifier consume all generated
+    # requirements/executables; E6 Node executes the same generator and owns no
+    # literal ids or version table. Constraints: neither a checked-in JSON file
+    # nor a language-specific mirror may become another catalog. Decision rules:
+    # I6 C7+C8=>E4+E5; I7 C7+C9=>E6.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
     sandbox_dockerfile = (sandbox / "Dockerfile").read_text()
     assert "--example image_runtime_contract" in sandbox_build
@@ -116,6 +119,12 @@ def main() -> None:
     assert "ARG ACP_RUNTIME_CONTRACT=" in sandbox_dockerfile
     assert "COPY ${ACP_RUNTIME_CONTRACT}" in sandbox_dockerfile
     assert not (sandbox / "acp-runtimes.json").exists()
+    runtime_profiles = (
+        Path(__file__).parent.parent.parent / "e2e" / "acp_runtime_profiles.mjs"
+    ).read_text()
+    assert "--example', 'image_runtime_contract'" in runtime_profiles
+    assert "ACP_RUNTIME_IDS = Object.freeze([" not in runtime_profiles
+    assert "ACP_RUNTIME_VERSION_SPECS = Object.freeze({" not in runtime_profiles
     installer = (sandbox / "install-acp-runtimes.py").read_text()
     verifier = (sandbox / "verify-acp-runtimes.py").read_text()
     for source in (installer, verifier):

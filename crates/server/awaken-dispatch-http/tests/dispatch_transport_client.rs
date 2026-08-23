@@ -237,6 +237,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // signed_worker_transport_http T20/T21. FMECA: making Work mandatory here
     // rejects non-Session transports with 500; skipping configured Work would
     // allow split ownership, so only the absence case bypasses that outer fence.
+    // Constraint/Invariant: the Dispatch claim and committed Run remain the only
+    // authorities when Session Work is absent. Decision rule: exercise the
+    // C1+C2+C3 branch over real HTTP and require one successful settlement.
     let mem = Arc::new(MemoryDispatchStore::new());
     let recovery = Arc::new(MemoryCommitCoordinator::new());
     recovery
@@ -325,6 +328,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         model: "provider/model".into(),
         partial_text: text.into(),
         partial_tools: Vec::new(),
+        retry_count: 0,
     };
     assert_eq!(
         queue
@@ -511,6 +515,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
                 thread_id: ThreadId("child-thread".into()),
                 correlation_id: "approval-1".into(),
                 available_at_ms: None,
+                context_messages: Vec::new(),
                 result: ResumeResult::Input("approved".into()),
             },
             "worker-1",

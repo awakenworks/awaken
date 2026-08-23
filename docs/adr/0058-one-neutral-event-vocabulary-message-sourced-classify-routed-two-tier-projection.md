@@ -7,7 +7,7 @@
   `{prefix}_event`); the commit fence / phase authority (`{prefix}_commit`, G31/G32);
   resume rebuilding the transcript from committed messages (`store::thread_reader`,
   G1/G13); the neutral projection fold + `Transcoder` seam (`project::AgentEvent`,
-  `project_messages`/`project_step`/`project_history`); the live stream sink
+  `project_messages`); the live stream sink
   (`stream::event::Kind`, `stream::sink::Sink`, neutral `EventForwardingSink`); the durable
   audit event (`event::RunEvent` → `Draft`); telemetry content-capture consent
   (ADR-0050); the best-effort-live / commit-is-truth discipline (G10/G13).
@@ -28,8 +28,9 @@ The neutral event surface is split across **three parallel enums**, and the spli
    `event::RunEvent` (5 audit-lifecycle variants) each redeclare
    `RunStarted`/`Awaiting`/`RunFinished`/`RunFailed`. Every protocol carries **two**
    transcoders — a live one reading `stream::Kind` and a committed one reading
-   `AgentEvent` — kept consistent only by hand (Managed reconciles `evt_N` ids between
-   its preview and its committed events).
+   `AgentEvent` — kept consistent only by hand. The current Managed adapter instead
+   reconstructs one deterministic id from the shared Run/Step/response coordinate
+   on both its live and committed projections.
 
 2. **The tool-argument field lies (leaky abstraction).** `stream::Kind::ToolCall`
    carries `arguments: Value` with *two* shapes: genai streams a **cumulative
@@ -109,7 +110,7 @@ pub enum Detail {
 **agent-produced content**: message / tool / **reasoning** / usage. It deliberately does
 **not** cover **session/orchestration lifecycle** — `session.status_running/terminated/updated`,
 the subagent five, `span.outcome_evaluation_*`, `agent.thread_context_compacted` — those are
-minted by the **state layer from a `TurnOutcome`**, are not "what the agent emitted token by
+minted by the **state layer from a `StepOutcome`**, are not "what the agent emitted token by
 token," and belong to a separate `DomainEvent`/state vocabulary. Forcing them into
 `AgentEvent` would be the mistake. **HITL/permission is already covered**:
 `Awaiting{pending_tool_use_id}` + `ToolDisposition::PendingBuiltin` projects
@@ -166,7 +167,7 @@ pub fn classify(e: &AgentEvent) -> Routing { /* the single source of routing tru
 
 | Channel | Contract | This repo's mapping |
 |---|---|---|
-| **live** | best-effort, lossy, high-freq, pre-commit | broadcast of `Detail` (+ `RunStarted`); ephemeral (G10/G13). Managed preview / AI-SDK+AG-UI prefix. |
+| **live** | best-effort, lossy, high-freq, pre-commit | RuntimeHost `ThreadEventHub` publishes neutral `Detail`; protocol adapters project their exact Thread subscription. Ephemeral (G10/G13). |
 | **canonical truth** | authoritative, atomic-with-checkpoint | **the message commit** (unchanged, `CommitCoordinator`). *Not an AgentEvent store.* Query = `fold_*` from messages. |
 | **audit** | durable, not-truth | `Lifecycle` + audit facts → `Draft` → `{prefix}_event`. |
 | **permission** | **synchronous** request/response | stays out of `AgentEvent` entirely (ACP `request_permission` bidirectional); only the *fact* `PermissionDecided` projects to audit. |
@@ -218,13 +219,15 @@ pub trait Transcoder {
 }
 ```
 
-- Because one transcoder now sees both `Detail::TextDelta` (preview) and the later
-  `Lifecycle::AssistantMessage` (committed) with a single `open_text`, **Managed's
-  cross-transcoder `evt_N` reconciliation disappears** — one instance, one id.
-- **Boundary (do not violate).** Wire-scoped id minting stays **per protocol**: Managed's
-  `event_seq` + `append_turn` reuse, AI-SDK `txt-N`, AG-UI `{run_id}-msg-N`. `classify()`
-  and the segmenter-free tiers never mint wire ids. Semantic ids (tool-call id) stay
-  runtime-stable.
+- Because one transcoder sees both `Detail::TextDelta` (preview) and the later
+  `Lifecycle::AssistantMessage` (committed), protocol-local projection state can
+  remain cohesive. Managed already needs no allocation hand-off: its exact
+  Run/Step/response coordinate deterministically yields the same wire id on both
+  sides.
+- **Boundary (do not violate).** Wire-scoped identity remains **per protocol**:
+  Managed derives it from the exact assistant-response coordinate, AI-SDK uses
+  `txt-N`, and AG-UI uses `{run_id}-msg-N`. `classify()` never mints wire ids;
+  semantic tool-call ids remain Runtime-stable.
 
 ### Axis 10 — Tool arguments: type-split + engine-owned de-accumulation. *Do this first.*
 
@@ -250,7 +253,7 @@ pub trait Transcoder {
 | `event/{kind,draft,record}.rs` | `audit/{kind,draft,record}.rs` | **keep**: audit's durable envelope (a *view*, not truth) |
 | `agent/{message,content,run,state,...}` | unchanged | domain value objects `AgentEvent` references |
 | `fact/`, `commit/coordinator.rs` | unchanged | `commit/staged.rs`: `assemble` shifts from hand-built events to `fold_step` view |
-| `state/types.rs` `TurnOutcome`, `state/events.rs` `append_turn`, `project.rs` `project_turn` | `StepOutcome`, `append_step`, `fold_step` | **rename turn → step** ([[turn/run/step vocabulary]]): the runtime port is already `run()`/`resume()`. `StepOutcome` now lives only in `awaken-session-contract`; the former `awaken-protocol-transport` compatibility crate was retired. `turn` survives only in `types/session.rs` doc comments as a Managed-Agents **wire-spec** mirror; the port and all execution vocabulary is run/step. |
+| Session Step projection (legacy names removed) | `StepOutcome`, `append_step`, `fold_step` | **canonical Step vocabulary**: the Runtime port is `run()`/`resume()`. `StepOutcome` lives only in `awaken-session-contract`; the former `awaken-protocol-transport` compatibility crate was retired. Live execution vocabulary is Thread/Run/Step; only fixed external wire/adapter fields retain their published spelling. |
 
 ### Axis 12 — Migration sequence (each step compiles + tests green; standalone commits).
 

@@ -2,7 +2,7 @@
 //!
 //! Cases are batched only to make private-corpus screening affordable. Any
 //! failure found here should be replayed as a single production-shaped Judge
-//! turn before it becomes a release gate.
+//! Run before it becomes a release gate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};

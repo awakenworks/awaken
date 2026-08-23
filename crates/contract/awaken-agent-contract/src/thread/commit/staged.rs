@@ -195,7 +195,14 @@ impl ThreadCommit {
         }
         let run_state = run.state();
         if state_changed {
-            events.push(RunEvent::RunStateChanged { state: run_state }.into());
+            let await_reason = run.resume_ticket().map(|ticket| ticket.reason());
+            events.push(
+                RunEvent::RunStateChanged {
+                    state: run_state,
+                    await_reason,
+                }
+                .into(),
+            );
         }
         if !state.is_empty() {
             events.push(
@@ -220,6 +227,31 @@ impl ThreadCommit {
             messages,
             state,
             events,
+        }
+    }
+
+    /// Commit the observable receipt of one dispatch-authorized retry without
+    /// pretending the Run changed state or re-entered Awaiting.
+    ///
+    /// This constructor deliberately emits neither `RunStateChanged` nor
+    /// `RunAwaiting`: the existing [`RunDisposition`] remains authoritative and
+    /// only the queue-derived recovery edge is new. The normal commit boundary
+    /// still validates and fences the complete Run/Thread coordinates.
+    #[must_use]
+    pub fn rescheduled(
+        thread_id: crate::agent::thread::Id,
+        run: RunDisposition,
+        claim_epoch: u64,
+    ) -> Self {
+        let state = run.state();
+        Self {
+            thread_id,
+            run,
+            messages: Vec::new(),
+            state: Vec::new(),
+            events: vec![
+                crate::audit::run_event::RunEvent::RunRescheduled { state, claim_epoch }.into(),
+            ],
         }
     }
 
@@ -332,6 +364,32 @@ mod assemble_tests {
         );
         // A non-first per-step increment stays Running: no state event.
         assert!(kinds(&assemble(RunState::Running, false, vec![], None, vec![])).is_empty());
+    }
+
+    #[test]
+    fn rescheduled_commit_preserves_disposition_without_duplicate_state_or_await_events() {
+        // Causes: C1 the reclaimed Run is Running or Awaiting; C2 Awaiting has
+        // its exact ticket; C3 the replacement claim has epoch 9. Effects: E1
+        // disposition/ticket are preserved; E2 exactly one RunRescheduled audit
+        // fact rides; E3 no duplicate RunStateChanged/RunAwaiting is invented.
+        //
+        // | Rule | Disposition | Ticket | Effects |
+        // |---|---|---|---|
+        // | R1 | Running | absent | E1,E2,E3 |
+        // | R2 | Awaiting | matching | E1,E2,E3 |
+        // Constraints/invariants: rescheduling preserves the existing durable
+        // disposition and ticket; only the queue-owned claim epoch is new.
+        for (rule, disposition) in [
+            ("R1", RunDisposition::running(RunId("r".into()))),
+            ("R2", RunDisposition::awaiting(ticket("r", "t"))),
+        ] {
+            let commit = ThreadCommit::rescheduled(ThreadId("t".into()), disposition, 9);
+            assert_eq!(commit.run_id(), &RunId("r".into()), "{rule}/E1");
+            assert_eq!(commit.resume_ticket().is_some(), rule == "R2", "{rule}/E1");
+            assert_eq!(kinds(&commit), vec![Kind::RunRescheduled], "{rule}/E2-E3");
+            assert_eq!(commit.events[0].payload["claim_epoch"], 9, "{rule}/E2");
+            commit.validate().expect("reschedule commit remains valid");
+        }
     }
 
     #[test]

@@ -157,10 +157,6 @@ impl SessionRuntime for ContinuationRuntime {
         unreachable!("continuation tests do not resume")
     }
 
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        unreachable!("continuation tests do not add system messages")
-    }
-
     async fn define_outcome(
         &self,
         _thread: &str,

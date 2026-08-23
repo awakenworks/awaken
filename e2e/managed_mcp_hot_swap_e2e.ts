@@ -30,6 +30,7 @@
 
 import assert from 'node:assert/strict';
 import http from 'node:http';
+// @ts-ignore -- shared JS HTTP teardown deliberately serves TypeScript scenarios.
 import { closeHttpServer } from './http_server.mjs';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.

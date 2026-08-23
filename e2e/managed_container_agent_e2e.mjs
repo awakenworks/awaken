@@ -23,7 +23,7 @@ import path from 'node:path';
 import { spawn, execFileSync as rawExecFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
-import { REPO_ROOT, waitForPort } from './harness.mjs';
+import { REPO_ROOT, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
@@ -38,6 +38,14 @@ const ENGINE_TIMEOUT_MS = 30_000;
 const TMP = path.join(os.tmpdir(), `awaken-container-agent-${ENGINE}-e2e-${process.pid}`);
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function listSessionEvents(client, sessionId) {
+  const events = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+    events.push(event);
+  }
+  return events;
+}
 
 const PACKAGE_CASES = [
   { manager: 'apt', requirements: ['jq'], proof: 'jq --version' },
@@ -77,7 +85,6 @@ async function exerciseContainerEnvironment(
   {
     packages,
     expectedMarker = MARKER,
-    expectedError,
     proveImageReuse = false,
     proofCommands = [],
   } = {},
@@ -122,20 +129,32 @@ async function exerciseContainerEnvironment(
       betas: BETAS,
     });
     let sendFailure;
+    let receipt;
     try {
-      await client.beta.sessions.events.send(session.id, {
+      receipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
         betas: BETAS,
       });
     } catch (error) {
       sendFailure = error;
     }
-    const events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(event);
-    }
+    let events = [];
     if (expectSuccess) {
       assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
+      const acceptedId = receipt?.data?.[0]?.id;
+      assert.equal(typeof acceptedId, 'string', `${name} returns one exact User Event receipt`);
+      ({ events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        acceptedId,
+        BETAS,
+        ({ delta }) => delta.some(
+          (event) => event.type === 'agent.message'
+            && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
+        ),
+        `${name} container Run to commit its Agent marker`,
+        { timeoutMs: 180_000, pollMs: 100 },
+      ));
       assert.ok(
         events.some(
           (event) => event.type === 'agent.message'
@@ -191,15 +210,37 @@ async function exerciseContainerEnvironment(
         }
       }
     } else {
-      assert.ok(
-        sendFailure || events.some((event) => event.type === 'session.error'),
-        `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
-      );
-      if (expectedError) {
-        assert.match(
-          `${sendFailure ?? ''} ${JSON.stringify(events)}`,
-          expectedError,
-          `${name} must expose the stable capability failure`,
+      if (!sendFailure) {
+        const acceptedId = receipt?.data?.[0]?.id;
+        assert.equal(typeof acceptedId, 'string', `${name} returns one exact User Event receipt`);
+        assert.equal(
+          receipt.data[0].processed_at,
+          null,
+          `${name} capability effect is not falsely processed`,
+        );
+        // Failure decision rules: F1 synchronous admission error => surface it;
+        // F2 accepted command + retryable provider/capability failure => retain
+        // the exact unprocessed receipt and create no Agent/terminal effect over
+        // one bounded reconciliation window. F2 is not a session.error until a
+        // separate authority classifies the fault as permanently quarantined.
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        events = await listSessionEvents(client, session.id);
+        const acceptedAt = events.findIndex((event) => event.id === acceptedId);
+        assert.notEqual(acceptedAt, -1, `${name} retained its exact User Event`);
+        assert.equal(events[acceptedAt].processed_at, null, `${name} retained retryable custody`);
+        const delta = events.slice(acceptedAt + 1);
+        assert.ok(
+          !delta.some((event) => [
+            'agent.message',
+            'agent.tool_use',
+            'agent.tool_result',
+            'session.error',
+            'session.status_idle',
+            'session.usage',
+            'span.model_request_start',
+            'span.model_request_end',
+          ].includes(event.type)),
+          `${name} fabricated no execution/terminal effect: ${JSON.stringify(delta)}`,
         );
       }
     }
@@ -240,7 +281,8 @@ async function exercisePackageManagerMatrix(client, { registryOnly = false } = {
 async function exercisePodmanRootfsMatrix(client) {
   // Network admission cause/effect graph:
   // C1=allowlist requested; C2=provider proves no-bypass enforcement.
-  // C1+!C2 -> N1 fail closed. !C1 -> N2 proceed using the selected rootfs.
+  // C1+!C2 -> N1 fail closed with retained retryable custody and no fallback.
+  // !C1 -> N2 proceed using the selected rootfs.
   //
   // | Rule | network request | provider proof | result              |
   // | N1   | allowlist       | absent         | reject, no fallback |
@@ -396,7 +438,10 @@ async function waitForTestContainersToBeReaped(timeoutMs = 20_000) {
 // Build the canonical production image, but omit network-fetched ACP packages: this
 // hermetic dev scenario supplies a tiny Node newline fixture through its explicit
 // fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
-// The image still contains the real `awaken-sandbox hand --stdio` binary.
+// Image-source decision rules: Q1 Docker + fully qualified public bases => build;
+// Q2 Podman with no unqualified registry + the same bases => build; Q3 either
+// engine cannot resolve an exact base => fail before any Session effect. The
+// image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
   ensureCanonicalSandboxImage({
     engine: ENGINE,
@@ -460,6 +505,16 @@ function buildBrain() {
 }
 
 async function main() {
+  // Test design (container matrix). Causes: C1=the selected Docker/Podman engine
+  // is reachable; C2=package/image/rootfs and immutable Environment variants;
+  // C3=ACP, Native, local MCP, Hand, File, Memory, Repository, Skill, and browser
+  // resources are frozen on the Session. Effects: E1=!C1 skips or fails when
+  // explicitly required; E2=each C2 arm realizes and cleans its exact container;
+  // E3=C3 is observable only inside that Session's shared sandbox.
+  // Constraints/invariant: Environment/resource manifests and one Session
+  // container are authoritative; no host fallback or cross-Session leak is valid.
+  // Decision rules: K0=!C1=>skip|required-fail; K1=C1+C2=>E2;
+  // K2=C1+C2+C3=>E2+E3.
   if (!containerAvailable()) {
     if (process.env.AWAKEN_E2E_REQUIRE_CONTAINER === '1') {
       throw new Error(`required ${ENGINE} runtime is unavailable`);
@@ -604,13 +659,29 @@ async function main() {
       ],
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // Main container Run rule: C1 Session owns File+Memory+Repository+Skill;
+    // C2 exact User receipt is admitted; C3 ACP container commits MARKER after
+    // C2. Effects: one later Agent message and one shared Session container.
+    // Constraints/invariant: only events following the exact processed receipt
+    // can prove this Run and all resources stay inside that Session container.
+    const initialReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'run the containerized agent' }] }],
       betas: BETAS,
     });
-
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const initialAcceptedId = initialReceipt.data[0]?.id;
+    assert.equal(typeof initialAcceptedId, 'string', 'main container Run exact User Event receipt');
+    const { events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      initialAcceptedId,
+      BETAS,
+      ({ delta }) => delta.some(
+        (event) => event.type === 'agent.message'
+          && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
+      ),
+      'the main container Run to round-trip its Agent marker',
+      { timeoutMs: 180_000, pollMs: 100 },
+    );
 
     const messages = events
       .filter((e) => e.type === 'agent.message')
@@ -728,7 +799,7 @@ async function main() {
 
     // A hard brain crash must retain the Session-owned environment. The replacement
     // process restores the durable binding, adopts the exact same container, renews
-    // its lease and reconnects both the hand and ACP process before another turn.
+    // its lease and reconnects both the hand and ACP process before another Run.
     const crashed = new Promise((resolve) => brain.once('exit', resolve));
     brain.kill('SIGKILL');
     await crashed;
@@ -736,14 +807,27 @@ async function main() {
     brain = spawnBrain();
     await waitForPort(PORT, 60_000, brain);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
-    await client.beta.sessions.events.send(session.id, {
+    // Crash-adoption rule: C1 prior marker exists; C2 replacement adopts the
+    // exact container; C3 new exact receipt is admitted. Only a marker after C3
+    // proves the replacement ACP path; the prior marker is ineligible.
+    const resumedReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'resume the adopted container' }] }],
       betas: BETAS,
     });
-    const resumedEvents = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      resumedEvents.push(event);
-    }
+    const resumedAcceptedId = resumedReceipt.data[0]?.id;
+    assert.equal(typeof resumedAcceptedId, 'string', 'adopted container Run exact User Event receipt');
+    const { events: resumedEvents } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      resumedAcceptedId,
+      BETAS,
+      ({ delta }) => delta.some(
+        (event) => event.type === 'agent.message'
+          && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
+      ),
+      'the adopted container Run to commit a new Agent marker',
+      { timeoutMs: 180_000, pollMs: 100 },
+    );
     assert.ok(
       resumedEvents.some(
         (event) => event.type === 'agent.message'

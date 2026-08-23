@@ -190,6 +190,11 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
 
 #[tokio::test]
 async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
+    // Test design — Causes: a crash left one Run-scoped text checkpoint before
+    // the first Step. Effects: fresh execution stitches it to new text, commits
+    // the completed response, and clears the checkpoint. Constraints/invariants:
+    // the prefix is consumed once and never becomes a second assistant message.
+    // Decision rule R1: matching checkpoint+fresh completion=>joined text+delete.
     // A crash mid-recovery would leave a checkpoint keyed by this run. On the next
     // execution the engine reads it and continues the first step from the partial.
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
@@ -200,6 +205,7 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
             model: "m".to_string(),
             partial_text: "Resumed ".to_string(),
             partial_tools: Vec::new(),
+            retry_count: 0,
         })
         .await
         .expect("checkpoint put");

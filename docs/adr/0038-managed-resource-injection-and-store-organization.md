@@ -282,7 +282,7 @@ index above it.
 ### A3: Resource prompts inject at config-bind time into the agent system prompt; artifacts are never runtime truth
 
 **Corrects earlier drafts** (which rendered the outputs path into the prompt *per
-turn at runtime*, and before that routed artifacts through a Checkpoint harvest —
+Run at runtime*, and before that routed artifacts through a Checkpoint harvest —
 both wrong). Two rulings:
 
 **(a) Resource prompts are written at bind/resolve time into the agent's effective
@@ -293,7 +293,7 @@ short description of that resource (its `mount_path`, `access`, a memory store's
 it to the agent's **effective** system prompt (base `AgentConfig.instructions` +
 one fragment per binding), handed to the runtime at the config→runtime boundary
 (ADR-0031) — exactly as an MCP binding resolves to a `ResolvedMcpServer`. This is
-**config-time**, not per-turn runtime compose, and **every resource kind shares the
+**config-time**, not per-Run runtime compose, and **every resource kind shares the
 one mechanism** (a template per kind). `AgentConfig.instructions` itself (the config
 domain's truth, part of the publication fingerprint) is **not** mutated — the
 fragment is composed at resolve, like every other resolved value.
@@ -375,7 +375,7 @@ read-only capability fails closed instead of silently projecting a writable copy
   backend. The skill registry is a control-plane index, not a backend.
 - Every resource kind's prompt is injected **at config-bind/resolve time** into the
   agent's effective system prompt (A3a), mirroring the MCP binding path — not
-  rendered per-turn at runtime; provisioning realizes bytes/mounts and never
+  rendered per-Run at runtime; provisioning realizes bytes/mounts and never
   injects prompts.
 - Adding `github_repository`/`skill` stays "a `MountSource` variant + a realize
   arm": `skill` reuses the `File` arm; `github_repository` reuses the

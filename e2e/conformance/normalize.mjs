@@ -15,9 +15,12 @@ const VOLATILE_KEYS = new Set([
   'next_page',
 ]);
 
-// Minted-id value shapes (evt_7, sesn_3, sthr_1, call-9, msg_2) → a placeholder,
-// so id cross-references (e.g. a stop_reason's event_ids) normalize too.
-const ID_VALUE = /^(evt|sesn|sthr|msg|call)[-_].+$/;
+// Minted-id value shapes (evt_7, sesn_3, sthr_1, call-9, msg_2, and the
+// canonical magent_v1_* projection ids) → a placeholder, so id
+// cross-references (e.g. model_request_start_id or stop_reason.event_ids)
+// normalize too. Keep this vocabulary exact: arbitrary external strings that
+// happen to end in `_id` are semantic payload, not volatile bookkeeping.
+const ID_VALUE = /^(?:(?:evt|sesn|sthr|msg|call)[-_]|magent_v1_).+$/;
 
 export function normalize(value) {
   if (Array.isArray(value)) return value.map(normalize);

@@ -8,8 +8,14 @@ import fs, { mkdtempSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Anthropic from '@anthropic-ai/sdk';
+import type {
+  BetaManagedAgentsSessionEvent,
+  BetaManagedAgentsUserToolResultEventParams,
+} from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { hasEndTurn, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
+// @ts-ignore -- shared JavaScript HTTP fixture intentionally serves TS scenarios.
 import { closeHttpServer } from './http_server.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
 import { sqliteDatabaseForThread, sqliteExec, sqliteRows, sqliteRun } from './sqlite.mjs';
@@ -19,7 +25,7 @@ type SeenMessage = { messageId?: string; contextId?: string; text?: string };
 const PORT = Number(process.env.E2E_PORT ?? 39771);
 const BASE = `http://127.0.0.1:${PORT}`;
 const AGENT = 'remote-root';
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const BETAS = ['managed-agents-2026-04-01'];
 
 function task(id: string, contextId: string, state: string, text?: string): Record<string, unknown> {
   return {
@@ -107,6 +113,8 @@ async function startPeer(): Promise<{
         });
       } else if (message.contextId === 'resume-failure-context') {
         json(response, 503, { error: { message: 'resume transport unavailable' } });
+      } else if (text.includes('trigger remote send rejection')) {
+        json(response, 503, { error: { message: 'initial transport unavailable' } });
       } else if (text.includes('cancel terminal remote')) {
         json(response, 200, {
           task: task('cancel-terminal-task', 'cancel-terminal-context', 'input-required', 'continue?'),
@@ -206,6 +214,15 @@ async function startPeer(): Promise<{
 }
 
 async function api(method: string, route: string, body?: unknown): Promise<{ status: number; body: any }> {
+  // Raw HTTP is reserved for Awaken-only config/durable control surfaces, which
+  // the Anthropic SDK does not own. C1=config/durable route => preserve its
+  // extension wire; C2=Managed Session route => fail before I/O. E1=no second
+  // Session codec survives beside the SDK. K1=fault injection remains direct DB
+  // mutation below. Decision A1=C1=>fetch; A2=C2=>reject.
+  assert.ok(
+    route.startsWith('/v1/config/') || route.startsWith('/v1/durable/'),
+    `compatible Managed route must use the Anthropic SDK: ${method} ${route}`,
+  );
   const response = await fetch(`${BASE}${route}`, {
     method,
     headers: {
@@ -241,21 +258,105 @@ async function publishRemote(endpoint: string): Promise<void> {
   assert.equal(projected.body.model.backend_ref, `a2a:${endpoint}`, 'backend_ref round-trips');
 }
 
-async function createSession(): Promise<string> {
-  const created = await api('POST', '/v1/sessions', {
+async function createSession(client: Anthropic): Promise<string> {
+  // SDK create rule: C1=current-process client + valid typed Params => one
+  // Session id. E1=the SDK owns request shape, beta and response decoding.
+  // K1=a client is rebuilt after every server restart. Decision S1=C1=>E1.
+  const created = await within(client.beta.sessions.create({
     agent: AGENT,
     environment_id: 'env_local',
-  });
-  assert.equal(created.status, 200, `session created: ${JSON.stringify(created.body)}`);
-  assert.ok(created.body.id);
-  return created.body.id;
+    betas: BETAS,
+  }), 30_000, 'Managed Session create');
+  assert.ok(created.id, `session created: ${JSON.stringify(created)}`);
+  return created.id;
 }
 
-async function sendText(thread: string, text: string): Promise<void> {
-  const response = await api('POST', `/v1/sessions/${thread}/events`, {
+type ToolUseEvent = Extract<
+  BetaManagedAgentsSessionEvent,
+  { type: 'agent.tool_use' }
+>;
+
+async function sessionEvents(
+  client: Anthropic,
+  thread: string,
+): Promise<BetaManagedAgentsSessionEvent[]> {
+  return within((async () => {
+    const events: BetaManagedAgentsSessionEvent[] = [];
+    for await (const event of client.beta.sessions.events.list(thread, { betas: BETAS })) {
+      events.push(event);
+    }
+    return events;
+  })(), 5_000, `official Session Event history for ${thread}`);
+}
+
+async function waitForPendingTool(
+  client: Anthropic,
+  thread: string,
+  receiptId: string,
+): Promise<ToolUseEvent> {
+  // Reply-target cause/effect table: C1=exact User receipt is processed;
+  // C2=its delta's latest idle is requires_action; C3=that edge names one
+  // qualified agent.tool_use. E1=return only that public id. K1=older idle/tool
+  // Events, raw A2A task ids and unlisted tools are ineligible. Decision R1
+  // !C1||!C2||!C3=>retry; R2=C1+C2+C3=>E1.
+  const { delta }: { delta: BetaManagedAgentsSessionEvent[] } = await waitForSessionEventReceipt(
+    client,
+    thread,
+    receiptId,
+    BETAS,
+    ({ delta: observed }: { delta: BetaManagedAgentsSessionEvent[] }) => {
+      const latestIdle = [...observed]
+        .reverse()
+        .find((event) => event.type === 'session.status_idle');
+      return latestIdle?.stop_reason.type === 'requires_action'
+        && latestIdle.stop_reason.event_ids.some((id) => observed.some(
+          (event) => event.type === 'agent.tool_use' && event.id === id,
+        ));
+    },
+    `Session ${thread} exact receipt to publish its qualified custom-tool reply target`,
+    { timeoutMs: 30_000 },
+  );
+  const latestIdle = [...delta]
+    .reverse()
+    .find((event) => event.type === 'session.status_idle');
+  assert.equal(latestIdle?.stop_reason.type, 'requires_action');
+  const pendingIds = latestIdle.stop_reason.event_ids;
+  const pending = delta.filter((event): event is ToolUseEvent =>
+    event.type === 'agent.tool_use' && pendingIds.includes(event.id));
+  assert.equal(pending.length, 1, `one qualified pending generic tool: ${JSON.stringify(delta)}`);
+  assert.equal(pending[0].name, 'agent_input', 'A2A input/auth await projects agent_input');
+  assert.equal(pending[0].evaluated_permission, 'allow', 'A2A agent_input is client-answerable');
+  return pending[0];
+}
+
+function toolResult(
+  toolUseId: string,
+  text: string,
+): BetaManagedAgentsUserToolResultEventParams {
+  return {
+    type: 'user.tool_result',
+    tool_use_id: toolUseId,
+    content: [{ type: 'text', text }],
+    is_error: false,
+  };
+}
+
+async function sendText(
+  client: Anthropic,
+  thread: string,
+  text: string,
+): Promise<BetaManagedAgentsSessionEvent> {
+  // Admission rule: C1=one typed User message => SDK returns one exact durable
+  // receipt. E1=callers bind their own later effect to that id. K1=HTTP success
+  // alone never proves processing or terminal state. Decision M1=C1=>E1.
+  const response = await within(client.beta.sessions.events.send(thread, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-  });
-  assert.equal(response.status, 200, `${text}: ${JSON.stringify(response.body)}`);
+    betas: BETAS,
+  }), 30_000, `Managed Event admission for ${text}`);
+  assert.equal(response.data?.length, 1, `${text}: ${JSON.stringify(response)}`);
+  const receipt = response.data?.[0];
+  assert.equal(typeof receipt?.id, 'string', `${text} returns one exact User Event receipt`);
+  return receipt;
 }
 
 function dispatchDatabases(root: string): string[] {
@@ -308,37 +409,51 @@ function rewriteLatestTaskReference(
   assert.equal(Number(changed.changes), 1, `rewrote exactly one A2A task reference for ${thread}`);
 }
 
-async function expectResumeFailure(thread: string, marker: string): Promise<void> {
-  const response = await api('POST', `/v1/sessions/${thread}/events`, {
-    events: [
-      {
-        type: 'user.custom_tool_result',
-        custom_tool_use_id: 'input-task',
-        content: [{ type: 'text', text: marker }],
-        is_error: false,
-      },
-    ],
-  });
-  assert.equal(
-    response.status,
-    200,
-    `${marker} input was durably accepted before its terminal validation: ${JSON.stringify(response.body)}`,
-  );
+async function expectResumeFailure(
+  client: Anthropic,
+  thread: string,
+  marker: string,
+  toolUseId: string,
+): Promise<void> {
   const expected = new Map([
-    ['missing endpoint', 'missing endpoint'],
-    ['missing task', 'missing task_id'],
-    ['missing context', 'missing context_id'],
+    ['missing endpoint', 'missing field `endpoint`'],
+    ['missing task', 'missing field `task_id`'],
+    ['missing context', 'missing field `context_id`'],
     ['endpoint mismatch', 'belongs to endpoint'],
     ['missing reference', 'missing its durable remote task'],
   ]).get(marker)!;
+  const response = await within(client.beta.sessions.events.send(thread, {
+    events: [toolResult(toolUseId, marker)],
+    betas: BETAS,
+  }), 5_000, `${marker} corrupt continuation admission`);
+  const receipt = response.data?.[0];
+  assert.ok(receipt && typeof receipt.id === 'string', `${marker} returns an exact tool-result receipt`);
+  // Corrupt-reference cause/effect decision table. C1 a required typed field is
+  // absent, C2 the endpoint differs, or C3 the reference was removed; C4 the
+  // exact SDK receipt is processed. E1=the corresponding typed Session error and
+  // idle edge follow only that receipt; E2=the dispatch settles; E3=no peer send.
+  // K1=these are fail-closed diagnostics, not fallback codecs/recovery paths.
+  // Decision D1=(C1||C2||C3)+C4=>E1+E2+E3.
+  await waitForSessionEventReceipt(
+    client,
+    thread,
+    receipt.id,
+    BETAS,
+    ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+      (event) => event.type === 'session.error'
+        && event.error?.message.includes(expected),
+    ) && delta.some((event) => event.type === 'session.status_idle'),
+    `${marker} exact receipt to commit its error and idle boundary`,
+    { timeoutMs: 5_000, pollMs: 25 },
+  );
   await waitForMessage(thread, expected, 5_000);
-  const deadline = Date.now() + 5_000;
-  while (Date.now() <= deadline) {
-    const dispatches = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
-    if ((dispatches.body.dispatches ?? []).length === 0) return;
-    await sleep(25);
-  }
-  assert.fail(`${marker} terminal failure remained dispatchable`);
+  await waitForValue(
+    () => api('GET', `/v1/durable/threads/${thread}/dispatches`),
+    (dispatches: { status: number; body: any }) => dispatches.status === 200
+      && (dispatches.body.dispatches ?? []).length === 0,
+    `${marker} terminal failure dispatch to settle`,
+    { timeoutMs: 5_000, pollMs: 25 },
+  );
 }
 
 function taskReferenceCleared(root: string, thread: string): boolean {
@@ -362,47 +477,47 @@ function persistedSessions(root: string, threads: string[]): string[] {
 }
 
 async function waitForMessage(thread: string, marker: string, timeoutMs = 30_000): Promise<any[]> {
-  const deadline = Date.now() + timeoutMs;
-  let observed: any[] = [];
-  while (Date.now() <= deadline) {
-    const response = await api('GET', `/v1/durable/threads/${thread}/messages`);
-    if (response.status === 200) {
-      observed = response.body.messages ?? [];
-      if (JSON.stringify(observed).includes(marker)) return observed;
-    }
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${marker}; messages=${JSON.stringify(observed)}`);
+  return waitForValue(
+    async () => {
+      const response = await api('GET', `/v1/durable/threads/${thread}/messages`);
+      assert.equal(response.status, 200, `list Thread messages: ${JSON.stringify(response.body)}`);
+      return response.body.messages ?? [];
+    },
+    (messages: any[]) => JSON.stringify(messages).includes(marker),
+    `Thread ${thread} message ${marker}`,
+    { timeoutMs, pollMs: 100 },
+  );
 }
 
 async function waitForAwaiting(thread: string, runId: string): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() <= deadline) {
-    const response = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
-    const row = (response.body.dispatches ?? []).find((entry: any) => entry.run_id === runId);
-    if (row?.status === 'Awaiting') return;
-    await sleep(50);
-  }
-  throw new Error(`run ${runId} never reached Awaiting`);
+  await waitForValue(
+    () => api('GET', `/v1/durable/threads/${thread}/dispatches`),
+    (response: { status: number; body: any }) => response.status === 200
+      && (response.body.dispatches ?? []).some(
+        (entry: any) => entry.run_id === runId && entry.status === 'Awaiting',
+      ),
+    `Run ${runId} to reach Awaiting`,
+    { timeoutMs: 20_000, pollMs: 50 },
+  );
 }
 
 async function waitForRemoteCancel(cancels: string[], taskId: string): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() <= deadline) {
-    if (cancels.includes(taskId)) return;
-    await sleep(25);
-  }
-  throw new Error(`remote cancellation was not delivered to ${taskId}`);
+  await waitForValue(
+    () => [...cancels],
+    (observed: string[]) => observed.includes(taskId),
+    `remote cancellation to reach ${taskId}`,
+    { timeoutMs: 20_000, pollMs: 25 },
+  );
 }
 
 async function waitForDispatchGone(thread: string, runId: string): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() <= deadline) {
-    const response = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
-    if (!(response.body.dispatches ?? []).some((entry: any) => entry.run_id === runId)) return;
-    await sleep(25);
-  }
-  throw new Error(`cancelled run ${runId} remained dispatchable`);
+  await waitForValue(
+    () => api('GET', `/v1/durable/threads/${thread}/dispatches`),
+    (response: { status: number; body: any }) => response.status === 200
+      && !(response.body.dispatches ?? []).some((entry: any) => entry.run_id === runId),
+    `cancelled Run ${runId} to leave dispatchable state`,
+    { timeoutMs: 20_000, pollMs: 25 },
+  );
 }
 
 async function within<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -427,13 +542,19 @@ async function main(): Promise<void> {
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
   };
   let server = spawnServer('config', PORT, environment).server;
+  let client = new Anthropic({
+    apiKey: 'e2e-dummy',
+    baseURL: BASE,
+    maxRetries: 0,
+    timeout: 30_000,
+  });
   try {
     await waitForPort(PORT, 180_000, server);
     await publishRemote(peer.endpoint);
 
     // 1) Crash after task-reference commit but during tasks/get. Replacement must
     // reattach to crash-task from the pinned snapshot and never message:send again.
-    const crashThread = await createSession();
+    const crashThread = await createSession(client);
     const submitted = await api('POST', `/v1/durable/threads/${crashThread}/submit_background`, {
       agent: AGENT,
       text: 'prove crash recovery',
@@ -453,6 +574,7 @@ async function main(): Promise<void> {
     }
     peer.completeCrash();
     server = spawnServer('config', PORT, environment).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
     await waitForPort(PORT, 180_000, server);
     await waitForMessage(crashThread, 'REMOTE-CRASH-RECOVERED');
     assert.equal(
@@ -471,24 +593,31 @@ async function main(): Promise<void> {
     // proving recovery consumed its pinned dispatch snapshot rather than reopening config.
     await publishRemote(peer.endpoint);
 
-    // 2) A foreground Managed API turn reaches input-required. A client result
+    // 2) A foreground Managed API Run reaches input-required. A client result
     // resumes the root Run on the exact remote context and commits its terminal reply.
-    const inputThread = await createSession();
-    const first = await api('POST', `/v1/sessions/${inputThread}/events`, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'need remote input' }] }],
-    });
-    assert.equal(first.status, 200, `remote input turn accepted: ${JSON.stringify(first.body)}`);
-    const resumed = await api('POST', `/v1/sessions/${inputThread}/events`, {
-      events: [
-        {
-          type: 'user.custom_tool_result',
-          custom_tool_use_id: 'input-task',
-          content: [{ type: 'text', text: 'README.md' }],
-          is_error: false,
-        },
-      ],
-    });
-    assert.equal(resumed.status, 200, `remote input resumed: ${JSON.stringify(resumed.body)}`);
+    const inputThread = await createSession(client);
+    const firstReceipt = await sendText(client, inputThread, 'need remote input');
+    const inputToolUse = await waitForPendingTool(client, inputThread, firstReceipt.id);
+    const resumed = await within(client.beta.sessions.events.send(inputThread, {
+      events: [toolResult(inputToolUse.id, 'README.md')],
+      betas: BETAS,
+    }), 30_000, 'remote input resume');
+    const resumedReceipt = resumed.data?.[0];
+    assert.ok(resumedReceipt && typeof resumedReceipt.id === 'string', 'remote input resume returns one exact receipt');
+    // Resume rule: C1=qualified public agent_input id; C2=exact SDK result
+    // receipt; C3=its delta carries REMOTE-RESUME-DONE and latest idle/end_turn.
+    // E1=the pinned A2A context resumes once. K1=pre-resume history cannot
+    // satisfy C3. Decision R3=C1+C2+C3=>E1.
+    await waitForSessionEventReceipt(
+      client,
+      inputThread,
+      resumedReceipt.id,
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) =>
+        JSON.stringify(delta).includes('REMOTE-RESUME-DONE') && hasEndTurn(delta),
+      'remote input exact receipt to commit its marker and idle/end_turn',
+      { timeoutMs: 30_000 },
+    );
     await waitForMessage(inputThread, 'REMOTE-RESUME-DONE');
     const resumeMessage = peer.sent.find((message) => message.text === 'README.md');
     assert.equal(resumeMessage?.contextId, 'input-context', 'resume retained remote context');
@@ -497,7 +626,7 @@ async function main(): Promise<void> {
     // 3) An awaiting background root Run is cancelled through the durable API.
     // The cancellation resolver reconstructs the remote executor without model,
     // credential or sandbox dependencies and addresses the committed task id.
-    const cancelThread = await createSession();
+    const cancelThread = await createSession(client);
     const cancelSubmit = await api('POST', `/v1/durable/threads/${cancelThread}/submit_background`, {
       agent: AGENT,
       text: 'cancel remote task',
@@ -529,6 +658,7 @@ async function main(): Promise<void> {
       sqliteExec(database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status IN ('running', 'awaiting')");
     }
     server = spawnServer('config', PORT, environment).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
     await waitForPort(PORT, 180_000, server);
     const cancelled = await api('POST', `/v1/durable/threads/${cancelThread}/cancel`, {
       run_id: cancelSubmit.body.run_id,
@@ -551,9 +681,10 @@ async function main(): Promise<void> {
     // this throwaway durable store: no production-only diagnostic API exists.
     const corruptions = await Promise.all(
       ['missing endpoint', 'missing task', 'missing context', 'endpoint mismatch', 'missing reference'].map(async (marker) => {
-        const thread = await createSession();
-        await sendText(thread, 'need remote input');
-        return { marker, thread };
+        const thread = await createSession(client);
+        const receipt = await sendText(client, thread, 'need remote input');
+        const toolUse = await waitForPendingTool(client, thread, receipt.id);
+        return { marker, thread, toolUseId: toolUse.id };
       }),
     );
     const corruptionKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
@@ -574,34 +705,54 @@ async function main(): Promise<void> {
       });
     }
     server = spawnServer('config', PORT, environment).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
     await waitForPort(PORT, 180_000, server);
     assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
     // Restore the exact publication first so each request reaches the damaged
     // A2A continuation boundary. Otherwise the publication's correct 503 masks
     // every corruption case and the test proves only fail-closed startup.
     await publishRemote(peer.endpoint);
-    for (const { marker, thread } of corruptions) await expectResumeFailure(thread, marker);
+    for (const { marker, thread, toolUseId } of corruptions) {
+      await expectResumeFailure(client, thread, marker, toolUseId);
+    }
     assert.ok(
       !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
       'invalid durable continuations never reached the remote peer',
     );
     // 4) Cancellation while a root remote attempt is actively polling uses the
     // same task driver as cold/awaiting cancellation and aborts the pinned task.
-    const activeCancelThread = await createSession();
-    const activeTurn = sendText(activeCancelThread, 'active remote cancel');
-    const activeDeadline = Date.now() + 20_000;
-    while (!peer.reads.includes('active-cancel-task') && Date.now() <= activeDeadline) await sleep(25);
-    assert.ok(peer.reads.includes('active-cancel-task'), 'active remote task reached the poll boundary');
-    const interrupted = await api('POST', `/v1/sessions/${activeCancelThread}/events`, {
+    const activeCancelThread = await createSession(client);
+    const activeRunAdmission = sendText(client, activeCancelThread, 'active remote cancel');
+    await waitForValue(
+      () => [...peer.reads],
+      (reads: string[]) => reads.includes('active-cancel-task'),
+      'active remote task to reach the poll boundary',
+      { timeoutMs: 20_000, pollMs: 25 },
+    );
+    const interrupted = await within(client.beta.sessions.events.send(activeCancelThread, {
       events: [{ type: 'user.interrupt' }],
-    });
-    assert.equal(interrupted.status, 200, `active remote interrupt accepted: ${JSON.stringify(interrupted.body)}`);
-    await activeTurn.catch(() => {});
+      betas: BETAS,
+    }), 30_000, 'active remote interrupt admission');
+    const interruptReceipt = interrupted.data?.[0];
+    assert.ok(interruptReceipt && typeof interruptReceipt.id === 'string', 'active interrupt returns one exact receipt');
+    await activeRunAdmission;
     await waitForRemoteCancel(peer.cancels, 'active-cancel-task');
+    // Interrupt rule: C1=exact SDK interrupt receipt; C2=the peer receives cancel
+    // for the pinned task. E1=C1 is processed and C2 occurs once. K1=peer state is
+    // the side-effect oracle; history only owns the receipt fence. D1=C1+C2=>E1.
+    await waitForSessionEventReceipt(
+      client,
+      activeCancelThread,
+      interruptReceipt.id,
+      BETAS,
+      () => true,
+      'active interrupt receipt to process after pinned peer cancellation',
+      { timeoutMs: 30_000 },
+    );
 
     // Cancellation observes an already-terminal task and remains idempotent at
     // the remote boundary (no unnecessary tasks/cancel request).
-    const terminalCancelThread = await createSession();
+    const terminalCancelThread = await createSession(client);
     const terminalSubmit = await api('POST', `/v1/durable/threads/${terminalCancelThread}/submit_background`, {
       agent: AGENT,
       text: 'cancel terminal remote',
@@ -624,8 +775,21 @@ async function main(): Promise<void> {
       ['rejected terminal', 'REMOTE-REJECTED-DONE'],
       ['canceled terminal', 'REMOTE-CANCELED-DONE'],
     ] as const) {
-      const thread = await createSession();
-      await sendText(thread, prompt);
+      const thread = await createSession(client);
+      const receipt = await sendText(client, thread, prompt);
+      // Terminal-carrier rule: C1=exact prompt receipt; C2=the A2A terminal is
+      // committed. E1=C1 is processed before the durable marker is accepted as
+      // evidence. K1=failed/rejected/canceled carriers keep their own terminal
+      // semantics, so this fence does not demand end_turn. D1=C1+C2=>E1.
+      await waitForSessionEventReceipt(
+        client,
+        thread,
+        receipt.id,
+        BETAS,
+        () => true,
+        `${prompt} exact receipt to process`,
+        { timeoutMs: 30_000 },
+      );
       await waitForMessage(thread, marker);
       assert.ok(
         taskReferenceCleared(storage, thread),
@@ -635,51 +799,296 @@ async function main(): Promise<void> {
 
     // 6) auth-required is a first-class await boundary (distinct from user input)
     // and resumes on the exact committed context/task identity.
-    const authThread = await createSession();
-    await sendText(authThread, 'need remote auth');
-    const authResume = await api('POST', `/v1/sessions/${authThread}/events`, {
-      events: [
-        {
-          type: 'user.custom_tool_result',
-          custom_tool_use_id: 'auth-task',
-          content: [{ type: 'text', text: 'delegated-auth-ready' }],
-          is_error: false,
-        },
-      ],
-    });
-    assert.equal(authResume.status, 200, `remote auth resumed: ${JSON.stringify(authResume.body)}`);
+    const authThread = await createSession(client);
+    const authReceipt = await sendText(client, authThread, 'need remote auth');
+    const authToolUse = await waitForPendingTool(client, authThread, authReceipt.id);
+    const authResume = await within(client.beta.sessions.events.send(authThread, {
+      events: [toolResult(authToolUse.id, 'delegated-auth-ready')],
+      betas: BETAS,
+    }), 30_000, 'remote auth resume');
+    const authResumeReceipt = authResume.data?.[0];
+    assert.ok(authResumeReceipt && typeof authResumeReceipt.id === 'string', 'remote auth resume returns one exact receipt');
+    // Auth-resume rule: C1=qualified auth agent_input; C2=exact result receipt;
+    // C3=its delta carries REMOTE-AUTH-DONE and idle/end_turn. E1=the exact
+    // committed context resumes once. K1=older success is excluded. D1=C1+C2+C3=>E1.
+    await waitForSessionEventReceipt(
+      client,
+      authThread,
+      authResumeReceipt.id,
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) =>
+        JSON.stringify(delta).includes('REMOTE-AUTH-DONE') && hasEndTurn(delta),
+      'remote auth exact receipt to commit its marker and idle/end_turn',
+      { timeoutMs: 30_000 },
+    );
     await waitForMessage(authThread, 'REMOTE-AUTH-DONE');
     const authMessage = peer.sent.find((message) => message.text === 'delegated-auth-ready');
     assert.equal(authMessage?.contextId, 'auth-context', 'auth resume retained remote context');
 
-    // 7) A remote send rejection is committed as an error outcome and never
-    // fabricated into a successful answer.
-    const errorThread = await createSession();
-    await sendText(errorThread, 'trigger remote send rejection');
-    await waitForMessage(errorThread, 'remote agent error');
+    // 7) Remote transport-failure cause/effect graph. C1 the initial
+    // message:send returns 503 before a task identity exists; C2 a committed
+    // working task's exact tasks/get returns 503; C3 an awaiting task resumes on
+    // its committed context but that message:send response is lost with 503.
+    // Effects: E1 every admitted User Event receives the exact HTTP 200 receipt,
+    // whose processed_at is nullable while asynchronous admission is in flight;
+    // E2 C1 commits the terminal a2a_error; E3 C2/C3 reach the exact remote
+    // task/context and retain the receipt plus a Running Session/Run;
+    // E4 no rule fabricates an Agent success or terminal Session boundary.
+    // Constraint: ADR-0057 makes poll/cancel delivery failure and resume response
+    // loss retryable after remote identity exists; only the rejected initial send
+    // is terminal because there is no task to reattach.
+    //
+    // | Rule | Initial send | Task committed | Poll/resume 503 | Effects |
+    // | F1 | 503 | no | n/a | E1 + E2 + E4 |
+    // | F2 | 200 | yes | poll | E1 + E3 + E4 |
+    // | F3 | 200 | yes, awaiting | resume | E1 + E3 + E4 |
+    const errorThread = await createSession(client);
+    const errorReceipt = await sendText(client, errorThread, 'trigger remote send rejection');
+    await waitForSessionEventReceipt(
+      client,
+      errorThread,
+      errorReceipt.id,
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+        (event) => event.type === 'session.error'
+          && event.error?.message.includes('503'),
+      ),
+      'F1 exact receipt to commit its terminal A2A send error',
+      { timeoutMs: 30_000 },
+    );
+    const initialFailureMessages = await waitForMessage(
+      errorThread,
+      'remote agent error',
+    );
+    assert.ok(
+      JSON.stringify(initialFailureMessages).includes('503'),
+      `F1/E2 committed the explicit initial-send 503: ${JSON.stringify(initialFailureMessages)}`,
+    );
 
-    // A direct-ingress process makes transport error disposition immediately
-    // observable (the durable process above intentionally retries such failures).
+    // A process without the durable monitoring surface still uses the same
+    // Session Event batch admission and remote-attempt authority.
     await stopServer(server);
     server = spawnServer('config', PORT, {}).server;
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
     await waitForPort(PORT, 180_000, server);
     await publishRemote(peer.endpoint);
-    const pollFailureThread = await createSession();
-    const pollFailure = await api('POST', `/v1/sessions/${pollFailureThread}/events`, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'poll remote failure' }] }],
-    });
-    assert.equal(pollFailure.status, 500, JSON.stringify(pollFailure.body));
-    const resumeFailureThread = await createSession();
-    await sendText(resumeFailureThread, 'resume remote failure');
-    const resumeFailure = await api('POST', `/v1/sessions/${resumeFailureThread}/events`, {
-      events: [{
-        type: 'user.custom_tool_result',
-        custom_tool_use_id: 'resume-failure-task',
-        content: [{ type: 'text', text: 'continue' }],
-        is_error: false,
-      }],
-    });
-    assert.equal(resumeFailure.status, 500, JSON.stringify(resumeFailure.body));
+    const pollFailureThread = await createSession(client);
+    const pollReadStart = peer.reads.length;
+    const pollFailure = await within(
+      client.beta.sessions.events.send(pollFailureThread, {
+        events: [
+          {
+            type: 'user.message',
+            content: [{ type: 'text', text: 'poll remote failure' }],
+          },
+        ],
+        betas: BETAS,
+      }),
+      30_000,
+      'F2 retryable poll admission',
+    );
+    assert.equal(
+      pollFailure.data?.length,
+      1,
+      `F2/E1 one receipt: ${JSON.stringify(pollFailure)}`,
+    );
+    const pollFailureReceipt = pollFailure.data?.[0];
+    assert.ok(pollFailureReceipt, 'F2/E1 exact receipt exists');
+    assert.equal(
+      pollFailureReceipt.type,
+      'user.message',
+      'F2/E1 preserves the admitted Event type',
+    );
+    assert.equal(
+      typeof pollFailureReceipt.id,
+      'string',
+      'F2/E1 assigns the durable Event identity',
+    );
+    assert.ok(
+      pollFailureReceipt.processed_at === null ||
+        typeof pollFailureReceipt.processed_at === 'string',
+      `F2/E1 processed_at is nullable during admission: ${JSON.stringify(pollFailureReceipt)}`,
+    );
+    // F2 negative-observation rule: C1=the official SDK receipt is retained;
+    // C2=the pinned task is polled and returns retryable 503; C3=Session remains
+    // Running. E1=no success/error/idle/terminated delta is fabricated. K1=the
+    // canonical receipt helper requires processed_at and is forbidden here
+    // because an unprocessed receipt is a valid retryable state. D1=C1+C2+C3=>E1.
+    const retryablePoll: {
+      session: { status: string };
+      events: BetaManagedAgentsSessionEvent[];
+      reads: string[];
+    } = await waitForValue(
+      async () => ({
+        session: await within(
+          client.beta.sessions.retrieve(pollFailureThread, { betas: BETAS }),
+          5_000,
+          'F2 official Session retrieve',
+        ),
+        events: await sessionEvents(client, pollFailureThread),
+        reads: peer.reads.slice(pollReadStart),
+      }),
+      (observed: {
+        session: { status: string };
+        events: BetaManagedAgentsSessionEvent[];
+        reads: string[];
+      }) =>
+        observed.session.status === 'running' &&
+        observed.reads.includes('poll-failure-task') &&
+        observed.events.some((event) => event.id === pollFailureReceipt.id),
+      'F2 retryable exact remote poll',
+      { timeoutMs: 20_000, pollMs: 25 },
+    );
+    assert.ok(
+      retryablePoll.reads.length > 0 &&
+        retryablePoll.reads.every((taskId) => taskId === 'poll-failure-task'),
+      `F2/E3 every new poll addresses the committed task: ${JSON.stringify(retryablePoll.reads)}`,
+    );
+    const pollReceiptAt = retryablePoll.events.findIndex(
+      (event) => event.id === pollFailureReceipt.id,
+    );
+    assert.notEqual(
+      pollReceiptAt,
+      -1,
+      'F2/E3 retains the exact admitted Event',
+    );
+    const pollFailureDelta = retryablePoll.events.slice(pollReceiptAt + 1);
+    assert.equal(
+      [...retryablePoll.events]
+        .reverse()
+        .find((event) => event.type.startsWith('session.status_'))?.type,
+      'session.status_running',
+      'F2/E3 latest committed Session/Run boundary remains Running',
+    );
+    assert.ok(
+      !pollFailureDelta.some((event) =>
+        [
+          'agent.message',
+          'session.error',
+          'session.status_idle',
+          'session.status_terminated',
+        ].includes(event.type),
+      ),
+      `F2/E4 fabricated no success or terminal boundary: ${JSON.stringify(pollFailureDelta)}`,
+    );
+
+    const resumeFailureThread = await createSession(client);
+    const resumeStartReceipt = await sendText(client, resumeFailureThread, 'resume remote failure');
+    const resumeFailureToolUse = await waitForPendingTool(
+      client,
+      resumeFailureThread,
+      resumeStartReceipt.id,
+    );
+    const resumeSendStart = peer.sent.length;
+    const resumeFailure = await within(
+      client.beta.sessions.events.send(resumeFailureThread, {
+        events: [toolResult(resumeFailureToolUse.id, 'continue')],
+        betas: BETAS,
+      }),
+      30_000,
+      'F3 retryable resume admission',
+    );
+    assert.equal(
+      resumeFailure.data?.length,
+      1,
+      `F3/E1 one receipt: ${JSON.stringify(resumeFailure)}`,
+    );
+    const resumeFailureReceipt = resumeFailure.data?.[0];
+    assert.ok(resumeFailureReceipt, 'F3/E1 exact receipt exists');
+    assert.equal(
+      resumeFailureReceipt.type,
+      'user.tool_result',
+      'F3/E1 preserves the admitted Event type',
+    );
+    assert.equal(
+      typeof resumeFailureReceipt.id,
+      'string',
+      'F3/E1 assigns the durable Event identity',
+    );
+    assert.ok(
+      resumeFailureReceipt.processed_at === null ||
+        typeof resumeFailureReceipt.processed_at === 'string',
+      `F3/E1 processed_at is nullable during admission: ${JSON.stringify(resumeFailureReceipt)}`,
+    );
+    // F3 negative-observation rule: C1=the official SDK result receipt is
+    // retained; C2=retry reaches the exact remote context with stable identity;
+    // C3=Session remains Running. E1=no success/error/idle/terminated delta is
+    // fabricated. K1=processed_at may remain null, so use SDK retrieve/list with
+    // bounded waitForValue, never the canonical processed-receipt helper.
+    // Decision D1=C1+C2+C3=>E1.
+    const retryableResume: {
+      session: { status: string };
+      events: BetaManagedAgentsSessionEvent[];
+      sent: SeenMessage[];
+    } = await waitForValue(
+      async () => ({
+        session: await within(
+          client.beta.sessions.retrieve(resumeFailureThread, { betas: BETAS }),
+          5_000,
+          'F3 official Session retrieve',
+        ),
+        events: await sessionEvents(client, resumeFailureThread),
+        sent: peer.sent.slice(resumeSendStart),
+      }),
+      (observed: {
+        session: { status: string };
+        events: BetaManagedAgentsSessionEvent[];
+        sent: SeenMessage[];
+      }) =>
+        observed.session.status === 'running' &&
+        observed.sent.some(
+          (message) =>
+            message.text === 'continue' &&
+            message.contextId === 'resume-failure-context',
+        ) &&
+        observed.events.some((event) => event.id === resumeFailureReceipt.id),
+      'F3 retryable exact remote resume',
+      { timeoutMs: 20_000, pollMs: 25 },
+    );
+    const retryableResumeSends = retryableResume.sent.filter(
+      (message) => message.text === 'continue',
+    );
+    assert.ok(
+      retryableResumeSends.length > 0,
+      'F3/E3 reached the remote resume boundary',
+    );
+    assert.ok(
+      retryableResumeSends.every(
+        (message) =>
+          message.contextId === 'resume-failure-context' &&
+          /^a2a-resume-/.test(message.messageId ?? ''),
+      ),
+      `F3/E3 every retry retains the committed context and stable identity shape: ${JSON.stringify(retryableResumeSends)}`,
+    );
+    const resumeReceiptAt = retryableResume.events.findIndex(
+      (event) => event.id === resumeFailureReceipt.id,
+    );
+    assert.notEqual(
+      resumeReceiptAt,
+      -1,
+      'F3/E3 retains the exact admitted Event',
+    );
+    const resumeFailureDelta = retryableResume.events.slice(
+      resumeReceiptAt + 1,
+    );
+    assert.equal(
+      [...retryableResume.events]
+        .reverse()
+        .find((event) => event.type.startsWith('session.status_'))?.type,
+      'session.status_running',
+      'F3/E3 latest committed Session/Run boundary remains Running',
+    );
+    assert.ok(
+      !resumeFailureDelta.some((event) =>
+        [
+          'agent.message',
+          'session.error',
+          'session.status_idle',
+          'session.status_terminated',
+        ].includes(event.type),
+      ),
+      `F3/E4 fabricated no success or terminal boundary: ${JSON.stringify(resumeFailureDelta)}`,
+    );
 
     console.log(
       'REMOTE ATTEMPT TS API E2E PASS: crash reattach, input/auth resume, terminal states, send failure, and pinned-task cancellation.',

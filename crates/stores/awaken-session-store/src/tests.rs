@@ -248,7 +248,9 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
         metadata,
         tools: Default::default(),
         budget: Default::default(),
+        event_batches: Vec::new(),
         activity_epoch: 0,
+        active_activity_epochs: Default::default(),
         running_interval: None,
         runtime_active_millis: 0,
         environment: Default::default(),
@@ -575,6 +577,92 @@ fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent 
     .unwrap()
 }
 
+fn snapshot_extraction(
+    namespace: &str,
+    physical_session: &str,
+    logical_thread: &str,
+    terminal: &str,
+    end_seq: u64,
+) -> awaken_ext_memory::MemoryExtractionIntent {
+    let messages = (0..end_seq)
+        .map(|sequence| {
+            awaken_agent_contract::agent::message::Message::text(
+                awaken_agent_contract::agent::message::Id(format!(
+                    "{namespace}-{logical_thread}-{sequence}"
+                )),
+                awaken_agent_contract::agent::message::Role::User,
+                format!("fact {sequence}"),
+            )
+        })
+        .collect();
+    awaken_ext_memory::MemoryExtractionIntent::new_snapshot(
+        format!("{namespace}-{logical_thread}-{terminal}"),
+        format!("{namespace}:{logical_thread}:{terminal}"),
+        "ws-a",
+        physical_session,
+        terminal,
+        "memory-1",
+        1,
+        awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef {
+            thread_id: awaken_agent_contract::agent::thread::Id(logical_thread.into()),
+            view: awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+            version: end_seq,
+            end_seq,
+        },
+        vec![awaken_agent_contract::thread::read::transcript::TranscriptRange::new(0, end_seq)],
+        messages,
+        extraction("snapshot-extractor", "snapshot-extractor").extractor,
+    )
+    .unwrap()
+}
+
+async fn put_snapshot_cursor_fixture(
+    repository: &dyn awaken_ext_memory::MemoryExtractionRepository,
+    namespace: &str,
+) {
+    use awaken_ext_memory::PutMemoryExtractionOutcome;
+
+    for intent in [
+        snapshot_extraction(namespace, "parent", "child-a", "terminal-1", 1),
+        snapshot_extraction(namespace, "parent", "child-a", "terminal-2", 3),
+        snapshot_extraction(namespace, "parent", "child-b", "terminal-1", 2),
+    ] {
+        assert_eq!(
+            repository.put_extraction_if_absent(intent).await.unwrap(),
+            PutMemoryExtractionOutcome::Inserted
+        );
+    }
+}
+
+async fn assert_snapshot_cursor_fixture(
+    repository: &dyn awaken_ext_memory::MemoryExtractionRepository,
+) {
+    // C/E/K/D backend-conformance design. Causes: C1 two snapshot-backed
+    // terminals share logical child A; C2 sibling child B shares their physical
+    // parent Session; C3 storage is SQLite-after-reopen/Postgres. Effects: E1 A
+    // advances to its greatest committed end (3); E2 B remains independently at
+    // 2; E3 the physical parent does not acquire either logical cursor.
+    // Constraints: K1 `TranscriptSnapshotRef.thread_id` is the only logical
+    // identity for new intents; K2 `session_id` remains recovery affinity; K3
+    // pending intents count. Decision table: D1 C1=>E1; D2 C1+C2=>E1+E2+E3;
+    // D3 D2 across each C3 backend=>identical results.
+    assert_eq!(
+        repository.extraction_cursor("child-a").await.unwrap(),
+        3,
+        "D3/E1"
+    );
+    assert_eq!(
+        repository.extraction_cursor("child-b").await.unwrap(),
+        2,
+        "D3/E2"
+    );
+    assert_eq!(
+        repository.extraction_cursor("parent").await.unwrap(),
+        0,
+        "D3/E3"
+    );
+}
+
 #[tokio::test]
 async fn extraction_intent_and_claim_survive_sqlite_reopen() {
     use awaken_ext_memory::{
@@ -611,6 +699,10 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
     let recovered = reopened.recoverable_extractions(10).await.unwrap();
     assert_eq!(reopened.extraction_cursor("sesn-1").await.unwrap(), 1);
+    put_snapshot_cursor_fixture(&reopened, "sqlite-snapshot").await;
+    drop(reopened);
+    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    assert_snapshot_cursor_fixture(&reopened).await;
     assert_eq!(recovered, vec![claimed]);
     assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
     assert!(matches!(
@@ -1094,6 +1186,8 @@ async fn postgres_round_trips_and_upserts() {
         vec![claimed]
     );
     assert_eq!(repo.extraction_cursor("sesn-1").await.unwrap(), 1);
+    put_snapshot_cursor_fixture(&repo, "postgres-snapshot").await;
+    assert_snapshot_cursor_fixture(&repo).await;
 
     /* Postgres parity for the recovery isolation decision table above.
      * Causes: P1 one decodable pending Session; P2 one corrupt aggregate.

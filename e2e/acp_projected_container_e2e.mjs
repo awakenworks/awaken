@@ -19,7 +19,7 @@ import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
-import { waitForValue } from './harness.mjs';
+import { waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -143,16 +143,19 @@ async function stop(child) {
   await exited;
 }
 
-async function messages(client, sessionId) {
+async function listEvents(client, sessionId) {
   const events = [];
   for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     events.push(event);
   }
-  const texts = events
+  return events;
+}
+
+function projectedTexts(events) {
+  return events
     .filter((event) => event.type === 'agent.message')
     .flatMap((event) => event.content ?? [])
     .map((content) => content.text ?? '');
-  return { events, texts };
 }
 
 async function request(base, method, route, body) {
@@ -207,6 +210,16 @@ async function startModelDirectory() {
 }
 
 async function main() {
+  // Test design (container projection arms). Causes: C1=Docker is reachable;
+  // C2=the publication pins an ACP/model plus Environment resources; C3=MCP is
+  // anonymous or credentialed without a proven no-bypass path. Effects:
+  // E1=!C1 skips without claiming compatibility; E2=C1+C2 realizes the pinned
+  // container and preserves File/Memory/Repository/tool projections; E3=C3
+  // either runs the anonymous endpoint or fails closed before launch.
+  // Constraints/invariant: immutable publication/resource identity and the
+  // container boundary remain authoritative across every arm.
+  // Decision rules: D0=!C1=>E1; D1=C1+C2+anonymous=>E2; D2=C1+C2+unsafe
+  // credential path=>E3.
   if (!dockerAvailable()) {
     console.log('E2E SKIP: no reachable Docker daemon.');
     return;
@@ -237,7 +250,6 @@ async function main() {
     'sandbox_tier = "docker"',
     `container_image = ${JSON.stringify(IMAGE)}`,
     'acp_clis = ["gemini"]',
-    'acp_default_cli = "gemini"',
   ].join('\n'));
   const server = spawn(binary, automatedAllInOneArgs('--config', configPath), {
     env: {
@@ -297,17 +309,17 @@ async function main() {
     // Cause/effect graph / decision table for the built-in Docker provider:
     // C1=credential selected; C2=substitution; C3=no-bypass network enforcement;
     // C4=a driving event wakes the registered Worker realization.
-    // C1 + !(C2 && C3) + C4 -> D1 reject the event and Worker custody before
-    //                              container launch.
+    // C1 + !(C2 && C3) + C4 -> D1 durably admit the exact command, then retain
+    //                              it unprocessed while permanent Worker custody
+    //                              failure settles/terminates before container launch.
     // !C1              -> D2 inject the anonymous MCP endpoint normally.
     //
     // | Rule | credential | substitution + no-bypass | driving event | result             |
-    // | D1   | yes        | no                       | yes           | event rejects; Session terminated; no launch |
+    // | D1   | yes        | no                       | yes           | exact receipt; retained/unprocessed; error + terminal; no launch |
     // | D2   | no         | n/a                      | yes           | launch + MCP config |
-    // FMECA: treating D1 as a successful event loses the activation failure
-    // returned by the authoritative Worker. The rejected event plus terminal
-    // projection proves no container was launched without adding another
-    // activation path.
+    // FMECA: rolling D1 back into an HTTP error erases the committed Session
+    // command. The accepted receipt plus permanent terminal projection proves
+    // no container was launched without adding another activation path.
     secureSession = await client.beta.sessions.create({
       agent: agentWithMcpServer({
         name: 'container-fixture-secure',
@@ -319,24 +331,65 @@ async function main() {
       betas: BETAS,
     });
     const beforeRejectedRealization = fixtureContainerIds();
-    await assert.rejects(
-      client.beta.sessions.events.send(secureSession.id, {
-        events: [{
-          type: 'user.message',
-          content: [{ type: 'text', text: 'must fail before container launch' }],
-        }],
-        betas: BETAS,
-      }),
-      (error) => error.status === 400 && String(error.message).includes('Session was not found'),
-      'D1: the driving event reports the permanent realization failure',
+    const secureReceipt = await client.beta.sessions.events.send(secureSession.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'must fail before container launch' }],
+      }],
+      betas: BETAS,
+    });
+    const acceptedSecure = secureReceipt.data[0];
+    assert.equal(acceptedSecure?.type, 'user.message', 'D1 exact User Event receipt family');
+    assert.equal(acceptedSecure?.processed_at, null, 'D1 effect failure is not falsely processed');
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const secureEvents = await listEvents(client, secureSession.id);
+    const retainedSecure = secureEvents.find((event) => event.id === acceptedSecure.id);
+    assert.equal(retainedSecure?.processed_at, null, 'D1 durable history retains the failed command');
+    const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
+    assert.equal(secureErrors.length, 1, 'D1 permanent custody failure projects exactly one error');
+    assert.ok(
+      typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
+      'D1 error retains a nonempty failure cause',
     );
-    const rejected = await waitForValue(
-      () => client.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
-      (observed) => observed.status === 'terminated',
-      'claim-fenced MCP custody failure status',
-      { timeoutMs: 60_000 },
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.thread_status_idle').length,
+      1,
+      'D1 settles the failed root Run before terminal Session policy applies',
     );
-    assert.equal(rejected.status, 'terminated', 'D1: realization failure is durable');
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.thread_status_terminated').length,
+      1,
+      'D1 terminates the exact root Thread once',
+    );
+    assert.ok(
+      secureEvents.findIndex((event) => event.type === 'session.thread_status_idle')
+        < secureEvents.findIndex((event) => event.type === 'session.thread_status_terminated'),
+      'D1 root Thread settles before it is terminated',
+    );
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.status_terminated').length,
+      1,
+      'D1 terminates the Session once',
+    );
+    assert.ok(
+      !secureEvents.some((event) => [
+        'agent.message',
+        'agent.mcp_tool_use',
+        'agent.mcp_tool_result',
+        'agent.tool_use',
+        'agent.tool_result',
+        'session.status_idle',
+        'session.usage',
+        'span.model_request_start',
+        'span.model_request_end',
+      ].includes(event.type)),
+      `D1 no model/tool/success effect is fabricated: ${secureEvents.map((event) => event.type)}`,
+    );
+    assert.equal(
+      (await client.beta.sessions.retrieve(secureSession.id, { betas: BETAS })).status,
+      'terminated',
+      'D1 permanent realization failure is durable after the accepted receipt',
+    );
     assert.deepEqual(
       fixtureContainerIds(),
       beforeRejectedRealization,
@@ -361,20 +414,26 @@ async function main() {
       }],
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // D2 receipt rule: C4 exact anonymous projected command receipt; E2 the
+    // processed delta contains CONTAINER_PROJECTED; K1 no prior Session history
+    // can satisfy the container/resource oracle. Decision D2+C4=>launch+E2.
+    const projectedReceipt = (await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: 'exercise the projected container launch' }],
       }],
       betas: BETAS,
-    });
-    const observed = await waitForValue(
-      () => messages(client, session.id),
-      (candidate) => candidate.texts.some((text) => text.includes('CONTAINER_PROJECTED')),
+    })).data[0];
+    const observed = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      projectedReceipt.id,
+      BETAS,
+      ({ delta }) => projectedTexts(delta).some((text) => text.includes('CONTAINER_PROJECTED')),
       'projected container ACP response',
       { timeoutMs: 60_000 },
     );
-    const reply = observed.texts.find((text) => text.includes('CONTAINER_PROJECTED'));
+    const reply = projectedTexts(observed.delta).find((text) => text.includes('CONTAINER_PROJECTED'));
     assert.ok(
       reply,
       `the production projected container returned an ACP message: ${JSON.stringify(observed.events)}`,

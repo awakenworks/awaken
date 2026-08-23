@@ -38,7 +38,9 @@ pub struct awaken_store_inmem::MemoryStreamSink
 impl awaken_store_inmem::MemoryStreamSink
 pub fn awaken_store_inmem::MemoryStreamSink::events(&self) -> alloc::vec::Vec<awaken_agent_contract::stream::event::Event>
 pub fn awaken_store_inmem::MemoryStreamSink::new() -> Self
+pub fn awaken_store_inmem::MemoryStreamSink::observations(&self) -> alloc::vec::Vec<awaken_agent_contract::stream::event::Observation>
 impl awaken_agent_contract::stream::sink::Sink for awaken_store_inmem::MemoryStreamSink
 pub fn awaken_store_inmem::MemoryStreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_store_inmem::MemoryStreamSink::send_observation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Observation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_store_inmem::replay_latest_state(&awaken_store_inmem::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
 pub fn awaken_store_inmem::replay_state(&awaken_store_inmem::CommittedThread) -> awaken_agent_contract::agent::state::Store

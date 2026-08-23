@@ -27,6 +27,9 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::lifecycle::{
+    RunLifecycleCursor, decode_run_lifecycle_cursor,
+};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSliceSpec, TranscriptView,
@@ -447,6 +450,13 @@ pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointRe
 /// version excludes unrelated commits while the backend cursor includes them,
 /// and the claimed Run ordinal counts only that Run's commits.
 pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>(store: &S) {
+    // Cause/effect graph: C1 two commits belong to the requested Thread; C2 an
+    // unrelated Thread commits later; C3 the requested prefix has one audit
+    // fact. Effects: E1 messages/runs/tickets/events exclude C2; E2 Thread
+    // version excludes C2 while store cursor includes it; E3 every returned
+    // event's decoded source commit is within that same cursor fence. Decision
+    // rule R1=C1+C2+C3=>E1+E2+E3. This generic case runs against memory,
+    // filesystem, SQLite, and PostgreSQL.
     let thread = ThreadId("conf-recovery".to_string());
     let awaiting_run = RunId("conf-recovery-awaiting".to_string());
     let claimed_run = RunId("conf-recovery-claimed".to_string());
@@ -478,6 +488,15 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
         1,
         "other Thread transcript excluded"
     );
+    assert_eq!(
+        snapshot.events.len(),
+        1,
+        "R1/E1 other Thread audit excluded"
+    );
+    assert_eq!(snapshot.events[0].run_id, claimed_run, "R1/E1");
+    let (source_commit, _) =
+        decode_run_lifecycle_cursor(RunLifecycleCursor(snapshot.events[0].sequence));
+    assert!(source_commit <= snapshot.store_cursor, "R1/E3");
     assert_eq!(snapshot.resume_tickets.len(), 1, "active ticket retained");
     assert_eq!(snapshot.resume_tickets[0].run_id, awaiting_run);
     assert_eq!(snapshot.thread_version, 2, "per-Thread version");

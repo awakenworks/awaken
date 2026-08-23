@@ -1,5 +1,6 @@
 //! Kubernetes realization of one retained active-filesystem volume.
 
+use awaken_provisioning_contract::ContainerContinuationHandle;
 use k8s_openapi::api::core::v1::{
     Container, PersistentVolumeClaim, PersistentVolumeClaimSpec, VolumeMount,
     VolumeResourceRequirements,
@@ -119,7 +120,7 @@ pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&
 
 pub(super) fn handle_extra(
     pod: &k8s_openapi::api::core::v1::Pod,
-) -> Result<Option<crate::ContainerRuntimeHandle>, RuntimeError> {
+) -> Result<Option<ContainerContinuationHandle>, RuntimeError> {
     let binds_continuation_claim = pod
         .spec
         .as_ref()
@@ -131,11 +132,9 @@ pub(super) fn handle_extra(
         });
     match (binds_continuation_claim, bound_claim_uid(pod)) {
         (false, None) => Ok(None),
-        (true, Some(uid)) => Ok(Some(
-            crate::ContainerRuntimeHandle::KubernetesContinuation {
-                claim_uid: uid.to_owned(),
-            },
-        )),
+        (true, Some(uid)) => Ok(Some(ContainerContinuationHandle::KubernetesContinuation {
+            claim_uid: uid.to_owned(),
+        })),
         (true, None) => Err(backend(
             "Kubernetes Sandbox Pod has no continuation PVC incarnation evidence",
         )),
@@ -355,6 +354,9 @@ mod tests {
          * (retained Session); H4 C1+C2+!C3=>E3; H5 any(C1)+!C2+C3=>E3.
          * C2 is the realized-object authority, so this does not duplicate the
          * typed claim selector used by allocation and Pod projection.
+         * Constraint/invariant: durable handle evidence exists only when the
+         * realized Pod binds the canonical PVC and carries its exact UID fence;
+         * configured capability alone can neither fabricate nor retain a handle.
          */
         let plain = super::super::K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
         let retained = plain.pod("configured-off", &plan());
@@ -375,7 +377,7 @@ mod tests {
         bind_claim_uid(&mut retained, "claim-incarnation-1");
         assert_eq!(
             handle_extra(&retained).unwrap(),
-            Some(crate::ContainerRuntimeHandle::KubernetesContinuation {
+            Some(ContainerContinuationHandle::KubernetesContinuation {
                 claim_uid: "claim-incarnation-1".into(),
             }),
             "H3"

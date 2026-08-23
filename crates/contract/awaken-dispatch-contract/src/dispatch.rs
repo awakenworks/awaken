@@ -15,7 +15,7 @@
 //! for the worker and host.
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::CredentialRealizationCapabilities;
@@ -28,6 +28,7 @@ pub use awaken_runtime_contract::{
 use awaken_runtime_contract::{
     CredentialAdmissionError, CredentialRealizationKind, CredentialUsage, PlaintextBoundary,
 };
+use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +50,47 @@ pub enum DispatchError {
     Rejected(String),
 }
 
+/// Failure at a committed Run boundary that must complete before delivery
+/// state can be removed or returned to Awaiting.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("dispatch settlement observer failed: {0}")]
+pub struct DispatchSettlementError(pub String);
+
+/// Fallible pre-settlement effect over trusted dispatch/claim coordinates and
+/// committed Run truth. An error retains the dispatch row as retry evidence.
+#[async_trait]
+pub trait DispatchSettlementObserver: Send + Sync {
+    /// Whether this observer's transport holds the authoritative reservation
+    /// phase guard across its Session root CAS. Local observers return false so
+    /// the Worker holds the colocated queue guard; remote authenticated adapters
+    /// return true because the guard exists only at the Coordinator endpoint.
+    fn owns_session_run_reservation_fence(&self) -> bool {
+        false
+    }
+
+    /// Repair the exact Session activity admission before an expired Reserved
+    /// intent is published to ordinary Pending. Implementations must derive a
+    /// stable operation from the canonical Run identity.
+    async fn admit_session_run_activity(
+        &self,
+        _dispatch: &RunDispatch,
+        _claim: &RunClaim,
+        _mode: SessionRunActivityAdmissionMode,
+    ) -> Result<SessionRunActivityAdmission, DispatchSettlementError> {
+        Err(DispatchSettlementError(
+            "Session Run activity admission is not installed".to_string(),
+        ))
+    }
+
+    async fn before_settle(
+        &self,
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        committed_state: &RunState,
+        cancellation_requested: bool,
+    ) -> Result<(), DispatchSettlementError>;
+}
+
 /// One unit of durable input delivered to a thread, awaiting consumption. Keyed
 /// by a stable `message_id` so an at-least-once delivery appends exactly once.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,7 +101,10 @@ pub struct PendingInput {
     /// The awaiting-ticket correlation this input answers. Consumption is keyed to
     /// it: the worker delivers an input only while the committed ticket still
     /// carries the same correlation, so a resume that already committed (and
-    /// advanced or cleared the ticket) is never re-applied (ADR-0010).
+    /// advanced or cleared the ticket) is never re-applied (ADR-0010). A fresh
+    /// continuation instead carries its exact future `run_id` and an empty
+    /// correlation; a generic idle-Thread input leaves both fields empty
+    /// (ADR-0021).
     pub correlation_id: String,
     /// Earliest delivery time (epoch millis). `None` is deliverable immediately;
     /// a future time schedules the wake — the claim skips it until it is due and
@@ -68,6 +113,12 @@ pub struct PendingInput {
     pub available_at_ms: Option<u64>,
     /// What this input delivers back into the awaiting run on resume.
     pub result: ResumeResult,
+    /// Stable committed-context Messages accepted with this input. A Session
+    /// tool reply uses this only for its immediately accompanying System
+    /// Message; the Worker copies the frozen values into `ResumeCommand` and
+    /// Runtime commits them before the correlated tool result in one delta.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_messages: Vec<awaken_agent_contract::agent::message::Message>,
 }
 
 /// A lease over one claimed dispatch: the single owner allowed to execute this
@@ -121,7 +172,9 @@ pub struct ClaimedCommitCommand {
 }
 
 /// A claimed, ready-to-run dispatch and the run's undelivered pending input.
-/// `pending` is empty for a fresh run and non-empty for a wake.
+/// `pending` is normally empty for a fresh Run, but contains an immediate
+/// Run-bound input when an Outbox message atomically admitted that continuation.
+/// It is non-empty for an ordinary wake.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claimed {
     pub request: RunDispatch,
@@ -144,6 +197,11 @@ pub struct Claimed {
     /// claim (both advance the fencing epoch).
     #[serde(default)]
     pub recovered: bool,
+    /// This lease owns an expired Session Run reservation. The Worker must
+    /// recover the root activity receipt and atomically resolve the reservation
+    /// before it may enter the Run executor.
+    #[serde(default)]
+    pub session_activity_admission_required: bool,
     /// The sandbox this run is bound to for its lifetime (B-P3, ADR-0021 §6), as an
     /// **opaque** reference — the dispatch aggregate stays neutral (it names no
     /// provisioning type); the fleet serializes a `SandboxHandle` into it and
@@ -188,6 +246,15 @@ pub enum SettleOutcome {
 pub struct DispatchCompletion {
     pub sequence: u64,
     pub run_id: RunId,
+    /// Logical Thread and optional Session routing affinity retained from the
+    /// accepted dispatch. A Session root is self-affine; a coordinated child is
+    /// affine to its parent. Historical rows may omit both. Admission uses the
+    /// pair only to enforce the Thread/archive limit, never as a second
+    /// relationship or archive source of truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_thread_id: Option<ThreadId>,
     /// Canonical identity of the accepted dispatch. Historical tombstones that
     /// predate collision detection retain `None` and therefore cannot authorize
     /// a caller-owned Run-id replay.
@@ -205,6 +272,12 @@ impl SettleOutcome {
 /// The lifecycle state of a dispatch, for the operational query surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchState {
+    /// Complete Session Run intent awaiting its root activity admission. It is
+    /// invisible to ordinary claims until its reservation deadline expires.
+    Reserved,
+    /// An exclusive recovery claim is repairing the Reserved intent's Session
+    /// activity admission. The Run executor has not started.
+    ReservationLeased,
     /// Fresh, not yet claimed.
     Pending,
     /// Claimed and executing under a lease.
@@ -223,6 +296,8 @@ impl DispatchState {
     /// into claimable `Pending` work.
     pub fn from_db(s: &str) -> Option<Self> {
         Some(match s {
+            "reserved" => Self::Reserved,
+            "reservation_running" => Self::ReservationLeased,
             "pending" => Self::Pending,
             "running" => Self::Leased,
             "awaiting" => Self::Awaiting,
@@ -240,6 +315,18 @@ impl DispatchState {
 pub struct DispatchSummary {
     pub run_id: RunId,
     pub thread_id: ThreadId,
+    /// Existing Session routing affinity. `None` denotes an ordinary root Run,
+    /// self-affinity denotes a Session root, and a different Thread denotes a
+    /// coordinated child. Operational cleanup can use this projection to find
+    /// every child without a second relationship registry.
+    pub session_thread_id: Option<ThreadId>,
+    /// Durable Session activity coordinate currently carried by this row. It
+    /// lets the Session root atomically transfer a committed continuation away
+    /// from the finishing attempt before the outbox rotates the row.
+    pub session_activity_epoch: Option<u64>,
+    /// Expiry of the exclusive admission owner while `state == Reserved`.
+    /// Other states report `None`.
+    pub reservation_deadline_ms: Option<u64>,
     pub state: DispatchState,
     /// Terminal control has been accepted and is awaiting/under a fenced claim.
     pub cancellation_requested: bool,
@@ -248,6 +335,47 @@ pub struct DispatchSummary {
     /// Whether an opaque Sandbox handle has been durably bound. The monitoring
     /// view deliberately exposes no provider-specific handle material.
     pub sandbox_bound: bool,
+}
+
+/// Claim-fenced resolution of one expired Session Run reservation. This mutates
+/// the existing dispatch row only; it is not a second command or activity log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRunReservationResolution {
+    /// The canonical Session activity receipt committed. Bind it to the row and
+    /// publish Pending; a later ordinary claim remains the only executor entry.
+    Admitted { session_activity_epoch: u64 },
+    /// Session policy definitively rejected the still-unstarted intent. Remove
+    /// the reservation without writing a Run completion tombstone.
+    Rejected,
+    /// Admission authority was unavailable. Return the exact claim to Reserved
+    /// until this absolute deadline, retaining the same Run identity.
+    Retry { reservation_deadline_ms: u64 },
+}
+
+/// Closed evidence returned when a caller binds a committed Session activity to
+/// its one durable Run reservation. Callers use this instead of guessing whether
+/// a false CAS result means replay, recovery ownership, completion, or absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRunReservationActivation {
+    Activated,
+    AlreadyActivated { session_activity_epoch: u64 },
+    RecoveryClaimed,
+    Completed,
+    MissingOrRejected,
+    Conflict,
+}
+
+/// Closed evidence returned before a caller opens a Session activity. This
+/// prevents a completion or conflicting replay from creating an epoch that
+/// would then require compensating recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRunReservationOutcome {
+    Reserved,
+    AlreadyReserved,
+    RecoveryClaimed,
+    AlreadyActivated { session_activity_epoch: u64 },
+    Completed,
+    Conflict,
 }
 
 /// Dispatch-level options for an accepted run. Defaults to ordinary priority and
@@ -266,449 +394,53 @@ pub struct SubmitOptions {
     pub supersede: bool,
 }
 
-/// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
-#[async_trait]
-pub trait DispatchQueue: Send + Sync {
-    /// Idempotently record an accepted run at default options. Re-enqueueing the
-    /// same run id and exact canonical dispatch is a no-op; reusing that id for a
-    /// different dispatch is rejected, so an at-least-once submit has one exact
-    /// effect per run.
-    async fn enqueue(&self, request: RunDispatch) -> Result<(), DispatchError> {
-        self.enqueue_with(request, SubmitOptions::default()).await
-    }
-
-    /// Record an accepted run with dispatch options (priority, dedupe key). A
-    /// dedupe key already live makes this a no-op. On an exact canonical Run-id
-    /// replay the first accepted options remain authoritative; retry options do
-    /// not mutate or supersede the existing dispatch.
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), DispatchError>;
-
-    /// Atomically record and claim one newly admitted Run.
-    ///
-    /// Parent-mediated child creation uses this command so the process-wide
-    /// dispatcher cannot claim the new row between a separate enqueue and exact
-    /// claim. Existing rows remain idempotent only when their canonical dispatch
-    /// is exact; a different payload under the same Run id is rejected before
-    /// placement eligibility is considered. An exact existing runnable row may
-    /// be claimed under the ordinary exact-claim rules; an already leased or
-    /// settled row returns `None`. The returned lease is otherwise identical to
-    /// [`claim`](Self::claim), including its fencing epoch.
-    async fn claim_new_run(
-        &self,
-        request: RunDispatch,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-    ) -> Result<Option<Claimed>, DispatchError>;
-
-    async fn claim_new_run_compatible(
-        &self,
-        _request: RunDispatch,
-        _worker: &WorkerSnapshot,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker exact claims".to_string(),
-        ))
-    }
-
-    /// Atomically append one idempotent input and claim its exact Run.
-    ///
-    /// This is the resume-side twin of [`claim_new_run`](Self::claim_new_run): a
-    /// general pool cannot observe the newly runnable awaiting row before the
-    /// parent-mediated caller receives its lease. A duplicate `message_id` is a
-    /// no-op, and the ordinary correlation, due-time, thread writer, recovery,
-    /// lease, and epoch rules still apply.
-    async fn deliver_and_claim(
-        &self,
-        input: PendingInput,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-    ) -> Result<Option<Claimed>, DispatchError>;
-
-    async fn deliver_and_claim_compatible(
-        &self,
-        _input: PendingInput,
-        _worker: &WorkerSnapshot,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker delivery claims".to_string(),
-        ))
-    }
-
-    /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
-    /// `pending` run, an awaiting run with pending input (a wake), or a running
-    /// dispatch whose lease expired (recovery). Returns `None` when nothing is
-    /// runnable, and the run's current pending input in the returned [`Claimed`].
-    async fn claim(
-        &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-    ) -> Result<Option<Claimed>, DispatchError>;
-
-    /// Atomically claim only work compatible with the registered worker snapshot.
-    /// Implementations must evaluate the shared compatibility kernel before the
-    /// lease transition and persist the resulting assignment with that transition.
-    async fn claim_compatible(
-        &self,
-        _worker: &WorkerSnapshot,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker claims".to_string(),
-        ))
-    }
-
-    /// Claim according to a replaceable preference policy while preserving the
-    /// same atomic eligibility, recovery and assignment transition. Preference
-    /// may use a liveness snapshot, while the backend's final claim transition
-    /// rechecks immutable eligibility and fencing; a stale preference can delay
-    /// work but cannot widen execution authority or create two owners.
-    async fn claim_placed(
-        &self,
-        _requester: &WorkerSnapshot,
-        _workers: Vec<WorkerSnapshot>,
-        _policy: std::sync::Arc<dyn PlacementPolicy>,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support policy-based registered-worker claims".to_string(),
-        ))
-    }
-
-    /// Claim one specific runnable Run without consuming unrelated queue work.
-    ///
-    /// Parent-mediated child Runs use this operation after durably scheduling a
-    /// known child identity. It applies exactly the same pending/wake/recovery,
-    /// single-writer-per-thread, lease, and epoch rules as [`claim`](Self::claim);
-    /// the only difference is selection. `None` means that Run is not currently
-    /// runnable or another owner/thread execution blocks it.
-    async fn claim_run(
-        &self,
-        run_id: &RunId,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-        capabilities: &CredentialRealizationCapabilities,
-    ) -> Result<Option<Claimed>, DispatchError>;
-
-    /// Claim one quiescent `awaiting` row or expired `running` lease after the
-    /// committed Run authority has already proved that the same `run_id` is
-    /// terminal.
-    ///
-    /// This is the repair-side entry into the ordinary fenced settlement path:
-    /// it never reads or accepts Run outcome truth, never executes the Run, and
-    /// skips execution placement/credential admission because the caller will
-    /// only redeliver terminal observers and call [`settle`](Self::settle) with
-    /// `Done`. Implementations must claim only an unleased `awaiting` row whose
-    /// Thread has no running dispatch, or a `running` row whose lease is strictly
-    /// expired. A live lease, missing, pending, superseded, or dead-lettered row
-    /// returns `None`.
-    async fn claim_for_terminal_recovery(
-        &self,
-        _run_id: &RunId,
-        _owner: &str,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support committed-terminal dispatch recovery".to_string(),
-        ))
-    }
-
-    /// Claim one strictly expired `running` dispatch at/above `max_attempts`.
-    /// This is delivery authority, not Run truth: route the ordinary [`Claimed`]
-    /// through the canonical Worker `Ended(Indeterminate)` + fenced `Done` path.
-    /// A failed commit stays eligible after expiry; `None` proves no eligible row remains at serialization.
-    async fn claim_retry_exhausted(
-        &self,
-        _owner: &str,
-        _lease_ms: u64,
-        _now_ms: u64,
-        _max_attempts: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support retry-exhaustion terminal claims".to_string(),
-        ))
-    }
-
-    async fn claim_run_compatible(
-        &self,
-        _run_id: &RunId,
-        _worker: &WorkerSnapshot,
-        _lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker run claims".to_string(),
-        ))
-    }
-
-    /// Extend the lease on a run this `owner` is executing, so a long run is not
-    /// reclaimed by another node's recovery while it is still making progress.
-    /// Returns `true` if the lease was renewed (the run is still owned by
-    /// `owner`); `false` if it was lost (stolen, settled, or unknown) — the holder
-    /// should then stop. This is the multi-node liveness knob (ADR-0019).
-    async fn renew_lease(
-        &self,
-        run_id: &RunId,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-    ) -> Result<bool, DispatchError>;
-
-    /// Renew, to `now_ms + lease_ms`, the lease on every running dispatch owned by
-    /// `owner` that is *within half a lease of expiring* — the daemon's heartbeat
-    /// that keeps its in-flight runs from being reclaimed while still executing
-    /// (ADR-0024). Returns how many leases were renewed.
-    ///
-    /// Renewing only near-expiry leases (`lease_until < now_ms + lease_ms/2`), not
-    /// every running row on every tick, bounds the write amplification of the
-    /// heartbeat: with hundreds of thousands of in-flight runs, a blanket renewal
-    /// every few seconds is a storm of no-op-equivalent writes. It stays safe as
-    /// long as the heartbeat cadence is under half the lease (the ADR-0024
-    /// recommendation), so a lease is always caught within the window before it
-    /// expires; a fresh claim, whose lease is a full length out, is skipped until
-    /// it approaches expiry.
-    async fn renew_owned_leases(
-        &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-    ) -> Result<usize, DispatchError>;
-
-    /// Return an exact, still-current claim to `pending` without consuming its
-    /// crash retry budget.
-    ///
-    /// This is the pre-execution admission rollback: a Worker may win the Run
-    /// queue and then discover that a subordinate authority (for example an
-    /// Environment's single active Session Work lease) is temporarily busy.
-    /// The complete claim fences the rollback, so a stale Worker cannot release
-    /// a replacement owner's Run. Pending input and attempt count are preserved.
-    async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support claim relinquish".to_string(),
-        ))
-    }
-
-    /// Whether one exact fenced claim still owns a live dispatch lease.
-    ///
-    /// The default reuses the backend's authoritative epoch guard instead of
-    /// introducing another claim source or duplicating owner/epoch queries.
-    async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
-        Ok(self
-            .lock_commit_epoch(claim)
-            .await?
-            .is_some_and(|guard| guard.is_live_at(now_ms)))
-    }
-
-    /// Persist secret-free proof that the exact claim-epoch credential binding
-    /// was realized. Implementations fence on the complete claim, verify through
-    /// [`verify_credential_realization_receipt`], and make exact retries
-    /// idempotent. A stale claim returns [`SettleOutcome::Fenced`].
-    async fn record_credential_realization(
-        &self,
-        _claim: &RunClaim,
-        _receipt: CredentialRealizationReceipt,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not persist credential realization receipts".to_string(),
-        ))
-    }
-
-    /// Return the current live claim only when this exact registered Worker
-    /// incarnation owns `run_id` and no cancellation has been requested.
-    ///
-    /// Server-side application capability issuers use this shape because they
-    /// authenticate a Worker identity and Run id, but must not trust a
-    /// caller-supplied claim epoch.
-    async fn worker_owns_run(
-        &self,
-        _identity: &WorkerIdentity,
-        _run_id: &RunId,
-        _now_ms: u64,
-    ) -> Result<Option<RunClaim>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not expose registered-worker run authority".to_string(),
-        ))
-    }
-
-    /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from
-    /// [`Claimed`]`.lease.epoch`). The settle applies only when `epoch` is still the
-    /// row's current epoch; if the run was re-claimed under a higher epoch (a
-    /// reclaimer took the lapsed lease), the settle is rejected as
-    /// [`SettleOutcome::Fenced`] and NOTHING is changed — a stale owner can never
-    /// clobber the current owner's in-flight dispatch (reset its lease, re-await it,
-    /// or delete it out from under an active drive).
-    ///
-    /// When applied: `Done` removes the dispatch and all its pending input; `Awaiting`
-    /// returns it to the awaiting state and drops only the `consumed` pending (by
-    /// `message_id`), leaving input that arrived mid-attempt for the next wake.
-    /// `Awaiting` also resets the crash-retry budget — a run that reaches a checkpoint
-    /// refreshes its attempts.
-    async fn settle(
-        &self,
-        run_id: &RunId,
-        epoch: u64,
-        outcome: DispatchOutcome,
-        consumed: &[String],
-    ) -> Result<SettleOutcome, DispatchError>;
-
-    /// Return durable applied-`Done` facts after `after_sequence`, in ascending
-    /// sequence order, capped at `limit`.
-    ///
-    /// Native durable stores retain these rows as permanent run-id tombstones;
-    /// completed ids therefore cannot be re-enqueued after their live dispatch
-    /// row is removed (ADR-0060). A transport that does not expose this
-    /// server-local projection query fails explicitly.
-    async fn completion_events_after(
-        &self,
-        _after_sequence: u64,
-        _limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not expose durable dispatch completion events".to_string(),
-        ))
-    }
-
-    /// Hold a claim's exact epoch stable across a `ThreadCommit`.
-    ///
-    /// `Some` means the claim remains authoritative while the guard lives;
-    /// `None` means the row is gone or its epoch/owner no longer matches. This is
-    /// required: a durable adapter may not degrade to a check-then-commit sequence.
-    async fn lock_commit_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
-
-    /// Remote-capable checkpoint operations. Native stores normally use
-    /// `lock_commit_epoch` around their colocated checkpoint store; transports
-    /// override these to execute the guarded operation on the authority server.
-    async fn load_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    async fn put_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-        _checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    async fn delete_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    /// Load one claim-authorized, internally consistent committed recovery
-    /// prefix. Remote transports override this; local workers already share the
-    /// commit reader and fail closed if they accidentally call it.
-    async fn load_recovery_snapshot(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
-    {
-        Err(DispatchError::Rejected(
-            "claimed recovery transport is unavailable".to_string(),
-        ))
-    }
-
-    /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
-    /// Moves rows to `DeadLetter`; automatic services use
-    /// [`claim_retry_exhausted`](Self::claim_retry_exhausted), so the Run first
-    /// receives committed terminal truth (ADR-0015).
-    async fn quarantine_retry_exhausted(
-        &self,
-        max_attempts: u64,
-        now_ms: u64,
-    ) -> Result<usize, DispatchError>;
-
-    /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
-    /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
-    /// overwrite the replacement's environment after its lease expires. The
-    /// reference is opaque to the dispatch aggregate (the fleet serializes a
-    /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
-    /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
-    /// for backends that do not persist the binding (the neutral seam).
-    async fn bind_sandbox(
-        &self,
-        _claim: &RunClaim,
-        _sandbox_ref: &str,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Ok(SettleOutcome::Fenced)
-    }
-
-    /// Current number of dispatches that are claimable at `now_ms`. Native stores
-    /// return an exact value; composed/remote backends may return `None` until they
-    /// expose an efficient server-side count. This is an operations query only and
-    /// never participates in scheduling correctness.
-    async fn runnable_depth(&self, _now_ms: u64) -> Result<Option<u64>, DispatchError> {
-        Ok(None)
-    }
-
-    /// The run ids currently dead-lettered, for operations.
-    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
-
-    /// Return a dead-lettered run to the queue at a fresh budget. Returns `true`
-    /// if a dead-lettered run with that id was requeued.
-    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
-
-    /// Durably request cancellation of a pending, awaiting, or running dispatch.
-    /// This operation records intent but never removes the row or pending input;
-    /// for a running row it also advances the epoch and releases the old lease so
-    /// that owner's later commit is fenced. The worker claims it and commits
-    /// `Cancelled` before settlement removes delivery state. Repeating it is
-    /// idempotent. Returns `None` only for a terminal queue state or unknown run.
-    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
-
-    /// The run currently awaiting on a thread, if any. A thread is the stable
-    /// addressable unit (a run is one ephemeral execution); this resolves a
-    /// thread-addressed delivery to the run awaiting on it.
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
-
-    /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
-    /// Returns how many were purged.
-    async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
-
-    /// Remove dead-lettered dispatches whose dead-letter time is at or before
-    /// `cutoff_ms` (and their pending input) — time-windowed GC the daemon runs on
-    /// a cadence (ADR-0023). Returns how many were purged.
-    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
-
-    /// The run ids superseded by a newer submission on their thread (ADR-0022),
-    /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
-    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
-
-    /// Every dispatch row's operational summary, in enqueue order — the query
-    /// surface for monitoring and maintenance (ADR-0025).
-    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
+/// Trusted policy and committed archive evidence for one Session-child
+/// admission.
+///
+/// `archived_threads` is a caller-supplied projection of authoritative committed
+/// [`ThreadDisposition`](awaken_agent_contract::ThreadDisposition) state. The
+/// queue never persists archive flags. It combines this evidence with its live
+/// dispatches and completion tombstones under one admission transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionChildAdmission {
+    pub max_unarchived_threads: usize,
+    pub archived_threads: Vec<ThreadId>,
+    /// Derived child Threads that share the Session partition but do not belong
+    /// to this Managed capacity class (currently publication-pinned advisor
+    /// consultations). This is transient authoritative evidence, not a stored
+    /// flag or relationship registry.
+    pub capacity_exempt_threads: Vec<ThreadId>,
 }
+
+impl SessionChildAdmission {
+    #[must_use]
+    pub fn new(max_unarchived_threads: usize, archived_threads: Vec<ThreadId>) -> Self {
+        Self {
+            max_unarchived_threads,
+            archived_threads,
+            capacity_exempt_threads: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_capacity_exempt_threads(mut self, threads: Vec<ThreadId>) -> Self {
+        self.capacity_exempt_threads = threads;
+        self
+    }
+}
+
+/// Admission authority for a fresh Run activated by one Outbox message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuationAdmission {
+    /// A root Run. Ordinary roots carry no Session affinity; a Session root
+    /// carries the existing canonical self-affinity (`session_thread_id` equals
+    /// its own Thread). A foreign parent affinity requires [`SessionChild`](Self::SessionChild).
+    Root,
+    /// Existing/new Session-child Thread under trusted archive evidence.
+    SessionChild(SessionChildAdmission),
+}
+
+include!("dispatch/queue.rs");
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The
 /// revision is store-assigned (1 on append, bumped on edit), so it is surfaced
@@ -781,9 +513,59 @@ pub trait Outbox: Send + Sync {
     /// row and the eventual pending append.
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError>;
 
+    /// Atomically stage one bound resume input to a committed-Awaiting,
+    /// Session-affine Run and rotate that dispatch's Session activity
+    /// settlement coordinate.
+    ///
+    /// The existing dispatch row remains the execution and routing authority:
+    /// implementations validate its exact Run/Thread/Session affinity and the
+    /// caller's expected prior activity coordinate, reject a competing resume
+    /// for the same awaiting correlation, then update `session_activity_epoch`
+    /// and insert the Outbox payload in one backend transaction. A `None` prior
+    /// coordinate is reserved for the foreground-to-durable handoff whose newly
+    /// enqueued row already carries `session_activity_epoch`. The queue row may still be
+    /// Leased after the Worker committed its Awaiting ticket but before it
+    /// settles; accepting that phase closes the commit/settle discovery race.
+    /// An exact replay returns `false`; it never rewrites the row or creates
+    /// another delivery.
+    async fn stage_session_resume(
+        &self,
+        _input: PendingInput,
+        _session_thread_id: &ThreadId,
+        _prior_session_activity_epoch: Option<u64>,
+        _session_activity_epoch: u64,
+    ) -> Result<bool, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support Session resume staging".to_string(),
+        ))
+    }
+
     /// Relay every staged delivery to its target thread's pending input, one
     /// store transaction per message. Returns how many were relayed.
     async fn relay(&self) -> Result<usize, DispatchError>;
+
+    /// Atomically deliver one immediate cross-Thread input bound to the exact
+    /// fresh Run that will consume it, and enqueue that Run under explicit
+    /// root/Session-child admission authority.
+    ///
+    /// This is the idle-target continuation twin of [`relay`](Self::relay): the
+    /// outbox still owns cross-Thread delivery and the ordinary dispatch row
+    /// still owns activation. The single transaction closes the otherwise fatal
+    /// window where a separately staged input can be relayed without its Run (or
+    /// vice versa). The caller submits the one canonical `PendingInput` value,
+    /// whose `run_id` must equal the dispatch Run; this command performs the
+    /// target append and dispatch insertion in the same backend transaction.
+    /// Exact canonical Run replay is a no-op and never resurrects consumed input.
+    async fn relay_and_enqueue(
+        &self,
+        _input: PendingInput,
+        _request: RunDispatch,
+        _admission: ContinuationAdmission,
+    ) -> Result<(), DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support atomic outbox continuation admission".to_string(),
+        ))
+    }
 }
 
 /// The combined durable-ingress store. One object implements all aggregates so a
@@ -957,11 +739,33 @@ mod tests {
         }
     }
 
+    fn acp_mcp_capabilities(
+        selected_holder: &PlaintextHolder,
+        backend_ref: &str,
+    ) -> CredentialRealizationCapabilities {
+        let mut installed = capabilities(
+            selected_holder,
+            CredentialRealizationKind::ProcessProtocolField,
+        );
+        installed.extension_consumers.insert(
+            format!(
+                "{}{}",
+                awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                backend_ref
+            ),
+            BTreeSet::from(["awaken.credential.mcp-process-protocol-field/v1".to_string()]),
+        );
+        installed
+    }
+
     fn session_runtime_with_mcp(
         credential: Option<CredentialAccess>,
         selected_plaintext_holder: Option<PlaintextHolder>,
     ) -> crate::SessionRuntimeEnvelope {
         let worker = holder(PlaintextBoundary::Worker, "worker-a");
+        let mcp_holder = selected_plaintext_holder
+            .clone()
+            .unwrap_or_else(|| worker.clone());
         crate::SessionRuntimeEnvelope::from_projection(
             awaken_session_contract::EnvironmentSnapshot {
                 environment_id: "environment-a".into(),
@@ -978,7 +782,7 @@ mod tests {
                 network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                 credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                     inference_holder: worker.clone(),
-                    mcp_holder: worker.clone(),
+                    mcp_holder,
                     resource_holder: worker,
                 },
             },
@@ -1008,22 +812,34 @@ mod tests {
 
     #[test]
     fn session_mcp_credentials_join_the_existing_claim_admission() {
-        // Cause/effect graph: C1 the frozen Session projection carries an MCP
-        // credential; C2 credential and selected holder are paired; C3 usage is
-        // canonical Authorization Bearer; C4 holder is Worker; C5 the selected
-        // Worker's installed materializer supports the exact source/holder/relay.
-        // Effects: all causes admit the row without adding a second durable
-        // binding (the Session generation already owns its holder/receipt), while
-        // any failed cause rejects or skips the claim before Worker effects.
+        // Cause/effect graph: C1 credential/holder are absent or paired; C2
+        // usage is canonical Authorization Bearer; C3 holder is legacy Worker,
+        // ACP Workload, or unsupported Platform; C4 every effective backend is
+        // ACP for Workload delivery; C5 one installed profile contains the exact
+        // holder/source/ProcessProtocolField plus that backend's declaration.
+        // Effects: E1 credential-free, legacy relay, and exact client injection
+        // admit without adding an MCP attempt binding; E2 malformed/unsupported
+        // requests fail before Worker effects; E3 capability failures retain the
+        // common admission error. Constraint: alternative profiles never combine
+        // a backend declaration from one adapter with mechanism evidence from
+        // another; the Session generation remains holder/receipt authority.
         //
-        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
-        // | M1 | N | - | - | - | - | admit credential-free |
-        // | M2 | Y | Y | Y | Y | Y | admit through common kernel |
-        // | M3 | Y | N | - | - | - | invalid paired binding |
-        // | M4 | Y | Y | N | - | - | invalid usage |
-        // | M5 | Y | Y | Y | Y | N | installed capability error |
+        // | Rule | binding | usage | holder/backend | installed evidence | Effect |
+        // | M1 | none | - | - | - | E1 credential-free |
+        // | M2 | paired | bearer | Worker | exact relay | E1 legacy relay |
+        // | M3 | paired | bearer | Workload/all ACP | same-profile exact marker | E1 client injection |
+        // | M4 | unpaired | - | - | - | E2 invalid binding |
+        // | M5 | paired | other | Worker | exact relay | E2 invalid usage |
+        // | M6 | paired | bearer | Platform | otherwise exact | E2 unsupported holder |
+        // | M7 | paired | bearer | Workload/non-ACP | otherwise exact | E2 unsupported backend |
+        // | M8 | paired | bearer | Workload/ACP | missing mechanism | E3 holder/mechanism unsupported |
+        // | M9 | paired | bearer | Workload/ACP | missing source | E3 source unsupported |
+        // | M10 | paired | bearer | Workload/ACP | marker names another backend | E2 unsupported adapter |
+        // | M11 | paired | bearer | Workload/ACP | marker/mechanism split across profiles | E2 no cross-profile synthesis |
         let worker = holder(PlaintextBoundary::Worker, "worker-a");
-        let access = |usage| {
+        let workload = holder(PlaintextBoundary::Workload, "workload-a");
+        let platform = holder(PlaintextBoundary::Platform, "platform-a");
+        let access = |selected: &PlaintextHolder, usage| {
             CredentialAccess::new(
                 CredentialRef {
                     id: "mcp-credential".into(),
@@ -1031,61 +847,153 @@ mod tests {
                 },
                 CredentialMaterialSource::ControlPlaneReference,
                 usage,
-                CredentialExecutionPolicy::exact(worker.clone(), ModelExposurePolicy::Forbidden),
+                CredentialExecutionPolicy::exact(selected.clone(), ModelExposurePolicy::Forbidden),
             )
         };
-        let installed = capabilities(&worker, CredentialRealizationKind::WorkerRelay);
+        let worker_installed = capabilities(&worker, CredentialRealizationKind::WorkerRelay);
 
         let mut anonymous = a_request();
         anonymous.session_runtime = Some(session_runtime_with_mcp(None, None));
         assert_eq!(
-            compile_attempt_credential_bindings(&anonymous, &installed, 1, 10),
+            compile_attempt_credential_bindings(&anonymous, &worker_installed, 1, 10),
             Ok(Vec::new()),
             "M1"
         );
 
-        let bearer = access(CredentialUsage::HttpHeader {
-            name: "Authorization".into(),
-            scheme: Some("Bearer".into()),
-        });
-        let mut admitted = a_request();
-        admitted.session_runtime = Some(session_runtime_with_mcp(
-            Some(bearer.clone()),
+        let worker_bearer = access(
+            &worker,
+            CredentialUsage::HttpHeader {
+                name: "Authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+        );
+        let mut legacy_relay = a_request();
+        legacy_relay.session_runtime = Some(session_runtime_with_mcp(
+            Some(worker_bearer.clone()),
             Some(worker.clone()),
         ));
         assert_eq!(
-            compile_attempt_credential_bindings(&admitted, &installed, 1, 10),
+            compile_attempt_credential_bindings(&legacy_relay, &worker_installed, 1, 10),
             Ok(Vec::new()),
             "M2"
         );
 
-        let mut unpaired = a_request();
-        unpaired.session_runtime = Some(session_runtime_with_mcp(Some(bearer.clone()), None));
+        let workload_bearer = access(
+            &workload,
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("bearer".into()),
+            },
+        );
+        let workload_installed = acp_mcp_capabilities(&workload, "acp:test");
+        let mut client_injection = a_request();
+        client_injection.session_runtime = Some(session_runtime_with_mcp(
+            Some(workload_bearer.clone()),
+            Some(workload.clone()),
+        ));
         assert_eq!(
-            compile_attempt_credential_bindings(&unpaired, &installed, 1, 10),
-            Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding),
+            compile_attempt_credential_bindings(&client_injection, &workload_installed, 1, 10),
+            Ok(Vec::new()),
             "M3"
+        );
+
+        let mut unpaired = a_request();
+        unpaired.session_runtime =
+            Some(session_runtime_with_mcp(Some(worker_bearer.clone()), None));
+        assert_eq!(
+            compile_attempt_credential_bindings(&unpaired, &worker_installed, 1, 10),
+            Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding),
+            "M4"
         );
 
         let mut invalid_usage = a_request();
         invalid_usage.session_runtime = Some(session_runtime_with_mcp(
-            Some(access(CredentialUsage::ProviderAdapter)),
+            Some(access(&worker, CredentialUsage::ProviderAdapter)),
             Some(worker.clone()),
         ));
         assert_eq!(
-            compile_attempt_credential_bindings(&invalid_usage, &installed, 1, 10),
+            compile_attempt_credential_bindings(&invalid_usage, &worker_installed, 1, 10),
             Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage),
-            "M4"
+            "M5"
         );
 
-        let mut missing_materializer = installed.clone();
-        missing_materializer.material_sources.clear();
+        let mut platform_request = a_request();
+        platform_request.session_runtime = Some(session_runtime_with_mcp(
+            Some(access(
+                &platform,
+                CredentialUsage::HttpHeader {
+                    name: "Authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+            )),
+            Some(platform.clone()),
+        ));
         assert_eq!(
-            compile_attempt_credential_bindings(&admitted, &missing_materializer, 1, 10),
+            compile_attempt_credential_bindings(
+                &platform_request,
+                &capabilities(&platform, CredentialRealizationKind::PlatformRelay),
+                1,
+                10,
+            ),
+            Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder),
+            "M6"
+        );
+
+        let mut non_acp = client_injection.clone();
+        non_acp.activation.snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "prov", "model", "genai",
+            ));
+        assert_eq!(
+            compile_attempt_credential_bindings(&non_acp, &workload_installed, 1, 10),
+            Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder),
+            "M7"
+        );
+
+        let mut missing_kind = workload_installed.clone();
+        missing_kind.realization_kinds.clear();
+        assert_eq!(
+            compile_attempt_credential_bindings(&client_injection, &missing_kind, 1, 10),
+            Err(DispatchCredentialAdmissionError::SessionAdmission(
+                CredentialAdmissionError::HolderUnsupported,
+            )),
+            "M8"
+        );
+
+        let mut missing_source = workload_installed.clone();
+        missing_source.material_sources.clear();
+        assert_eq!(
+            compile_attempt_credential_bindings(&client_injection, &missing_source, 1, 10),
             Err(DispatchCredentialAdmissionError::SessionAdmission(
                 CredentialAdmissionError::MaterialSourceUnsupported,
             )),
-            "M5"
+            "M9"
+        );
+
+        let mismatched_adapter = acp_mcp_capabilities(&workload, "acp:other");
+        assert_eq!(
+            compile_attempt_credential_bindings(&client_injection, &mismatched_adapter, 1, 10),
+            Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder),
+            "M10"
+        );
+
+        let mechanism_only =
+            capabilities(&workload, CredentialRealizationKind::ProcessProtocolField);
+        let mut marker_only = CredentialRealizationCapabilities::default();
+        marker_only.extension_consumers.insert(
+            format!(
+                "{}{}",
+                awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                "acp:test"
+            ),
+            BTreeSet::from(["awaken.credential.mcp-process-protocol-field/v1".to_string()]),
+        );
+        let split_profiles =
+            CredentialRealizationCapabilities::alternatives([mechanism_only, marker_only]);
+        assert_eq!(
+            compile_attempt_credential_bindings(&client_injection, &split_profiles, 1, 10),
+            Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder),
+            "M11"
         );
     }
 
@@ -1579,6 +1487,20 @@ mod tests {
     /// outside the known set is rejected rather than becoming runnable.
     #[test]
     fn dispatch_status_from_db_maps_known_values_and_rejects_unknowns() {
+        // Test design. Causes: C1 each persisted status uses the exact canonical
+        // spelling; C2 the value is case-variant, unknown, or empty. Effects: E1
+        // C1 maps to its public state; E2 C2 is rejected. Constraint/Invariant:
+        // unrecognized durable vocabulary must never become runnable. Decision rule:
+        // cover every supported state plus one representative from each
+        // invalid class (case mismatch, unknown, and empty).
+        assert_eq!(
+            DispatchState::from_db("reserved"),
+            Some(DispatchState::Reserved)
+        );
+        assert_eq!(
+            DispatchState::from_db("reservation_running"),
+            Some(DispatchState::ReservationLeased)
+        );
         assert_eq!(
             DispatchState::from_db("running"),
             Some(DispatchState::Leased)
@@ -1617,18 +1539,43 @@ mod tests {
             thread_id: ThreadId("thrd-1".into()),
             correlation_id: "corr-1".into(),
             available_at_ms: Some(1_234),
+            context_messages: Vec::new(),
             result: ResumeResult::allow(),
         }
     }
 
-    /// A pending-input row round-trips through JSON unchanged — the durable delivery
-    /// payload the inbox persists.
     #[test]
     fn pending_input_round_trips_through_serde() {
-        let p = pending();
+        // Cause/effect graph: C1 a current row carries stable System context;
+        // C2 a legacy row omits the field. Effects: E1 current values round-trip
+        // without changing role/id/content; E2 omission decodes to empty. The
+        // PendingInput is the one durable delivery payload, so no second System
+        // queue or Session context store participates.
+        //
+        // | Rule | context field | Effect |
+        // |---|---|---|
+        // | P1 | present, one System Message | E1 exact round-trip |
+        // | P2 | absent | E2 empty compatibility default |
+        // Constraint/Invariant: PendingInput remains the sole durable delivery
+        // payload, and legacy decoding may not invent context. Decision rule:
+        // execute P1 and P2 once to cover both field-presence partitions.
+        let mut p = pending();
+        p.context_messages = vec![Message::text(
+            MessageId("system-1".into()),
+            Role::System,
+            "context",
+        )];
         let json = serde_json::to_string(&p).expect("serializes");
         let back: PendingInput = serde_json::from_str(&json).expect("deserializes");
-        assert_eq!(back, p);
+        assert_eq!(back, p, "P1/E1");
+
+        let mut legacy = serde_json::to_value(&p).expect("to value");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("context_messages");
+        let legacy: PendingInput = serde_json::from_value(legacy).expect("legacy row loads");
+        assert!(legacy.context_messages.is_empty(), "P2/E2");
     }
 
     /// ADR-0014 added `available_at_ms` with `#[serde(default)]`: a row written
@@ -1701,6 +1648,12 @@ mod tests {
     /// dispatch transport, not out of the DB.
     #[test]
     fn claimed_round_trips_through_serde_including_sandbox_binding() {
+        // Test design. Causes: C1 a claimed payload carries a bound sandbox and
+        // cancellation/recovery flags; C2 the same payload is unplaced. Effects:
+        // E1 C1 round-trips every authority-bearing field; E2 C2 preserves
+        // sandbox=None. Constraint/Invariant: transport serialization must not
+        // alter claim ownership or synthesize placement. Decision rule: exercise
+        // the bound and unbound sandbox partitions over the same claim.
         let claimed = Claimed {
             request: a_request(),
             lease: Lease {
@@ -1713,6 +1666,7 @@ mod tests {
             cancellation_requested: true,
             pending: vec![pending()],
             recovered: true,
+            session_activity_admission_required: false,
             sandbox: Some("sbx-opaque-ref".into()),
             assignment: None,
         };

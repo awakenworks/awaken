@@ -8,6 +8,47 @@
 
 use std::sync::Arc;
 
+/// Deterministic list prices for the existing management Scenario composition.
+///
+/// Cause/effect table: P1 no provider + budget -> fail closed (covered by the
+/// production composition); P2 this explicit Scenario provider + every frozen
+/// model ref -> one complete immutable snapshot; P3 an unlisted model cannot
+/// occur because the snapshot is derived from the exact requested roster. A
+/// two-token Scenario response costs exactly one public cent, making the real
+/// budget gate observable without installing a production default price.
+struct ScenarioListPriceProvider;
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ManagedListPriceProvider for ScenarioListPriceProvider {
+    async fn resolve_snapshot(
+        &self,
+        request: awaken_session_contract::ManagedListPriceRequest,
+    ) -> Result<
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
+    > {
+        let rates = awaken_session_contract::ManagedTokenListRates {
+            input_micros_per_million: 5_000_000_000,
+            output_micros_per_million: 5_000_000_000,
+            cache_read_micros_per_million: 5_000_000_000,
+            cache_creation_micros_per_million: 5_000_000_000,
+        };
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "scenario-list-prices-v1".into(),
+            version: 1,
+            effective_at_unix_ms: request.occurred_at_unix_ms,
+            arithmetic_version: 1,
+            model_rates: request
+                .model_refs
+                .into_iter()
+                .map(|model_ref| (model_ref, rates))
+                .collect(),
+            runtime_rates: Default::default(),
+            fingerprint: "scenario-list-prices-v1".into(),
+        })
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_cli::block_on_service(async_main())
 }
@@ -95,15 +136,25 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
             );
-            awaken_cli::build_all_in_one_router_with_scenario_model(model, model_ref).await
+            awaken_cli::build_all_in_one_router_with_scenario_model(
+                model,
+                model_ref,
+                awaken_cli::ManagedServiceAdapters::default()
+                    .with_list_price_provider(Arc::new(ScenarioListPriceProvider)),
+            )
+            .await
         }
         Ok("management-agents") => {
             awaken_cli::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
+                awaken_cli::ManagedServiceAdapters::default(),
             )
             .await
         }
+        // Deterministic paid Web provider selected before AllInOne assembly, so
+        // Control publication and Host dispatch consume one registry instance.
+        Ok("management-web") => awaken_scenario_host::build_management_web_router().await,
         // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
@@ -116,6 +167,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             awaken_cli::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
+                awaken_cli::ManagedServiceAdapters::default(),
             )
             .await
         }
@@ -186,6 +238,7 @@ fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
         Some(
             "management"
                 | "management-agents"
+                | "management-web"
                 | "management-providers"
                 | "management-skills"
                 | "distributed-control"
@@ -322,6 +375,7 @@ mod dispatch_tests {
         for mode in [
             "management",
             "management-agents",
+            "management-web",
             "management-providers",
             "management-skills",
         ] {

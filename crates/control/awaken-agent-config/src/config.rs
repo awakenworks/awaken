@@ -575,13 +575,8 @@ impl MultiagentConfig {
         if self.agents.is_empty() {
             return Err("agents must contain at least one entry".into());
         }
-        let ordinary_count = self
-            .agents
-            .iter()
-            .filter(|target| target.advisor_model().is_none())
-            .count();
-        if ordinary_count > 20 {
-            return Err("agents supports at most 20 ordinary Agent entries".into());
+        if self.agents.len() > 20 {
+            return Err("agents supports at most 20 entries".into());
         }
         let mut saw_self = false;
         let mut saw_advisor = false;
@@ -981,7 +976,7 @@ pub struct CompactionStrategy {
     /// The agent's chosen trigger window in tokens; `None` derives it from the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<u32>,
-    /// Recent turns kept verbatim past the injected summary; `None` uses the realizer default.
+    /// Recent Steps kept verbatim past the injected summary; `None` uses the realizer default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_recent: Option<u32>,
 }

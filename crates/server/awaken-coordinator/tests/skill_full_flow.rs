@@ -8,6 +8,8 @@
 //!              is returned as the tool result.
 //!   /name    — a user `/greet` invocation is expanded into the skill body.
 
+mod support;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
@@ -20,6 +22,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use support::wait_for_session_events;
 use tower::ServiceExt;
 
 // ── managed-protocol harness ─────────────────────────────────────────────────
@@ -63,35 +66,45 @@ async fn create_session(app: &Router) -> String {
 }
 
 async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the skill command's terminal Session event",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }
 
 async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": tool_use_id, "result": "allow" }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the confirmed skill command's terminal Session event",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }
@@ -172,7 +185,7 @@ impl LlmExecutor for FullFlowModel {
         let output = match last.role {
             Role::User => {
                 if last_text.contains("FORK-REVIEW-BODY") {
-                    // This is the forked sub-agent's turn (its input is the body).
+                    // This is the forked sub-agent's Run (its input is the body).
                     AssistantOutput::text("FORK-DONE")
                 } else if last_text.contains("GREETING for") {
                     // The /name expansion replaced the user's text with the body.
@@ -228,6 +241,18 @@ fn tool(call_id: &str, tool_id: &str, arguments: serde_json::Value) -> Assistant
 
 #[tokio::test]
 async fn discover_author_fork_and_slash_name_end_to_end() {
+    // Causes: C1 two published skills include inline and fork contexts; C2 the
+    // model requests discovery; C3 authoring invokes approval-gated bash and the
+    // client confirms it; C4 a fork skill is activated; C5 `/greet World` is sent.
+    // Effects: E1 discovery returns the initial catalog; E2 the approval stop
+    // names the exact public bash Event and the authored skill appears only after
+    // confirming that identity; E3 the child Run result returns through the
+    // parent tool result; E4 slash expansion reaches the model verbatim.
+    // Constraints/invariants: every observation is anchored to its accepted
+    // receipt and committed terminal Event; Session/Run remains the sole driver,
+    // and one canonical read-only wait helper performs no execution or retry.
+    // Decision rules: F1=C1+C2 -> E1; F2=F1+C3 -> E2;
+    // F3=F2+C4 -> E3; F4=F3+C5 -> E4.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
     let review = SkillSpec::new("review", "Review", "review code", "FORK-REVIEW-BODY")
         .with_context(SkillContext::Fork);
@@ -246,9 +271,18 @@ async fn discover_author_fork_and_slash_name_end_to_end() {
     let awaiting = send_message(&app, &id, "please author").await;
     let idle = last_idle(&awaiting);
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
-    assert_eq!(idle["stop_reason"]["event_ids"][0], "w");
+    let public_tool_id = idle["stop_reason"]["event_ids"][0]
+        .as_str()
+        .expect("requires_action carries the answerable public Event id");
+    let bash = awaiting["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "agent.tool_use" && event["name"] == "bash")
+        .expect("the approval-gated bash Event is projected");
+    assert_eq!(bash["id"], public_tool_id, "F2 public identity");
     // Confirm → bash runs (rooted) → a re-scan surfaces the authored skill.
-    let done = confirm(&app, &id, "w").await;
+    let done = confirm(&app, &id, public_tool_id).await;
     assert!(messages(&done).contains(&"AUTHORED".to_string()));
     assert!(
         tool_results(&done)
@@ -323,6 +357,15 @@ impl LlmExecutor for PathProbeModel {
 
 #[tokio::test]
 async fn conditional_paths_skill_surfaces_after_touching_a_matching_file() {
+    // Causes: C1 a conditional skill requires `src/**/*.rs`; C2 the first list
+    // occurs before a matching path is touched; C3 the allowed read touches
+    // `src/app/main.rs`; C4 the model lists again after that committed result.
+    // Effects: E1 the first catalog hides `rusty`; E2 the second catalog exposes
+    // it; E3 the model reaches its terminal `DONE` message.
+    // Constraints/invariants: the path gate is Session-local, the read remains
+    // the only path-touch authority, and observations are receipt-anchored rather
+    // than racing asynchronous lifecycle supervision.
+    // Decision rules: P1=C1+C2+!C3 -> E1; P2=P1+C3+C4 -> E2+E3.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "hi");
     let rusty = SkillSpec::new("rusty", "Rusty", "rust review", "RUST-BODY")
         .with_paths(vec!["src/**/*.rs".into()]);

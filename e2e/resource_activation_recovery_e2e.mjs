@@ -7,17 +7,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
+import {
+  managedWorkspaceClient,
+  spawnProduction,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `activation-recovery-${process.pid}`;
 const AGENT = 'activation-recovery-agent';
 const MODEL = 'activation-recovery-model';
 const FAKE_KEY = 'sk-activation-recovery-fake'; // awaken-allow: secret
+const MANAGED_BETA = 'managed-agents-2026-04-01';
+const MEMORY_BETA = 'agent-memory-2026-07-22';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function start(directory) {
@@ -46,10 +53,15 @@ async function stop(child, signal = 'SIGINT') {
 const scoped = (suffix) =>
   `http://127.0.0.1:${PORT}/v1/workspaces/${WORKSPACE}/${suffix}`;
 
-async function json(method, url, body) {
+async function internalJson(method, url, body) {
+  // Config publication is an internal seam absent from the Managed SDK.
+  // Compatible Session/Memory operations in this scenario must go through
+  // `managedWorkspaceClient`.
   const response = await fetch(url, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -57,7 +69,7 @@ async function json(method, url, body) {
 }
 
 async function authorModel(upstream) {
-  const provider = await json('POST', scoped('config/provider-connections'), {
+  const provider = await internalJson('POST', scoped('config/provider-connections'), {
     idempotency_key: 'activation-recovery-provider',
     workspace_id: WORKSPACE,
     provider_id: 'anthropic',
@@ -68,22 +80,36 @@ async function authorModel(upstream) {
     secret: FAKE_KEY,
   });
   assert.equal(provider.status, 201, JSON.stringify(provider.body));
-  const agent = await json('PUT', scoped(`config/agents/${AGENT}`), {
+  const agent = await internalJson('PUT', scoped(`config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'resource recovery', max_steps: 2,
   });
   assert.equal(agent.status, 200, JSON.stringify(agent.body));
-  const publication = await json('POST', scoped(`config/agents/${AGENT}/publish`));
+  const publication = await internalJson('POST', scoped(`config/agents/${AGENT}/publish`));
   assert.equal(publication.status, 200, JSON.stringify(publication.body));
 }
 
-async function driveSession(sessionId, text) {
-  const response = await json('POST', scoped(`sessions/${sessionId}/events`), {
+async function driveSession(client, sessionId, text, { timeoutMs = 45_000 } = {}) {
+  // Demand-driver cause/effect table: C1=official SDK send returns one exact
+  // User receipt; C2=the registered Worker realizes the frozen generation and
+  // processes C1; C3=a later idle edge commits. E1=return only after C1+C2+C3.
+  // K: no status poll or second command may stand in for this receipt. Rules:
+  // D1 !C1=>fail; D2 C1+(!C2||!C3)=>bounded retry; D3 C1+C2+C3=>E1.
+  const response = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: [MANAGED_BETA],
   });
-  // Demand-driver decision rule: a published model + valid Run demand -> 200
-  // only after the Worker realizes the exact Resource generation and inference
-  // commits. Every error remains visible instead of being treated as recovery.
-  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.data?.length, 1, JSON.stringify(response));
+  const receiptId = response.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'exact activation User Event receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    [MANAGED_BETA],
+    ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+    `Resource activation Run ${JSON.stringify(text)} to settle`,
+    { timeoutMs },
+  );
 }
 
 function seedRepository(root) {
@@ -105,6 +131,19 @@ function sqlQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function terminalCleanupEffectId(sessionId) {
+  // Exact test-fixture encoding of the contract's stable cleanup identity. The
+  // production aggregate remains the authority; this helper only lets the SQL
+  // crash seam represent the post-Requested/pre-effect durable window.
+  const bytes = Buffer.from(JSON.stringify(['session-terminal-cleanup-v1', sessionId]));
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
+}
+
 function sqlite(database, sql) {
   return sqliteExec(database, sql);
 }
@@ -120,17 +159,32 @@ function sessionRow(database, sessionId) {
   return {
     aggregate,
     status: aggregate.status,
-    archivedAt: aggregate.archived_at,
     resources: aggregate.resources,
   };
 }
 
-function updateSessionRow(database, sessionId, status, archivedAt, resources) {
+function requiredRealizationLease(database, sessionId) {
+  const lease = sessionRow(database, sessionId).aggregate.realization;
+  assert.ok(lease, `Session ${sessionId} has no durable realization lease`);
+  assert.ok(lease.runtime_incarnation, `Session ${sessionId} has no Runtime incarnation`);
+  return lease;
+}
+
+function terminalCleanupReceiptRecorded(aggregate, sessionId) {
+  const cleanup = aggregate.terminal_cleanup;
+  return cleanup?.state === 'completed'
+    || cleanup?.completions?.[sessionId]?.thread_id === sessionId;
+}
+
+function updateSessionRow(database, sessionId, status, resources) {
   const row = sessionRow(database, sessionId);
+  // Fault-injection constraint: mutate only current aggregate-owned fields.
+  // Archive visibility belongs to `disposition`; fabricating the retired
+  // `archived_at` compatibility field would turn a recovery case into corrupt
+  // storage before the behavior under test can run.
   const aggregate = {
     ...row.aggregate,
     status,
-    archived_at: archivedAt,
     resources,
   };
   sqliteExec(
@@ -160,7 +214,7 @@ function persistPreparedGeneration(database, sessionId) {
       last_error: 'process died before realization',
     }));
   assert.ok(prepared.length > 0);
-  updateSessionRow(database, sessionId, 'idle', null, {
+  updateSessionRow(database, sessionId, 'idle', {
     revision,
     active: row.resources.active,
     pending: row.resources.active,
@@ -179,30 +233,20 @@ function persistTerminalRelease(database, sessionId) {
     })),
   };
   assert.ok(resources.activations.some((activation) => activation.state === 'releasing'));
-  updateSessionRow(database, sessionId, 'terminated', '2026-07-22T00:00:00Z', resources);
-}
-
-function persistLegacyManifest(database, sessionId) {
-  const row = sessionRow(database, sessionId);
-  assert.equal(row.status, 'idle');
-  assert.equal(row.resources.pending, undefined);
-  assert.ok(row.resources.active.inputs.length > 0);
-  // Exercise the retained one-way row decoder deliberately: a genuine legacy
-  // row owns Agent, model, Environment, and resource facts in retained columns,
-  // never inside aggregate_json. A canonical-era row deliberately leaves those
-  // columns blank, so nulling only aggregate_json would fabricate storage
-  // corruption rather than a historical row. Preserve the complete legacy
-  // causes here so recovery tests the supported migration contract.
-  //
-  // Legacy-row decision rule: aggregate absent + retained identity complete =>
-  // decode and adopt once; aggregate absent + identity absent is corruption and
-  // must not be described as a successful legacy recovery.
+  const aggregate = {
+    ...row.aggregate,
+    status: 'terminated',
+    resources,
+    terminal_cleanup: {
+      state: 'requested',
+      effect_id: terminalCleanupEffectId(sessionId),
+      thread_ids: [sessionId],
+      delegation_watermark: 0,
+    },
+  };
   sqliteExec(
     database,
-    `UPDATE managed_session
-       SET aggregate_json=NULL, agent_id=${sqlQuote(AGENT)}, model=${sqlQuote(MODEL)},
-           environment_id='env_local', status='idle', archived_at=NULL,
-           effective_inputs_json=${sqlQuote(JSON.stringify(row.resources.active))}
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify(aggregate))}
        WHERE session_id=${sqlQuote(sessionId)}`,
   );
 }
@@ -218,7 +262,7 @@ function persistInconsistentRelease(database, sessionId) {
     })),
   };
   assert.ok(resources.activations.some((activation) => activation.state === 'releasing'));
-  updateSessionRow(database, sessionId, 'idle', null, resources);
+  updateSessionRow(database, sessionId, 'idle', resources);
 }
 
 function repositoryRecord(database, id) {
@@ -251,6 +295,11 @@ async function waitRepositoryReceipt(directory, resourceId) {
 }
 
 async function main() {
+  // Constraints/invariants for the decision tables below: the persisted Session
+  // activation/cleanup state and the Resources component's catalog/receipt
+  // aggregates are the only recovery authorities; listener readiness, process
+  // liveness, and test-injected database faults cannot themselves claim an
+  // effect complete or authorize a second physical attempt.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const sessionsDatabase = path.join(directory, 'sessions.db');
@@ -261,41 +310,39 @@ async function main() {
   try {
     await ready();
     await authorModel(upstream);
+    const client = managedWorkspaceClient(`http://127.0.0.1:${PORT}`, WORKSPACE);
 
-    const malformed = await json('POST', scoped('sessions'), {
-      agent: AGENT,
-      resources: [{ type: 'unsupported-resource' }],
-    });
-    assert.equal(malformed.status, 400);
+    // SDK-admission decision rule: a typed Session call with an unsupported
+    // Resource reaches the public Managed route and is rejected with 400 before
+    // any aggregate or recovery work exists.
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: AGENT,
+        resources: [{ type: 'unsupported-resource' }],
+        betas: [MANAGED_BETA],
+      }),
+      (error) => error?.status === 400,
+    );
 
     // A Workdir-backed MemoryStore exercises the same activation state machine
     // without claiming the local sandbox can enforce a read-only File mount.
     // File isolation belongs to the namespace/container suites.
-    const memoryStore = await json('POST', scoped('memory_stores'), {
+    const memoryStore = await client.beta.memoryStores.create({
       name: 'activation-recovery-memory',
+      betas: [MEMORY_BETA],
     });
-    assert.equal(memoryStore.status, 200, JSON.stringify(memoryStore.body));
-    const memoryStoreId = memoryStore.body.id;
-    const recovering = await json('POST', scoped('sessions'), {
+    const memoryStoreId = memoryStore.id;
+    const recovering = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
         type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/recovery',
       }],
+      betas: [MANAGED_BETA],
     });
-    assert.equal(recovering.status, 200, JSON.stringify(recovering.body));
-
-    const legacy = await json('POST', scoped('sessions'), {
-      agent: AGENT,
-      environment_id: 'env_local',
-      resources: [{
-        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/legacy',
-      }],
-    });
-    assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
 
     const repository = seedRepository(directory);
-    const terminating = await json('POST', scoped('sessions'), {
+    const terminating = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
@@ -303,21 +350,21 @@ async function main() {
         url: repository,
         mount_path: '/workspace/terminal-repository',
       }],
+      betas: [MANAGED_BETA],
     });
-    assert.equal(terminating.status, 200, JSON.stringify(terminating.body));
 
-    const inconsistent = await json('POST', scoped('sessions'), {
+    const inconsistent = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
         type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/inconsistent',
       }],
+      betas: [MANAGED_BETA],
     });
-    assert.equal(inconsistent.status, 200, JSON.stringify(inconsistent.body));
 
     const cleanupCases = [];
     for (const name of ['catalog-read', 'purge-schedule', 'catalog-write', 'already-gone']) {
-      const created = await json('POST', scoped('sessions'), {
+      const created = await client.beta.sessions.create({
         agent: AGENT,
         environment_id: 'env_local',
         resources: [{
@@ -325,12 +372,12 @@ async function main() {
           url: repository,
           mount_path: `/workspace/${name}`,
         }],
+        betas: [MANAGED_BETA],
       });
-      assert.equal(created.status, 200, `${name}: ${JSON.stringify(created.body)}`);
       cleanupCases.push({
         name,
-        sessionId: created.body.id,
-        repositoryId: `managed:${created.body.id}:repository:0`,
+        sessionId: created.id,
+        repositoryId: `managed:${created.id}:repository:0`,
       });
     }
 
@@ -345,14 +392,13 @@ async function main() {
     // | B1 | yes | no | no | retain Prepared; no Coordinator-side effect |
     // | B2 | yes | yes | yes | stable idle baseline; crash injection is valid |
     const baselineSessionIds = [
-      recovering.body.id,
-      legacy.body.id,
-      terminating.body.id,
-      inconsistent.body.id,
+      recovering.id,
+      terminating.id,
+      inconsistent.id,
       ...cleanupCases.map((cleanup) => cleanup.sessionId),
     ];
     for (const sessionId of baselineSessionIds) {
-      await driveSession(sessionId, `establish active baseline for ${sessionId}`);
+      await driveSession(client, sessionId, `establish active baseline for ${sessionId}`);
     }
     await waitForValue(
       () => baselineSessionIds.map((sessionId) => sessionRow(sessionsDatabase, sessionId)),
@@ -363,14 +409,23 @@ async function main() {
       { timeoutMs: 45_000 },
     );
 
+    const terminalSessionIds = [
+      terminating.id,
+      ...cleanupCases.map((cleanup) => cleanup.sessionId),
+    ];
+    const predecessorLeases = new Map(terminalSessionIds.map((sessionId) => [
+      sessionId,
+      requiredRealizationLease(sessionsDatabase, sessionId),
+    ]));
+
     // Model process death after each first durable edge: Prepared for a live
-    // replacement, and Releasing for a terminal Session. These are precisely
-    // the states the coordinator persists before external sandbox/catalog IO.
+    // replacement, and Requested root cleanup + Releasing resources for a
+    // terminal Session. These are precisely the states the coordinator persists
+    // before Worker-owned teardown and external catalog IO.
     await stop(server, 'SIGKILL');
-    persistPreparedGeneration(sessionsDatabase, recovering.body.id);
-    persistLegacyManifest(sessionsDatabase, legacy.body.id);
-    persistTerminalRelease(sessionsDatabase, terminating.body.id);
-    persistInconsistentRelease(sessionsDatabase, inconsistent.body.id);
+    persistPreparedGeneration(sessionsDatabase, recovering.id);
+    persistTerminalRelease(sessionsDatabase, terminating.id);
+    persistInconsistentRelease(sessionsDatabase, inconsistent.id);
     for (const cleanup of cleanupCases) {
       persistTerminalRelease(sessionsDatabase, cleanup.sessionId);
     }
@@ -424,21 +479,34 @@ async function main() {
     // | R3   | Releasing     | yes        | n/a | Released in background |
     // | R4   | faulted edge  | yes        | n/a | remains Releasing until repaired |
     //
+    // Replacement timing rule: SIGKILL leaves the previous Session Work lease
+    // live for its canonical 60-second TTL. Before expiry the replacement must
+    // not steal it and R2 remains Prepared with attempts=0; after expiry the
+    // same queued demand authorizes takeover and R2 must settle. The 90-second
+    // observation bound covers that lease plus registration/claim latency; it
+    // does not add a second demand or relax the final state oracle.
+    //
     await sleep(500);
-    const demandPending = sessionRow(sessionsDatabase, recovering.body.id);
+    const demandPending = sessionRow(sessionsDatabase, recovering.id);
     assert.ok(demandPending.resources.pending, 'R1 retains the durable generation');
     assert.equal(demandPending.resources.activations.at(-1).attempts, 0, 'R1 has no hidden effect');
-    await driveSession(recovering.body.id, 'recover prepared Resource generation');
-    await driveSession(legacy.body.id, 'adopt legacy Resource generation');
+    await driveSession(
+      client,
+      recovering.id,
+      'recover prepared Resource generation',
+      { timeoutMs: 90_000 },
+    );
 
     // The bounded durable-state waits cover R2/R3 without creating a second
     // readiness contract or racing the sole supervisor/Worker claim path.
     const recovered = await waitForValue(
-      () => sessionRow(sessionsDatabase, recovering.body.id),
-      (row) => row.resources.pending === undefined
+      () => sessionRow(sessionsDatabase, recovering.id),
+      (row) => row.status === 'idle'
+        && row.resources.pending === undefined
         && row.resources.activations.map((activation) => activation.state).join(',')
           === 'released,active',
       'prepared resource generation did not recover',
+      { timeoutMs: 90_000 },
     );
     assert.equal(recovered.status, 'idle');
     assert.equal(recovered.resources.pending, undefined);
@@ -449,25 +517,8 @@ async function main() {
     assert.equal(recovered.resources.activations[1].attempts, 1);
     assert.equal(recovered.resources.activations[1].last_error, undefined);
 
-    // Legacy resource state stored only the resolved manifest. The durable
-    // live-inbox ingress reads the same Session aggregate after restart,
-    // realizes that manifest, and upgrades it to the activation state machine.
-    const legacyLookup = await json(
-      'GET',
-      scoped(`awaken/sessions/${legacy.body.id}/live-inbox`),
-    );
-    assert.equal(legacyLookup.status, 200);
-    const upgraded = sessionRow(sessionsDatabase, legacy.body.id);
-    assert.equal(upgraded.status, 'idle');
-    assert.equal(upgraded.resources.revision, 1);
-    assert.equal(upgraded.resources.pending, undefined);
-    assert.equal(upgraded.resources.activations.length, 1);
-    assert.equal(upgraded.resources.activations[0].state, 'active');
-    assert.equal(upgraded.resources.activations[0].attempts, 1);
-    assert.equal(upgraded.resources.activations[0].last_error, undefined);
-
     const released = await waitForValue(
-      () => sessionRow(sessionsDatabase, terminating.body.id),
+      () => sessionRow(sessionsDatabase, terminating.id),
       (row) => row.resources.pending === undefined
         && row.resources.activations.every((activation) => activation.state === 'released'),
       'terminal resource generation did not release',
@@ -476,14 +527,46 @@ async function main() {
     assert.equal(released.resources.pending, undefined);
     assert.ok(released.resources.activations.every((activation) => activation.state === 'released'));
 
-    const repositoryId = `managed:${terminating.body.id}:repository:0`;
+    const repositoryId = `managed:${terminating.id}:repository:0`;
     const receipt = await waitRepositoryReceipt(directory, repositoryId);
     assert.equal(receipt.receipt.evidence.local_realizations_deleted, 0);
+
+    // Cold-replacement decision table: C1 terminal cleanup is Requested with
+    // no resident Host slot after SIGKILL; C2 the registry has a fresh process
+    // incarnation for the same logical Worker; C3 no Run claim or second API
+    // command exists for a terminal Session. Effects: E1 claim-next fences epoch
+    // N+1 on the Session root; E2 the Worker installs the frozen projection,
+    // polls the aggregate command, and records the root receipt; E3 catalog
+    // faults may keep Resource release pending but cannot erase that receipt.
+    // The observation follows the scenario's unrelated prepared-generation
+    // demand so it does not block the sole lifecycle supervisor from starting.
+    //
+    // | Rule | terminal | predecessor | replacement | Effect |
+    // |---|---|---|---|---|
+    // | G48-1 | yes | process dead | same owner/new incarnation | E1 + E2 |
+    // | G48-2 | yes | process dead | no terminal Run/API demand | E1 + E2 |
+    // | G48-3 | yes | process dead | catalog fault | E1 + E2 + E3 |
+    await waitForValue(
+      () => terminalSessionIds.map((sessionId) => ({
+        sessionId,
+        row: sessionRow(sessionsDatabase, sessionId),
+      })),
+      (rows) => rows.every(({ sessionId, row }) => {
+        const predecessor = predecessorLeases.get(sessionId);
+        const replacement = row.aggregate.realization;
+        return replacement?.owner === predecessor.owner
+          && replacement.runtime_incarnation !== predecessor.runtime_incarnation
+          && replacement.epoch > predecessor.epoch
+          && terminalCleanupReceiptRecorded(row.aggregate, sessionId);
+      }),
+      'cold replacement did not claim and receipt every terminal root cleanup',
+      { timeoutMs: 90_000 },
+    );
 
     // Each terminal cleanup error is durable and fail-closed. A missing catalog
     // row is the idempotent "already physically gone" case and can complete;
     // malformed catalog state and failed writes/scheduling must remain Releasing.
-    const inconsistentState = sessionRow(sessionsDatabase, inconsistent.body.id);
+    const inconsistentState = sessionRow(sessionsDatabase, inconsistent.id);
     assert.equal(inconsistentState.status, 'idle');
     assert.ok(inconsistentState.resources.activations.some(
       (activation) => activation.state === 'releasing',
@@ -506,7 +589,7 @@ async function main() {
     // Repair only the failed durable dependencies. The next process must finish
     // every original cleanup intent without another API transition.
     await stop(server, 'SIGKILL');
-    const repairedInconsistent = sessionRow(sessionsDatabase, inconsistent.body.id);
+    const repairedInconsistent = sessionRow(sessionsDatabase, inconsistent.id);
     repairedInconsistent.resources.activations = repairedInconsistent.resources.activations.map(
       (activation) => ({
         ...activation,
@@ -515,9 +598,8 @@ async function main() {
     );
     updateSessionRow(
       sessionsDatabase,
-      inconsistent.body.id,
+      inconsistent.id,
       repairedInconsistent.status,
-      repairedInconsistent.archivedAt,
       repairedInconsistent.resources,
     );
     sqlite(
@@ -546,7 +628,7 @@ async function main() {
       );
     }
 
-    console.log('E2E PASS: prepared, legacy, inconsistent, and faulted terminal resource states recover after process death.');
+    console.log('E2E PASS: prepared, inconsistent, and faulted terminal resource states recover after process death.');
   } finally {
     await stop(server).catch(() => {});
     await upstream.close();

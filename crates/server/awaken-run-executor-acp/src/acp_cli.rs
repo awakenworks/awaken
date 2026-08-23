@@ -23,8 +23,7 @@ pub use image_contract::{AcpImageRequirement, image_runtime_contract_json};
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{
     CredentialArtifactCodec, CredentialArtifactSpec, ManagedCredentialDelivery,
-    ManagedProviderConfigCodec, ManagedProviderConfigDelivery, McpDelivery, McpInterface,
-    ModelDelivery,
+    ManagedProviderConfigCodec, ManagedProviderConfigDelivery, ModelDelivery,
 };
 pub use publication::known_acp_publication_capabilities;
 
@@ -92,45 +91,43 @@ pub enum SessionPersistence {
 }
 
 /// Pure admission kernel used by [`AcpCli::admits_mcp_client_credential`]. The
-/// adapter declaration is supplied by the private built-in allowlist; accepting
-/// ordinary secret-free MCP routes is intentionally insufficient.
+/// adapter declaration comes from its authoritative catalog row; accepting an
+/// ordinary secret-free MCP route is intentionally insufficient.
 #[must_use]
 const fn mcp_client_credential_admitted(
     delivery: Option<awaken_credential_contract::McpCredentialDelivery>,
     adapter_declared: bool,
-    acp_session_transport: bool,
     http_transport: bool,
 ) -> bool {
     matches!(
         delivery,
         Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection)
     ) && adapter_declared
-        && acp_session_transport
         && http_transport
 }
 
 #[cfg(kani)]
 #[kani::proof]
 fn mcp_client_credential_admission_has_no_gateway_or_adapter_fallback() {
+    // Causes: C1 delivery is ClientInjection rather than None/Gateway;
+    // C2 the catalog row declares client injection; C3 transport is HTTP.
+    // Effects: E1 admits iff C1+C2+C3; E2 rejects every other combination.
+    // Constraint: ACP Session is the sole production MCP delivery path, so
+    // adapter identity and a legacy config-file fallback are not inputs.
+    // Decision rule: exhaust the 3*2*2 input product and prove E1's exact
+    // conjunction, which covers every rejecting rule as its complement.
     let delivery = match kani::any::<u8>() % 3 {
         0 => None,
         1 => Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
         _ => Some(awaken_credential_contract::McpCredentialDelivery::GatewayMediation),
     };
     let adapter_declared: bool = kani::any();
-    let acp_session_transport: bool = kani::any();
     let http_transport: bool = kani::any();
-    let admitted = mcp_client_credential_admitted(
-        delivery,
-        adapter_declared,
-        acp_session_transport,
-        http_transport,
-    );
+    let admitted = mcp_client_credential_admitted(delivery, adapter_declared, http_transport);
     assert_eq!(
         admitted,
         delivery == Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection)
             && adapter_declared
-            && acp_session_transport
             && http_transport
     );
 }
@@ -187,7 +184,10 @@ pub struct AcpCli {
     /// ACP authentication method selected after initialize, when the adapter
     /// exposes more than one protocol-level method.
     pub auth_method_id: Option<&'static str>,
-    pub mcp_interface: McpInterface,
+    /// Whether this adapter has been verified to accept an HTTP MCP credential
+    /// through the process-private ACP `session/new` field. Ordinary MCP route
+    /// support does not imply this capability.
+    pub mcp_client_credential_injection: bool,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: Option<&'static str>,
     /// Additional standard/vendor home variables that point at the same isolated
@@ -208,20 +208,17 @@ pub struct AcpCli {
 }
 
 impl AcpCli {
-    /// Whether this exact built-in adapter admits a process-private MCP
-    /// credential on its typed ACP `session/new` HTTP field. Unknown/custom
-    /// rows fail closed: matching the general MCP interface is not enough.
+    /// Whether this exact adapter row admits a process-private MCP credential
+    /// on its typed ACP `session/new` HTTP field.
     #[must_use]
     pub fn admits_mcp_client_credential(
         &self,
         delivery: Option<awaken_credential_contract::McpCredentialDelivery>,
         http_transport: bool,
     ) -> bool {
-        let adapter_declared = self.id == "claude";
         mcp_client_credential_admitted(
             delivery,
-            adapter_declared,
-            matches!(self.mcp_interface, McpInterface::AcpSession),
+            self.mcp_client_credential_injection,
             http_transport,
         )
     }
@@ -760,34 +757,23 @@ pub fn acp_cli(id: &str) -> Option<&'static AcpCli> {
     known_acp_clis().iter().find(|c| c.id == id)
 }
 
-/// Canonical test fixture for the retired config-file delivery mechanism. Keeping
-/// it outside the production catalog proves legacy behavior without assigning it
-/// to Codex or creating multiple synthetic rows across test modules.
-#[cfg(test)]
-pub(crate) fn legacy_config_file_cli() -> AcpCli {
-    let mut cli = *acp_cli("claude").expect("claude test fixture");
-    cli.mcp_interface = McpInterface::ConfigFileToml {
-        path: "config.toml",
-    };
-    cli.config_home_env = Some("TEST_CONFIG_HOME");
-    cli.session_export_excludes = &["config.toml"];
-    cli
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::resolved::{
-        AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
-    };
 
     #[test]
     fn mcp_client_credential_admission_is_exact_and_has_no_gateway_fallback() {
         use awaken_credential_contract::McpCredentialDelivery;
-        for (delivery, declared, acp_session, http, admitted) in [
+        // Cause/effect graph: C1 delivery is exact ClientInjection; C2 the
+        // selected catalog row declares its private field; C3 transport is
+        // HTTP. Effect E1 admits credential material iff C1+C2+C3; otherwise
+        // E2 rejects before launch. Constraint: all production MCP delivery is
+        // the official ACP Session path, so no interface/fallback cause exists.
+        // Decision rules: R1=111=>E1; R2=!C1 (None or Gateway)=>E2;
+        // R3=1!1=>E2; R4=11!=>E2. These rules give MC/DC for each cause.
+        for (delivery, declared, http, admitted) in [
             (
                 Some(McpCredentialDelivery::ClientInjection),
-                true,
                 true,
                 true,
                 true,
@@ -796,42 +782,39 @@ mod tests {
                 Some(McpCredentialDelivery::ClientInjection),
                 false,
                 true,
-                true,
                 false,
             ),
             (
                 Some(McpCredentialDelivery::ClientInjection),
                 true,
                 false,
-                true,
                 false,
             ),
-            (
-                Some(McpCredentialDelivery::ClientInjection),
-                true,
-                true,
-                false,
-                false,
-            ),
+            (None, true, true, false),
             (
                 Some(McpCredentialDelivery::GatewayMediation),
-                true,
                 true,
                 true,
                 false,
             ),
         ] {
             assert_eq!(
-                mcp_client_credential_admitted(delivery, declared, acp_session, http),
+                mcp_client_credential_admitted(delivery, declared, http),
                 admitted
             );
         }
     }
 
     #[test]
-    fn only_conformance_declared_adapter_accepts_process_private_mcp_auth() {
+    fn catalog_datum_not_adapter_id_drives_process_private_mcp_auth() {
         use awaken_credential_contract::McpCredentialDelivery;
 
+        // Causes: C1 one production row is selected; C2 its row datum declares
+        // client injection; C3 its display id is relabeled independently.
+        // Effects: E1 only declared rows admit; E2 an undeclared row rejects.
+        // Constraint: identity is lookup metadata, never a capability allowlist.
+        // Decision rules: R1=C1+C2=>E1 for every row; R2=C2+renamed=>E1;
+        // R3=!C2+id "claude"=>E2, proving no hidden string branch remains.
         assert_eq!(
             known_acp_clis()
                 .iter()
@@ -844,6 +827,20 @@ mod tests {
                 .map(|cli| cli.id)
                 .collect::<Vec<_>>(),
             ["claude"]
+        );
+
+        let mut renamed_declared = *acp_cli("claude").expect("declared row");
+        renamed_declared.id = "fixture";
+        assert!(
+            renamed_declared
+                .admits_mcp_client_credential(Some(McpCredentialDelivery::ClientInjection), true,)
+        );
+
+        let mut relabeled_undeclared = *acp_cli("codex").expect("undeclared row");
+        relabeled_undeclared.id = "claude";
+        assert!(
+            !relabeled_undeclared
+                .admits_mcp_client_credential(Some(McpCredentialDelivery::ClientInjection), true,)
         );
     }
 
@@ -1371,117 +1368,6 @@ mod tests {
                         cli.id
                     );
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn every_cli_declares_a_coherent_mcp_interface() {
-        // The built side of the MCP-delivery capability: every CLI declares HOW it
-        // receives MCP servers. A `ConfigFileToml` CLI writes them into a file in its
-        // config home, so that machine-local file must be excluded from portable
-        // session export; an `AcpSession` CLI takes them at
-        // `session/new`, so no config file is named.
-        for cli in known_acp_clis() {
-            match cli.mcp_interface {
-                McpInterface::AcpSession => {}
-                McpInterface::ConfigFileToml { path } => {
-                    assert!(
-                        !path.is_empty(),
-                        "{}: ConfigFileToml needs a config path",
-                        cli.id
-                    );
-                    assert!(
-                        cli.session_export_excludes.contains(&path),
-                        "{}: MCP config file {path} must be excluded from session export",
-                        cli.id
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn project_mcp_writes_a_config_file_for_a_config_toml_cli() {
-        let cli = legacy_config_file_cli();
-        let servers = vec![McpServerConfig {
-            name: "github".into(),
-            transport: McpTransport::Stdio {
-                command: "npx".into(),
-                args: vec!["-y".into(), "@mcp/github".into()],
-            },
-        }];
-        match cli.project_mcp(&servers) {
-            McpDelivery::ConfigFile { path, contents } => {
-                assert_eq!(path, "config.toml");
-                assert!(contents.contains("[mcp_servers.github]"));
-                assert!(contents.contains("command = \"npx\""));
-                assert!(contents.contains("\"@mcp/github\""));
-                assert!(!contents.to_ascii_lowercase().contains("credential"));
-            }
-            other => panic!("config-file fixture must deliver a file, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn project_mcp_passes_session_servers_for_an_acp_session_cli() {
-        let claude = acp_cli("claude").unwrap();
-        let servers = vec![McpServerConfig {
-            name: "fs".into(),
-            transport: McpTransport::Http {
-                url: "https://mcp.internal/fs".into(),
-            },
-        }];
-        match claude.project_mcp(&servers) {
-            McpDelivery::SessionServers(s) => assert_eq!(s, servers),
-            other => panic!("claude delivers MCP at session/new, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_retained_credential_field_cannot_enter_projected_mcp_config() {
-        let raw = "sk-RAW-MCP-TOKEN"; // awaken-allow: secret
-        let server: McpServerConfig = serde_json::from_value(serde_json::json!({
-            "name": "x",
-            "transport": {"kind": "http", "url": "https://x"},
-            "credential": {"auth": "trusted_inline", "secret": raw}
-        }))
-        .expect("retained unknown field remains decode-compatible");
-        let McpDelivery::ConfigFile { contents, .. } =
-            legacy_config_file_cli().project_mcp(&[server])
-        else {
-            panic!("config-file fixture must deliver a file");
-        };
-        assert!(
-            !contents.contains(raw),
-            "a raw secret must never enter the MCP config"
-        );
-        assert!(!contents.to_ascii_lowercase().contains("credential"));
-    }
-
-    #[test]
-    fn every_cli_projects_mcp_consistently_with_its_declared_interface() {
-        // Property over the catalog: a ConfigFileToml CLI yields a ConfigFile at its
-        // declared path; an AcpSession CLI passes the servers through. Adding a CLI is
-        // covered by construction.
-        let servers = vec![McpServerConfig {
-            name: "s".into(),
-            transport: McpTransport::Http {
-                url: "https://s".into(),
-            },
-        }];
-        for cli in known_acp_clis() {
-            match (cli.mcp_interface, cli.project_mcp(&servers)) {
-                (
-                    McpInterface::ConfigFileToml { path },
-                    McpDelivery::ConfigFile { path: p, .. },
-                ) => {
-                    assert_eq!(p, path, "{}", cli.id)
-                }
-                (McpInterface::AcpSession, McpDelivery::SessionServers(s)) => {
-                    assert_eq!(s, servers, "{}", cli.id)
-                }
-                (_, d) => panic!("{}: delivery {d:?} disagrees with its interface", cli.id),
             }
         }
     }

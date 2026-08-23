@@ -28,6 +28,7 @@ import {
   pass,
   startUpstream,
   realServerEnv,
+  waitForSessionEventReceipt,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38213);
@@ -62,21 +63,29 @@ function extractionIntents(sessionId) {
     .filter((intent) => intent.session_id === sessionId);
 }
 
-async function reply(sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events
-    .filter((e) => e.type === 'agent.message')
-    .map((e) => e.content.map((b) => b.text ?? '').join(''))
-    .join('\n');
-}
-
 async function turn(sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact User receipt; C2=memory reply+terminal. E1=post-C1 reply proves
+  // this process incarnation. K: extraction intent/storage has its own durable
+  // oracle. Decision M1 C1&&!C2=>retry; M2 C1+C2=>return committed reply.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
-  return reply(sessionId);
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'M1 exact durable-memory User Event receipt');
+  const { delta } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta: later }) => later.some((event) => event.type === 'agent.message')
+      && later.some((event) => event.type === 'session.status_idle'),
+    `M1 durable-memory Run for ${JSON.stringify(text)} to commit`,
+  );
+  return delta
+    .filter((event) => event.type === 'agent.message')
+    .map((event) => event.content.map((block) => block.text ?? '').join(''))
+    .join('\n');
 }
 
 // Poll fresh sessions until the recall plugin injects the marker memory (the
@@ -123,11 +132,66 @@ async function main() {
       }],
     });
     const readOnlyMarker = 'fact-readonly-must-not-extract';
-    await assert.rejects(
-      () => turn(readOnly.id, `remember ${readOnlyMarker}`),
-      /read-only mount .* requested but backend does not enforce read-only/u,
-      'a backend without an enforced read-only capability must fail before execution',
+    const modelRequestsBeforeReadOnly = upstream.requests.length;
+    // Read-only capability decision table: C1=the User batch is durably
+    // admitted; C2=the local backend cannot enforce the frozen read-only mount;
+    // C3=one bounded reconciliation window elapses. E1=retain the exact
+    // unprocessed receipt; E2=keep the Session idle/nonterminal; E3=publish no
+    // model/tool/terminal effect; E4=enqueue no extraction or store mutation.
+    // K: admission owns the durable retryable command, so this fixture must not
+    // use the success-only receipt observer or fabricate a terminal error.
+    // Decision RO1 C1+C2=>E1+E2; RO2 C1+C2+C3=>E1+E2+E3+E4.
+    const readOnlyReceipt = await client.beta.sessions.events.send(readOnly.id, {
+      betas: BETAS,
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: `remember ${readOnlyMarker}` }],
+      }],
+    });
+    const acceptedReadOnly = readOnlyReceipt.data[0];
+    assert.equal(acceptedReadOnly?.type, 'user.message', 'RO1 exact User Event receipt family');
+    assert.equal(
+      acceptedReadOnly?.processed_at,
+      null,
+      'RO1 capability failure is not falsely processed',
     );
+    await sleep(750);
+    const readOnlyEvents = [];
+    for await (const event of client.beta.sessions.events.list(readOnly.id, { betas: BETAS })) {
+      readOnlyEvents.push(event);
+    }
+    const acceptedReadOnlyAt = readOnlyEvents.findIndex(
+      (event) => event.id === acceptedReadOnly.id,
+    );
+    assert.notEqual(acceptedReadOnlyAt, -1, 'RO2 retains the exact User Event receipt');
+    assert.equal(
+      readOnlyEvents[acceptedReadOnlyAt].processed_at,
+      null,
+      'RO2 retained history preserves retryability',
+    );
+    const readOnlyDelta = readOnlyEvents.slice(acceptedReadOnlyAt + 1);
+    assert.ok(
+      !readOnlyDelta.some((event) => [
+        'agent.message',
+        'agent.mcp_tool_use',
+        'agent.mcp_tool_result',
+        'agent.tool_use',
+        'agent.tool_result',
+        'session.error',
+        'session.status_idle',
+        'session.thread_status_idle',
+        'session.usage',
+        'span.model_request_start',
+        'span.model_request_end',
+      ].includes(event.type)),
+      `RO2 no execution or terminal effect is fabricated: ${readOnlyDelta.map((event) => event.type)}`,
+    );
+    assert.equal(
+      (await client.beta.sessions.retrieve(readOnly.id, { betas: BETAS })).status,
+      'idle',
+      'RO2 capability failure remains idle and nonterminal',
+    );
+    assert.equal(upstream.requests.length, modelRequestsBeforeReadOnly, 'RO2 no Provider request');
     assert.deepEqual(
       extractionIntents(readOnly.id),
       [],

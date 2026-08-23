@@ -33,9 +33,8 @@ pub struct FrozenSessionProjection {
     #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
     pub mcp: Vec<crate::SessionMcpAttachment>,
-    /// Materialized, rebuildable view of `baseline.transcript_prefix`. It is
-    /// populated only on a projection-preparation Stage, crosses the Worker
-    /// boundary, and is never persisted as Session or Thread truth.
+    /// Materialized, rebuildable view of `baseline.transcript_prefix`. These
+    /// messages remain request-only and are never persisted as Thread truth.
     #[serde(default)]
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
 }
@@ -352,6 +351,19 @@ pub struct SessionRealizationDirective {
     pub action: SessionRealizationAction,
 }
 
+/// One cold Worker assignment for an already-fenced terminal Session.
+///
+/// Cleanup commands deliberately do not travel in this assignment. The Worker
+/// installs the frozen projection and then polls [`SessionRealizationControl::terminal_cleanup_commands`],
+/// keeping [`crate::SessionCleanupOperation`] as the only durable work queue and
+/// completion registry.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SessionTerminalCleanupAssignment {
+    pub session_id: String,
+    pub projection: FrozenSessionProjection,
+    pub lease: SessionRealizationLease,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BeginSessionRealization {
     pub session_id: String,
@@ -506,6 +518,44 @@ pub trait SessionRealizationControl: Send + Sync {
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure>;
+
+    /// Claim the next terminal Session whose physical realization was lost
+    /// with a prior Worker process. The returned assignment contains only the
+    /// facts needed to rebuild that process-local projection; callers must use
+    /// [`Self::terminal_cleanup_commands`] for the immutable cleanup commands.
+    /// Implementations that do not own external Worker placement return `None`.
+    async fn claim_next_terminal_cleanup(
+        &self,
+        _target: SessionRealizationTarget,
+    ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
+        Ok(None)
+    }
+
+    /// Project the exact terminal-cleanup commands owned by this realization
+    /// lease. `None` means the Session has no terminal fence; `Some([])` means
+    /// terminal cleanup is fenced but not currently executable (or all receipts
+    /// are already recorded). Remote Workers poll this existing Control channel
+    /// so the durable [`crate::SessionCleanupOperation`] remains the only queue.
+    async fn terminal_cleanup_commands(
+        &self,
+        _session_id: &str,
+        _lease: &SessionRealizationLease,
+    ) -> Result<Option<Vec<crate::SessionCleanupCommand>>, SessionRealizationControlFailure> {
+        Ok(None)
+    }
+
+    /// Admit one exact Runtime completion into the existing durable terminal
+    /// cleanup operation. Implementations must verify the command identity and
+    /// current realization generation before recording it.
+    async fn record_terminal_cleanup_completion(
+        &self,
+        _lease: &SessionRealizationLease,
+        _completion: crate::SessionCleanupCompletion,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "remote Session terminal cleanup is unsupported".into(),
+        ))
+    }
 }
 
 /// Topology-specific projection installation used by the one realization

@@ -358,6 +358,8 @@ impl EnvItem {
 #[derive(Debug, Default)]
 pub struct EnvUpdate {
     pub name: Option<String>,
+    /// Wire adapters normalize an explicit nullable clear to the canonical empty
+    /// string before constructing this domain patch; absence remains unchanged.
     pub description: Option<String>,
     pub config: Option<EnvironmentConfigMutation>,
     pub scope: Option<EnvironmentFieldUpdate<String>>,

@@ -9,7 +9,13 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
-import { pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38343);
@@ -30,13 +36,27 @@ async function createSession(client, environmentID, name) {
 }
 
 async function sendTask(client, sessionID) {
-  await client.beta.sessions.events.send(sessionID, {
+  // C1=exact task receipt; C2=custom tool pending+requires_action. E1=C2 after
+  // C1 makes the official runner's reconciliation input durable. K: this wait
+  // never executes the client tool. Decision T1 C1&&!C2=>retry; T2=>start runner.
+  const receipt = await client.beta.sessions.events.send(sessionID, {
     events: [{
       type: 'user.message',
       content: [{ type: 'text', text: 'answer it' }],
     }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'T1 exact SessionToolRunner task receipt');
+  await waitForSessionEventReceipt(
+    client,
+    sessionID,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.custom_tool_use')
+      && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+    'T1 custom tool task to commit before SessionToolRunner starts',
+  );
 }
 
 function tool(run, close = undefined) {

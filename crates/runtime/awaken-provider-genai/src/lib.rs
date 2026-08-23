@@ -201,12 +201,12 @@ pub async fn discover_model_ids(
     Ok(ids.into_iter().collect())
 }
 
-// One model turn can contain a long reasoning prelude followed by a large typed
-// tool call. Keep that complete-turn budget independent from the per-event
+// One model response can contain a long reasoning prelude followed by a large typed
+// tool call. Keep that complete-response budget independent from the per-event
 // silence bound: using the same 120-second value for both made healthy streams
 // from reasoning models fail while they were still emitting progress.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
-/// How long the stream may go silent between events before the turn fails as
+/// How long the stream may go silent between events before the response fails as
 /// a retryable timeout. `timeout` independently bounds the complete streaming
 /// inference, including opening and consuming the response; without both bounds,
 /// either a silent stream or an endless stream of no-op events could hang a run.
@@ -221,8 +221,15 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 mod default_timeout_tests {
     use super::{DEFAULT_IDLE_TIMEOUT, DEFAULT_TIMEOUT};
 
+    /// Cause/effect design: C1 the default complete-response and idle-silence
+    /// budgets are selected together. Effect E1: the complete response retains
+    /// at least five idle windows, so healthy reasoning progress is not bounded
+    /// by the transport-silence threshold. Coverage rule T1=C1=>E1; a smaller
+    /// ratio is the regression boundary asserted here.
+    /// Constraints/invariants: the complete-call budget must remain at least
+    /// five times the idle window; specialized overrides do not change defaults.
     #[test]
-    fn complete_reasoning_turn_has_a_larger_budget_than_transport_silence() {
+    fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
         assert!(DEFAULT_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 5);
     }
 }
@@ -441,7 +448,7 @@ impl LlmExecutor for GenaiExecutor {
         let model = request.model_binding.model_ref.clone();
         let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
 
-        // Have genai assemble the committed turn for us. It concatenates the text
+        // Have genai assemble the committed response for us. It concatenates the text
         // chunks and parses the accumulated tool-argument fragments into a JSON
         // object, exactly as the non-streaming path returns them — Anthropic
         // streams tool arguments as `input_json_delta` text that is only valid
@@ -472,7 +479,7 @@ impl LlmExecutor for GenaiExecutor {
         // Accumulated reasoning (streamed chunks); the End event's captured value
         // is preferred when present.
         let mut reasoning = String::new();
-        // Fallback assembly, used only if the provider delivers no captured turn.
+        // Fallback assembly, used only if the provider delivers no captured response.
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         // Per-call bytes already emitted: genai hands CUMULATIVE argument snapshots,
@@ -515,7 +522,7 @@ impl LlmExecutor for GenaiExecutor {
                     text.push_str(&chunk.content);
                 }
                 // Live tool-call progress: genai hands incremental, string-encoded
-                // arguments here. Best-effort only; the committed turn is the End
+                // arguments here. Best-effort only; the committed response is the End
                 // event, where genai has parsed the arguments into an object.
                 ChatStreamEvent::ToolCallChunk(tool) => {
                     let call = from_genai_tool_call(&tool.tool_call);
@@ -543,7 +550,7 @@ impl LlmExecutor for GenaiExecutor {
                     sink.on_reasoning(&chunk.content).await;
                     reasoning.push_str(&chunk.content);
                 }
-                // Committed turn: genai's parsed, ordered content and usage.
+                // Committed response: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
                     stop_reason = end.captured_stop_reason.as_ref().and_then(map_stop_reason);
                     captured = end.captured_content;
@@ -556,7 +563,7 @@ impl LlmExecutor for GenaiExecutor {
             }
         }
 
-        // Prefer genai's captured turn (parsed tool arguments, same shape as
+        // Prefer genai's captured response (parsed tool arguments, same shape as
         // `infer`); fall back to the chunk-assembled blocks only if no End
         // content arrived (e.g. a stream that ends without a captured block).
         let output = match captured {
@@ -576,8 +583,8 @@ impl LlmExecutor for GenaiExecutor {
                 AssistantOutput::from_blocks(blocks)
             }
         };
-        // Fold the turn's reasoning through the same canonical response mapper
-        // used by non-streaming inference so both paths commit an identical turn.
+        // Fold the response's reasoning through the same canonical response mapper
+        // used by non-streaming inference so both paths commit an identical Step response.
         let output = with_reasoning(output, Some(&reasoning), ResponseTransport::Streaming);
         require_usable_response(ChatResponse {
             output,
@@ -828,12 +835,12 @@ fn to_genai_request_with_adapter(
             .flatten()
             .collect();
         // A standalone reasoning-only history row is not a complete assistant
-        // turn and some provider protocols reject it. Reasoning that accompanies
+        // message and some provider protocols reject it. Reasoning that accompanies
         // text or a tool call remains attached and is replayed by adapters that
         // require it (notably DeepSeek's OpenAI-compatible tool loop).
         // The neutral transcript commits one Tool message per completed call.
         // Anthropic Messages instead requires every result for one assistant
-        // tool-use turn to appear together in the immediately following user
+        // tool-use message to appear together in the immediately following user
         // message. `genai` maps one Tool message to one Anthropic user message,
         // so coalesce adjacent Tool messages here. OpenAI/Responses still emit
         // one wire result per part from the combined message.
@@ -849,7 +856,7 @@ fn to_genai_request_with_adapter(
             Role::Assistant => ChatMessage::assistant(parts),
             Role::User => ChatMessage::user(parts),
             // A tool result must be a tool-role message correlated by tool-call id,
-            // or a strict provider rejects the turn ("tool_call_ids did not have
+            // or a strict provider rejects the message ("tool_call_ids did not have
             // response messages").
             Role::Tool => ChatMessage::tool(parts),
         };
@@ -1070,7 +1077,7 @@ fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
     }
     // Some OpenAI-compatible reasoning providers occasionally serialize their
     // private tool-call wire language as assistant text. Committing that text as
-    // a successful turn silently drops the requested side effect. Do not parse
+    // a successful response silently drops the requested side effect. Do not parse
     // or execute it here: only the SDK's typed ToolCall is trusted. A retryable
     // provider error lets the canonical run retry policy obtain a structured
     // response without creating a second provider-specific tool parser.
@@ -1093,13 +1100,18 @@ mod visible_response_tests {
 
     #[test]
     fn reasoning_only_response_is_retryable_instead_of_committed_as_empty_success() {
+        // Test design — Causes: a provider returns private reasoning and usage
+        // but no public text or typed tool call. Effects: usability validation
+        // returns a retryable provider error. Constraints/invariants: reasoning
+        // alone is not a completed assistant response. Decision rule V1:
+        // reasoning-only=>retryable failure, never empty success.
         let response = ChatResponse {
             output: AssistantOutput::from_blocks(vec![ContentBlock::thinking("reasoning")]),
             usage: Some(TokenUsage {
                 completion_tokens: 7,
                 ..TokenUsage::default()
             }),
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(StopReason::NaturalEnd),
         };
 
         let error = require_usable_response(response).unwrap_err();
@@ -1116,6 +1128,8 @@ mod visible_response_tests {
     /// never occurs while the Session looks successful; this sole provider seam
     /// detects it even on the tool-free reserved final step, and deliberately
     /// avoids a second, injection-prone tool parser.
+    /// Constraints/invariants: only structured provider tool data is executable;
+    /// sentinel text is detected but never parsed as a second tool authority.
     #[test]
     fn textual_dsml_tool_calls_always_fail_closed() {
         let serialized = || ChatResponse {
@@ -1123,7 +1137,7 @@ mod visible_response_tests {
                 "<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name=\"publish\">",
             ),
             usage: None,
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(StopReason::NaturalEnd),
         };
 
         let error = require_usable_response(serialized()).expect_err("T2/E2");
@@ -1133,7 +1147,7 @@ mod visible_response_tests {
         let ordinary = ChatResponse {
             output: AssistantOutput::text("ordinary final answer"),
             usage: None,
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(StopReason::NaturalEnd),
         };
         assert!(require_usable_response(ordinary).is_ok(), "T3/E1");
 
@@ -1155,7 +1169,7 @@ mod visible_response_tests {
 pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Option<StopReason> {
     use genai::chat::StopReason as GenaiStopReason;
     match reason {
-        GenaiStopReason::Completed(_) => Some(StopReason::EndTurn),
+        GenaiStopReason::Completed(_) => Some(StopReason::NaturalEnd),
         GenaiStopReason::MaxTokens(_) => Some(StopReason::MaxTokens),
         GenaiStopReason::ToolCall(_) => Some(StopReason::ToolUse),
         GenaiStopReason::StopSequence(_) => Some(StopReason::StopSequence),
@@ -1164,8 +1178,8 @@ pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Option<StopReason> {
     }
 }
 
-/// Map a provider turn onto neutral content blocks, preserving the order of text
-/// and tool requests so an interleaved turn (text + tool call + text) survives.
+/// Map a provider response onto neutral content blocks, preserving the order of text
+/// and tool requests so an interleaved response (text + tool call + text) survives.
 pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
     let blocks = content
         .iter()
@@ -1218,7 +1232,7 @@ fn with_reasoning(
 mod reasoning_projection_tests {
     use super::*;
 
-    fn public_turn() -> AssistantOutput {
+    fn public_response() -> AssistantOutput {
         AssistantOutput::from_blocks(vec![
             ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({"id": 1})),
             ContentBlock::text("public answer"),
@@ -1227,13 +1241,18 @@ mod reasoning_projection_tests {
 
     #[test]
     fn streaming_and_non_streaming_commit_the_same_reasoning_shape() {
+        // Test design — Causes: identical public output and private reasoning
+        // arrive through streaming and non-streaming transports. Effects: both
+        // commit the same ordered Thinking/ToolUse/Text blocks. Constraints/
+        // invariants: transport cannot alter committed transcript semantics.
+        // Decision rule R1: equal inputs across both modes=>identical block vector.
         let streaming = with_reasoning(
-            public_turn(),
+            public_response(),
             Some("private reasoning"),
             ResponseTransport::Streaming,
         );
         let non_streaming = with_reasoning(
-            public_turn(),
+            public_response(),
             Some("private reasoning"),
             ResponseTransport::NonStreaming,
         );
@@ -1276,6 +1295,13 @@ mod reasoning_projection_tests {
 
     #[test]
     fn ordered_signed_thinking_blocks_a_different_scalar_without_losing_order() {
+        // Test design — Causes: C1 output already contains two ordered signed
+        // Thinking blocks interleaved with public text/tool use; C2 a different
+        // aggregate reasoning scalar arrives from streaming transport. Effect:
+        // C1 remains byte/order exact and C2 is ignored rather than duplicated.
+        // Constraints/invariants: signed structured blocks are authoritative;
+        // the lossy scalar may fill only an output with no Thinking block.
+        // Decision rule R1=C1+C2=>preserve all blocks/signatures exactly.
         let output = AssistantOutput::from_blocks(vec![
             ContentBlock::signed_thinking("first", Some("opaque-signature-1".into())),
             ContentBlock::text("public"),
@@ -1306,7 +1332,7 @@ mod reasoning_projection_tests {
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {
     // The prompt-cache breakdown (Anthropic cache_read/cache_creation), when the
-    // provider reports it; absent for providers/turns without prompt caching.
+    // provider reports it; absent for providers/responses without prompt caching.
     let (cache_read_tokens, cache_creation_tokens) = usage
         .prompt_tokens_details
         .as_ref()
@@ -1335,7 +1361,11 @@ mod classify_tests {
 
     #[test]
     fn default_stream_idle_window_allows_long_reasoning_prefill() {
-        // A live DeepSeek reasoning turn produced no SSE event for just over
+        // Test design — Causes: valid model prefill may remain silent for sixty
+        // seconds. Effects: the default idle window remains at least 120 seconds.
+        // Constraints/invariants: silence timeout must not misclassify that known
+        // healthy interval. Decision rule D1: default>=120s=>prefill boundary safe.
+        // A live DeepSeek reasoning response produced no SSE event for just over
         // sixty seconds and was incorrectly terminated as a transport stall.
         // Preserve at least two minutes for valid model-side prefill/reasoning;
         // explicit test/host overrides retain the fast-stall path.
@@ -1611,7 +1641,7 @@ mod hermetic_tests {
                     let _ = socket.write_all(head.as_bytes()).await;
                     let _ = socket.write_all(body.as_bytes()).await;
                     let _ = socket.flush().await;
-                    // Keep the connection open; `message_stop` already ended the turn.
+                    // Keep the connection open; `message_stop` already ended the response.
                     std::future::pending::<()>().await;
                 });
             }
@@ -1761,6 +1791,12 @@ mod hermetic_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn streaming_tool_args_de_accumulate_into_suffix_deltas() {
+        // Test design — Causes: an Anthropic SSE stream sends cumulative tool
+        // argument snapshots split across multibyte characters. Effects: live
+        // output emits suffix deltas that concatenate to the committed JSON tool
+        // call. Constraints/invariants: the adapter is the sole de-accumulation
+        // owner and slices only UTF-8 boundaries. Decision rule A1: cumulative
+        // snapshots=>exact suffix sequence, one identical committed object.
         let base_url = spawn_sse_server(tool_stream_body()).await;
         let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
             .with_idle_timeout(Duration::from_secs(5));
@@ -1786,7 +1822,7 @@ mod hermetic_tests {
         )
         .await
         .expect("the stream self-terminates on message_stop")
-        .expect("a well-formed tool stream is a turn, not an error");
+        .expect("a well-formed tool stream is a response, not an error");
 
         // Committed truth (G13): genai parsed the accumulated fragments into an
         // object with the multi-byte value intact.
@@ -1831,7 +1867,7 @@ mod hermetic_tests {
             reparsed, expected_args,
             "the concatenated live suffixes reconstruct the committed object"
         );
-        // No text was streamed on a pure tool turn.
+        // No text was streamed on a pure tool response.
         assert!(recorder.text.lock().unwrap().is_empty());
     }
 

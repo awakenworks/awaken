@@ -657,6 +657,14 @@ mod tests {
 
     #[test]
     fn terminal_failure_surfaces_an_error_frame() {
+        // Causes: the fixtures below establish `terminal failure` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `surfaces an error frame` and every asserted state
+        // transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
         // Cause/effect rule F1: a committed inference failure emits an error
         // frame and finish(error), never an ordinary finish.
         let outcome = StepOutcome::ended(
@@ -665,8 +673,6 @@ mod tests {
                 code: "inference_failed".into(),
                 message: "upstream is down".into(),
             }),
-            false,
-            false,
         );
         // A fresh (non-streamed) step: opened stream + error + finish("error").
         let step = encode_step(&outcome);
@@ -697,11 +703,18 @@ mod tests {
     /// error frame. Pins that exhaustion doesn't leak as a fault.
     #[test]
     fn an_exhausted_run_finishes_cleanly_not_as_error() {
+        // Causes: the fixtures below establish `an exhausted run finishes cleanly not as error`
+        // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
         let outcome = StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::MaxSteps,
-            false,
-            false,
         );
         let step = encode_step(&outcome);
         assert!(
@@ -725,6 +738,15 @@ mod tests {
     // assistant text twice.
     #[test]
     fn streamed_text_is_not_re_emitted_by_the_committed_tail() {
+        // Causes: the fixtures below establish `streamed text` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `is not re emitted by the committed tail` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `streamed text` is one independent branch selecting `is not re
+        // emitted by the committed tail`; a multi-row decision table is not applicable, and sibling
+        // tests own alternate causes.
         let outcome = StepOutcome::ended(
             vec![Message::text(
                 Id("a1".into()),
@@ -732,8 +754,6 @@ mod tests {
                 "hello there",
             )],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AiSdkEncoder::new();
         encoder.fact(&Fact::RunStarted);
@@ -779,6 +799,15 @@ mod tests {
 
     #[test]
     fn client_pending_tool_is_not_provider_executed() {
+        // Causes: the fixtures below establish `client pending tool` with the concrete inputs,
+        // state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `is not provider executed` and every asserted state
+        // transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `client pending tool` is one independent branch selecting `is not
+        // provider executed`; a multi-row decision table is not applicable, and sibling tests own
+        // alternate causes.
         let outcome = StepOutcome::awaiting(
             vec![assistant_tool("a1", "c1", "submit_answer", json!({}))],
             Some(Pending {
@@ -787,8 +816,6 @@ mod tests {
                 input: json!({}),
                 client_executed: true,
             }),
-            false,
-            false,
         );
         let events = encode_step(&outcome);
         let tool = events
@@ -806,11 +833,20 @@ mod tests {
 
     #[test]
     fn plain_assistant_turn_finishes_stop() {
+        // Causes: the fixtures below establish `plain assistant turn finishes stop` with the
+        // concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `plain assistant turn finishes stop` is one independent branch
+        // selecting `all output, state, side-effect, error, and terminal assertions below hold
+        // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+        // causes.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
             EndCause::NaturalEnd,
-            false,
-            false,
         );
         let events = encode_step(&outcome);
         assert!(events.contains(&UIStreamEvent::finish("stop")));
@@ -823,6 +859,15 @@ mod tests {
 
     #[test]
     fn close_emits_authoritative_tail_without_start_or_text() {
+        // Causes: the fixtures below establish `close` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits authoritative tail without start or text` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `close` is one independent branch selecting `emits authoritative tail
+        // without start or text`; a multi-row decision table is not applicable, and sibling tests
+        // own alternate causes.
         let outcome = StepOutcome::awaiting(
             vec![
                 Message::text(Id("a1".into()), Role::Assistant, "let me read"),
@@ -834,8 +879,6 @@ mod tests {
                 input: json!({"path": "x"}),
                 client_executed: true,
             }),
-            false,
-            false,
         );
         let mut encoder = AiSdkEncoder::new();
         encoder.fact(&Fact::RunStarted);
@@ -868,14 +911,21 @@ mod tests {
 
     #[test]
     fn reasoning_only_prefix_keeps_committed_text_without_restarting_stream() {
+        // Causes: the fixtures below establish `reasoning only prefix` with the concrete inputs,
+        // state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `keeps committed text without restarting stream` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `reasoning only prefix` is one independent branch selecting `keeps
+        // committed text without restarting stream`; a multi-row decision table is not applicable,
+        // and sibling tests own alternate causes.
         // CE-AI3/AI4: private reasoning bytes are not visible text. Completion
         // closes the activity marker, emits the committed answer, and does not
         // repeat start frames.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
             EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AiSdkEncoder::new();
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 2);
@@ -903,6 +953,18 @@ mod tests {
 
     #[test]
     fn live_tool_missing_from_committed_outcome_fails_closed() {
+        // Causes: the fixtures below establish `live tool missing from committed outcome fails
+        // closed` with the concrete inputs, state, dependencies, and failure triggers used by this
+        // case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `live tool missing from committed outcome fails closed` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         // CE-AI9: tool-input-start without a committed ToolCall cannot receive an
         // authoritative input-available frame, so completion terminates as error.
         let mut encoder = AiSdkEncoder::new();
@@ -914,8 +976,6 @@ mod tests {
         let events = encoder.complete(&StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ));
         assert!(
             events
@@ -1155,6 +1215,15 @@ mod tests {
     // carries no spurious `text-*` frames — only the step's start and finish.
     #[test]
     fn an_empty_text_only_assistant_turn_emits_no_text_part() {
+        // Causes: the fixtures below establish `an empty text only assistant turn` with the
+        // concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits no text part` and every asserted state transition
+        // or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `an empty text only assistant turn` is one independent branch
+        // selecting `emits no text part`; a multi-row decision table is not applicable, and sibling
+        // tests own alternate causes.
         let outcome = StepOutcome::ended(
             vec![Message::new(
                 Id("a1".into()),
@@ -1162,8 +1231,6 @@ mod tests {
                 vec![ContentBlock::text("")],
             )],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let events = encode_step(&outcome);
         assert!(

@@ -108,10 +108,9 @@ mod realization_renewal_tests {
 /// The single Session-baseline prompt projection boundary for foreground,
 /// durable, Native, ACP, and A2A attempts.
 ///
-/// Mutating only Host `pending_system` state cannot affect an already-serialized
-/// activation. Wrapping the authoritative attempt router keeps one mechanism for
-/// every topology. Deterministic message ids make a retried uncommitted attempt
-/// byte-for-byte stable; committed history prevents later turns from reinjecting
+/// Wrapping the authoritative attempt router keeps one mechanism for every
+/// topology. Deterministic message ids make a retried uncommitted attempt
+/// byte-for-byte stable; committed history prevents later Runs from reinjecting
 /// the baseline.
 pub(crate) struct SessionPromptAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
@@ -364,13 +363,13 @@ mod acp_context_tests {
     }
 
     /// Session prompt FMECA cause/effect graph:
-    /// C1=frozen prompts exist, C2=the durable user input was committed before
+    /// C1=frozen prompts exist, C2=the durable User input was committed before
     /// the Worker claim, C3=the exact deterministic prompt is already present.
     /// E1=prepend the prompt exactly once, E2=leave input byte-stable.
     /// Decision rules: C1 C2 !C3 -> E1; C1 * C3 -> E2; !C1 * * -> E2.
     /// Runtime's committed-id filter, rather than transcript emptiness, owns
-    /// replay/later-run de-duplication; a committed user message is not proof
-    /// that the frozen system prompt has ever reached inference.
+    /// replay/later-Run de-duplication; a committed User Message is not proof
+    /// that the frozen System prompt has ever reached inference.
     #[test]
     fn session_prompt_projection_survives_precommitted_user_input_without_duplication() {
         let slots = crate::session_slot::SessionRuntimeSlots::default();
@@ -397,7 +396,6 @@ mod acp_context_tests {
             "frozen session prompt",
             "E1"
         );
-
         let replayed = executor.project(projected);
         assert_eq!(
             replayed
@@ -560,8 +558,141 @@ impl crate::SharedHost {
             .unwrap_or(false)
     }
 
-    /// Renew every active Session realization approaching expiry through the
-    /// same Control phase protocol used for initial creation and hot replacement.
+    /// Drive the one aggregate-owned terminal cleanup projection for a resident
+    /// realization. `true` means the terminal fence owns this slot (including a
+    /// completed/not-found retirement); `false` resumes ordinary lease renewal.
+    /// Warm slots and cold recovery assignments both enter this exact helper.
+    async fn reconcile_terminal_cleanup_for_lease(
+        &self,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<bool, crate::HostError> {
+        match control.terminal_cleanup_commands(session_id, lease).await {
+            Ok(Some(commands)) => {
+                let mut terminal_error = None;
+                for command in commands {
+                    match self
+                        .execute_dispatched_terminal_cleanup(command.clone())
+                        .await
+                    {
+                        Ok(completion) => {
+                            if let Err(error) = control
+                                .record_terminal_cleanup_completion(lease, completion)
+                                .await
+                                && !matches!(
+                                    error,
+                                    awaken_session_contract::SessionRealizationControlFailure::NotFound
+                                )
+                            {
+                                terminal_error.get_or_insert_with(|| {
+                                    crate::HostError::internal(format!(
+                                        "Session `{session_id}` terminal cleanup receipt remained pending: {error}"
+                                    ))
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            terminal_error.get_or_insert_with(|| {
+                                crate::HostError::internal(format!(
+                                    "Session `{session_id}` terminal cleanup effect remained pending: {error}"
+                                ))
+                            });
+                        }
+                    }
+                }
+                match terminal_error {
+                    Some(error) => Err(error),
+                    None => Ok(true),
+                }
+            }
+            Ok(None) => Ok(false),
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
+                let _ = self.interrupt(session_id).await;
+                self.revoke_session_realization(session_id).await;
+                Ok(true)
+            }
+            Err(error) => Err(crate::HostError::internal(format!(
+                "Session `{session_id}` terminal cleanup control remained pending: {error}"
+            ))),
+        }
+    }
+
+    /// Claim and install every currently discoverable cold terminal assignment,
+    /// then enter the same cleanup helper as resident projections. The bound
+    /// prevents one heartbeat from monopolizing the Worker; repeated calls are
+    /// safe because Control skips assignments already owned by this incarnation.
+    pub async fn recover_terminal_cleanup_assignments(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<usize, crate::HostError> {
+        const MAX_ASSIGNMENTS_PER_HEARTBEAT: usize = 64;
+
+        let control = self.session_control.as_ref().ok_or_else(|| {
+            crate::HostError::internal(
+                "active Worker Session projection has no Control renewal client",
+            )
+        })?;
+        let mut recovered = 0;
+        let mut terminal_error = None;
+        for _ in 0..MAX_ASSIGNMENTS_PER_HEARTBEAT {
+            let assignment = match control.claim_next_terminal_cleanup(target.clone()).await {
+                Ok(Some(assignment)) => assignment,
+                Ok(None) => break,
+                Err(error) => {
+                    terminal_error.get_or_insert_with(|| {
+                        crate::HostError::internal(format!(
+                            "cold Session terminal cleanup claim remained pending: {error}"
+                        ))
+                    });
+                    break;
+                }
+            };
+            if let Err(error) =
+                crate::host::HostWorkerResolver::install_terminal_cleanup_assignment(
+                    self,
+                    &assignment,
+                )
+                .await
+            {
+                terminal_error.get_or_insert_with(|| {
+                    crate::HostError::internal(format!(
+                        "Session `{}` terminal cleanup projection remained pending: {error}",
+                        assignment.session_id
+                    ))
+                });
+                continue;
+            }
+            recovered += 1;
+            match self
+                .reconcile_terminal_cleanup_for_lease(
+                    control.as_ref(),
+                    &assignment.session_id,
+                    &assignment.lease,
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    // Another actor completed the operation between claim and
+                    // poll. This projection has no ordinary Run authority.
+                    self.revoke_session_realization(&assignment.session_id)
+                        .await;
+                }
+                Err(error) => {
+                    terminal_error.get_or_insert(error);
+                }
+            }
+        }
+        match terminal_error {
+            Some(error) => Err(error),
+            None => Ok(recovered),
+        }
+    }
+
+    /// Reconcile terminal cleanup first, then renew every active Session
+    /// realization approaching expiry through the same Control phase protocol
+    /// used for initial creation and hot replacement.
     /// Environment-only Sessions participate because image/package realization
     /// can outlive the initial lease even when no MCP attachment exists.
     /// A failed renewal revokes that Session's process-local projection before
@@ -573,13 +704,8 @@ impl crate::SharedHost {
         renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
     ) -> Result<usize, crate::HostError> {
-        let due = self
-            .session_slots
-            .realization_leases()
-            .into_iter()
-            .filter(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms)
-            .collect::<Vec<_>>();
-        if due.is_empty() {
+        let realizations = self.session_slots.realization_leases();
+        if realizations.is_empty() {
             return Ok(0);
         }
         let control = self.session_control.as_ref().ok_or_else(|| {
@@ -588,7 +714,42 @@ impl crate::SharedHost {
             )
         })?;
         let mut renewed = 0;
-        for (session_id, lease) in &due {
+        let mut terminal_error = None;
+        for (session_id, lease) in &realizations {
+            // Cause/effect decision table: C1 the aggregate has no terminal
+            // fence, C2 it is Fenced, C3 it has missing exact commands, C4 all
+            // completions are already recorded, and C5 Control is temporarily
+            // unavailable. Effects: E1 ordinary renewal; E2 retain the slot
+            // without teardown; E3 attempt every command and record each exact
+            // receipt; E4 let Control complete and then retire the now-empty
+            // projection; E5 retain recoverable local state. No Worker-local
+            // cleanup queue or completion registry participates.
+            //
+            // | Rule | Control projection | Effect |
+            // | R1 | None | E1 when due |
+            // | R2 | Some([]) | E2 |
+            // | R3 | Some(commands) | E3, retry failures cold |
+            // | R4 | NotFound after settlement | E4 |
+            // | R5 | Unavailable | E5 |
+            match self
+                .reconcile_terminal_cleanup_for_lease(control.as_ref(), session_id, lease)
+                .await
+            {
+                Ok(true) => {
+                    // Even an empty batch is a durable terminal fence. Never
+                    // reinterpret retired Work as ordinary projection revocation
+                    // while cleanup is waiting or retrying.
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    terminal_error.get_or_insert(error);
+                    continue;
+                }
+            }
+            if lease.expires_at_unix_ms > renew_before_unix_ms {
+                continue;
+            }
             let renewal = async {
                 let directive = match control
                     .begin_session_realization(awaken_session_contract::BeginSessionRealization {
@@ -650,7 +811,10 @@ impl crate::SharedHost {
             let _ = self.interrupt(session_id).await;
             self.revoke_session_realization(session_id).await;
         }
-        Ok(renewed)
+        match terminal_error {
+            Some(error) => Err(error),
+            None => Ok(renewed),
+        }
     }
 
     /// Remove one process-local realization after its continuing authority is

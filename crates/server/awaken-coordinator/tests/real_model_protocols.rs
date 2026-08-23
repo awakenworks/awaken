@@ -1,4 +1,4 @@
-//! Real-model conformance across every protocol adapter: multi-turn conversation
+//! Real-model conformance across every protocol adapter: multi-Run conversation
 //! (each protocol threads history to the model) and multi-agent (a graded outcome
 //! runs a judge sub-agent through the kernel). Gated with `#[ignore]`; run:
 //!
@@ -78,7 +78,7 @@ fn recalled(reply: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// The concatenated text of the last agent message in the session's committed
-/// event log (read after the turn drives the run).
+/// event log (read after the adapter drives the Run).
 async fn managed_last_reply(app: &Router, session: &str) -> String {
     let (status, body) = call(
         app,
@@ -103,7 +103,7 @@ async fn managed_last_reply(app: &Router, session: &str) -> String {
         .collect()
 }
 
-async fn managed_turn(app: &Router, session: &str, text: &str) -> String {
+async fn managed_run(app: &Router, session: &str, text: &str) -> String {
     let (status, body) = call(
         app,
         "POST",
@@ -112,13 +112,26 @@ async fn managed_turn(app: &Router, session: &str, text: &str) -> String {
             "content": [{ "type": "text", "text": text }] }] }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "managed turn failed: {body}");
+    assert_eq!(status, StatusCode::OK, "managed Run failed: {body}");
     managed_last_reply(app, session).await
 }
 
+/// Cause/effect design: C1 a live Managed Session first receives the fixed SET
+/// prompt; C2 the same Session then receives ASK. Effect E1: the live provider's
+/// second reply recalls the value established by C1. Coverage rule R1=C1+C2=>E1;
+/// the ignored/live gate is intentional because model context retention is the
+/// external dependency under test.
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
-async fn managed_multi_turn_remembers_context() {
+async fn managed_multi_run_remembers_context() {
+    // Causes: the fixtures below establish `managed multi run remembers context` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = live_router();
     let (_, body) = call(
         &app,
@@ -134,12 +147,12 @@ async fn managed_multi_turn_remembers_context() {
         .as_str()
         .unwrap()
         .to_string();
-    managed_turn(&app, &session, SET).await;
-    let reply = managed_turn(&app, &session, ASK).await;
+    managed_run(&app, &session, SET).await;
+    let reply = managed_run(&app, &session, ASK).await;
     eprintln!("[managed] reply: {reply:?}");
     assert!(
         recalled(&reply),
-        "managed lost multi-turn context: {reply:?}"
+        "managed lost multi-Run context: {reply:?}"
     );
 }
 
@@ -147,7 +160,7 @@ async fn managed_multi_turn_remembers_context() {
 // AI SDK protocol (/v1/ai-sdk)
 // ---------------------------------------------------------------------------
 
-async fn ai_sdk_turn(app: &Router, thread: &str, id: &str, text: &str) -> String {
+async fn ai_sdk_run(app: &Router, thread: &str, id: &str, text: &str) -> String {
     let (status, body) = call(
         app,
         "POST",
@@ -162,22 +175,28 @@ async fn ai_sdk_turn(app: &Router, thread: &str, id: &str, text: &str) -> String
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
-async fn ai_sdk_multi_turn_remembers_context() {
+async fn ai_sdk_multi_run_remembers_context() {
+    // Causes: the fixtures below establish `ai sdk multi run remembers context` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `ai sdk multi run remembers context` is one independent branch selecting
+    // `all output, state, side-effect, error, and terminal assertions below hold together`; a
+    // multi-row decision table is not applicable, and sibling tests own alternate causes.
     let app = live_router();
-    ai_sdk_turn(&app, "sdk-mt", "u1", SET).await;
-    let reply = ai_sdk_turn(&app, "sdk-mt", "u2", ASK).await;
+    ai_sdk_run(&app, "sdk-mt", "u1", SET).await;
+    let reply = ai_sdk_run(&app, "sdk-mt", "u2", ASK).await;
     eprintln!("[ai-sdk] reply: {reply:?}");
-    assert!(
-        recalled(&reply),
-        "ai-sdk lost multi-turn context: {reply:?}"
-    );
+    assert!(recalled(&reply), "ai-sdk lost multi-Run context: {reply:?}");
 }
 
 // ---------------------------------------------------------------------------
 // AG-UI protocol (/v1/ag-ui)
 // ---------------------------------------------------------------------------
 
-async fn ag_ui_turn(app: &Router, thread: &str, run: &str, text: &str) -> String {
+async fn ag_ui_run(app: &Router, thread: &str, run: &str, text: &str) -> String {
     let (status, body) = call(
         app,
         "POST",
@@ -192,19 +211,28 @@ async fn ag_ui_turn(app: &Router, thread: &str, run: &str, text: &str) -> String
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
-async fn ag_ui_multi_turn_remembers_context() {
+async fn ag_ui_multi_run_remembers_context() {
+    // Causes: the fixtures below establish `ag ui multi run remembers context` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `ag ui multi run remembers context` is one independent branch selecting
+    // `all output, state, side-effect, error, and terminal assertions below hold together`; a
+    // multi-row decision table is not applicable, and sibling tests own alternate causes.
     let app = live_router();
-    ag_ui_turn(&app, "ag-mt", "r1", SET).await;
-    let reply = ag_ui_turn(&app, "ag-mt", "r2", ASK).await;
+    ag_ui_run(&app, "ag-mt", "r1", SET).await;
+    let reply = ag_ui_run(&app, "ag-mt", "r2", ASK).await;
     eprintln!("[ag-ui] reply: {reply:?}");
-    assert!(recalled(&reply), "ag-ui lost multi-turn context: {reply:?}");
+    assert!(recalled(&reply), "ag-ui lost multi-Run context: {reply:?}");
 }
 
 // ---------------------------------------------------------------------------
 // A2A protocol (/v1/a2a)
 // ---------------------------------------------------------------------------
 
-async fn a2a_turn(app: &Router, context: &str, id: &str, text: &str) -> String {
+async fn a2a_run(app: &Router, context: &str, id: &str, text: &str) -> String {
     let (status, body) = call(
         app,
         "POST",
@@ -224,12 +252,21 @@ async fn a2a_turn(app: &Router, context: &str, id: &str, text: &str) -> String {
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
-async fn a2a_multi_turn_remembers_context() {
+async fn a2a_multi_run_remembers_context() {
+    // Causes: the fixtures below establish `a2a multi run remembers context` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `a2a multi run remembers context` is one independent branch selecting
+    // `all output, state, side-effect, error, and terminal assertions below hold together`; a
+    // multi-row decision table is not applicable, and sibling tests own alternate causes.
     let app = live_router();
-    a2a_turn(&app, "a2a-mt", "m1", SET).await;
-    let reply = a2a_turn(&app, "a2a-mt", "m2", ASK).await;
+    a2a_run(&app, "a2a-mt", "m1", SET).await;
+    let reply = a2a_run(&app, "a2a-mt", "m2", ASK).await;
     eprintln!("[a2a] reply: {reply:?}");
-    assert!(recalled(&reply), "a2a lost multi-turn context: {reply:?}");
+    assert!(recalled(&reply), "a2a lost multi-Run context: {reply:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +276,16 @@ async fn a2a_multi_turn_remembers_context() {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
+    // Causes: the fixtures below establish `multi agent graded outcome runs a judge subagent` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `multi agent graded outcome runs a judge subagent` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     let (executor, model) = live_executor();
     // Outcomes are graded by a judge sub-agent (a second run) driven by the same
     // live model — a genuine multi-agent flow: a worker run plus a judge sub-run.
@@ -259,8 +306,8 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
         .unwrap()
         .to_string();
 
-    // A draft turn, then an outcome the judge sub-agent grades (and revises).
-    managed_turn(
+    // A draft Run, then an outcome the judge sub-agent grades (and revises).
+    managed_run(
         &app,
         &session,
         "Write a one-sentence greeting that says hello.",

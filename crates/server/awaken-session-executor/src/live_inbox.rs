@@ -1,7 +1,8 @@
-//! Per-attempt live-inbox lifecycle: open with carry-over, close with
-//! leftover capture, and the in-flight lookup wire handlers use.
+//! Per-attempt live-inbox lifecycle: open with carry-over and close with
+//! leftover capture. In-flight discovery belongs to the Runtime's one active-
+//! attempt registry, which covers both direct and pool-owned execution.
 //!
-//! Only the native direct turn path opens an inbox (see `run_exec`): the
+//! Only the native direct Run path opens an inbox (see `run_exec`): the
 //! ACP executor never drains one, and the durable path runs in the worker's
 //! process. The slot lives on `SessionCtx` with the same locking discipline
 //! as the cancel token — brief std locks, never held across an await.
@@ -11,9 +12,9 @@ use awaken_runtime_contract::live_inbox::{LiveInbox, LiveInboxMessage};
 use crate::host::{SessionCtx, SharedHost};
 
 /// The per-thread live-inbox slot. `open` is `Some` only while a native
-/// direct turn is in flight; `leftovers` carries messages queued but not
+/// direct Run is in flight; `leftovers` carries messages queued but not
 /// consumed when an attempt closed, seeded into the next attempt's inbox so
-/// a queued message survives the turn boundary instead of dying with it. The
+/// a queued message survives the Run boundary instead of dying with it. The
 /// full [`LiveInboxMessage`] is kept (not just its content) so an entry's
 /// [`MessageOrigin`](awaken_runtime_contract::live_inbox::MessageOrigin) — e.g.
 /// an out-of-band External injection — is not relaundered to Run across the
@@ -26,8 +27,8 @@ pub(crate) struct LiveInboxSlot {
 
 impl SessionCtx {
     /// Open a fresh live inbox for the attempt about to run, seeded with the
-    /// previous attempt's unconsumed leftovers. Registered on this ctx so a
-    /// concurrent wire request can list/edit the in-flight queue.
+    /// previous attempt's unconsumed leftovers. The slot owns direct-attempt
+    /// lifecycle and carry-over; Runtime registration owns concurrent discovery.
     pub(crate) fn open_live_inbox(&self) -> LiveInbox {
         let inbox = LiveInbox::new();
         let mut slot = self.live_inbox.lock().expect("live-inbox slot poisoned");
@@ -49,47 +50,20 @@ impl SessionCtx {
             slot.leftovers.extend(inbox.close());
         }
     }
-
-    /// The live inbox an offer queues into. A durable session steers through the
-    /// process-local per-session inbox its co-located worker drains at boundaries
-    /// (ADR-0054 P2). The caller must first prove that an attempt is active and
-    /// locally reachable; this helper deliberately does not turn the best-effort
-    /// queue into durable pending input. A direct session uses the attempt slot.
-    pub(crate) fn live_inbox(&self) -> Option<LiveInbox> {
-        if let Some(ingress) = &self.durable_ingress {
-            return Some(ingress.live_inbox().clone());
-        }
-        self.live_inbox
-            .lock()
-            .expect("live-inbox slot poisoned")
-            .open
-            .clone()
-    }
 }
 
 impl SharedHost {
-    /// The in-flight live inbox for `thread`, if a native turn is currently
-    /// running. A pure lookup — never materializes a session — so wire
+    /// The in-flight live inbox for `thread`, if an attempt is currently owned
+    /// by this process. A pure lookup — never materializes a Session — so wire
     /// handlers can probe without side effects.
     pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
-        // A coordinator-only process and a registered Worker do not share memory.
-        // Advertising this process's durable-ingress inbox would accept steer that
-        // the remote attempt can never observe. Fail closed so the caller uses the
-        // ordinary durable Session event path instead.
-        if !self.runs_local_dispatch_pool() {
-            return None;
-        }
-        self.session_slots
-            .read(thread, |slot| {
-                slot.runtime.as_ref().and_then(|ctx| {
-                    let active = ctx
-                        .active_run
-                        .lock()
-                        .expect("active run mutex poisoned")
-                        .is_some();
-                    active.then(|| ctx.live_inbox()).flatten()
-                })
-            })
-            .flatten()
+        let ctx = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()?;
+        // Runtime execution and Worker RAII both install their exact attempt
+        // bundle here. The generation and ownership fences make deployment
+        // topology irrelevant and make remote, idle and stale attempts fail closed.
+        ctx.runtime.active_attempt_live_inbox(&ctx.thread_id).await
     }
 }

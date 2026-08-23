@@ -1,5 +1,5 @@
 // REAL-CLI + REAL-LLM ACP × MCP e2e (no stubs): a managed session runs on the
-// ACTUAL `claude --acp` adapter (launched via npx) pointed at the real KIMI endpoint,
+// ACTUAL catalog-selected ACP adapter pointed at the real KIMI endpoint,
 // with a dynamically-injected, vault-bound MCP server (α secretless relay). Proves two
 // things the user asked to verify with a real LLM:
 //
@@ -8,11 +8,11 @@
 //      The adapter carries no vault secret; the host relay authenticates upstream and KIMI
 //      drives the tool. The upstream MCP fixture records the requests it actually served.
 //   2. CONFIG-HOME ISOLATION: the adapter is pointed at an isolated per-thread config
-//      home under SESSION_DEPLOYMENT_STORAGE_DIR; the host's real ~/.claude is NEVER touched. We run
+//      home under SESSION_DEPLOYMENT_STORAGE_DIR; the host's real CLI homes are NEVER touched. We run
 //      the whole server under a throwaway $HOME so even a misbehaving CLI cannot reach it.
 //
 // Gated: skips unless a KIMI Anthropic-dialect key is discoverable in ~/.bashrc. It needs
-// network + npx + the real key, so it is NOT part of the default CI sweep.
+// network + an installed real ACP runtime + the real key, so it is NOT part of the default CI sweep.
 //
 // Run: (from e2e/)  node acp_real_mcp_kimi_e2e.mjs
 
@@ -22,18 +22,17 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  applyAcpRuntimeProfile,
+  parseAcpRuntimes,
+  resolveAcpRuntimeProfiles,
+} from './acp_runtime_profiles.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
-
-async function listEvents(client, id) {
-  const out = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) out.push(ev);
-  return out;
-}
 
 async function main() {
   const kimi = loadKimiConfig();
@@ -43,65 +42,41 @@ async function main() {
   }
 
   // A throwaway HOME + storage dir: the CLI's isolated config homes live under storage;
-  // the fake HOME guarantees the real ~/.claude is unreachable for the whole run. Pin
+  // the fake HOME guarantees real operator CLI homes are unreachable for the whole run. Pin
   // CARGO_HOME/RUSTUP_HOME to the real home first so the harness's `cargo build` (which
   // resolves them from HOME) still finds the toolchain + dep cache under the fake HOME.
   const realHome = os.homedir();
-  const runtime = process.env.ACP_RUNTIME ?? 'claude';
+  const selectedRuntimes = parseAcpRuntimes(process.env.ACP_RUNTIME ?? 'claude');
+  assert.equal(selectedRuntimes.length, 1, 'ACP_RUNTIME must select exactly one runtime');
+  const [runtime] = selectedRuntimes;
   const noMcp = process.env.ACP_NO_MCP === '1';
   const multiTurn = process.env.ACP_MULTITURN === '1';
-  const supported = new Set(['claude', 'kimi', 'opencode', 'hermes', 'codex']);
-  assert.ok(supported.has(runtime), `ACP_RUNTIME must be one of ${[...supported].join(', ')}`);
+  // Runtime/profile decision table: C1=one canonical catalog runtime; C2=Kimi
+  // compatibility supports Claude/OpenCode/Hermes; C3=an isolated OpenAI
+  // credential supports Codex; C4=Gemini/unknown has neither compatible source.
+  // Effects: E1 C1+(C2|C3) resolves one profile; E2 C4 fails before server or
+  // paid model work. The shared profile resolver is the sole compatibility
+  // owner; this scenario must not mirror runtime/provider branches.
+  const [runtimeProfile] = resolveAcpRuntimeProfiles({
+    runtimes: [runtime],
+    kimi,
+    env: {
+      OPENAI_BASE_URL: kimi.openaiBase,
+      OPENAI_API_KEY: kimi.key,
+      OPENAI_MODEL: kimi.openaiModel,
+    },
+  });
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-home-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-store-'));
-  // The ACP adapter reads its model from the operator env (the ACP model-delivery path).
+  // The ACP adapter reads the shared resolver's model/credential projection
+  // from the operator env (the ACP model-delivery path).
   Object.assign(process.env, {
     CARGO_HOME: process.env.CARGO_HOME ?? path.join(realHome, '.cargo'),
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
     SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
-    ANTHROPIC_BASE_URL: kimi.anthropicBase,
-    ANTHROPIC_API_KEY: kimi.anthropicKey ?? kimi.key,
-    ANTHROPIC_MODEL: kimi.anthropicModel,
-    AWAKEN_ACP_CLI: runtime,
-    AWAKEN_MODEL: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
   });
-  if (runtime === 'kimi') {
-    Object.assign(process.env, {
-      KIMI_MODEL_BASE_URL: kimi.openaiBase,
-      KIMI_MODEL_API_KEY: kimi.key,
-      KIMI_MODEL_NAME: kimi.openaiModel,
-    });
-  } else if (runtime === 'opencode' || runtime === 'codex') {
-    Object.assign(process.env, {
-      OPENAI_BASE_URL: kimi.openaiBase,
-      OPENAI_API_KEY: kimi.key,
-      OPENAI_MODEL: kimi.openaiModel,
-    });
-    if (runtime === 'opencode') {
-      Object.assign(process.env, {
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        model: `awaken-kimi/${kimi.openaiModel}`,
-        small_model: `awaken-kimi/${kimi.openaiModel}`,
-        enabled_providers: ['awaken-kimi'],
-        provider: {
-          'awaken-kimi': {
-            npm: '@ai-sdk/openai-compatible',
-            name: 'Awaken Kimi Code',
-            options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
-            models: { [kimi.openaiModel]: { name: kimi.openaiModel } },
-          },
-        },
-      }),
-      });
-    }
-  } else if (runtime === 'hermes') {
-    Object.assign(process.env, {
-      KIMI_BASE_URL: kimi.openaiBase,
-      KIMI_API_KEY: kimi.key,
-      HERMES_MODEL: kimi.openaiModel,
-    });
-  }
+  applyAcpRuntimeProfile(runtimeProfile, process.env);
 
   // The expected value exists only inside the MCP fixture. Unlike arithmetic,
   // the model cannot manufacture it from the prompt and must really call the
@@ -112,10 +87,9 @@ async function main() {
   try {
     await withServer('acp-real-mcp', 38198, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
-      const selectedModel = runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel;
       const acpAgent = await client.beta.agents.create({
         name: `${runtime} live ACP`,
-        model: selectedModel,
+        model: runtimeProfile.model,
         mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
         tools: noMcp ? [] : [{ type: 'mcp_toolset', mcp_server_name: 'calc' }],
         betas: BETAS,
@@ -136,7 +110,11 @@ async function main() {
         betas: BETAS,
       });
 
-      await client.beta.sessions.events.send(session.id, {
+      // First-Run decision rule: F1 exact receipt unprocessed => observe; F2
+      // processed receipt without a later Agent Message + idle => observe; F3
+      // both later effects => assert the scenario-specific model/tool evidence.
+      // Older Session history can never satisfy this Run.
+      const firstReceipt = await client.beta.sessions.events.send(session.id, {
         events: [{
           type: 'user.message',
           content: [{
@@ -150,8 +128,18 @@ async function main() {
         }],
         betas: BETAS,
       });
-
-      const events = await listEvents(client, session.id);
+      const firstReceiptId = firstReceipt.data?.[0]?.id;
+      assert.equal(typeof firstReceiptId, 'string', 'first real ACP Run exact User receipt');
+      const { events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        firstReceiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        `real ${runtime} ACP Run to commit its Agent reply`,
+        { timeoutMs: 600_000, pollMs: 200 },
+      );
       const texts = events
         .filter((e) => e.type === 'agent.message')
         .map((e) => (e.content ?? []).map((c) => c.text ?? '').join(''));
@@ -160,7 +148,7 @@ async function main() {
 
       // (1) Dynamic MCP injection reached the REAL adapter's own MCP client — not just the
       // host's in-process `connect_staged`. Two independent MCP clients handshake with the
-      // fixture: the host (tool discovery/pre-auth) AND the launched claude adapter (its own
+      // fixture: the host (tool discovery/pre-auth) AND the launched catalog adapter (its own
       // client, through the α relay injected into session/new). So ≥2 `initialize` proves
       // the injected server reached the CLI. Every upstream request carries the vault token,
       // but only the host relay materializes it; the sandboxed CLI receives a loopback URL.
@@ -172,8 +160,10 @@ async function main() {
           `expected a plain ACP ${expected} reply, got ${JSON.stringify(texts)}`,
         );
         if (multiTurn) {
-          const before = texts.length;
-          await client.beta.sessions.events.send(session.id, {
+          // Second-Run decision rule: M1 exact receipt processed without a
+          // later recalled token + idle => observe; M2 both later effects =>
+          // prove session/load continuity. First-Run messages are ineligible.
+          const secondReceipt = await client.beta.sessions.events.send(session.id, {
             events: [{
               type: 'user.message',
               content: [{
@@ -183,10 +173,24 @@ async function main() {
             }],
             betas: BETAS,
           });
-          const after = (await listEvents(client, session.id))
+          const secondReceiptId = secondReceipt.data?.[0]?.id;
+          assert.equal(typeof secondReceiptId, 'string', 'second real ACP Run exact User receipt');
+          const { delta: secondDelta } = await waitForSessionEventReceipt(
+            client,
+            session.id,
+            secondReceiptId,
+            BETAS,
+            ({ delta }) => delta.some(
+              (event) => event.type === 'agent.message'
+                && JSON.stringify(event.content).includes(conversationMarker),
+            ) && delta.some((event) => event.type === 'session.status_idle'),
+            `real ${runtime} ACP second Run to recall prior context`,
+            { timeoutMs: 600_000, pollMs: 200 },
+          );
+          const after = secondDelta
             .filter((event) => event.type === 'agent.message')
             .map((event) => (event.content ?? []).map((content) => content.text ?? '').join(''));
-          assert.ok(after.length > before, 'the second ACP turn produced a new assistant message');
+          assert.ok(after.length > 0, 'the second ACP turn produced a new assistant message');
           assert.ok(
             after.at(-1).includes(conversationMarker),
             `${runtime} session/load recalled the first-turn token: ${JSON.stringify(after.at(-1))}`,
@@ -205,21 +209,26 @@ async function main() {
         `the host relay authenticated every upstream MCP request, got ${JSON.stringify(fixture.calls.map((c) => c.authorization))}`,
       );
       const calledAttest = fixture.calls.some((c) => c.method === 'tools/call');
-      pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAttest})`);
+      pass(`dynamic MCP injection reached the real ${runtime} adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAttest})`);
 
-      // (2) Config-home isolation: the adapter used an isolated per-thread home under the
-      // storage dir, and the (throwaway) HOME's ~/.claude was never created.
+      // (2) Config-home isolation: the adapter used an isolated per-thread home
+      // under storage, and the throwaway HOME has no adapter-owned entry. Causes:
+      // C1 the fixture may own top-level .npm cache; C2 any other top-level entry
+      // was written outside the isolated config home. Effects: E1 C1-only is
+      // allowed; E2 C2 fails. This generic oracle covers every catalog runtime
+      // without maintaining a second table of vendor default-home names.
       const threadsDir = path.join(storageDir, 'threads');
       const homes = fs.existsSync(threadsDir)
         ? fs.readdirSync(threadsDir).filter((t) => fs.existsSync(path.join(threadsDir, t, 'config_home')))
         : [];
       assert.ok(homes.length > 0, `an isolated per-thread config home was created under ${threadsDir}`);
-      const defaultHomes = ['.claude', '.kimi-code', '.config/opencode', '.hermes'];
-      const clobbered = defaultHomes.some((relative) => {
-        const target = path.join(sandboxHome, relative);
-        return fs.existsSync(target) && fs.readdirSync(target).some((n) => n !== '.npm');
-      });
-      assert.ok(!clobbered, 'the ACP run never wrote a CLI default config home');
+      const unexpectedHomeEntries = fs.readdirSync(sandboxHome)
+        .filter((entry) => entry !== '.npm');
+      assert.deepEqual(
+        unexpectedHomeEntries,
+        [],
+        'the ACP run never wrote outside its isolated config home',
+      );
       pass(`ACP ${runtime} execution used an isolated config home`);
 
       // Keep transport/config assertions independent from provider semantics so a

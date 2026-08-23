@@ -56,6 +56,15 @@ export function requirePrebuiltExecutable(environmentName, environment = process
   return candidate;
 }
 
+/**
+ * @param {{
+ *   packageName: string,
+ *   targetName: string,
+ *   targetKind?: 'bin' | 'example',
+ *   features?: string[],
+ *   noDefaultFeatures?: boolean,
+ * }} options
+ */
 export function cargoArguments({
   packageName,
   targetName,
@@ -78,6 +87,19 @@ export function cargoArguments({
   return args;
 }
 
+/**
+ * @param {{
+ *   cwd: string,
+ *   packageName: string,
+ *   targetName: string,
+ *   targetKind?: 'bin' | 'example',
+ *   features?: string[],
+ *   noDefaultFeatures?: boolean,
+ *   environment?: NodeJS.ProcessEnv,
+ *   prebuiltEnvironmentName?: string,
+ * }} options
+ * @returns {string}
+ */
 export function cargoExecutable({
   cwd,
   packageName,

@@ -34,7 +34,7 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | POSIX cron and IANA timezone calculation | `awaken-deployment-contract::Cron` | exact wall-clock occurrences, including DST behavior |
 | executable Agent version truth | `ExecutableAgentRegistrationSource` | validates and freezes the requested latest or pinned Agent version |
-| Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create/event commands | the only Deployment-to-execution path, idempotent by DeploymentRun |
+| Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create command and its root-owned initial-Event plan | the only Deployment-to-execution path, idempotent by DeploymentRun |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
 | webhook delivery and retry | `WebhookOutboxNotifier` over `LifecycleFactDelivery` | drains the sole Managed lifecycle outbox; notifications carry no fact payload |
 

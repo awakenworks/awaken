@@ -195,6 +195,7 @@ fn resume_command() -> ResumeCommand {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FINGERPRINT.to_string()),
         result: ResumeResult::deny(None),
+        context_messages: Vec::new(),
         now_ms: 0,
     }
 }

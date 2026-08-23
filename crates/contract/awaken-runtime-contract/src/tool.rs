@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU16;
@@ -30,14 +31,21 @@ tokio::task_local! {
 /// Stable runtime coordinates for one tool invocation.
 ///
 /// This is execution context rather than tool input: providers and models cannot
-/// author either value. Infrastructure adapters may use the run id to request a
-/// run-bound capability and the operation id for idempotent side effects.
+/// author the Run/Thread coordinates or durable operation identity. The model
+/// call id is carried only for protocol correlation; it must not replace the
+/// Runtime-owned operation id at durable-effect boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOperationContext {
     /// Absent only for direct adapter/unit invocations outside the runtime. A
     /// capability broker must fail closed when it requires run-bound authority.
     pub run_id: Option<RunId>,
+    /// Logical Thread containing the current Run. Absent only for direct
+    /// adapter/unit invocations outside the Runtime execution loop.
+    pub thread_id: Option<ThreadId>,
     pub operation_id: String,
+    /// Provider/model tool-use correlation id. This may be synthesized or have
+    /// response-local scope and is therefore not a durable idempotency key.
+    pub call_id: Option<String>,
     /// Trusted Workspace ownership inherited from the current attempt. This is
     /// absent for legacy/direct unit invocations and is never model input.
     pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
@@ -111,7 +119,9 @@ impl ToolOperationContext {
     pub fn for_run(run_id: impl Into<String>, operation_id: impl Into<String>) -> Self {
         Self {
             run_id: Some(RunId(run_id.into())),
+            thread_id: None,
             operation_id: operation_id.into(),
+            call_id: None,
             execution_scope: None,
         }
     }
@@ -161,7 +171,9 @@ pub async fn with_tool_operation_id<T>(
     with_tool_operation_context(
         ToolOperationContext {
             run_id: None,
+            thread_id: None,
             operation_id,
+            call_id: None,
             execution_scope: None,
         },
         future,
@@ -678,15 +690,20 @@ mod recovery_tests {
     #[tokio::test]
     async fn operation_context_is_scoped_to_one_executor_future() {
         // Cause-effect graph:
-        // runtime scope present -> expose exact run + operation coordinates;
+        // runtime scope present -> expose exact Run/Thread/durable-operation and
+        // model-correlation coordinates;
         // nested future completes -> scope is removed; no runtime scope -> None.
         // Decision table: R1(outside)=None, R2(inside)=exact context,
         // R3(after completion)=None. This also proves there is one context source
         // rather than independent run-id and operation-id task locals.
+        // Constraints/invariants: scope is future-local and removed on exit;
+        // every helper reads the same context owner.
         assert_eq!(current_tool_operation_context(), None);
         let expected = ToolOperationContext {
             run_id: Some(RunId("run-7".into())),
+            thread_id: Some(ThreadId("thread-4".into())),
             operation_id: "tool-batch:run-7:3:c1".into(),
+            call_id: Some("c1".into()),
             execution_scope: None,
         };
         let seen = with_tool_operation_context(expected.clone(), async {
@@ -706,11 +723,47 @@ mod recovery_tests {
         assert_eq!(current_tool_operation_context(), None);
     }
 
+    #[tokio::test]
+    async fn direct_context_helpers_do_not_invent_runtime_correlation_coordinates() {
+        // Cause-effect graph / decision table:
+        // C1=legacy adapter knows a Run + durable operation; C2=direct caller
+        // knows only a durable operation. R1 C1 -> preserve the supplied Run but
+        // leave Thread/model-call/scope absent. R2 C2 -> leave every trusted
+        // Runtime coordinate absent. Neither helper invents correlation data.
+        // Effects: supplied legacy coordinates survive and every unknown axis
+        // remains None. Constraints/invariants: helpers preserve, never infer.
+        let run_context = ToolOperationContext::for_run("run-direct", "operation-direct");
+        assert_eq!(run_context.run_id, Some(RunId("run-direct".into())), "R1");
+        assert_eq!(run_context.thread_id, None, "R1");
+        assert_eq!(run_context.call_id, None, "R1");
+        assert_eq!(run_context.execution_scope, None, "R1");
+
+        let operation_context = with_tool_operation_id("operation-only".into(), async {
+            current_tool_operation_context().expect("R2 scoped operation context")
+        })
+        .await;
+        assert_eq!(operation_context.run_id, None, "R2");
+        assert_eq!(operation_context.thread_id, None, "R2");
+        assert_eq!(operation_context.operation_id, "operation-only", "R2");
+        assert_eq!(operation_context.call_id, None, "R2");
+        assert_eq!(operation_context.execution_scope, None, "R2");
+    }
+
     #[test]
-    fn operation_token_ledger_identity_binds_every_authority_axis() {
+    fn operation_token_ledger_identity_preserves_the_existing_durable_axes() {
+        // Cause-effect graph / decision table:
+        // C1=operation/run/workspace/infrastructure scope changes;
+        // C2=logical Thread changes; C3=model call id changes.
+        // R1 C1 -> a different ledger identity. R2 C2 or C3 alone -> the same
+        // ledger identity because these new correlation fields must not create a
+        // parallel idempotency key or alter the established operation token.
+        // Constraints/invariants: only the established operation/run/workspace/
+        // infrastructure axes own ledger identity; Thread/call are observational.
         let base = ToolOperationContext {
             run_id: Some(RunId("run-7".into())),
+            thread_id: Some(ThreadId("thread-1".into())),
             operation_id: "operation-1".into(),
+            call_id: Some("call-1".into()),
             execution_scope: Some(awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId(
                 "workspace-a".into(),
             ))),
@@ -724,6 +777,33 @@ mod recovery_tests {
         assert_ne!(
             exact,
             ToolOperationToken::from_context(&another_operation)
+                .unwrap()
+                .ledger_id(Some("session-1"))
+        );
+
+        let mut another_run = base.clone();
+        another_run.run_id = Some(RunId("run-8".into()));
+        assert_ne!(
+            exact,
+            ToolOperationToken::from_context(&another_run)
+                .unwrap()
+                .ledger_id(Some("session-1"))
+        );
+
+        let mut another_thread = base.clone();
+        another_thread.thread_id = Some(ThreadId("thread-2".into()));
+        assert_eq!(
+            exact,
+            ToolOperationToken::from_context(&another_thread)
+                .unwrap()
+                .ledger_id(Some("session-1"))
+        );
+
+        let mut another_call = base.clone();
+        another_call.call_id = Some("call-2".into());
+        assert_eq!(
+            exact,
+            ToolOperationToken::from_context(&another_call)
                 .unwrap()
                 .ledger_id(Some("session-1"))
         );

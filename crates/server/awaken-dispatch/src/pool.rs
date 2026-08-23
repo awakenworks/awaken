@@ -11,12 +11,13 @@
 //! from drive precisely so a run always executes on its own session's runtime, not
 //! on whichever task happened to claim it.
 //!
-//! One renewal heartbeat and one maintenance loop (GC aged manual quarantines,
-//! relay the cross-thread outbox) run once per process rather than
-//! once per session. Correctness rests on the same durable-claim invariants as the
-//! per-session daemon: `claim` is owner-scoped with `FOR UPDATE SKIP LOCKED`, so N
-//! tasks take distinct runs; a dropped wake only defers work to the poll fallback;
-//! a crash leaves the lease to expire and be reclaimed.
+//! Each claimed task owns one exact renewal guard, transferred across resolver to
+//! Worker drive; one maintenance loop (GC aged manual quarantines, relay the
+//! cross-thread outbox) runs per process rather than per Session. Correctness
+//! rests on the same durable-claim invariants as the per-Session service: `claim`
+//! is owner-scoped with `FOR UPDATE SKIP LOCKED`, so N tasks take distinct Runs; a
+//! dropped wake only defers work to the poll fallback; a crash drops the guard and
+//! leaves the lease to expire and be reclaimed.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +45,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// claimed run's thread config and drives the run there.
 ///
 /// The resolver MUST return workers that share the pool's store and claim owner,
-/// so the pool's claim, the drive, and the heartbeat all agree on lease ownership
+/// so the Pool's claim, exact renewal guard, and drive agree on lease ownership
 /// (the host wires every session worker with the process's `dispatch_owner()` and
 /// the one shared store, which satisfies this).
 #[async_trait]
@@ -89,6 +90,7 @@ pub trait WorkerResolver<S>: Send + Sync {
         &self,
         _claimed: &Claimed,
         error: Error,
+        _clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         Err(error)
     }
@@ -100,13 +102,14 @@ pub trait WorkerResolver<S>: Send + Sync {
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &Claimed,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error>
     where
         S: Dispatch + 'static,
     {
         self.worker_for_claimed(claimed)
             .await?
-            .terminalize_retry_exhausted(claimed)
+            .terminalize_retry_exhausted(claimed, clock)
             .await
     }
 
@@ -116,7 +119,7 @@ pub trait WorkerResolver<S>: Send + Sync {
     /// for its Session/commit ownership boundary.
     async fn reconcile_committed_terminals(
         &self,
-        _now_ms: u64,
+        _clock: Arc<dyn Clock>,
         _limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         Ok(Vec::new())
@@ -134,16 +137,11 @@ pub trait CompletionSink: Send + Sync {
 /// A running pool of drain tasks over one shared dispatch queue.
 pub struct DispatchPool<S> {
     store: Arc<S>,
-    clock: Arc<dyn Clock>,
-    owner: String,
-    lease_ms: u64,
-    resolver: Arc<dyn WorkerResolver<S>>,
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     drains: Vec<JoinHandle<()>>,
     wake_coordinator: JoinHandle<()>,
     maintenance: JoinHandle<()>,
-    completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
 }
 
@@ -233,7 +231,7 @@ struct DrainErrorGate {
 impl DrainErrorGate {
     /// During an outage, admit exactly one recovery probe for the whole pool.
     /// Pool width must remain execution concurrency, never retry concurrency.
-    async fn wait_turn(&self, shutdown: &CancellationToken) -> bool {
+    async fn wait_cycle(&self, shutdown: &CancellationToken) -> bool {
         loop {
             let delay = {
                 let mut state = self.state.lock().await;
@@ -471,16 +469,11 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         ));
         Self {
             store,
-            clock,
-            owner,
-            lease_ms,
-            resolver,
             wake,
             shutdown,
             drains,
             wake_coordinator,
             maintenance,
-            completion,
             admission,
         }
     }
@@ -520,53 +513,20 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let _ = self.wake.publish().await;
     }
 
-    /// Persist cancellation and drive that exact row through the pool's one
-    /// claim/resolver path. The claimed activation remains authoritative after a
-    /// process restart; no Session config or runtime is reconstructed merely to
-    /// discover its executor.
+    /// Persist cancellation and wake the pool's one claim/resolver path.
+    ///
+    /// Acceptance ends at the durable dispatch-row boundary. A drainer owns the
+    /// resulting claim, Runtime cancellation commit, and settlement; keeping
+    /// those effects out of the caller prevents an HTTP/control request from
+    /// becoming a second synchronous dispatch driver. The retained intent remains
+    /// authoritative across process replacement.
     pub async fn cancel(&self, run_id: &RunId) -> Result<bool, Error> {
         if self.store.cancel(run_id).await?.is_none() {
             return Ok(false);
         }
-        // Wake peer/local drains as well as attempting the synchronous exact
-        // claim below. A racing owner is valid; the durable intent remains the
-        // authority and only one claimant can settle its new epoch.
+        // The signal is only a latency hint. A dropped signal is covered by the
+        // pool's poll fallback and the durable cancellation bit.
         let _ = self.wake.publish().await;
-        let now = self.clock.now_ms();
-        let claimed = self
-            .store
-            .claim_run(
-                run_id,
-                &self.owner,
-                self.lease_ms,
-                now,
-                &self.resolver.credential_realization_capabilities(),
-            )
-            .await?;
-        let Some(claimed) = claimed else {
-            // A drain worker may already own the newly fenced cancellation. The
-            // durable intent is accepted and that owner must settle it.
-            return Ok(true);
-        };
-        let claim = crate::RunClaim::from(&claimed.lease);
-        let _claim_renewal = renew_claim_while_active(
-            self.store.clone(),
-            &claim,
-            self.lease_ms,
-            self.clock.clone(),
-        );
-        let worker = match self.resolver.worker_for_claimed(&claimed).await {
-            Ok(worker) => worker,
-            Err(error) => {
-                relinquish_after_resolution_failure(self.store.as_ref(), &claimed).await;
-                return Err(error);
-            }
-        };
-        if let Some((settled_run, state)) = worker.drive_claimed(claimed, now).await?
-            && let Some(sink) = &self.completion
-        {
-            sink.settled(&settled_run, &state);
-        }
         Ok(true)
     }
 
@@ -637,7 +597,7 @@ async fn drain_loop<S: Dispatch + 'static>(
             _ = shutdown.cancelled() => break,
             _ = admission.wake.notified() => {}
         }
-        if !admission.error_gate.wait_turn(&shutdown).await {
+        if !admission.error_gate.wait_cycle(&shutdown).await {
             break;
         }
         // Drain everything runnable now. A store error is transient — the next
@@ -750,11 +710,15 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let Some(claimed) = claimed else {
         return Ok(false);
     };
-    let _in_flight = InFlightGuard::new(admission.in_flight.clone());
+    let _in_flight = counts_toward_execution_capacity(
+        retry_exhausted,
+        claimed.session_activity_admission_required,
+    )
+    .then(|| InFlightGuard::new(admission.in_flight.clone()));
     // Session resolution can create/adopt a sandbox and materialize credentials
     // before `drive_claimed` installs its guard. Renew from queue exit onward.
     let claim = crate::RunClaim::from(&claimed.lease);
-    let _claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms, clock.clone());
+    let claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms, clock.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
@@ -767,7 +731,9 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         // path calls the same Worker terminal method through this resolver seam;
         // a failure leaves the exact claim leased for later re-claim.
         admission.wake.notify_one();
-        resolver.terminalize_retry_exhausted(&claimed).await?
+        resolver
+            .terminalize_retry_exhausted(&claimed, clock.clone())
+            .await?
     } else {
         match resolver.worker_for_claimed(&claimed).await {
             Ok(worker) => {
@@ -776,11 +742,13 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                 // would let a temporarily inadmissible head item hot-loop and starve
                 // later runnable work.
                 admission.wake.notify_one();
-                worker.drive_claimed(claimed, now).await?
+                worker
+                    .drive_claimed_with_renewal(claimed, clock.clone(), claim_renewal)
+                    .await?
             }
             Err(error) if error.is_terminal_resolution() => {
                 resolver
-                    .settle_claimed_resolution_failure(&claimed, error)
+                    .settle_claimed_resolution_failure(&claimed, error, clock.clone())
                     .await?
             }
             Err(error) => {
@@ -819,6 +787,17 @@ async fn relinquish_after_resolution_failure<S: Dispatch + 'static>(store: &S, c
 }
 
 struct InFlightGuard(Arc<AtomicU32>);
+
+/// Pool heartbeat capacity measures executable Run claims, not admission repair
+/// or retry-exhaustion terminalization. Both maintenance claims still occupy a
+/// drain task and retain lease renewal, but neither consumes model/tool/runtime
+/// execution capacity.
+const fn counts_toward_execution_capacity(
+    retry_exhausted: bool,
+    session_activity_admission_required: bool,
+) -> bool {
+    !retry_exhausted && !session_activity_admission_required
+}
 
 impl InFlightGuard {
     fn new(counter: Arc<AtomicU32>) -> Self {
@@ -864,7 +843,10 @@ async fn maintenance_loop<S: Dispatch + 'static>(
         if let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation
         {
-            match resolver.reconcile_committed_terminals(now, 256).await {
+            match resolver
+                .reconcile_committed_terminals(clock.clone(), 256)
+                .await
+            {
                 Ok(reconciled) => {
                     if let Some(sink) = &completion {
                         for (run_id, state) in reconciled {
@@ -908,9 +890,11 @@ mod in_flight_tests {
 
     #[tokio::test]
     async fn one_shared_recovery_probe_crosses_the_error_gate() {
-        // C1 one queue outage; C2 multiple drain tasks; E1 one probe after the
-        // deadline; E2 every sibling remains blocked. Per-task counters violate
-        // E2 by rotating a fresh "first retry" through the pool.
+        // Causes: C1 one queue outage; C2 multiple drain tasks. Effects: E1 one
+        // probe crosses after the deadline; E2 every sibling remains blocked.
+        // Constraint/Invariant: retry authority is pool-wide; per-task counters
+        // must not rotate fresh first retries. Decision rule: with C1+C2, exactly
+        // one waiter finishes before shutdown and its sibling does not.
         let gate = Arc::new(DrainErrorGate::default());
         let shutdown = CancellationToken::new();
         assert_eq!(gate.record_failure().await.0, 1);
@@ -918,12 +902,12 @@ mod in_flight_tests {
         let first = {
             let gate = gate.clone();
             let shutdown = shutdown.clone();
-            tokio::spawn(async move { gate.wait_turn(&shutdown).await })
+            tokio::spawn(async move { gate.wait_cycle(&shutdown).await })
         };
         let second = {
             let gate = gate.clone();
             let shutdown = shutdown.clone();
-            tokio::spawn(async move { gate.wait_turn(&shutdown).await })
+            tokio::spawn(async move { gate.wait_cycle(&shutdown).await })
         };
         tokio::time::sleep(Duration::from_millis(130)).await;
         assert_eq!(
@@ -953,7 +937,7 @@ mod in_flight_tests {
 
         async fn reconcile_committed_terminals(
             &self,
-            _now_ms: u64,
+            _clock: Arc<dyn Clock>,
             _limit: usize,
         ) -> Result<Vec<(RunId, RunState)>, Error> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1000,6 +984,28 @@ mod in_flight_tests {
             assert_eq!(counter.load(Ordering::SeqCst), 1);
         }
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn only_executable_claims_count_toward_worker_capacity() {
+        // Cause/effect graph: C1 ordinary executable claim; C2 Session activity
+        // repair claim; C3 retry-exhaustion terminal claim. Effects: E1 consumes
+        // one Worker execution slot; E2/E3 keep capacity unchanged while their
+        // existing drain task and lease renewal remain active.
+        //
+        // | Rule | Retry exhausted | Admission repair | Capacity effect |
+        // |---|---|---|---|
+        // | PC1 | false | false | E1 counted |
+        // | PC2 | false | true | E2 not counted |
+        // | PC3 | true | false | E3 not counted |
+        // | PC4 | true | true | E2+E3 not counted (defensive overlap) |
+        // Constraint/Invariant: only a claim that can enter the Run executor
+        // consumes execution capacity. Decision rule: PC1-PC4 exhaust the two
+        // boolean causes, including their defensive overlap.
+        assert!(counts_toward_execution_capacity(false, false), "PC1/E1");
+        assert!(!counts_toward_execution_capacity(false, true), "PC2/E2");
+        assert!(!counts_toward_execution_capacity(true, false), "PC3/E3");
+        assert!(!counts_toward_execution_capacity(true, true), "PC4/E2+E3");
     }
 
     /// Cause/effect decision table for process-level terminal maintenance:

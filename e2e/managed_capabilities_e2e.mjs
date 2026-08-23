@@ -46,21 +46,28 @@ async function main() {
         enabled: true,
         permission_policy: { type: 'always_allow' },
       });
-      // Each config entry is a fully resolved {name, enabled, permission_policy}
-      // triple (the SDK's BetaManagedAgentsAgentToolConfig requires all three).
+      // Capability-member graph: C1=the current SDK models each built-in config
+      // as a discriminated union member; C2=the host enables or gates that named
+      // member. E1=each resolved object carries matching `name` and `type` plus
+      // its exact enable/permission policy. K=`type` cannot identify a different
+      // member than `name`. Decision rules: known matching member+C2=>E1;
+      // absent/mismatched discriminator=>wire-contract failure.
       const cfg = Object.fromEntries(ts.configs.map((c) => [c.name, c]));
       assert.deepEqual(cfg.bash, {
         name: 'bash',
+        type: 'bash',
         enabled: true,
         permission_policy: { type: 'always_ask' },
       });
       assert.deepEqual(cfg.write, {
         name: 'write',
+        type: 'write',
         enabled: true,
         permission_policy: { type: 'always_ask' },
       });
       assert.deepEqual(cfg.web_fetch, {
         name: 'web_fetch',
+        type: 'web_fetch',
         enabled: true,
         permission_policy: { type: 'always_ask' },
       });
@@ -75,6 +82,7 @@ async function main() {
       // | C2   | web_search      | no                  | disabled override |
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',
+        type: 'web_search',
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });

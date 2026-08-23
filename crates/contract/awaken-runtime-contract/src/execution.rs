@@ -44,6 +44,26 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Verify the one claim-bound authority immediately before an external
+/// execution boundary.
+///
+/// Direct and embedded callers have no dispatch claim, so an absent verifier
+/// preserves that topology. Once ingress supplies an authority, both a lost
+/// claim and an unavailable authority fail closed through the ordinary attempt
+/// error path.
+pub async fn verify_attempt_ownership(
+    ownership: Option<&dyn crate::runtime_context::AttemptOwnershipVerifier>,
+) -> Result<()> {
+    match ownership {
+        Some(ownership) => ownership.verify_current().await.map_err(|error| {
+            Error::Execution(format!(
+                "Run attempt no longer owns external execution: {error}"
+            ))
+        }),
+        None => Ok(()),
+    }
+}
+
 /// How an executor can be stopped in flight. The host branches on this before it
 /// offers cancel/interrupt for a run — the axis is worth typing because it differs
 /// across execution altitudes (ADR-0055): the native loop observes a cooperative
@@ -289,6 +309,49 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+
+    struct FixedOwnership(std::result::Result<(), crate::runtime_context::AttemptOwnershipError>);
+
+    #[async_trait::async_trait]
+    impl crate::runtime_context::AttemptOwnershipVerifier for FixedOwnership {
+        async fn verify_current(
+            &self,
+        ) -> std::result::Result<(), crate::runtime_context::AttemptOwnershipError> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn external_execution_ownership_is_optional_but_fail_closed_when_bound() {
+        // Cause/effect graph: C1=dispatch authority is absent, current, lost, or
+        // unavailable. E1=admit the external execution boundary; E2=return an
+        // attempt error before that boundary. Constraint: absence is valid only
+        // for direct/embedded execution; a bound authority is never bypassed.
+        //
+        // | Rule | C1          | Effect |
+        // | O1   | absent      | E1     |
+        // | O2   | current     | E1     |
+        // | O3   | lost        | E2     |
+        // | O4   | unavailable | E2     |
+        verify_attempt_ownership(None).await.expect("O1/E1");
+        let current = FixedOwnership(Ok(()));
+        verify_attempt_ownership(Some(&current))
+            .await
+            .expect("O2/E1");
+
+        let lost = FixedOwnership(Err(crate::runtime_context::AttemptOwnershipError::Lost));
+        assert!(
+            verify_attempt_ownership(Some(&lost)).await.is_err(),
+            "O3/E2"
+        );
+        let unavailable = FixedOwnership(Err(
+            crate::runtime_context::AttemptOwnershipError::Unavailable("authority down".into()),
+        ));
+        assert!(
+            verify_attempt_ownership(Some(&unavailable)).await.is_err(),
+            "O4/E2"
+        );
+    }
 
     struct DefaultExecutor;
 

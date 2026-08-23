@@ -19,6 +19,9 @@ use serde::Deserialize;
 
 use crate::erase;
 
+/// Stable model-facing identity owned with the concrete Task tool.
+pub const SEND_MESSAGE_TOOL_ID: &str = "send_message";
+
 /// Deliver a message to another thread in the multi-agent message lifecycle. A
 /// thread is the stable, addressable unit (a run is one ephemeral execution); the
 /// host backs this with the runtime's message ingress, resolving the target
@@ -80,7 +83,7 @@ pub struct SendMessageArgs {
 impl Tool for SendMessageTool {
     type Args = SendMessageArgs;
     type Output = String;
-    const ID: &'static str = "send_message";
+    const ID: &'static str = SEND_MESSAGE_TOOL_ID;
     const DESCRIPTION: &'static str = "Send a message to another thread";
 
     fn recovery_capability(&self) -> ToolRecoveryCapability {

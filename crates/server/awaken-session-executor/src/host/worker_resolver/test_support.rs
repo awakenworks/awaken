@@ -26,7 +26,7 @@ impl LlmExecutor for AdoptionModel {
     }
 }
 
-pub(super) fn test_activation(thread: &str, run: &str) -> RunActivation {
+pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
     let fingerprint = CatalogFingerprint(format!("catalog-{run}"));
     RunActivation::new(
         RunId(run.to_string()),
@@ -79,6 +79,15 @@ pub(super) async fn prepare_deferred_session(
 ) -> crate::ManagedHost {
     use awaken_session_contract::SessionRuntime;
     let managed = crate::ManagedHost::new(host.clone());
+    static APPLICATION: std::sync::OnceLock<
+        Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+    > = std::sync::OnceLock::new();
+    let application = APPLICATION.get_or_init(|| {
+        Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
+    });
+    managed
+        .install_agent_coordination_application(Arc::downgrade(application))
+        .expect("install one test Session application authority");
     managed
         .prepare_session(
             thread,

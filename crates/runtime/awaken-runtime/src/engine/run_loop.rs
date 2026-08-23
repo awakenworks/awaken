@@ -168,18 +168,19 @@ async fn infer_step(
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
+    thread_id: &ThreadId,
     step_base: usize,
     step: usize,
     ledger: &mut StepLedger,
+    store: &mut Store,
     prelude: &[Message],
     opened: &std::collections::BTreeSet<String>,
-    delta_sink: &StreamDeltaSink<'_>,
     checkpoint_ref: Option<&CheckpointCtx<'_>>,
     step_resume: Option<StreamCheckpoint>,
     context: &RuntimeRunContext,
     context_window: Option<usize>,
     final_step: bool,
-) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+) -> std::result::Result<InferStepOutcome, awaken_runtime_contract::llm::Error> {
     let mut truncation_retries = 0;
     // Model-pool failover: the ordered candidate bindings (primary first, then
     // any pool fallbacks). Single-model agents yield exactly one, so this is a
@@ -223,28 +224,69 @@ async fn infer_step(
         if let Some(materializer) = &context.model_content_materializer {
             request = materializer.materialize(request).await?;
         }
-        match infer_with_retry_observed(
+        if let Some(gate) = &context.model_request_gate {
+            match gate
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: run_id.clone(),
+                    thread_id: thread_id.clone(),
+                })
+                .await
+                .map_err(|error| {
+                    awaken_runtime_contract::llm::Error::Unauthorized(format!(
+                        "model request admission unavailable: {error}"
+                    ))
+                })? {
+                ModelRequestAdmission::Admit => {}
+                ModelRequestAdmission::Pause(reason) => {
+                    break Ok(InferStepOutcome::Await(reason));
+                }
+            }
+        }
+        // One stable response coordinate per model response. A MaxTokens
+        // continuation constructs a fresh sink on the next loop iteration, so
+        // its preview cannot be merged into the partial Message that just
+        // committed.
+        let delta_sink = StreamDeltaSink {
+            context,
+            run_id,
+            thread_id,
+            step: step_base + step,
+            response: truncation_retries,
+        };
+        let observed = infer_with_retry_observed(
             llm,
             request,
             runtime.retry_policy(),
             runtime.circuit_breaker(),
-            delta_sink,
+            &delta_sink,
             checkpoint_ref,
             pending_resume.take(),
             &context.capture.decision,
             context.content_sink(),
             runtime.metrics(),
-            context.reschedules.as_ref(),
-            context.model_requests.as_ref(),
-            context.rescheduled_runs.as_ref().map(|runs| (runs, run_id)),
+            context.ownership.as_deref(),
         )
-        .await
-        {
+        .await;
+        // The audit vector shares the existing ThreadCommit watermarks with
+        // messages and state. Gate pauses return before this seam and therefore
+        // stage no model observation.
+        ledger
+            .audit
+            .push(RunEvent::ModelRequestCompleted(observed.observation).into());
+        match observed.result {
             Ok(response) => {
                 let truncated_text_only = response.stop_reason == Some(StopReason::MaxTokens)
                     && response.output.tool_calls().is_empty()
                     && !response.output.text_content().is_empty();
                 if truncated_text_only && truncation_retries < runtime.max_continuation_retries() {
+                    if let Some(step_usage) = response.usage {
+                        fold_thread_usage(
+                            store,
+                            &mut ledger.staged_state,
+                            "thread usage state drifted; skipping continuation record",
+                            |usage| usage.record(&candidates[cand_idx].model_ref, step_usage),
+                        );
+                    }
                     let partial = truncated_assistant_message(
                         run_id,
                         step_base + step,
@@ -254,10 +296,24 @@ async fn infer_step(
                     ledger.push_message(partial);
                     let prompt = continuation_message(run_id, step_base + step, truncation_retries);
                     ledger.push_message(prompt);
+                    // The next loop iteration is another logical model request.
+                    // Commit this response's usage and transcript first so the
+                    // owning Session gate observes the exact cumulative truth.
+                    if context.commit.is_some() && ledger.has_uncommitted() {
+                        ledger
+                            .commit_delta(context, thread_id, run_id)
+                            .await
+                            .map_err(|error| {
+                                awaken_runtime_contract::llm::Error::Provider(error.to_string())
+                            })?;
+                    }
                     truncation_retries += 1;
                     continue;
                 }
-                break Ok(response);
+                break Ok(InferStepOutcome::Response {
+                    response,
+                    model_ref: candidates[cand_idx].model_ref.clone(),
+                });
             }
             Err(err) => {
                 if truncation_retries == 0 && cand_idx + 1 < candidates.len() {
@@ -271,6 +327,14 @@ async fn infer_step(
             }
         }
     }
+}
+
+enum InferStepOutcome {
+    Response {
+        response: ChatResponse,
+        model_ref: String,
+    },
+    Await(PauseReason),
 }
 
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
@@ -331,9 +395,6 @@ pub(super) async fn drive(
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself an end (`MaxSteps`).
     let mut disposition: Option<RunDisposition> = None;
-    // Forwards streamed text chunks to the live stream during each inference.
-    let delta_sink = StreamDeltaSink { context, run_id };
-
     // Durable interrupted-stream checkpoints (Phase 3), when a store is wired.
     // A checkpoint left by a crash mid-recovery is read once here and applied to
     // this drive's first step — the only step that can be resuming, since
@@ -504,12 +565,13 @@ pub(super) async fn drive(
             resolved,
             env,
             run_id,
+            thread_id,
             step_base,
             step,
             &mut ledger,
+            &mut store,
             &prelude,
             &opened,
-            &delta_sink,
             checkpoint_ref,
             step_resume,
             context,
@@ -534,10 +596,31 @@ pub(super) async fn drive(
             disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         };
-        let response = match inference {
-            Ok(response) => {
+        let (response, response_model_ref) = match inference {
+            Ok(InferStepOutcome::Response {
+                response,
+                model_ref,
+            }) => {
                 consecutive_inference_failures = 0;
-                response
+                (response, model_ref)
+            }
+            Ok(InferStepOutcome::Await(reason)) => {
+                disposition = Some(RunDisposition::awaiting(pause_ticket(
+                    context,
+                    resolved,
+                    run_id,
+                    delegation_origin,
+                    reason,
+                )));
+                emit(
+                    context,
+                    run_id,
+                    AgentEvent::Fact(Fact::Awaiting {
+                        pending_tool_use_id: None,
+                    }),
+                )
+                .await;
+                break;
             }
             Err(err) => {
                 // Below the tolerance the failed step is absorbed and the next
@@ -569,7 +652,7 @@ pub(super) async fn drive(
                 &mut store,
                 &mut ledger.staged_state,
                 "thread usage state drifted; skipping record",
-                |usage| usage.record(&resolved.spec.model_binding.model_ref, step_usage),
+                |usage| usage.record(&response_model_ref, step_usage),
             );
         }
 
@@ -911,10 +994,9 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     }
 }
 
-/// A no-tool awaiting ticket for an operator pause (ADR-0054): the run awaits with
-/// no pending tool and no call id, correlated by run id, resumed by an explicit
-/// operator resume rather than a tool result. The drain/re-identify discipline
-/// this used to sit next to now lives in `awaken-runtime-contract::boundary`.
+/// A no-tool awaiting ticket for any safe-boundary pause: the Run awaits with no
+/// pending tool and no call id, correlated by Run id. The owning authority may
+/// resume it explicitly or automatically without fabricating a tool result.
 fn pause_ticket(
     context: &RuntimeRunContext,
     resolved: &ResolvedRun,

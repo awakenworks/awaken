@@ -37,6 +37,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { waitForSessionEventReceipt } from './harness.mjs';
 
 if (process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -199,14 +200,6 @@ const client = new Anthropic({
   baseURL: deployment.baseURL,
 });
 
-async function events(sessionId) {
-  const out = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    out.push(event);
-  }
-  return out;
-}
-
 const session = await client.beta.sessions.create({
   agent: deployment.agent,
   environment_id: 'env_local',
@@ -224,14 +217,29 @@ const containerProbe = profile === 'container'
   : undefined;
 
 try {
+  let transcript;
   try {
-    await client.beta.sessions.events.send(session.id, {
+    // Receipt decision L1: C5 has an exact SDK receipt; E1 requires that exact
+    // receipt processed with marker and running->idle effects. K1 no prior
+    // transcript can satisfy the live gate. D1=C1-C5=>E1.
+    const receipt = (await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: `Reply with exactly this text and nothing else: ${marker}` }],
       }],
       betas: BETAS,
-    });
+    })).data[0];
+    ({ events: transcript } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receipt.id,
+      BETAS,
+      ({ delta }) => JSON.stringify(delta).includes(marker)
+        && delta.some((event) => event.type === 'session.status_running')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'real Codex ACP marker and running-to-idle lifecycle',
+      { timeoutMs: 600_000, pollMs: 200 },
+    ));
   } finally {
     if (containerProbe !== undefined) clearInterval(containerProbe);
   }
@@ -243,7 +251,6 @@ try {
     );
   }
 
-  const transcript = await events(session.id);
   const replies = transcript
     .filter((event) => event.type === 'agent.message')
     .map((event) => (event.content ?? []).map((content) => content.text ?? '').join('').trim());

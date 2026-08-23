@@ -9,13 +9,25 @@
 use crate::agent::run::RunState;
 use crate::audit::draft::Draft;
 use crate::audit::kind::Kind;
+use crate::audit::model_request::ModelRequestObservation;
 
 /// A committed run fact, carrying its own typed data. Lowers to a [`Draft`] for
 /// the durable event log.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEvent {
     /// The run's state transitioned (nothing→Running, Running→Awaiting/Ended).
-    RunStateChanged { state: RunState },
+    RunStateChanged {
+        state: RunState,
+        await_reason: Option<crate::agent::awaiting::AwaitReason>,
+    },
+    /// A dispatch lease was durably reclaimed and its replacement claim is
+    /// about to execute. `claim_epoch` is the queue's existing fencing
+    /// coordinate, not a second attempt counter.
+    RunRescheduled { state: RunState, claim_epoch: u64 },
+    /// One logical model request completed at the inference seam. Transparent
+    /// provider retries stay inside this observation; model-pool failover and
+    /// response continuation each produce another event.
+    ModelRequestCompleted(ModelRequestObservation),
     /// `commands` committed-state commands rode this checkpoint.
     StateChanged { commands: usize },
     /// The run began awaiting, keyed by `run_id`.
@@ -34,9 +46,26 @@ pub enum RunEvent {
 impl From<RunEvent> for Draft {
     fn from(event: RunEvent) -> Self {
         let (kind, payload) = match event {
-            RunEvent::RunStateChanged { state } => {
-                (Kind::RunStateChanged, serde_json::json!({ "state": state }))
+            RunEvent::RunStateChanged {
+                state,
+                await_reason,
+            } => {
+                let mut payload = serde_json::json!({ "state": state });
+                if let Some(reason) = await_reason {
+                    payload["await_reason"] = serde_json::to_value(reason)
+                        .expect("AwaitReason serialization is infallible");
+                }
+                (Kind::RunStateChanged, payload)
             }
+            RunEvent::RunRescheduled { state, claim_epoch } => (
+                Kind::RunRescheduled,
+                serde_json::json!({ "state": state, "claim_epoch": claim_epoch }),
+            ),
+            RunEvent::ModelRequestCompleted(observation) => (
+                Kind::ModelRequestCompleted,
+                serde_json::to_value(observation)
+                    .expect("ModelRequestObservation serialization is infallible"),
+            ),
             RunEvent::StateChanged { commands } => (
                 Kind::StateChanged,
                 serde_json::json!({ "commands": commands }),
@@ -99,9 +128,14 @@ mod tests {
 
     #[test]
     fn run_state_changed_lowers_with_the_state_in_its_payload() {
+        // Test design — Causes: Running is lowered with no await reason.
+        // Effects: the neutral audit kind and exact serialized state are retained.
+        // Constraints/invariants: lowering cannot infer another state or await
+        // authority. Decision rule S1: Running+None=>state-only payload.
         use crate::agent::run::{EndCause, RunState};
         let d: Draft = RunEvent::RunStateChanged {
             state: RunState::Ended(EndCause::NaturalEnd),
+            await_reason: None,
         }
         .into();
         assert_eq!(d.kind, Kind::RunStateChanged);
@@ -109,8 +143,62 @@ mod tests {
         // string form pinned by the serde-boundary test.
         let d2: Draft = RunEvent::RunStateChanged {
             state: RunState::Running,
+            await_reason: None,
         }
         .into();
         assert_eq!(d2.payload, serde_json::json!({ "state": "Running" }));
+    }
+
+    #[test]
+    fn run_rescheduled_lowers_the_current_state_and_existing_claim_fence() {
+        // Cause/effect graph: C1 the dispatch aggregate reclaimed an active Run;
+        // C2 its exact replacement claim has epoch 7; C3 the Run remains
+        // Running. Effects: E1 one neutral RunRescheduled kind is emitted; E2
+        // the current state and queue-owned fence survive lowering. Decision
+        // rule R1=C1+C2+C3=>E1+E2. No attempt counter is manufactured here.
+        // Constraints/invariants: the dispatch claim epoch remains the only
+        // reschedule fence and audit lowering does not create execution state.
+        let draft: Draft = RunEvent::RunRescheduled {
+            state: RunState::Running,
+            claim_epoch: 7,
+        }
+        .into();
+
+        assert_eq!(draft.kind, Kind::RunRescheduled, "R1/E1");
+        assert_eq!(
+            draft.payload,
+            serde_json::json!({"state":"Running", "claim_epoch":7}),
+            "R1/E2"
+        );
+    }
+
+    #[test]
+    fn model_request_completion_lowers_usage_error_and_provider_retries() {
+        // Cause/effect graph: C1 one logical request completes with provider
+        // usage; C2 one transparent retry occurred; C3 the final result is an
+        // error. Effects: E1 one typed audit kind is written; E2 usage and retry
+        // count remain attached to that same request. Decision rule
+        // R1=C1+C2+C3=>E1+E2; no provider attempt is promoted into another
+        // logical request.
+        // Constraints/invariants: one logical request owns exactly one audit
+        // record even when its provider implementation retried internally.
+        let observation = ModelRequestObservation {
+            is_error: true,
+            usage: crate::audit::model_request::TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                cache_read_tokens: 3,
+                cache_creation_tokens: 2,
+            },
+            retry_count: 1,
+        };
+        let draft: Draft = RunEvent::ModelRequestCompleted(observation).into();
+
+        assert_eq!(draft.kind, Kind::ModelRequestCompleted, "R1/E1");
+        assert_eq!(
+            draft.payload,
+            serde_json::to_value(observation).unwrap(),
+            "R1/E2"
+        );
     }
 }

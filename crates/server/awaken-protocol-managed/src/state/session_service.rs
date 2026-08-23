@@ -38,7 +38,7 @@ impl ManagedState {
 
     /// Use one fixture object that provides both independent application services.
     /// The shared `Arc` preserves one instance without merging the
-    /// Session turn lifecycle with MCP attachment realization.
+    /// Session Run lifecycle with MCP attachment realization.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_mcp<R>(runtime: R) -> Self
     where
@@ -55,9 +55,15 @@ impl ManagedState {
 
     /// Construct the disposable Managed wire projection over the one canonical
     /// Session application created during process startup.
-    pub fn from_application(application: Arc<SessionApplication>) -> Self {
+    pub fn from_application(
+        application: Arc<SessionApplication>,
+        environments: Arc<
+            awaken_environment_execution_application::EnvironmentExecutionApplication,
+        >,
+    ) -> Self {
         Self {
             application,
+            environments,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
@@ -68,8 +74,8 @@ impl ManagedState {
     }
 
     /// Install the hosted Workspace policy used at Session creation and again
-    /// before every turn. The latter is intentionally dynamic so narrowing an
-    /// allowlist stops an already-created Session on its next turn.
+    /// before every Run. The latter is intentionally dynamic so narrowing an
+    /// allowlist stops an already-created Session on its next Run.
     #[must_use]
     pub fn with_inference_geo_policy(
         mut self,
@@ -86,10 +92,31 @@ impl ManagedState {
         self.application.clone()
     }
 
+    /// Exact executable Environment application used by Session admission.
+    /// Coordinator composition reuses this Arc for the Worker warmup adapter so
+    /// test-support and production cannot observe different desired capacity.
+    #[must_use]
+    pub fn environment_execution(
+        &self,
+    ) -> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
+        self.environments.clone()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn application_mut(&mut self) -> &mut SessionApplication {
         Arc::get_mut(&mut self.application)
             .expect("ManagedState builders must finish before the application is shared")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_executable_projection_refresh(
+        mut self,
+        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+    ) -> Self {
+        self.application_mut()
+            .set_executable_projection_refresh(refresh)
+            .expect("ManagedState fixture executable projection refresh binds once");
+        self
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -101,12 +128,15 @@ impl ManagedState {
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
     ) -> Self {
-        Self::from_application(Arc::new(SessionApplication::new(
-            runtime,
-            mcp_realizer,
-            sessions_repo,
+        Self::from_application(
+            Arc::new(SessionApplication::new(
+                runtime,
+                mcp_realizer,
+                sessions_repo,
+                environments.clone(),
+            )),
             environments,
-        )))
+        )
     }
 
     /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle
@@ -114,7 +144,9 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_lifecycle_notifier(mut self, notifier: Arc<dyn LifecycleFactNotifier>) -> Self {
-        self.application_mut().set_lifecycle_notifier(notifier);
+        self.application_mut()
+            .set_lifecycle_notifier(notifier)
+            .expect("ManagedState fixture lifecycle notifier is bound once");
         self
     }
 
@@ -130,7 +162,8 @@ impl ManagedState {
         >,
     ) -> Self {
         self.application_mut()
-            .replace_environment_source(environments);
+            .replace_environment_source(environments.clone());
+        self.environments = environments;
         self
     }
 

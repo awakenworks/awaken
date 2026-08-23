@@ -51,6 +51,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
+    verify_attempt_ownership,
 };
 use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
@@ -58,7 +59,7 @@ use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{
     PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
 };
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
 fn preserve_terminal_outcome<T>(
@@ -70,7 +71,7 @@ fn preserve_terminal_outcome<T>(
         tracing::warn!(
             process_id,
             error = %cleanup_error,
-            "ACP terminal process cleanup failed after the turn outcome was fixed"
+            "ACP terminal process cleanup failed after the Step outcome was fixed"
         );
     }
     outcome
@@ -91,9 +92,8 @@ pub struct AgentSession {
     /// per thread so a cwd-keyed CLI's session is found on `session/load` across
     /// directories/machines. `None` → the CLI runs at `/` (the default).
     pub workspace_cwd: Option<String>,
-    /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface —
-    /// claude/gemini/opencode). Populated by [`ProjectingChannelSource::open`] for those
-    /// CLIs; empty for a legacy config-file adapter and for fixtures.
+    /// MCP servers to hand any catalog ACP CLI at `session/new`. Populated by
+    /// [`ProjectingChannelSource::open`]; fixtures may leave the collection empty.
     pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
     /// Exact managed model selected through ACP after opening the Session.
     pub session_model: Option<String>,
@@ -171,26 +171,26 @@ impl SessionHomeProvider for NoSessionHome {
 /// host can gate an override fail-closed against a backend that cannot honor it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSwitch {
-    /// Native: each turn resolves its own executor; switching is free (O(1)).
+    /// Native: each Step resolves its own executor; switching is free (O(1)).
     FreePerTurn,
     /// ACP CLI: a live session is a process, so switching relaunches it with the
-    /// new env. Correct but not free — a fresh channel per turn.
+    /// new env. Correct but not free — a fresh channel per Step.
     Relaunch,
-    /// The backend cannot switch mid-conversation; a per-turn override must fail.
+    /// The backend cannot switch mid-conversation; a per-Step override must fail.
     Unsupported,
 }
 
 /// Drives an external ACP agent as a [`RunExecutor`].
 ///
 /// Each [`execute`](RunExecutor::execute) opens a fresh channel via the source, so
-/// an ACP thread relaunches its CLI every turn — which is exactly how a model
+/// an ACP Thread relaunches its CLI every Step — which is exactly how a model
 /// switch takes effect (R7): the host re-stages the model, evicts the context, and
-/// the next turn's launch carries the new env. Reported as [`ModelSwitch::Relaunch`].
+/// the next Step's launch carries the new env. Reported as [`ModelSwitch::Relaunch`].
 pub struct AcpRunExecutor {
     source: Arc<dyn AgentChannelSource>,
     policy: SupervisePolicy,
     observer: Option<Arc<dyn LaunchObserver>>,
-    /// Authorizes the external CLI's mid-turn tool requests. Defaults to allow (the
+    /// Authorizes the external CLI's mid-Step tool requests. Defaults to allow (the
     /// sandbox is the enforcement boundary); a host wires a neutral `ToolPermissionPolicy`
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
@@ -322,7 +322,7 @@ fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
     }
 }
 
-/// The prompt for this turn: the concatenated text of the activation's input.
+/// The prompt for this Step: the concatenated text of the activation's input.
 fn prompt_of(input: &[Message]) -> String {
     input
         .iter()
@@ -333,7 +333,7 @@ fn prompt_of(input: &[Message]) -> String {
 }
 
 /// ACP has no portable system-instruction field. Project the frozen Agent
-/// instructions into the first turn so an ACP backend observes the same resolved
+/// instructions into the first Step so an ACP backend observes the same resolved
 /// snapshot contract as a native backend. Later steers reuse the ACP session and
 /// therefore send only their new input, preserving prefix-cache locality.
 fn initial_prompt(activation: &RunActivation, request_context: &[Message]) -> String {
@@ -360,7 +360,7 @@ fn initial_prompt(activation: &RunActivation, request_context: &[Message]) -> St
     sections.join("\n\n")
 }
 
-/// Map a clean ACP turn outcome to a terminal cause.
+/// Map a clean ACP Step outcome to a terminal cause.
 fn end_cause(reason: TerminationReason) -> EndCause {
     match reason {
         TerminationReason::NaturalEnd => EndCause::NaturalEnd,
@@ -370,7 +370,7 @@ fn end_cause(reason: TerminationReason) -> EndCause {
             code: "acp_error".to_string(),
             message: "agent reported an error".to_string(),
         }),
-        TerminationReason::TimedOut => EndCause::Stopped("turn deadline exceeded".to_string()),
+        TerminationReason::TimedOut => EndCause::Stopped("Step deadline exceeded".to_string()),
     }
 }
 
@@ -378,7 +378,7 @@ fn end_cause(reason: TerminationReason) -> EndCause {
 /// committed as an assistant message (below) so the run surface explains it.
 fn failure_cause(failure: &AcpFailure) -> EndCause {
     match failure.termination() {
-        TerminationReason::TimedOut => EndCause::Stopped("turn deadline exceeded".to_string()),
+        TerminationReason::TimedOut => EndCause::Stopped("Step deadline exceeded".to_string()),
         TerminationReason::Refusal => EndCause::Stopped("agent refused".to_string()),
         _ => EndCause::Error(Failure::Inference {
             code: "acp_failure".to_string(),
@@ -387,10 +387,11 @@ fn failure_cause(failure: &AcpFailure) -> EndCause {
     }
 }
 
-/// ACP fact ids are stable within one durable Run (so a replay deduplicates) and
-/// distinct across Runs in the same Thread (so a later turn is never mistaken for
-/// a replay of the first turn).
-fn acp_message_id(
+/// ACP Tool-result fact ids are stable within one durable Run (so a replay
+/// deduplicates) and distinct across activations. Assistant facts deliberately
+/// do not use this private family: every execution backend shares the canonical
+/// [`MessageId::assistant`] Run/Step identity.
+fn acp_tool_message_id(
     run_id: &RunId,
     namespace: impl std::fmt::Display,
     suffix: impl std::fmt::Display,
@@ -398,12 +399,47 @@ fn acp_message_id(
     MessageId(format!("acp-{}-{namespace}-{suffix}", run_id.0))
 }
 
+/// Mint exactly one assistant Message id from a cursor recovered through
+/// [`awaken_agent_contract::agent::message::next_assistant_step`]. The cursor is
+/// attempt-local; committed Thread truth remains the sole durable coordinate.
+fn take_assistant_message_id(run_id: &RunId, next_step: &mut usize) -> MessageId {
+    let id = MessageId::assistant(run_id, *next_step);
+    *next_step += 1;
+    id
+}
+
+fn push_assistant_text(
+    messages: &mut Vec<Message>,
+    run_id: &RunId,
+    next_step: &mut usize,
+    text: impl Into<String>,
+) {
+    messages.push(Message::text(
+        take_assistant_message_id(run_id, next_step),
+        Role::Assistant,
+        text,
+    ));
+}
+
+fn assistant_step_base(context: &RuntimeRunContext, activation: &RunActivation) -> usize {
+    let committed = context.reader.as_ref().map_or(0, |reader| {
+        awaken_agent_contract::agent::message::next_assistant_step(
+            &reader.committed_messages(&activation.thread_id),
+            &activation.run_id,
+        )
+    });
+    committed.max(awaken_agent_contract::agent::message::next_assistant_step(
+        &activation.input,
+        &activation.run_id,
+    ))
+}
+
 #[async_trait]
 impl RunExecutor for AcpRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
-        // The supervisor interrupts the opaque CLI turn when the cancel future
-        // resolves, and the ACP permission flow awaits a turn on an authorization
-        // decision. Mid-turn input steer is not delivered into the CLI, so `wait`
+        // The supervisor interrupts the opaque CLI Step when the cancel future
+        // resolves, and the ACP permission flow awaits the Run on an authorization
+        // decision. Mid-Step input steer is not delivered into the CLI, so `wait`
         // is `Auth`, not `Both`.
         ExecutorCapabilities {
             cancellation: Cancellation::RemoteAbort,
@@ -443,11 +479,16 @@ impl AcpRunExecutor {
         // resolution returns `None` and this is a no-op (as is the default provider).
         let home = self.session_home_binding(&activation);
         if let Some((key, plan)) = &home {
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
             self.session_home.restore(key, plan).await;
         }
-        let result = self.drive(activation, context, permission_resume).await;
+        let result = self.drive(activation, &context, permission_resume).await;
         if let Some((key, plan)) = &home {
-            self.session_home.harvest(key, plan).await;
+            match verify_attempt_ownership(context.ownership.as_deref()).await {
+                Ok(()) => self.session_home.harvest(key, plan).await,
+                Err(error) if result.is_ok() => return Err(error),
+                Err(_) => {}
+            }
         }
         result
     }
@@ -499,7 +540,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     .map(|value| format!(" Reason: {value}"))
                     .unwrap_or_default();
                 // RunResume the loaded ACP session with a new, explicit continuation
-                // turn. Replaying the original user prompt could duplicate all work
+                // Step. Replaying the original user prompt could duplicate all work
                 // before the permission boundary; this asks the agent to continue
                 // and the one-shot resolver below answers the repeated tool ask.
                 activation.input = vec![Message::text(
@@ -575,9 +616,10 @@ impl AcpRunExecutor {
     async fn drive(
         &self,
         activation: RunActivation,
-        context: RuntimeRunContext,
+        context: &RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         // Wrapper acquisition completed during product startup. Per-run lifecycle
         // begins at launching and therefore never performs hidden network/package I/O.
         let scope = activation.thread_id.0.clone();
@@ -589,7 +631,7 @@ impl AcpRunExecutor {
 
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
-        let mut session = match self.source.open(&activation, &context).await {
+        let mut session = match self.source.open(&activation, context).await {
             Ok(session) => session,
             Err(open) => {
                 notify(
@@ -597,14 +639,14 @@ impl AcpRunExecutor {
                     AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, open.0.clone()),
                 );
                 let failure = classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                return finish_failure(&context, &activation, &failure).await;
+                return finish_failure(context, &activation, &failure).await;
             }
         };
         self.apply_session_mcp_projection(&mut session);
 
-        // ADR-0054 P4: drive turns in a boundary loop. After each turn the shared
+        // ADR-0054 P4: drive Steps in a boundary loop. After each Step the shared
         // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
-        // next turn's prompt and the CLI relaunches (ACP is per-turn — R7), so
+        // next Step's prompt and the CLI relaunches (ACP is per-Step — R7), so
         // steer/redirect reaches external-CLI runs. Messages accumulate and commit
         // once at the terminal state, matching the executor's single-commit model.
         let run_id = activation.run_id.clone();
@@ -625,13 +667,12 @@ impl AcpRunExecutor {
         // prompt material. Commit it with the external Agent's facts so ACP and
         // Native expose the same Thread transcript and message-range semantics.
         let mut committed = activation.input.clone();
-        // The ACP session id, carried across the per-turn relaunches so a resumed
-        // turn reloads the CLI's own session (`session/load`) instead of starting
+        // The ACP session id, carried across the per-Step relaunches so a resumed
+        // Step reloads the CLI's own session (`session/load`) instead of starting
         // fresh — context survives the relaunch (the newline stand-in leaves it
         // `None`, so it always starts fresh, unchanged from before).
-        let mut acp_session_id =
-            restored_session_id(&context, &activation.thread_id, &backend_ref)?;
-        // The run's token usage, accumulated across turns and committed as thread
+        let mut acp_session_id = restored_session_id(context, &activation.thread_id, &backend_ref)?;
+        // The Run's token usage, accumulated across Steps and committed as Thread
         // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
         // A freshly launched CLI can occasionally lose its transport during the ACP
@@ -643,7 +684,10 @@ impl AcpRunExecutor {
             .last()
             .map(|message| message.id.0.clone())
             .unwrap_or_else(|| "empty-input".to_string());
-        let mut turn_ordinal = 0_u64;
+        let mut step_ordinal = 0_u64;
+        // The reader supplies the durable prefix on replacement/resume. Local
+        // ACP Steps advance this cursor until the next atomic ThreadCommit.
+        let mut next_assistant_step = assistant_step_base(context, &activation);
         let mcp_server_names = session
             .mcp_session_servers
             .iter()
@@ -672,20 +716,30 @@ impl AcpRunExecutor {
             .map(|decision| ResumedPermissionResolver::new(base_permission, decision));
 
         loop {
-            let turn_namespace = format!("{activation_namespace}:{turn_ordinal}");
-            turn_ordinal += 1;
+            if let Err(error) = verify_attempt_ownership(context.ownership.as_deref()).await {
+                let _ = Supervisor::reap_after_terminal(
+                    session.process.as_ref(),
+                    self.policy.reap_grace,
+                )
+                .await;
+                return Err(error);
+            }
+            let step_namespace = format!("{activation_namespace}:{step_ordinal}");
+            step_ordinal += 1;
             let mut appender = CollectingAppender::new(
                 run_id.clone(),
-                turn_namespace,
+                step_namespace,
+                next_assistant_step,
                 context.tool_output_spiller.clone(),
+                context.ownership.clone(),
                 permission_resume.as_ref(),
             );
             // ADR-0052 owner control channel. Retain the sender and forward a run
             // cancellation into it as an `Injection::Interrupt`, so the supervisor
-            // reaps the turn through the same interrupt path a protocol interrupt
+            // reaps the Step through the same interrupt path a protocol interrupt
             // uses (a dropped sender would close the channel and permanently disable
             // the supervisor's interrupt arm). The `cancel` future below still races
-            // the turn directly; both resolve the cancellation to `Cancelled`.
+            // the Step directly; both resolve the cancellation to `Cancelled`.
             let (tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
             let interrupt_forwarder = context.cancellation.clone().map(|token| {
                 tokio::spawn(async move {
@@ -733,8 +787,8 @@ impl AcpRunExecutor {
                 launch_sink,
             )
             .await;
-            // ACP adapters are per-turn processes. A natural/refused/error frame ends
-            // the turn but commonly leaves the adapter waiting for another request;
+            // ACP adapters are per-Step processes. A natural/refused/error frame ends
+            // the Step but commonly leaves the adapter waiting for another request;
             // reap it explicitly so the next boundary really relaunches it and provider
             // teardown hooks (including refreshed OAuth-file write-back) complete.
             let already_reaped = matches!(
@@ -746,22 +800,27 @@ impl AcpRunExecutor {
             } else {
                 // The protocol terminal fact is the business outcome. Cleanup is
                 // an independently observable lifecycle concern and must never
-                // rewrite a completed turn into a different result.
+                // rewrite a completed Step into a different result.
                 preserve_terminal_outcome(
                     outcome,
                     Supervisor::reap_after_terminal(process.as_ref(), self.policy.reap_grace).await,
                     process.id(),
                 )
             };
-            // The turn is over — stop the cancellation→interrupt forwarder so it does
-            // not outlive this turn's injection channel.
+            // The Step is over — stop the cancellation→interrupt forwarder so it does
+            // not outlive this Step's injection channel.
             if let Some(handle) = interrupt_forwarder {
                 handle.abort();
             }
-            // Keep the negotiated session id for the next relaunched turn, and fold
-            // this turn's token usage into the run total.
+            // A claim may be revoked while the opaque ACP Step is in flight.
+            // Recheck before projecting any returned fact into local Run truth;
+            // the replacement owner remains the only attempt allowed to commit.
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
+            // Keep the negotiated session id for the next relaunched Step, and fold
+            // this Step's token usage into the Run total.
             acp_session_id = config.session_id.take();
             run_usage = run_usage.saturating_add(appender.usage);
+            next_assistant_step = appender.next_assistant_step;
 
             let reason = match outcome {
                 Ok(reason) => reason,
@@ -774,6 +833,7 @@ impl AcpRunExecutor {
                             &err,
                         ) =>
                 {
+                    verify_attempt_ownership(context.ownership.as_deref()).await?;
                     handshake_retry_used = true;
                     notify(
                         launch_sink,
@@ -782,12 +842,12 @@ impl AcpRunExecutor {
                             "ACP handshake interrupted; relaunching once",
                         ),
                     );
-                    session = match self.source.open(&activation, &context).await {
+                    session = match self.source.open(&activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
                                 classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                            return finish_failure(&context, &activation, &failure).await;
+                            return finish_failure(context, &activation, &failure).await;
                         }
                     };
                     self.apply_session_mcp_projection(&mut session);
@@ -798,7 +858,12 @@ impl AcpRunExecutor {
                     ask,
                 }) => {
                     committed.extend(appender.messages);
-                    ensure_pending_tool_use(&run_id, &mut committed, &ask);
+                    ensure_pending_tool_use(
+                        &run_id,
+                        &mut next_assistant_step,
+                        &mut committed,
+                        &ask,
+                    );
                     let ticket = ResumeTicket::new(
                         correlation_id,
                         run_id.clone(),
@@ -824,11 +889,13 @@ impl AcpRunExecutor {
                     let disposition = RunDisposition::awaiting(ticket);
                     let state = disposition.state();
                     commit(
-                        &context,
+                        context,
                         &activation.thread_id,
                         disposition,
                         committed,
                         run_state(
+                            context,
+                            &activation.thread_id,
                             &run_usage,
                             &model_ref,
                             &backend_ref,
@@ -838,30 +905,29 @@ impl AcpRunExecutor {
                     .await?;
                     return Ok(state);
                 }
-                // A driver error mid-turn: classify it (oversight taxonomy), surface
-                // its prompt, commit everything so far + the error turn, and end. No
+                // A driver error mid-Step: classify it (oversight taxonomy), surface
+                // its prompt, commit everything so far + the error Step, and end. No
                 // retry/reschedule — that is a host concern above us.
                 Err(err) => {
                     let failure = classify_from_acp_error(&err);
                     committed.extend(appender.messages);
-                    committed.push(Message::text(
-                        acp_message_id(
-                            &run_id,
-                            "runtime",
-                            format_args!("err-{}", committed.len() + 1),
-                        ),
-                        Role::Assistant,
+                    push_assistant_text(
+                        &mut committed,
+                        &run_id,
+                        &mut next_assistant_step,
                         failure.prompt(),
-                    ));
+                    );
                     let disposition =
                         RunDisposition::ended(run_id.clone(), failure_cause(&failure));
                     let state = disposition.state();
                     commit(
-                        &context,
+                        context,
                         &activation.thread_id,
                         disposition,
                         committed,
                         run_state(
+                            context,
+                            &activation.thread_id,
                             &run_usage,
                             &model_ref,
                             &backend_ref,
@@ -883,23 +949,22 @@ impl AcpRunExecutor {
             {
                 let failure = classify_error(Stage::Prompt, &RawAcpError::message(detail));
                 committed.extend(appender.messages);
-                committed.push(Message::text(
-                    acp_message_id(
-                        &run_id,
-                        "runtime",
-                        format_args!("err-{}", committed.len() + 1),
-                    ),
-                    Role::Assistant,
+                push_assistant_text(
+                    &mut committed,
+                    &run_id,
+                    &mut next_assistant_step,
                     failure.prompt(),
-                ));
+                );
                 let disposition = RunDisposition::ended(run_id.clone(), failure_cause(&failure));
                 let state = disposition.state();
                 commit(
-                    &context,
+                    context,
                     &activation.thread_id,
                     disposition,
                     committed,
                     run_state(
+                        context,
+                        &activation.thread_id,
                         &run_usage,
                         &model_ref,
                         &backend_ref,
@@ -912,31 +977,30 @@ impl AcpRunExecutor {
 
             // Other opaque adapters collapse an upstream provider failure into a
             // clean ACP end_turn with no projected output. Accepting that as a
-            // NaturalEnd silently turns quota/auth/provider failures into an empty
-            // assistant response. A conversational turn must produce at least one
+            // NaturalEnd silently converts quota/auth/provider failures into an empty
+            // assistant response. A conversational Step must produce at least one
             // text or tool fact before it can end naturally.
             if matches!(reason, TerminationReason::NaturalEnd) && appender.messages.is_empty() {
                 let failure = classify_error(
                     Stage::Prompt,
                     &RawAcpError::message("ACP agent ended naturally without producing output"),
                 );
-                committed.push(Message::text(
-                    acp_message_id(
-                        &run_id,
-                        "runtime",
-                        format_args!("err-{}", committed.len() + 1),
-                    ),
-                    Role::Assistant,
+                push_assistant_text(
+                    &mut committed,
+                    &run_id,
+                    &mut next_assistant_step,
                     failure.prompt(),
-                ));
+                );
                 let disposition = RunDisposition::ended(run_id.clone(), failure_cause(&failure));
                 let state = disposition.state();
                 commit(
-                    &context,
+                    context,
                     &activation.thread_id,
                     disposition,
                     committed,
                     run_state(
+                        context,
+                        &activation.thread_id,
                         &run_usage,
                         &model_ref,
                         &backend_ref,
@@ -949,13 +1013,14 @@ impl AcpRunExecutor {
             committed.extend(appender.messages);
 
             // The safe boundary, shared with the native engine: fold queued live
-            // steer into the next turn, or end.
-            match evaluate_boundary(&context, &run_id, &committed) {
+            // steer into the next Step, or end.
+            match evaluate_boundary(context, &run_id, &committed) {
                 BoundaryOutcome::Continue { fold } => {
                     prompt = prompt_of(&fold);
                     committed.extend(fold);
-                    // Relaunch the CLI for the next turn (ACP is per-turn).
-                    session = match self.source.open(&activation, &context).await {
+                    // Relaunch the CLI for the next Step (ACP is per-Step).
+                    verify_attempt_ownership(context.ownership.as_deref()).await?;
+                    session = match self.source.open(&activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -964,11 +1029,13 @@ impl AcpRunExecutor {
                                 RunDisposition::ended(run_id.clone(), failure_cause(&failure));
                             let state = disposition.state();
                             commit(
-                                &context,
+                                context,
                                 &activation.thread_id,
                                 disposition,
                                 committed,
                                 run_state(
+                                    context,
+                                    &activation.thread_id,
                                     &run_usage,
                                     &model_ref,
                                     &backend_ref,
@@ -991,11 +1058,13 @@ impl AcpRunExecutor {
                     let disposition = RunDisposition::awaiting(ticket);
                     let state = disposition.state();
                     commit(
-                        &context,
+                        context,
                         &activation.thread_id,
                         disposition,
                         committed,
                         run_state(
+                            context,
+                            &activation.thread_id,
                             &run_usage,
                             &model_ref,
                             &backend_ref,
@@ -1005,16 +1074,18 @@ impl AcpRunExecutor {
                     .await?;
                     return Ok(state);
                 }
-                // Idle: no queued input, no pause — the turn's own reason is terminal.
+                // Idle: no queued input, no pause — the Step's own reason is terminal.
                 BoundaryOutcome::Idle => {
                     let disposition = RunDisposition::ended(run_id.clone(), end_cause(reason));
                     let state = disposition.state();
                     commit(
-                        &context,
+                        context,
                         &activation.thread_id,
                         disposition,
                         committed,
                         run_state(
+                            context,
+                            &activation.thread_id,
                             &run_usage,
                             &model_ref,
                             &backend_ref,
@@ -1077,7 +1148,7 @@ fn retryable_handshake_failure(
 }
 
 /// Classify a bridge/supervisor [`AcpError`] into a neutral [`AcpFailure`]. A
-/// truncated stream or an IO drop mid-turn is the backend cutting the turn
+/// truncated stream or an IO drop mid-Step is the backend cutting the Step
 /// (Prompt stage); a malformed frame is a permanent adapter fault. A streamed
 /// HARD-quota banner already carries its classified failure (RateLimited) — keep
 /// it rather than re-deriving a weaker class from the flattened message string.
@@ -1088,7 +1159,7 @@ fn classify_from_acp_error(err: &AcpError) -> AcpFailure {
     }
 }
 
-/// Commit a terminal failure that occurred before/instead of a turn (open fault):
+/// Commit a terminal failure that occurred before/instead of a Step (open fault):
 /// the activation input and one assistant message with the failure prompt, plus
 /// the terminal state.
 async fn finish_failure(
@@ -1099,11 +1170,13 @@ async fn finish_failure(
     let disposition = RunDisposition::ended(activation.run_id.clone(), failure_cause(failure));
     let state = disposition.state();
     let mut messages = activation.input.clone();
-    messages.push(Message::text(
-        acp_message_id(&activation.run_id, "runtime", "err-1"),
-        Role::Assistant,
+    let mut next_assistant_step = assistant_step_base(context, activation);
+    push_assistant_text(
+        &mut messages,
+        &activation.run_id,
+        &mut next_assistant_step,
         failure.prompt(),
-    ));
+    );
     commit(
         context,
         &activation.thread_id,
@@ -1115,7 +1188,7 @@ async fn finish_failure(
     Ok(state)
 }
 
-/// Commit the turn's messages and disposition through the one boundary (G13).
+/// Commit the Step's messages and disposition through the one boundary (G13).
 async fn commit(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
@@ -1157,13 +1230,26 @@ async fn commit(
 /// the same `__usage` `ThreadUsage` tally the native engine writes, so a session's
 /// ACP usage is readable from thread state exactly like a native run's. Empty when
 /// no usage was reported (nothing to record).
-fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
+fn usage_state(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    usage: &TokenUsage,
+    model_ref: &str,
+) -> Result<Vec<StateCommand>> {
     if *usage == TokenUsage::default() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let mut tally = ThreadUsage::default();
+    // `__usage` is a cumulative Thread cell. A fresh ACP execute (including one
+    // recovered in another process) must extend the last committed Set just as
+    // the Native engine's load-record-write loop does; beginning from empty here
+    // would make every independent ACP Run erase all earlier accounting.
+    let mut tally = match &context.reader {
+        Some(reader) => ThreadUsageKey::load(&Store::rebuild(&reader.committed_state(thread_id)))
+            .map_err(|error| Error::Execution(error.to_string()))?,
+        None => ThreadUsage::default(),
+    };
     tally.record(model_ref, *usage);
-    vec![ThreadUsageKey::write(&tally)]
+    Ok(vec![ThreadUsageKey::write(&tally)])
 }
 
 const ACP_SESSION_ID_STATE_KEY: &str = "__acp_session_id";
@@ -1184,12 +1270,14 @@ fn acp_session_cell() -> StateCell<AcpSessionReference> {
 }
 
 fn run_state(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
     usage: &TokenUsage,
     model_ref: &str,
     backend_ref: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<StateCommand>> {
-    let mut state = usage_state(usage, model_ref);
+    let mut state = usage_state(context, thread_id, usage, model_ref)?;
     if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
         state.push(
             acp_session_cell()
@@ -1422,16 +1510,18 @@ impl PermissionResolver for ResumedPermissionResolver<'_> {
     }
 }
 
-/// A [`RunFactAppender`] that projects an ACP turn's facts into committable neutral
+/// A [`RunFactAppender`] that projects an ACP Step's facts into committable neutral
 /// messages, enforcing the monotonic-seq contract. Assistant text, tool calls, and
 /// tool results each become a message so the committed transcript mirrors the
-/// external agent's turn (a tool call is an assistant `ToolUse`; its result is a
+/// external Agent's Step (a tool call is an assistant `ToolUse`; its result is a
 /// `Role::Tool` `ToolResult` addressed to that call). `TurnEnd` carries no message —
-/// it is returned as the turn's reason.
+/// it is returned as the Step's reason.
 struct CollectingAppender {
     run_id: RunId,
     namespace: String,
+    next_assistant_step: usize,
     spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
+    ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
     last: u64,
     messages: Vec<Message>,
     /// Index of the assistant message receiving the current contiguous ACP text
@@ -1439,8 +1529,8 @@ struct CollectingAppender {
     /// one logical assistant message until a tool boundary or ACP message-id
     /// change interrupts the stream.
     open_text_message: Option<(usize, Option<String>)>,
-    /// The turn's token usage, accumulated from any `Usage` events (kept out of the
-    /// committed messages — it lands as thread state, matching the native engine).
+    /// The Step's token usage, accumulated from any `Usage` events (kept out of the
+    /// committed messages — it lands as Thread state, matching the native engine).
     usage: TokenUsage,
     resumed_call: Option<PermissionResume>,
     remapped_result: Option<(String, String)>,
@@ -1450,13 +1540,17 @@ impl CollectingAppender {
     fn new(
         run_id: RunId,
         namespace: String,
+        next_assistant_step: usize,
         spiller: Option<Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>,
+        ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
         resumed_call: Option<&PermissionResume>,
     ) -> Self {
         Self {
             run_id,
             namespace,
+            next_assistant_step,
             spiller,
+            ownership,
             last: 0,
             messages: Vec::new(),
             open_text_message: None,
@@ -1492,11 +1586,9 @@ impl RunFactAppender for CollectingAppender {
                     }
                 }
                 _ => {
-                    self.messages.push(Message::text(
-                        acp_message_id(&self.run_id, &self.namespace, seq),
-                        Role::Assistant,
-                        text.clone(),
-                    ));
+                    let id = take_assistant_message_id(&self.run_id, &mut self.next_assistant_step);
+                    self.messages
+                        .push(Message::text(id, Role::Assistant, text.clone()));
                     self.open_text_message = Some((self.messages.len() - 1, message_id.clone()));
                 }
             },
@@ -1514,8 +1606,10 @@ impl RunFactAppender for CollectingAppender {
                     self.remapped_result = Some((id.clone(), pending.call_id));
                     return Ok(());
                 }
+                let message_id =
+                    take_assistant_message_id(&self.run_id, &mut self.next_assistant_step);
                 self.messages.push(Message {
-                    id: acp_message_id(&self.run_id, &self.namespace, seq),
+                    id: message_id,
                     role: Role::Assistant,
                     content: vec![ContentBlock::tool_use(
                         tool_use_id(&self.run_id, id, seq),
@@ -1543,14 +1637,19 @@ impl RunFactAppender for CollectingAppender {
                     .map(|(_, original)| original)
                     .unwrap_or_else(|| tool_use_id(&self.run_id, id, seq));
                 let body = match &self.spiller {
-                    Some(spiller) => spiller
-                        .spill(&self.run_id, &result_id, body)
-                        .await
-                        .map_err(|error| AppendError::Append(error.to_string()))?,
+                    Some(spiller) => {
+                        verify_attempt_ownership(self.ownership.as_deref())
+                            .await
+                            .map_err(|error| AppendError::Append(error.to_string()))?;
+                        spiller
+                            .spill(&self.run_id, &result_id, body)
+                            .await
+                            .map_err(|error| AppendError::Append(error.to_string()))?
+                    }
                     None => body,
                 };
                 self.messages.push(Message {
-                    id: acp_message_id(&self.run_id, &self.namespace, seq),
+                    id: acp_tool_message_id(&self.run_id, &self.namespace, seq),
                     role: Role::Tool,
                     content: vec![ContentBlock::tool_result(
                         result_id,
@@ -1579,7 +1678,7 @@ impl RunFactAppender for CollectingAppender {
 
 /// The neutral tool-use id for an ACP tool call: the ACP `tool_call_id` when the
 /// agent supplied one, else a per-seq fallback so a call and its result still
-/// correlate within the turn.
+/// correlate within the Step.
 fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
     if acp_id.is_empty() {
         format!("acp-tool-{}-{seq}", run_id.0)
@@ -1592,7 +1691,12 @@ fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
 /// emit a `tool_call` update before requesting permission and some do not; append
 /// only when absent so both wire styles project to exactly one Managed tool-use
 /// event whose id matches the durable resume ticket.
-fn ensure_pending_tool_use(run_id: &RunId, messages: &mut Vec<Message>, ask: &PermissionAsk) {
+fn ensure_pending_tool_use(
+    run_id: &RunId,
+    next_assistant_step: &mut usize,
+    messages: &mut Vec<Message>,
+    ask: &PermissionAsk,
+) {
     let already_projected = messages.iter().any(|message| {
         message
             .content
@@ -1601,11 +1705,7 @@ fn ensure_pending_tool_use(run_id: &RunId, messages: &mut Vec<Message>, ask: &Pe
     });
     if !already_projected {
         messages.push(Message {
-            id: acp_message_id(
-                run_id,
-                "permission",
-                format_args!("permission-{}", ask.call_id),
-            ),
+            id: take_assistant_message_id(run_id, next_assistant_step),
             role: Role::Assistant,
             content: vec![ContentBlock::tool_use(
                 ask.call_id.clone(),
@@ -1624,10 +1724,9 @@ mod subprocess;
 pub use acp_cli::{
     AcpAcquisition, AcpCli, AcpImageRequirement, BackendModelInterface, CredentialArtifactCodec,
     CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery,
-    ManagedModelInterface, ManagedProviderConfigCodec, ManagedProviderConfigDelivery, McpDelivery,
-    McpInterface, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
-    SessionPersistence, acp_cli, image_runtime_contract_json, known_acp_clis,
-    known_acp_publication_capabilities,
+    ManagedModelInterface, ManagedProviderConfigCodec, ManagedProviderConfigDelivery,
+    ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence,
+    acp_cli, image_runtime_contract_json, known_acp_clis, known_acp_publication_capabilities,
 };
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
@@ -1640,10 +1739,10 @@ pub use discovery_spec::{
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
-    AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver, McpInjection,
-    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_injection, mcp_injection,
-    mcp_injection_from_servers, mcp_injection_from_session_servers, project_launch,
-    with_backend_owned_host_environment, with_local_host_launch_environment,
+    AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver,
+    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_session_servers,
+    mcp_session_servers_from_routes, project_launch, with_backend_owned_host_environment,
+    with_local_host_launch_environment,
 };
 
 #[cfg(test)]

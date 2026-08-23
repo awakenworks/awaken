@@ -14,6 +14,16 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     #[serde(alias = "RunPhaseChanged")]
     RunStateChanged,
+    /// A durable dispatch recovery admitted another execution attempt for this
+    /// still-active Run. The dispatch aggregate remains retry authority; this
+    /// claim-fenced audit fact makes that transition observable through the
+    /// existing committed lifecycle feed without a second event store.
+    RunRescheduled,
+    /// One logical model request completed. Provider retries remain internal to
+    /// that request and are summarized by the event payload's `retry_count`.
+    /// This is an observation only: messages and accumulated usage retain their
+    /// existing committed authorities.
+    ModelRequestCompleted,
     StateChanged,
     // A run awaits for a structured reason and may later resume. The
     // design dropped the "external tool" concept: a client-executed tool is just

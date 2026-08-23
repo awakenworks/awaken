@@ -23,7 +23,7 @@ use crate::snapshot::{
 ///
 /// Protocol adapters, the config authoring plane, administrative assistant, and
 /// direct snapshot builder all consume this one value. It is deliberately
-/// large enough for a normal plan + multi-tool + result turn while remaining a
+/// large enough for a normal plan + multi-tool + result Step while remaining a
 /// hard runaway backstop.
 pub const DEFAULT_MAX_STEPS: usize = 16;
 
