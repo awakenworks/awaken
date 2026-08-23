@@ -141,6 +141,44 @@ async fn memory_store_mount_realizes_and_persists_an_edit() {
 }
 
 #[tokio::test]
+async fn workdir_rejects_read_only_memory_before_materialization() {
+    // Cause/effect graph: C1 a durable Store contains v1; C2 the requested
+    // provider is Workdir; C3 access is ReadOnly. E1 admission fails before
+    // materialization because Workdir cannot enforce read-only; E2 no projected
+    // bytes survive; E3 durable truth remains v1.
+    //
+    // Decision rule RO1: C1+C2+C3 => E1+E2+E3.
+    // Constraint: provider capability admission is the single authority; the
+    // Memory mounter must not simulate a weaker read-only mode behind it.
+    let fs = Arc::new(VolatileMemoryRepository::new());
+    fs.create("readonly", "/note.md", "v1").await.unwrap();
+    let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path()).with_memory_mounter(mounter);
+    let mut spec = base_spec("t-readonly-memory");
+    spec.mounts
+        .push(memory_mount("readonly", pc::MountAccess::ReadOnly));
+
+    let error = match provider.create(&spec).await {
+        Err(error) => error,
+        Ok(_) => panic!("RO1/E1 Workdir must reject read-only Memory"),
+    };
+    assert!(error.to_string().contains("does not enforce read-only"));
+    assert!(find_file(tmp.path(), "note.md").is_none(), "RO1/E2");
+
+    assert_eq!(
+        fs.get_by_path("readonly", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v1"),
+        "RO1/E3"
+    );
+}
+
+#[tokio::test]
 async fn memory_store_mount_fails_loud_without_a_mounter() {
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path()); // no mounter wired

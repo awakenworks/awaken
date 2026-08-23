@@ -2,7 +2,7 @@
 // real provider wire. A single session configures a memory_store + a github_repository
 // resource via the API, is offered a skill, and has out-of-band memory extraction —
 // then one natural-language turn drives the whole ADR-0038/0036 loop:
-//   configure (API) → apply (sandbox mounts) → NL turn → use a skill →
+//   configure (API) → apply (sandbox mounts) → NL turn → read and use a skill →
 //   write the memory store → commit the repo → produce an output artifact →
 //   retrieve the artifact via GET /v1/files → release once to reconcile/publish.
 // Plus: the extractor sub-run saves a cross-session memory after the turn.
@@ -15,7 +15,7 @@
 // C1 authoritative Skill/Memory/Repository configuration exists; C2 Session
 // freezes those resources and env_local; C3 the real provider turn completes;
 // C4 gated mutations are approved; C5 release/reconciliation succeeds. Effects:
-// E1 Skill is offered and invoked; E2 Memory and Repository mutations publish;
+// E1 attached and repository-local Skills are announced and read; E2 Memory and Repository mutations publish;
 // E3 the output is one downloadable File whose bytes are exact; E4 extraction
 // persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
 // changed bytes append one version. Any missing cause must fail the scenario,
@@ -60,6 +60,8 @@ const README = 'SEED_README_FULLCHAIN';
 const REPO_MARKER = 'REPO_FULLCHAIN_8830'; // must match the fullChain behavior
 const MEMO_MARKER = 'MEMO_FULLCHAIN_5521';
 const ARTIFACT_MARKER = 'ARTIFACT_FULLCHAIN_9142';
+const REPOSITORY_SKILL_MARKER = 'REPOSITORY-SKILL-FULLCHAIN-3017';
+const LATE_REPOSITORY_SKILL_MARKER = 'LATE-REPOSITORY-SKILL-FULLCHAIN-4819';
 
 const client = () => new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,11 +76,31 @@ function seedRemote() {
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, README);
+  fs.mkdirSync(`${work}/.claude/skills/repository-guide`, { recursive: true });
+  fs.writeFileSync(
+    `${work}/.claude/skills/repository-guide/SKILL.md`,
+    `---\nname: repository-guide\ndescription: repository-local guidance\n---\n${REPOSITORY_SKILL_MARKER}`,
+  );
   git(['add', '-A'], work);
   git(['commit', '-q', '-m', 'seed'], work);
   const bare = `${TMP}/remote.git`;
   git(['clone', '-q', '--bare', work, bare]);
   return bare;
+}
+
+function addLateRepositorySkill(bare) {
+  const work = `${TMP}/late-skill`;
+  git(['clone', '-q', bare, work]);
+  git(['config', 'user.email', 'late@t'], work);
+  git(['config', 'user.name', 'late'], work);
+  fs.mkdirSync(`${work}/.claude/skills/late-guide`, { recursive: true });
+  fs.writeFileSync(
+    `${work}/.claude/skills/late-guide/SKILL.md`,
+    `---\nname: late-guide\ndescription: added after a Session snapshot\n---\n${LATE_REPOSITORY_SKILL_MARKER}`,
+  );
+  git(['add', '-A'], work);
+  git(['commit', '-q', '-m', 'add late repository skill'], work);
+  git(['push', '-q', 'origin', 'HEAD:main'], work);
 }
 
 const listEvents = async (c, sid) => {
@@ -113,6 +135,32 @@ async function listArtifacts(c, sid) {
   } catch {
     return null;
   }
+}
+
+async function probeRepositorySkillPaths(c, sid) {
+  const receipt = (await c.beta.sessions.events.send(sid, {
+    events: [{
+      type: 'user.message',
+      content: [{ type: 'text', text: 'probe-repository-skill-snapshot' }],
+    }],
+    betas: BETAS,
+  })).data[0];
+  const { delta } = await waitForSessionEventReceipt(
+    c,
+    sid,
+    receipt.id,
+    BETAS,
+    ({ delta: events }) => events.some((event) => event.type === 'agent.message'),
+    'repository Skill metadata probe to complete',
+    { timeoutMs: 30_000, pollMs: 200 },
+  );
+  const reply = delta
+    .filter((event) => event.type === 'agent.message')
+    .flatMap((event) => event.content ?? [])
+    .map((content) => content.text ?? '')
+    .at(-1);
+  assert.equal(typeof reply, 'string', 'probe returned one Agent text message');
+  return JSON.parse(reply);
 }
 
 async function main() {
@@ -242,11 +290,114 @@ async function main() {
       await sleep(200);
     }
 
-    // 4) Skill was discovered + used.
+    // 4) Attached and repository-local Skills share the sole filesystem path.
+    // Causes: C6 the Session has filesystem tools and one frozen attached Skill;
+    // C7 the mounted repository contains exact
+    // `.claude/skills/<name>/SKILL.md`; C8 `read` is enabled. Effects: E6 both
+    // metadata entries are announced and each body arrives through ordinary
+    // `read`; E7 neither semantic Skill tool is exposed or called.
+    // Decision rule F6=C6+C7+C8=>E6+E7. Startup timing and same-name repository
+    // combinations remain owned by the lower-level decision-table test.
     const toolNames = evs.filter((e) => e.type === 'agent.tool_use').map((e) => e.name);
-    assert.ok(toolNames.includes('list_skills'), `skill discovery ran: ${JSON.stringify(toolNames)}`);
-    assert.ok(toolNames.includes('Skill'), 'the greet skill was activated via the Skill tool');
-    pass('skill discovered + activated (list_skills → Skill) in the same conversation');
+    assert.deepEqual(toolNames.slice(0, 2), ['read', 'read'], 'both Skill bodies use ordinary read');
+    assert.ok(
+      !toolNames.includes('list_skills') && !toolNames.includes('Skill'),
+      `filesystem delivery has no semantic parallel path: ${JSON.stringify(toolNames)}`,
+    );
+    const skillResults = JSON.stringify(
+      evs.filter((event) => event.type === 'agent.tool_result').map((event) => event.content),
+    );
+    assert.ok(skillResults.includes('GREETING-FROM-SKILL'), 'attached Skill body reached read result');
+    assert.ok(
+      skillResults.includes(REPOSITORY_SKILL_MARKER),
+      'repository-local Skill body reached read result from its discovered path',
+    );
+    pass('attached + repository-local Skills were discovered and read through one filesystem path');
+
+    // Repository Skill startup snapshot decision table:
+    // C9=read enabled, C10=Session has already completed its first discovery,
+    // C11=remote gains a Skill after that snapshot, C12=new Session, C13=read
+    // disabled while bash remains enabled. E8=old Session stays frozen; E9=new
+    // Session sees both repository paths; E10=read-disabled Session receives no
+    // repository metadata even though it still has a filesystem tool.
+    // R7 C9+C10 => original only; R8 R7+C11 => E8; R9 C9+C11+C12 => E9;
+    // R10 C11+C12+C13 => E10. The probe returns prompt metadata without reading
+    // bodies, so tool success cannot fabricate discovery evidence.
+    const frozenRepositorySession = await c.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      resources: [
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
+      ],
+      betas: BETAS,
+    });
+    const frozenBefore = await probeRepositorySkillPaths(c, frozenRepositorySession.id);
+    assert.deepEqual(
+      frozenBefore,
+      ['workspace/repo/.claude/skills/repository-guide/SKILL.md'],
+      'R7 first Run freezes the original repository Skill metadata',
+    );
+    addLateRepositorySkill(bare);
+    const frozenAfter = await probeRepositorySkillPaths(c, frozenRepositorySession.id);
+    assert.deepEqual(frozenAfter, frozenBefore, 'R8 current Session keeps its startup snapshot');
+
+    const freshRepositorySession = await c.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      resources: [
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
+      ],
+      betas: BETAS,
+    });
+    assert.deepEqual(
+      await probeRepositorySkillPaths(c, freshRepositorySession.id),
+      [
+        'workspace/repo/.claude/skills/late-guide/SKILL.md',
+        'workspace/repo/.claude/skills/repository-guide/SKILL.md',
+      ],
+      'R9 a new Session snapshots the advanced repository checkout',
+    );
+
+    const readDisabledRepositorySession = await c.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'agent_toolset_20260401',
+          default_config: {
+            enabled: false,
+            permission_policy: { type: 'always_allow' },
+          },
+          configs: [{
+            name: 'bash',
+            enabled: true,
+            permission_policy: { type: 'always_allow' },
+          }],
+        }],
+      },
+      environment_id: 'env_local',
+      resources: [
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
+      ],
+      betas: BETAS,
+    });
+    assert.deepEqual(
+      await probeRepositorySkillPaths(c, readDisabledRepositorySession.id),
+      [],
+      'R10 repository Skill discovery requires read, not merely bash',
+    );
+    for (const probeSession of [
+      frozenRepositorySession,
+      freshRepositorySession,
+      readDisabledRepositorySession,
+    ]) {
+      const archived = await c.beta.sessions.archive(probeSession.id, { betas: BETAS });
+      assert.equal(archived.status, 'terminated', 'probe Session cleanup reached its terminal edge');
+    }
+    pass('repository Skill discovery is startup-scoped and gated by the read capability');
 
     // 5) Memory store write-back landed.
     assert.ok(memContent.includes(MEMO_MARKER), `memory-store write-back landed: ${JSON.stringify(memContent)}`);
@@ -405,7 +556,8 @@ async function main() {
       (skillCatalog.data ?? []).some((skill) => skill.id === authoredSkillId),
       'the authored aggregate remains available for an explicit future publication update',
     );
-    await c.beta.sessions.delete(consumingSession.id, { betas: BETAS });
+    const consumingArchived = await c.beta.sessions.archive(consumingSession.id, { betas: BETAS });
+    assert.equal(consumingArchived.status, 'terminated');
     pass('agent-authored Skill versions persist without implicitly mutating Agent selection');
 
     console.log('E2E PASS: full chain — config → mounts → skill → memory + repo write-back → artifact → authored Skill versions.');

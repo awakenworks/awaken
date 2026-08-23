@@ -58,4 +58,6 @@ podman = ["connection", "tokio/process"]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
 awaken-runtime-contract.workspace = true
 awaken-tool-relay.workspace = true
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-memoryd.workspace = true
 tempfile = "3"

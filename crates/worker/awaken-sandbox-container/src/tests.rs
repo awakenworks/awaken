@@ -488,10 +488,16 @@ fn host_live_input_projection_has_one_stable_read_only_bind_and_atomic_generatio
 
 #[tokio::test]
 async fn memory_store_realizes_as_copy_on_the_container_tier() {
-    // Managed-memory path decision rule M1: a Memory requirement names the
-    // protocol path /mnt/memory/notes. The container binds the canonical mounter
-    // copy at that exact path; it must not add /workspace or a hidden `.mnt`
-    // carrier. This matches Namespace and Workdir structured-tool projection.
+    // Cause/effect graph: C1 a Memory requirement names an exact protocol path;
+    // C2 access is ReadWrite or ReadOnly. E1 the container binds the canonical
+    // mounter copy at that exact path, without `/workspace` or hidden `.mnt`;
+    // E2 the runtime bind's read-only flag exactly projects C2.
+    //
+    // | Rule | access | bind flag | effects |
+    // | M1   | RW     | false     | E1,E2   |
+    // | M2   | RO     | true      | E1,E2   |
+    // Constraint: the container runtime enforces access; the Memory mounter is
+    // the one content/lifecycle owner and must not be reimplemented here.
     let rt = Arc::new(FakeRuntime::default());
     let mut s = spec("mem-real");
     s.mounts.push(pc::MountRequirement {
@@ -503,6 +509,18 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
         },
         mount_path: "/mnt/memory/notes".into(),
         access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "archive".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "store-8".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/archive".into(),
+        access: pc::MountAccess::ReadOnly,
         lifetime: pc::MountLifetime::Session,
         required: true,
     });
@@ -531,6 +549,11 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
             std::fs::read(std::path::Path::new(&bind.source_ref).join("seed.txt")).unwrap(),
             b"seed"
         );
+        let read_only = state.created_binds["cid-mem-real"]
+            .iter()
+            .find(|bind| bind.mount_path == "/mnt/memory/archive")
+            .expect("M2 read-only memory copy is bound into the container");
+        assert!(read_only.read_only, "M2/E2");
     }
     sandbox.dispose().await.unwrap();
     assert!(torn_down.load(Ordering::SeqCst));
