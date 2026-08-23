@@ -223,11 +223,6 @@ production logic.
   followers that cannot return early, cooperative completion, deadline abort,
   and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
   proves the shutdown admission and return barriers directly.
-- `MountCoordinator.tla` covers the shared FUSE mount reference-count state
-  machine under concurrent acquire/release: one published live mount per store,
-  last-reference teardown, failed-mount atomicity, unknown-release idempotence,
-  and fail-closed reference-count exhaustion. `MountCoordinatorProof.tla`
-  proves the complete inductive safety invariant for every modeled transition.
 - `ObservationReconcile.tla` covers the concurrent heartbeat and periodic
   observation-refresh paths sharing one async mutex. It gives every semantic
   evidence change a monotonic epoch (including A -> B -> A), preserves the
@@ -388,7 +383,6 @@ graphs with zero invariant violations and zero states left on the queue:
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |
 | LiveInbox | 3,025 | 81 | 7 |
 | ServiceLifecycle | 226 | 131 | 9 |
-| MountCoordinator | 361 | 81 | 11 |
 | ObservationReconcile | 10,055 | 2,835 | 16 |
 | ExecutableProjectionRefresh | 111,151 | 39,600 | 37 |
 | CheckpointRecovery | 462 | 141 | 8 |
@@ -604,13 +598,6 @@ delivered promptly, or that an already-busy third-party ACP call is interrupted
 and its process terminated. Immediate busy-call revocation propagation is not
 implemented as a repository-guaranteed protocol; it remains an explicit
 external operational boundary rather than an overclaimed formal theorem.
-
-`MountCoordinator` proves the in-process registry and reference-count protocol,
-including concurrent serialization and rejection at the finite counter bound.
-It assumes callers pair one release with each successful acquire. Whether the
-kernel actually mounts/unmounts FUSE, drains every file descriptor, and preserves
-filesystem semantics remains part of the explicitly external container/kernel
-boundary and is exercised by Linux kernel-VFS integration tests rather than TLA+.
 
 `ObservationReconcile` proves the in-process fence and mutex protocol assuming
 the Worker directory accepts heartbeats in strictly increasing sequence order

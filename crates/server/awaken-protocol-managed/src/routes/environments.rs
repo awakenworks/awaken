@@ -82,20 +82,6 @@ pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Ro
 pub fn environment_work_router(
     state: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> Router {
-    environment_work_router_with_capability(state, None)
-}
-
-/// Mount Work coordination with the exact capability authority shared by the
-/// Coordinator verification edge. Product compositions must supply it; the
-/// authority-free form remains available for non-Session protocol fixtures.
-pub fn environment_work_router_with_capability(
-    execution: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
-    capability: Option<crate::SessionWorkCapabilityConfiguration>,
-) -> Router {
-    let state = Arc::new(EnvironmentWorkState {
-        execution,
-        capability,
-    });
     Router::new()
         .route("/v1/environments/{id}/work", get(work_routes::list_work))
         .route(
@@ -123,19 +109,6 @@ pub fn environment_work_router_with_capability(
             post(work_routes::stop_work),
         )
         .with_state(state)
-}
-
-pub(super) struct EnvironmentWorkState {
-    execution: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
-    capability: Option<crate::SessionWorkCapabilityConfiguration>,
-}
-
-impl std::ops::Deref for EnvironmentWorkState {
-    type Target = awaken_environment_execution_application::EnvironmentExecutionApplication;
-
-    fn deref(&self) -> &Self::Target {
-        &self.execution
-    }
 }
 
 fn map_environment_application_error(error: EnvironmentApplicationError) -> WireError {

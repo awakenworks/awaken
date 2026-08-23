@@ -80,10 +80,10 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
 /// Build the one AllInOne Web scenario. The registry enters `ProcessStartup`
 /// before router assembly, so Control validation and Host dispatch share it.
 pub async fn build_management_web_router() -> Router {
-    let registry = WebSearchProviderRegistry::try_new([
-        Arc::new(ScenarioWebSearchProvider) as Arc<dyn WebSearchProvider>
-    ])
-    .expect("the scenario Web provider descriptor is valid and unique");
+    let mut registry = WebSearchProviderRegistry::builtins();
+    registry
+        .register(Arc::new(ScenarioWebSearchProvider))
+        .expect("the scenario Web provider descriptor is valid and unique");
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(WebToolDrivingModel),
         ModelBinding::new("default", "management-web", "default"),

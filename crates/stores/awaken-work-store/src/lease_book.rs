@@ -106,6 +106,15 @@ impl LeaseBook {
             .is_some_and(|owner| owner == worker_id)
     }
 
+    pub fn is_owned_at_epoch(&self, work_id: &str, worker_id: &str, expected_epoch: u64) -> bool {
+        let authority = self.authority.lock().unwrap();
+        authority
+            .owners
+            .get(work_id)
+            .is_some_and(|owner| owner == worker_id)
+            && authority.epochs.get(work_id).copied() == Some(expected_epoch)
+    }
+
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
         let authority = self.authority.lock().unwrap();
         let lease = authority.leases.get(work_id).copied()?;
@@ -131,23 +140,6 @@ impl LeaseBook {
         let mut authority = self.authority.lock().unwrap();
         authority.leases.remove(work_id);
         authority.owners.remove(work_id);
-    }
-
-    /// Remove authority only when both owner and fencing epoch still identify
-    /// the observed claim. This is the in-memory compare-and-set counterpart of
-    /// the durable stores' conditional compensation update.
-    pub fn release_exact(&self, work_id: &str, owner: &str, epoch: u64) -> bool {
-        let mut authority = self.authority.lock().unwrap();
-        let matches = authority
-            .owners
-            .get(work_id)
-            .is_some_and(|current| current == owner)
-            && authority.epochs.get(work_id).copied() == Some(epoch);
-        if matches {
-            authority.leases.remove(work_id);
-            authority.owners.remove(work_id);
-        }
-        matches
     }
 
     pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {

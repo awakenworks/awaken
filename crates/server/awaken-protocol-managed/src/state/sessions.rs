@@ -50,24 +50,6 @@ const fn rehydration_publication_decision(
     }
 }
 
-fn project_resolved_skills(
-    resources: &awaken_session_contract::ResolvedSessionResources,
-) -> Vec<crate::types::agent::AgentSkill> {
-    resources
-        .skills()
-        .iter()
-        .map(|skill| {
-            crate::types::agent::AgentSkill::from_binding(
-                awaken_agent_contract::AgentSkillBinding {
-                    kind: skill.kind,
-                    skill_id: skill.skill_id.clone(),
-                    version: skill.version.to_string(),
-                },
-            )
-        })
-        .collect()
-}
-
 #[cfg(kani)]
 #[kani::proof]
 fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
@@ -840,7 +822,16 @@ impl ManagedState {
                 tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
-                skills: project_resolved_skills(&persisted.resources.active),
+                skills: effective_skills.as_ref().map_or_else(
+                    || project::agent_skills(&caps),
+                    |skills| {
+                        skills
+                            .iter()
+                            .cloned()
+                            .map(crate::types::agent::AgentSkill::from_binding)
+                            .collect()
+                    },
+                ),
                 multiagent: session_multiagent,
             },
             budget: persisted
@@ -948,7 +939,6 @@ impl ManagedState {
             metadata,
             agent_tools,
             mcp_servers,
-            skills,
             status,
             archived_at,
         ) = match persisted {
@@ -972,7 +962,6 @@ impl ManagedState {
                         )
                     });
                 let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
-                let skills = project_resolved_skills(&p.resources.active);
                 let archived_at = p.archived_at().map(str::to_owned);
                 (
                     agent_id,
@@ -983,7 +972,6 @@ impl ManagedState {
                     p.metadata,
                     project::managed_tools(&p.tools),
                     mcp_servers,
-                    skills,
                     Self::wire_session_status(p.execution),
                     archived_at,
                 )
@@ -997,7 +985,6 @@ impl ManagedState {
                 Default::default(),
                 default_tools,
                 Vec::new(),
-                project::agent_skills(&caps),
                 SessionStatus::Idle,
                 None,
             ),
@@ -1056,7 +1043,7 @@ impl ManagedState {
                 system: profile.as_ref().and_then(|profile| profile.system.clone()),
                 tools: agent_tools,
                 mcp_servers,
-                skills,
+                skills: project::agent_skills(&caps),
                 multiagent,
             },
             budget: projected_budget,

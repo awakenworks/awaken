@@ -1080,20 +1080,21 @@ async fn advertises_only_runnable_tools() {
         .to_string();
 
     // Cause/effect graph and decision table:
-    // C1=a tool has one executable in the assembled host; C2=a host-owned web
-    // capability is not published. E1=offer it to the model; E2=omit it.
-    // R1(C1,!C2)->E1 covers filesystem/shell. R2(!C1,C2)->E2 covers web_fetch
-    // and web_search. FMECA: offering an inexecutable tool causes a late tool
-    // failure (R2 detects it); omitting a real executable hides a capability
-    // (R1 detects it). Permission gating is independently enforced by the
-    // effective-authorization decision table.
+    // C1=a tool has one executable in the assembled host; C2=a configurable Web
+    // route has no provider. E1=offer it to the model; E2=omit it.
+    // R1(C1,!C2)->E1 covers filesystem/shell. R2(!C1,C2)->E2 covers WebFetch and
+    // WebSearch. K1 the configured-provider registry is the sole Web route owner;
+    // there is no parallel static WebFetch fallback. FMECA: offering an
+    // inexecutable tool causes a late tool failure (R2 detects it); omitting a real
+    // executable hides a capability (R1 detects it). Permission gating is
+    // independently enforced by the effective-authorization decision table.
     for tool in ["read", "write", "edit", "glob", "grep", "bash"] {
         assert!(offered.contains(tool), "expected `{tool}` in {offered:?}");
     }
     for tool in ["web_fetch", "web_search"] {
         assert!(
             !offered.contains(tool),
-            "`{tool}` must not be advertised without a published capability: {offered:?}"
+            "`{tool}` must not be advertised without a connector: {offered:?}"
         );
     }
 }

@@ -196,6 +196,7 @@ pub fn awaken_provisioning_contract::Command::new(impl core::iter::traits::colle
 pub struct awaken_provisioning_contract::ContainerSandboxHandleV1
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::container_id: alloc::string::String
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::continuation_excluded_paths: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::live_input_projection: bool
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::outputs_path: alloc::string::String
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::runtime_handle: core::option::Option<awaken_provisioning_contract::ContainerContinuationHandle>

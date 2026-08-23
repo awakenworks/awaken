@@ -68,17 +68,17 @@ async function main() {
       assert.deepEqual(cfg.web_fetch, {
         name: 'web_fetch',
         type: 'web_fetch',
-        enabled: true,
-        permission_policy: { type: 'always_ask' },
+        enabled: false,
+        permission_policy: { type: 'always_allow' },
       });
-      // Cause/effect graph: direct URL fetch is a sandbox-owned built-in and is
-      // confirmation-gated; web_search requires a configured provider. The
-      // official toolset therefore exposes fetch as enabled/ask and search as a
-      // disabled member, without introducing a parallel custom search tool.
+      // Cause/effect graph: both WebFetch and WebSearch are configurable routes
+      // owned by the unified provider registry. With no connector published,
+      // neither route is runnable, so the official toolset exposes both as
+      // disabled members without a parallel static fetch or custom search tool.
       //
       // Decision table:
       // | Rule | official member | provider configured | effect             |
-      // | C1   | web_fetch       | built in            | enabled/ask       |
+      // | C1   | web_fetch       | no                  | disabled override |
       // | C2   | web_search      | no                  | disabled override |
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',

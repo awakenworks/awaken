@@ -55,8 +55,8 @@ const anthropicContractFingerprints01171 = {
   'resources/beta/webhooks.d.ts': { declarations: 48, sha256: '9abf53b51b18eb3a5d7d4a7efd9bd63e71038e8e6731e809569b446b7a0ad1f3' },
 };
 
-// Version-fingerprint cause/effect graph: C1=the pinned 0.117.1 package or the
-// registry-canary 0.120.0 package supplies its exact version; C2=its reachable
+// Version-fingerprint cause/effect graph: C1=the pinned 0.120.0 package or the
+// retained 0.117.1 compatibility alias supplies its exact version; C2=its reachable
 // public AST matches the reviewed map; C3=the version is unknown; C4=a known
 // version's declaration drifts. Effects: E1=shared declarations reuse the one
 // reviewed baseline and audited deltas override it; E2=the gate passes only

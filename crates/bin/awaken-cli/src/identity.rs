@@ -47,12 +47,41 @@ pub(crate) struct IdentityWiring {
     pub(crate) cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
 }
 
-pub(crate) fn identity_wiring(
+pub(crate) async fn identity_wiring(
     identity_mode: ManagementIdentityMode,
     data_dir: Option<&std::path::Path>,
     org_id: &str,
     iam_workspaces: &[String],
     cloud_iam: &config::CloudIamConfig,
+    cloud_credential_cache: awaken_iam_client::CredentialCache,
+    entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
+) -> Result<IdentityWiring, String> {
+    let data_dir = data_dir.map(std::path::Path::to_path_buf);
+    let org_id = org_id.to_owned();
+    let iam_workspaces = iam_workspaces.to_vec();
+    let cloud_iam = cloud_iam.clone();
+    tokio::task::spawn_blocking(move || {
+        identity_wiring_blocking(
+            identity_mode,
+            data_dir.as_deref(),
+            &org_id,
+            &iam_workspaces,
+            &cloud_iam,
+            cloud_credential_cache,
+            entitlement_provider,
+        )
+    })
+    .await
+    .map_err(|error| format!("identity initialization task failed: {error}"))?
+}
+
+fn identity_wiring_blocking(
+    identity_mode: ManagementIdentityMode,
+    data_dir: Option<&std::path::Path>,
+    org_id: &str,
+    iam_workspaces: &[String],
+    cloud_iam: &config::CloudIamConfig,
+    cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
 ) -> Result<IdentityWiring, String> {
     match identity_mode {
@@ -82,7 +111,9 @@ pub(crate) fn identity_wiring(
                 cloud_login: None,
             })
         }
-        ManagementIdentityMode::AwakenCloud => cloud_identity_wiring(cloud_iam),
+        ManagementIdentityMode::AwakenCloud => {
+            cloud_identity_wiring(cloud_iam, cloud_credential_cache)
+        }
         ManagementIdentityMode::NoLogin => Ok(IdentityWiring {
             iam: None,
             remote_iam: None,
@@ -93,12 +124,15 @@ pub(crate) fn identity_wiring(
     }
 }
 
-fn cloud_identity_wiring(config: &config::CloudIamConfig) -> Result<IdentityWiring, String> {
+fn cloud_identity_wiring(
+    config: &config::CloudIamConfig,
+    cache: awaken_iam_client::CredentialCache,
+) -> Result<IdentityWiring, String> {
     let interactive = config.access_token.is_none()
         && config.service_token.is_none()
         && config.service_token_file.is_none();
     let login = interactive
-        .then(|| DesktopCloudLogin::new(config, awaken_iam_client::CredentialCache::open()))
+        .then(|| DesktopCloudLogin::new(config, cache))
         .transpose()?
         .map(Arc::new);
     let remote_iam = awaken_cloud_authz(config, login.clone())?;
@@ -423,5 +457,48 @@ mod tests {
                 "C2"
             );
         });
+    }
+
+    /// Cause/effect decision rule: C1 interactive Cloud identity is assembled
+    /// while a Tokio service runtime is already polling; E1 the blocking OAuth
+    /// client is constructed on the dedicated blocking pool and initialization
+    /// returns through its ordinary Result channel without a nested-runtime
+    /// panic. K1 `identity_wiring` remains the sole IAM composition owner; this
+    /// test does not create a test-only client path or enlarge the runtime stack.
+    /// D1=C1=>E1, with the unreachable fixture issuer selecting the typed JWKS
+    /// failure outcome after the blocking boundary has been crossed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interactive_cloud_identity_initializes_outside_the_async_poll_stack() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = CredentialCache::at(directory.path().join("credentials.json"));
+        let config = cloud_config();
+        cache
+            .store(
+                &config.issuer,
+                CachedCredential {
+                    token: IamSecret::new("async-runtime-access"),
+                    principal: PrincipalRef::Account {
+                        account_id: IamAccountId("acct-async-runtime".into()),
+                    },
+                    expires_at: u64::MAX / 2,
+                    oauth: None,
+                },
+            )
+            .unwrap();
+        let error = match identity_wiring(
+            ManagementIdentityMode::AwakenCloud,
+            None,
+            "org-test",
+            &[],
+            &config,
+            cache,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("the unreachable fixture issuer must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("JWKS fetch failed"), "D1: {error}");
     }
 }

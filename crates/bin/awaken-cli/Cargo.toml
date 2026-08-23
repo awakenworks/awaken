@@ -109,7 +109,6 @@ awaken-tenancy = { workspace = true }
 # process startup, outside the authorization/resource services.
 awaken-iam-client = { workspace = true, features = ["desktop-oauth"] }
 awaken-iam-core.workspace = true
-awaken-iam-server.workspace = true
 # The live credential probe backing the admin router — the only place the model SDK
 # is named in the startup (mirrors the standalone's GenaiProbe).
 awaken-provider-genai = { workspace = true }
@@ -126,7 +125,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 base64 = "0.22"
-sha2 = "0.10"
 url.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 

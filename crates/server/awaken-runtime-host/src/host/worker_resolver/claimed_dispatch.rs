@@ -75,7 +75,7 @@ impl HostWorkerResolver {
             remote: host.remote_attempt_executor.clone(),
             remote_credentials: host.remote_credential_realization.clone(),
             web_search: Some(host.web_search_plugin(&session_thread_id.0, None)),
-            web_fetch: Some(host.web_fetch_plugin(&session_thread_id.0)),
+            web_fetch: Some(host.web_fetch_plugin(&session_thread_id.0, None)),
         };
         let runtime = Arc::new(runtime);
         let attempt = crate::agent_runner::child_attempt_executor(

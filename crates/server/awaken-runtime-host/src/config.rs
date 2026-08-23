@@ -11,8 +11,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_ext_builtin_tools::{
-    AGENT_RUN, ConfiguredWebToolExecutor, Toolset, WebFetchPlugin, WebSearchPlugin,
-    WebSearchProviderRegistry, all_hand_tools, builtin_tools, web_fetch_execution_configuration,
+    AGENT_RUN, Toolset, WebFetchPlugin, WebSearchPlugin, WebSearchProviderRegistry, all_hand_tools,
+    builtin_tools,
 };
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
@@ -466,26 +466,6 @@ pub(crate) fn server_gate_allowing(
     Arc::new(PermissionGate::new(Arc::new(server_policy(extra_allowed))))
 }
 
-/// Compose the current placement's Hand executor with the Agent's frozen
-/// WebFetch policy. This is the sole root/child composition owner: parsing stays
-/// in `awaken-ext-builtin-tools`, and policy enforcement stays in
-/// `ConfiguredWebToolExecutor`.
-///
-/// Absence of configuration preserves `base` exactly. A configured policy wraps
-/// an available base. Configuration never manufactures an executor: `None`
-/// remains `None`, so an unavailable Sandbox placement fails closed at dispatch.
-pub(crate) fn configured_web_fetch_executor(
-    base: Option<Arc<dyn ToolExecutor>>,
-    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
-) -> Result<Option<Arc<dyn ToolExecutor>>, String> {
-    let Some(configuration) = web_fetch_execution_configuration(toolsets)? else {
-        return Ok(base);
-    };
-    Ok(base.map(|executor| {
-        Arc::new(ConfiguredWebToolExecutor::new(executor, configuration)) as Arc<dyn ToolExecutor>
-    }))
-}
-
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
 /// `agent_run` executor is registered: a delegate call is advertised by the config
 /// but the kernel runs it via the injected resolver, not the tool registry.
@@ -657,70 +637,6 @@ mod tests {
             .map(|tool| tool.id().to_string())
             .collect::<Vec<_>>();
         assert!(static_ids.is_empty(), "R1/E2");
-    }
-
-    #[test]
-    fn configured_web_fetch_executor_composes_only_an_available_current_base() {
-        // Causes: C1 the current placement supplies a base executor; C2 the
-        // frozen Agent has no WebFetch configuration, a valid configuration, or
-        // malformed configuration. Effects: E1 preserve the exact base; E2 wrap
-        // that base once with the canonical policy executor; E3 keep a missing
-        // base missing; E4 reject malformed configuration before dispatch.
-        // Constraints: K1 parsing remains extension-owned; K2 this helper cannot
-        // manufacture a placement executor; K3 policy enforcement remains solely
-        // in ConfiguredWebToolExecutor.
-        //
-        // | Rule | C1 base | C2 configuration | Effect |
-        // | R1 | yes | absent | E1 exact base |
-        // | R2 | yes | valid | E2 one wrapper |
-        // | R3 | no | valid | E3 None/fail closed |
-        // | R4 | either | malformed | E4 error/no executor |
-        use awaken_runtime_contract::agent_bindings::{
-            ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
-        };
-
-        let toolsets = |configuration| {
-            vec![ToolsetPolicy {
-                source: ToolsetSource::Agent,
-                default: ToolExecutionPolicy::default(),
-                overrides: vec![ToolPolicyOverride::with_optional_configuration(
-                    "web_fetch",
-                    ToolExecutionPolicy::default(),
-                    Some(configuration),
-                )],
-            }]
-        };
-        let base: Arc<dyn ToolExecutor> =
-            Arc::new(awaken_runtime_contract::tool::RawToolRegistry::default());
-
-        let unchanged = configured_web_fetch_executor(Some(base.clone()), &[])
-            .expect("R1 absent configuration is valid")
-            .expect("R1 preserves the available base");
-        assert!(Arc::ptr_eq(&base, &unchanged), "R1/E1");
-
-        let valid = toolsets(serde_json::json!({
-            "type": "web_fetch",
-            "max_content_tokens": 3
-        }));
-        let wrapped = configured_web_fetch_executor(Some(base.clone()), &valid)
-            .expect("R2 valid configuration")
-            .expect("R2 wraps the available base");
-        assert!(!Arc::ptr_eq(&base, &wrapped), "R2/E2");
-        assert!(
-            configured_web_fetch_executor(None, &valid)
-                .expect("R3 valid configuration")
-                .is_none(),
-            "R3/E3"
-        );
-
-        let malformed = toolsets(serde_json::json!({
-            "type": "web_fetch",
-            "unexpected": true
-        }));
-        assert!(
-            configured_web_fetch_executor(Some(base), &malformed).is_err(),
-            "R4/E4"
-        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 // PEP enforcement, and remote authorization over HTTP.
 //
 // Brokered model cause graph / decision table:
-// C1 valid cached Cloud login, C2 Cloud readiness, C3 native model projection,
+// C1 valid configured Cloud access token, C2 Cloud readiness, C3 native model projection,
 // C4 explicit brokered Profile binding, C5 current attempt ownership, C6 Cloud
 // grant, C7 native Gateway function call + tool result + final response,
 // C8 later model removal, C9 transient
@@ -25,8 +25,9 @@
 // blocks; incomplete and unknown output variants remain valid terminal responses.
 // T9 malformed/unsupported Cloud projections fail atomically; duplicate public
 // model observations merge only the conservative known attribute minimum.
-// T10 Cloud login on + Cloud models off -> identity remains authenticated while
-// Catalog refresh fails locally and performs zero Cloud inference requests.
+// T10 fixed-token Cloud identity + Cloud models off -> identity remains
+// authenticated, interactive login remains disabled, and Catalog refresh fails
+// locally with zero Cloud inference requests.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -310,7 +311,7 @@ async function main() {
     assert.equal(localOnlyResult.status, 200, JSON.stringify(localOnlyResult.body));
     assert.deepEqual(localOnlyResult.body.identity, {
       mode: 'awaken-cloud',
-      cloud_login_enabled: true,
+      cloud_login_enabled: false,
       authenticated: true,
     });
     assert.equal(localOnlyResult.body.models.cloud_models_enabled, false);
@@ -328,7 +329,7 @@ async function main() {
     );
     await stopServer(server);
     server = null;
-    pass('Cloud login and Cloud model supply are independent; disabled supply has zero Cloud traffic');
+    pass('fixed-token Cloud identity and model supply are independent; disabled supply has zero Cloud traffic');
 
     const env = deploymentEnv(directory, {
       identityMode: 'awaken-cloud',
@@ -389,17 +390,27 @@ async function main() {
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
     pass('model-supply PEP uses its dedicated read action and trusted workspace');
 
+    // T1 startup owns the first reconciliation; the explicit ConfigService
+    // command reuses that same catalog/discovery path and is idempotent.
+    result = await req(base, 'GET', '/v1/config/catalog');
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    let brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
+    assert.ok(brokered, JSON.stringify(result.body));
+
     result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(result.body.activated, 1);
+    assert.equal(result.body.activated, 0, 'T1 explicit refresh replays the startup projection');
     assert.deepEqual(
       iam.cloudCalls.map((entry) => entry.path),
-      ['/v1/inference/readiness', '/v1/inference/models'],
+      [
+        '/v1/inference/readiness', '/v1/inference/models',
+        '/v1/inference/readiness', '/v1/inference/models',
+      ],
     );
     assert.ok(iam.cloudCalls.every((entry) => entry.authorization === `Bearer ${cachedToken}`));
     result = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    const brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
+    brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
     assert.ok(brokered, JSON.stringify(result.body));
     assert.equal(brokered.model_id, 'gpt-5-e2e');
     assert.equal(result.body.model_attributes['gpt-5-e2e'].context_window, 400000);

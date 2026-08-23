@@ -20,6 +20,17 @@ pub use repository::{
     MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation, sha256_hex,
 };
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+struct VersionAppend<'a> {
+    store: &'a str,
+    memory_id: &'a str,
+    operation: MemoryVersionOperation,
+    path: &'a str,
+    content: Option<&'a str>,
+    created: i64,
+    actor: Option<&'a MemoryActor>,
+}
+
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

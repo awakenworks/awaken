@@ -12,6 +12,14 @@ const workdir = mkdtempSync(join(tmpdir(), 'awaken-agent-toolset-'));
 const tools = betaAgentToolset20260401({ workdir, maxFileBytes: 64 });
 const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
+// Cause/effect graph: C1 valid Bash/file operations; C2 absolute, parent, or
+// symlink escape, non-file read, missing edit target, or oversized read; C3
+// timeout, abort, or non-zero Bash exit. Effects: E1 exact official results;
+// E2 fail closed before an out-of-workdir read/write; E3 a failed Bash process
+// is discarded and the next invocation is clean. Constraints: K1 this invokes
+// the official SDK helper directly, with no Awaken shadow implementation; K2
+// assertions bind semantic boundaries rather than a retired SDK error phrase.
+// Decision rules: AT-01 C1=>E1; AT-02 C2=>E2; AT-03 C3=>E3.
 try {
   assert.deepEqual(
     Object.keys(byName).sort(),
@@ -43,7 +51,7 @@ try {
   symlinkSync('/etc/passwd', join(workdir, 'outside-link'));
   await assert.rejects(
     () => byName.read.run({ file_path: 'outside-link' }),
-    /escapes workdir/,
+    /outside the session's working directory/,
   );
   await byName.write.run({ file_path: 'large.txt', content: 'x'.repeat(65) });
   await assert.rejects(() => byName.read.run({ file_path: 'large.txt' }), /exceeds 64-byte limit/);

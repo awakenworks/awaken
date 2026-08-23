@@ -48,7 +48,7 @@ pub awaken_environment_contract::EnvironmentRegistrationOperation::Withdraw
 pub struct awaken_environment_contract::CreateEnvironmentCommand
 pub awaken_environment_contract::CreateEnvironmentCommand::command_id: alloc::string::String
 pub awaken_environment_contract::CreateEnvironmentCommand::config: awaken_environment_contract::EnvironmentConfig
-pub awaken_environment_contract::CreateEnvironmentCommand::description: alloc::string::String
+pub awaken_environment_contract::CreateEnvironmentCommand::description: core::option::Option<alloc::string::String>
 pub awaken_environment_contract::CreateEnvironmentCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_environment_contract::CreateEnvironmentCommand::name: alloc::string::String
 pub awaken_environment_contract::CreateEnvironmentCommand::scope: core::option::Option<alloc::string::String>
@@ -57,7 +57,7 @@ pub fn awaken_environment_contract::CreateEnvironmentCommand::fingerprint(&self)
 pub struct awaken_environment_contract::EnvItem
 pub awaken_environment_contract::EnvItem::archived_at: core::option::Option<alloc::string::String>
 pub awaken_environment_contract::EnvItem::config: awaken_environment_contract::EnvironmentConfig
-pub awaken_environment_contract::EnvItem::description: alloc::string::String
+pub awaken_environment_contract::EnvItem::description: core::option::Option<alloc::string::String>
 pub awaken_environment_contract::EnvItem::id: alloc::string::String
 pub awaken_environment_contract::EnvItem::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_environment_contract::EnvItem::name: alloc::string::String
@@ -69,7 +69,7 @@ pub fn awaken_environment_contract::EnvItem::apply(&mut self, awaken_environment
 pub fn awaken_environment_contract::EnvItem::is_self_hosted(&self) -> bool
 pub struct awaken_environment_contract::EnvUpdate
 pub awaken_environment_contract::EnvUpdate::config: core::option::Option<awaken_environment_contract::EnvironmentConfigMutation>
-pub awaken_environment_contract::EnvUpdate::description: core::option::Option<alloc::string::String>
+pub awaken_environment_contract::EnvUpdate::description: core::option::Option<awaken_environment_contract::EnvironmentFieldUpdate<alloc::string::String>>
 pub awaken_environment_contract::EnvUpdate::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
 pub awaken_environment_contract::EnvUpdate::name: core::option::Option<alloc::string::String>
 pub awaken_environment_contract::EnvUpdate::sandbox_policy: core::option::Option<awaken_environment_contract::EnvironmentFieldUpdate<awaken_environment_contract::EnvironmentSandboxPolicyRef>>

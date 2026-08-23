@@ -41,8 +41,6 @@ pub(super) struct ProcessStartup {
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub(super) inference_materializer:
         Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>,
-    pub(super) session_work_capability:
-        Option<awaken_protocol_managed::SessionWorkCapabilityConfiguration>,
     pub(super) worker_directory: Option<awaken_coordinator::WorkerDirectoryHandle>,
     pub(super) runtime_authority: Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>,
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,

@@ -95,7 +95,7 @@ pub fn awaken_coordinator::data_subject_boundary::router_with_authenticator(allo
 pub mod awaken_coordinator::mcp_export
 pub struct awaken_coordinator::mcp_export::SessionToolExporter
 impl awaken_runtime_host::acp_tool_export::AcpToolExporter for awaken_coordinator::mcp_export::SessionToolExporter
-pub fn awaken_coordinator::mcp_export::SessionToolExporter::export<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::acp_tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_coordinator::mcp_export::SessionToolExporter::export_set<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::acp_tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub mod awaken_coordinator::webhooks
 pub use awaken_coordinator::webhooks::<<awaken_webhook_managed::*>>
@@ -147,6 +147,7 @@ pub awaken_coordinator::CoordinatorComponent::managed_router: axum::routing::Rou
 pub awaken_coordinator::CoordinatorComponent::management_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::private_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::router: axum::routing::Router
+pub awaken_coordinator::CoordinatorComponent::work_session_access: alloc::sync::Arc<awaken_protocol_managed::work_session_access::ManagedWorkSessionAccess>
 pub struct awaken_coordinator::CoordinatorDependencies
 pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>
 pub awaken_coordinator::CoordinatorDependencies::default_workspace: alloc::string::String

@@ -56,6 +56,11 @@ pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
                  CREATE UNIQUE INDEX {prefix}_session_projection_unique \
                  ON {prefix}_item (environment_id, data_type, data_id)",
             )?,
+            Migration::new(
+                5,
+                "bind a digest-only per-Session bearer to the current Work lease",
+                "ALTER TABLE {prefix}_item ADD COLUMN session_token_sha256 TEXT",
+            )?,
         ],
     )
 }

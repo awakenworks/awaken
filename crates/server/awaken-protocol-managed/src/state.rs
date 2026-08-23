@@ -65,6 +65,7 @@ pub(crate) use threads::{internal_thread_id, public_thread_id};
 mod types;
 mod vault_rollout;
 mod work_dispatch;
+pub(crate) mod work_session_access;
 
 pub use error::StateError;
 pub use managed_state::ManagedState;

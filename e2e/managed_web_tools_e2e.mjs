@@ -147,8 +147,10 @@ async function main() {
             max_content_tokens: 3,
           }],
         }],
-        plugins: [],
-        plugin_config: {},
+        plugins: ['web_fetch'],
+        plugin_config: {
+          web_fetch: { provider_id: 'awaken-direct', options: {} },
+        },
       });
       await publishAgent(baseURL, 'web-policy-block-search', {
         name: 'Blocked fetch and configured search',
@@ -174,8 +176,9 @@ async function main() {
             },
           }],
         }],
-        plugins: ['web_search'],
+        plugins: ['web_fetch', 'web_search'],
         plugin_config: {
+          web_fetch: { provider_id: 'awaken-direct', options: {} },
           web_search: {
             provider_id: SEARCH_PROVIDER,
             credential: { id: credential.body.id, revision: credential.body.version },
@@ -185,12 +188,14 @@ async function main() {
       });
 
       // Fetch cause/effect graph:
-      // C1 published allow policy+cap3; C2 URL matches; C3 `.pdf` suffix;
-      // C4 published block policy matches. Effects: E1 physical HTTP once;
+      // C1 published allow policy+cap3 and the canonical awaken-direct plugin;
+      // C2 URL matches; C3 `.pdf` suffix; C4 published block policy matches.
+      // Effects: E1 physical HTTP once;
       // E2 non-PDF text=`abc`; E3 `.PDF` legacy text=`abcdef`; E4 block is an
       // error result before HTTP; E7 each Run durably links one use/result/final/idle.
-      // Constraints K1 one publication snapshot, K3 wrapper is sole fetch policy
-      // and raw fetch retains only GET/lossy UTF-8/1MiB, K7 reject has zero I/O.
+      // Constraints K1 one publication snapshot, K3 WebFetchPlugin is the sole
+      // route owner while its configured wrapper is the sole fetch policy and
+      // raw fetch retains only GET/lossy UTF-8/1MiB, K7 reject has zero I/O.
       // Decision table: F1 C1+C2+!C3=>E1+E2+E7; F2 C1+C2+C3=>E1+E3+E7;
       // F3 C4=>E4+E7 with fixture request count unchanged.
       const beforeText = fixture.requests.length;

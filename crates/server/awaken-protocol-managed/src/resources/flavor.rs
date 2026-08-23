@@ -30,7 +30,7 @@ pub(super) fn resource_api_flavor(
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .any(|value| value.trim() == beta_name);
-    match (query_beta.first().is_some(), header_beta) {
+    match (!query_beta.is_empty(), header_beta) {
         (true, true) | (false, true) => Ok(ManagedResourceApiFlavor::Beta),
         (true, false) => Err(format!(
             "`beta=true` requires `anthropic-beta: {beta_name}`"

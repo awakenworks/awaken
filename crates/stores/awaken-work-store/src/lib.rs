@@ -8,18 +8,19 @@
 //! a distinct aggregate from the managed session config. The lease is the store's
 //! own transaction: SQLite claims under a `BEGIN IMMEDIATE` write lock, so a run is
 //! owned by one worker at a time. PostgreSQL locks an environment's work rows so
-//! its single-active decision is atomic across processes. No secret is minted;
-//! `secret` stays `null` on the wire.
+//! its single-active decision is atomic across processes. A Session claim mints
+//! one epoch-bound sessions token and stores only its digest on that same row;
+//! list/retrieve projections never expose it again.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionWorkLease,
-    WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError,
+    WorkItem, WorkMutationResult, WorkQueue, WorkQueueError, WorkSessionAccess,
 };
-
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string())
 }
@@ -52,6 +53,8 @@ fn lease_epoch(current: i64, advance: bool) -> Result<(i64, u64), WorkQueueError
     Ok((i64::try_from(next).map_err(storage)?, next))
 }
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sqlx::Row;
+use sqlx::postgres::{PgPool, PgRow};
 
 // Poll-liveness bookkeeping is shared by the durable stores. Lease authority remains
 // in their rows. The volatile executable specification is never part of a default
@@ -64,6 +67,8 @@ mod inmem;
 pub use inmem::InMemoryWorkQueue;
 mod schema;
 use schema::*;
+mod session_access;
+pub(crate) use session_access::session_token_sha256;
 
 /// SQLite persistence for the environment work queue. Ownership, epoch and expiry
 /// are durable because they are safety authority; only poller liveness is ephemeral.
@@ -106,7 +111,7 @@ impl SqliteWorkQueue {
         tx.execute(
             "UPDATE work_queue_item \
              SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
              WHERE environment_id = ?1 AND state = 'active' \
                AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?2)",
             params![env_id, db_millis(now_ms)],
@@ -203,7 +208,7 @@ impl WorkQueue for SqliteWorkQueue {
             "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
              latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
              stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL WHERE work_id = ?1 AND environment_id = ?2 \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?1 AND environment_id = ?2 \
              AND data_type = 'session' AND data_id = ?3 AND state = 'stopped'",
             params![work_id, env_id, session_id],
         )
@@ -277,7 +282,6 @@ impl WorkQueue for SqliteWorkQueue {
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
             .await
-            .map(|claimed| claimed.map(ClaimedWork::into_item))
     }
 
     async fn claim_with_reclaim(
@@ -287,152 +291,55 @@ impl WorkQueue for SqliteWorkQueue {
         poller_id: &str,
         now_ms: u64,
         age_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
-        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
-            let mut guard = self.conn.lock().map_err(storage)?;
-            let tx = guard
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let cutoff = db_millis(now_ms - age);
-            tx.execute(
-                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
-                 WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
-                params![env_id, cutoff],
-            ).map_err(storage)?;
-            tx.commit().map_err(storage)?;
-        }
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        // Reclaim any lapsed lease first, so a crashed worker doesn't block the env.
-        self.reclaim_lapsed(&tx, env_id, now_ms)?;
-        // Single active lease per environment (the open-tier single-worker cap).
-        let active: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
-                params![env_id],
-                |r| r.get(0),
-            )
-            .map_err(storage)?;
-        if active > 0 {
-            return Ok(None);
-        }
-        // Lease the oldest queued item (ascending seq == enqueue order).
-        let wid: Option<String> = tx
-            .query_row(
-                "SELECT work_id FROM work_queue_item \
-                 WHERE environment_id = ?1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
-                params![env_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
-        let Some(wid) = wid else {
-            return Ok(None);
-        };
-        tx.execute(
-            "UPDATE work_queue_item \
-             SET state = 'active', started_at = ?1, lease_owner = ?2, \
-                 lease_epoch = lease_epoch + 1, lease_expires_ms = ?3, \
-                 lease_refreshed_ms = ?4, latest_heartbeat_at = NULL \
-             WHERE work_id = ?5",
-            params![
-                OBJECT_AT,
-                lease_owner,
-                lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
-                db_millis(now_ms),
-                wid,
-            ],
-        )
-        .map_err(storage)?;
-        let item = Self::owned(&tx, env_id, &wid)?;
-        let Some(item) = item else {
-            return Err(storage("claimed Work disappeared inside its transaction"));
-        };
-        let session_lease = match &item.data {
-            WorkPayload::Session { id } => {
-                let (epoch, expires): (i64, Option<i64>) = tx
-                    .query_row(
-                        "SELECT lease_epoch, lease_expires_ms FROM work_queue_item WHERE work_id = ?1",
-                        params![wid],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .map_err(storage)?;
-                let (_, epoch) = lease_epoch(epoch, false)?;
-                let expires_at_unix_ms = u64::try_from(
-                    expires.ok_or_else(|| storage("active Session Work has no lease expiry"))?,
-                )
-                .map_err(storage)?;
-                Some(SessionWorkLease {
-                    work_id: wid.clone(),
-                    environment_id: env_id.to_string(),
-                    session_id: id.clone(),
-                    owner: lease_owner.to_string(),
-                    epoch,
-                    expires_at_unix_ms,
-                })
-            }
-            WorkPayload::HealthCheck { .. } => None,
-        };
-        tx.commit().map_err(storage)?;
-        Ok(Some(ClaimedWork {
-            item,
-            session_lease,
-        }))
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        Ok(self
+            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, false)?
+            .map(|claim| claim.item))
     }
 
-    async fn current_session_lease(
+    async fn claim_with_session_access(
         &self,
         env_id: &str,
-        session_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
         now_ms: u64,
-    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let guard = self.conn.lock().map_err(storage)?;
-        let row: Option<(String, String, i64, i64)> = guard
-            .query_row(
-                "SELECT work_id, lease_owner, lease_epoch, lease_expires_ms \
-                 FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'session' \
-                 AND data_id = ?2 AND state = 'active' AND lease_expires_ms > ?3",
-                params![env_id, session_id, db_millis(now_ms)],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(storage)?;
-        row.map(|(work_id, owner, epoch, expires)| {
-            let (_, epoch) = lease_epoch(epoch, false)?;
-            Ok(SessionWorkLease {
-                work_id,
-                environment_id: env_id.to_string(),
-                session_id: session_id.to_string(),
-                owner,
-                epoch,
-                expires_at_unix_ms: u64::try_from(expires).map_err(storage)?,
-            })
-        })
-        .transpose()
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        self.claim_inner(
+            env_id,
+            lease_owner,
+            poller_id,
+            now_ms,
+            reclaim_older_than_ms,
+            true,
+        )
     }
 
-    async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
-        let epoch = i64::try_from(lease.epoch).map_err(storage)?;
-        let guard = self.conn.lock().map_err(storage)?;
-        let changed = guard
-            .execute(
-                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, \
-                 lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
-                 WHERE work_id = ?1 AND environment_id = ?2 AND data_type = 'session' \
-                 AND data_id = ?3 AND state = 'active' AND lease_owner = ?4 AND lease_epoch = ?5",
-                params![
-                    lease.work_id,
-                    lease.environment_id,
-                    lease.session_id,
-                    lease.owner,
-                    epoch
-                ],
-            )
-            .map_err(storage)?;
-        Ok(changed == 1)
+    async fn authenticate_session_access(
+        &self,
+        presented: &RedactedString,
+        now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
+        let digest = session_token_sha256(presented);
+        let conn = self.conn.lock().map_err(storage)?;
+        conn.query_row(
+            "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
+             FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
+               AND session_token_sha256 = ?1 AND lease_expires_ms > ?2 LIMIT 1",
+            params![digest, db_millis(now_ms)],
+            |row| {
+                Ok(WorkSessionAccess {
+                    work_id: row.get(0)?,
+                    environment_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    lease_owner: row.get(3)?,
+                    lease_epoch: row.get::<_, u64>(4)?,
+                    expires_at_unix_ms: row.get::<_, u64>(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage)
     }
 
     async fn ack(
@@ -441,34 +348,19 @@ impl WorkQueue for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let Some(current) = Self::owned(&tx, env_id, wid)? else {
-            return Ok(WorkMutationResult::NotFound);
-        };
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT lease_owner FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2",
-                params![wid, env_id],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
-        if owner.as_deref() != Some(worker_id) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        let next = ack_next_state(&current);
-        tx.execute(
-            "UPDATE work_queue_item SET acknowledged_at = ?1, state = ?2 WHERE work_id = ?3",
-            params![OBJECT_AT, next, wid],
+        self.ack_inner(env_id, wid, worker_id, None)
+    }
+
+    async fn ack_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.ack_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
         )
-        .map_err(storage)?;
-        let item = Self::owned(&tx, env_id, wid)?;
-        tx.commit().map_err(storage)?;
-        Ok(item
-            .map(WorkMutationResult::accepted)
-            .unwrap_or(WorkMutationResult::NotFound))
     }
 
     async fn heartbeat(
@@ -479,57 +371,23 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let Some(current) = Self::owned(&tx, env_id, wid)? else {
-            return Ok(HeartbeatResult::NotFound);
-        };
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT lease_owner FROM work_queue_item \
-                 WHERE work_id = ?1 AND environment_id = ?2",
-                params![wid, env_id],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
-        if owner.as_deref() != Some(worker_id) {
-            return Ok(HeartbeatResult::PreconditionFailed);
-        }
-        if !heartbeat
-            .condition
-            .permits(current.latest_heartbeat_at.as_deref())
-        {
-            return Ok(HeartbeatResult::PreconditionFailed);
-        }
-        let extended = current.state.can_extend_lease();
-        let ttl_seconds = effective_ttl_seconds(heartbeat.desired_ttl_seconds);
-        let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
-        if extended {
-            tx.execute(
-                "UPDATE work_queue_item \
-                 SET latest_heartbeat_at = ?1, lease_expires_ms = ?2, lease_refreshed_ms = ?3 \
-                 WHERE work_id = ?4 AND environment_id = ?5 AND state = 'active' \
-                   AND lease_owner = ?6",
-                params![
-                    &last_heartbeat,
-                    lease_expiry(now_ms, ttl_seconds),
-                    db_millis(now_ms),
-                    wid,
-                    env_id,
-                    worker_id
-                ],
-            )
-            .map_err(storage)?;
-        }
-        tx.commit().map_err(storage)?;
-        Ok(HeartbeatResult::Accepted(LeaseReceipt {
-            last_heartbeat,
-            lease_extended: extended,
-            state: current.state,
-            ttl_seconds,
-        }))
+        self.heartbeat_inner(env_id, wid, worker_id, None, now_ms, heartbeat)
+    }
+
+    async fn heartbeat_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        self.heartbeat_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
+            now_ms,
+            heartbeat,
+        )
     }
 
     async fn stop(
@@ -538,36 +396,19 @@ impl WorkQueue for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if Self::owned(&tx, env_id, wid)?.is_none() {
-            return Ok(WorkMutationResult::NotFound);
-        }
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT lease_owner FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2",
-                params![wid, env_id],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
-        if owner.as_deref() != Some(worker_id) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        tx.execute(
-            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
-             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL \
-             WHERE work_id = ?2",
-            params![OBJECT_AT, wid],
+        self.stop_inner(env_id, wid, worker_id, None)
+    }
+
+    async fn stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
         )
-        .map_err(storage)?;
-        let item = Self::owned(&tx, env_id, wid)?;
-        tx.commit().map_err(storage)?;
-        Ok(item
-            .map(WorkMutationResult::accepted)
-            .unwrap_or(WorkMutationResult::NotFound))
     }
 
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
@@ -576,7 +417,7 @@ impl WorkQueue for SqliteWorkQueue {
             .execute(
                 "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
                  state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
                  WHERE data_type = 'session' AND state = 'active' AND lease_owner = ?1",
                 params![worker_owner],
             )
@@ -607,7 +448,7 @@ impl WorkQueue for SqliteWorkQueue {
         tx.execute(
             "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
              state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL WHERE work_id = ?2",
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?2",
             params![OBJECT_AT, work_id],
         )
         .map_err(storage)?;
@@ -784,8 +625,590 @@ impl WorkQueue for SqliteWorkQueue {
     }
 }
 
-mod postgres;
-pub use postgres::PostgresWorkQueue;
+fn pg_row_to_item(row: &PgRow) -> WorkItem {
+    let metadata_json: String = row.get("metadata_json");
+    build_item(
+        row.get("work_id"),
+        row.get("environment_id"),
+        &row.get::<String, _>("data_type"),
+        row.get("data_id"),
+        &metadata_json,
+        &row.get::<String, _>("state"),
+        row.get("acknowledged_at"),
+        row.get("latest_heartbeat_at"),
+        row.get("started_at"),
+        row.get("stop_requested_at"),
+        row.get("stopped_at"),
+    )
+}
+
+/// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
+/// `work_queue` migration scope, for distributed deployments. Claims run in a
+/// transaction that mirrors the SQLite semantics (the single-active-per-env cap);
+/// the transaction locks the environment rows before the single-active decision.
+pub struct PostgresWorkQueue {
+    pool: PgPool,
+    book: LeaseBook,
+}
+
+impl PostgresWorkQueue {
+    /// Connect and apply the work-queue migrations under the `work_queue` namespace.
+    pub async fn connect(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        Self::with_pool(pool).await
+    }
+
+    /// Build from an existing pool: apply the work-queue migrations.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+        let bundle = work_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            pool,
+            book: LeaseBook::default(),
+        })
+    }
+
+    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let bundle = work_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            pool,
+            book: LeaseBook::default(),
+        })
+    }
+
+    async fn insert(
+        &self,
+        env_id: &str,
+        data_type: &str,
+        session_id: Option<&str>,
+    ) -> Result<String, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        // Serialize the portable MAX(seq)+1 allocator. This is infrequent control
+        // plane work and avoids a backend-specific sequence while remaining safe
+        // across processes.
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        if let Some(session_id) = session_id
+            && let Some(existing) = sqlx::query_scalar::<_, String>(
+                "SELECT work_id FROM work_queue_item \
+                 WHERE environment_id = $1 AND data_type = 'session' AND data_id = $2 \
+                 ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(env_id)
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
+        {
+            tx.commit().await.map_err(storage)?;
+            return Ok(existing);
+        }
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let work_id = format!("work_{next:016}");
+        let data_id = session_id.unwrap_or(&work_id).to_string();
+        sqlx::query(
+            "INSERT INTO work_queue_item \
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
+             VALUES ($1, $2, $3, $4, $5, '{}', 'queued')",
+        )
+        .bind(&work_id)
+        .bind(next)
+        .bind(env_id)
+        .bind(data_type)
+        .bind(&data_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
+    }
+
+    async fn fetch_owned(
+        &self,
+        env_id: &str,
+        wid: &str,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        Ok(sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
+        ))
+        .bind(wid)
+        .bind(env_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?
+        .map(|r| pg_row_to_item(&r)))
+    }
+}
+
+#[async_trait]
+impl WorkQueue for PostgresWorkQueue {
+    async fn enqueue_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<String, WorkQueueError> {
+        self.insert(env_id, "session", Some(session_id)).await
+    }
+
+    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
+        let work_id = self.insert(env_id, "session", Some(session_id)).await?;
+        sqlx::query(
+            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
+             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
+             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = $1 AND environment_id = $2 \
+             AND data_type = 'session' AND data_id = $3 AND state = 'stopped'",
+        )
+        .bind(&work_id)
+        .bind(env_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(work_id)
+    }
+
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        self.insert(env_id, "healthcheck", None).await
+    }
+
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            tx.commit().await.map_err(storage)?;
+            return Ok(id);
+        }
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let work_id = format!("work_{next:016}");
+        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued')")
+            .bind(&work_id).bind(next).bind(env_id)
+            .execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
+    }
+
+    async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
+        Ok(sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
+        ))
+        .bind(env_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .iter()
+        .map(pg_row_to_item)
+        .collect())
+    }
+
+    async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn claim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+            .await
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        age_ms: Option<u64>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        Ok(self
+            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, false)
+            .await?
+            .map(|claim| claim.item))
+    }
+
+    async fn claim_with_session_access(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        self.claim_inner(
+            env_id,
+            lease_owner,
+            poller_id,
+            now_ms,
+            reclaim_older_than_ms,
+            true,
+        )
+        .await
+    }
+
+    async fn authenticate_session_access(
+        &self,
+        presented: &RedactedString,
+        now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
+        let digest = session_token_sha256(presented);
+        let row = sqlx::query(
+            "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
+             FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
+               AND session_token_sha256 = $1 AND lease_expires_ms > $2 LIMIT 1",
+        )
+        .bind(digest)
+        .bind(db_millis(now_ms))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            Ok(WorkSessionAccess {
+                work_id: row.try_get(0).map_err(storage)?,
+                environment_id: row.try_get(1).map_err(storage)?,
+                session_id: row.try_get(2).map_err(storage)?,
+                lease_owner: row.try_get(3).map_err(storage)?,
+                lease_epoch: u64::try_from(row.try_get::<i64, _>(4).map_err(storage)?)
+                    .map_err(storage)?,
+                expires_at_unix_ms: u64::try_from(row.try_get::<i64, _>(5).map_err(storage)?)
+                    .map_err(storage)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.ack_inner(env_id, wid, worker_id, None).await
+    }
+
+    async fn ack_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.ack_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
+        )
+        .await
+    }
+
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        self.heartbeat_inner(env_id, wid, worker_id, None, now_ms, heartbeat)
+            .await
+    }
+
+    async fn heartbeat_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        self.heartbeat_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
+            now_ms,
+            heartbeat,
+        )
+        .await
+    }
+
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(env_id, wid, worker_id, None).await
+    }
+
+    async fn stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            Some(access.lease_epoch),
+        )
+        .await
+    }
+
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let released = sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
+             state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+             WHERE data_type = 'session' AND state = 'active' AND lease_owner = $1",
+        )
+        .bind(worker_owner)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?
+        .rows_affected();
+        usize::try_from(released)
+            .map_err(|_| WorkQueueError::Storage("released row count overflow".into()))
+    }
+
+    async fn retire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        let work_id: Option<String> = sqlx::query_scalar(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 \
+             AND data_type = 'session' AND data_id = $2 ORDER BY seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        let Some(work_id) = work_id else {
+            return Ok(None);
+        };
+        sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = $2 AND environment_id = $3",
+        )
+        .bind(OBJECT_AT)
+        .bind(&work_id)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        self.fetch_owned(env_id, &work_id).await
+    }
+
+    async fn acquire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let work_id = self.insert(env_id, "session", Some(session_id)).await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let _: Vec<String> = sqlx::query_scalar(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
+        )
+        .bind(env_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        sqlx::query(
+            "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, \
+             lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+             WHERE environment_id = $1 AND state = 'active' \
+             AND (lease_expires_ms IS NULL OR lease_expires_ms <= $2)",
+        )
+        .bind(env_id)
+        .bind(db_millis(now_ms))
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let current: (String, Option<String>, i64, Option<i64>) = sqlx::query_as(
+            "SELECT state, lease_owner, lease_epoch, lease_expires_ms FROM work_queue_item \
+             WHERE work_id = $1 AND environment_id = $2",
+        )
+        .bind(&work_id)
+        .bind(env_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
+            let owner = current.1.clone().ok_or_else(|| {
+                WorkQueueError::Storage("active Session Work has no lease owner".into())
+            })?;
+            let (_, epoch) = lease_epoch(current.2, false)?;
+            let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
+                .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
+            return Ok(Some(SessionWorkLease {
+                work_id,
+                environment_id: env_id.to_string(),
+                session_id: session_id.to_string(),
+                owner,
+                epoch,
+                expires_at_unix_ms,
+            }));
+        }
+        let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
+            let (_, epoch) = lease_epoch(current.2, false)?;
+            sqlx::query(
+                "UPDATE work_queue_item SET lease_expires_ms = $1, lease_refreshed_ms = $2 \
+                 WHERE work_id = $3 AND environment_id = $4 AND lease_owner = $5",
+            )
+            .bind(lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS))
+            .bind(db_millis(now_ms))
+            .bind(&work_id)
+            .bind(env_id)
+            .bind(worker_owner)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+            epoch
+        } else {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+            )
+            .bind(env_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage)?;
+            if active > 0 || current.0 != "queued" {
+                return Ok(None);
+            }
+            let (epoch_db, epoch) = lease_epoch(current.2, true)?;
+            sqlx::query(
+                "UPDATE work_queue_item SET state = 'active', started_at = $1, \
+                 lease_owner = $2, lease_epoch = $3, lease_expires_ms = $4, \
+                 lease_refreshed_ms = $5, latest_heartbeat_at = NULL WHERE work_id = $6",
+            )
+            .bind(OBJECT_AT)
+            .bind(worker_owner)
+            .bind(epoch_db)
+            .bind(lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS))
+            .bind(db_millis(now_ms))
+            .bind(&work_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+            epoch
+        };
+        tx.commit().await.map_err(storage)?;
+        Ok(Some(SessionWorkLease {
+            work_id,
+            environment_id: env_id.to_string(),
+            session_id: session_id.to_string(),
+            owner: worker_owner.to_string(),
+            epoch,
+            expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
+        }))
+    }
+
+    async fn update_metadata(
+        &self,
+        env_id: &str,
+        wid: &str,
+        patch: BTreeMap<String, Option<String>>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        let Some(mut current) = self.fetch_owned(env_id, wid).await? else {
+            return Ok(None);
+        };
+        apply_metadata_patch(&mut current.metadata, patch);
+        let metadata_json = metadata_str(&current.metadata);
+        sqlx::query(
+            "UPDATE work_queue_item SET metadata_json = $1 WHERE work_id = $2 AND environment_id = $3",
+        )
+        .bind(metadata_json)
+        .bind(wid)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+        let count = |clause: &'static str| {
+            let pool = self.pool.clone();
+            let env = env_id.to_string();
+            async move {
+                sqlx::query_scalar::<_, i64>(&format!(
+                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND {clause}"
+                ))
+                .bind(env)
+                .fetch_one(&pool)
+                .await
+                .map_err(storage)
+                .map(|count| count as usize)
+            }
+        };
+        let depth = count("state = 'queued'").await?;
+        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
+        // Parity with the in-memory queue: oldest persists while processing, and
+        // pollers come from the liveness book (not the active-count proxy).
+        let has_unfinished = depth > 0 || pending > 0;
+        Ok(QueueStats {
+            depth,
+            pending,
+            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            workers_polling: self.book.workers_polling(env_id, now_ms),
+        })
+    }
+
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1",
+        )
+        .bind(env_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        sqlx::query("DELETE FROM work_queue_item WHERE environment_id = $1")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        self.book.forget_env(env_id, &ids);
+        Ok(())
+    }
+}
 
 #[cfg(all(test, not(feature = "loom")))]
 mod tests {
@@ -795,110 +1218,6 @@ mod tests {
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()
-    }
-
-    async fn session_claim_capability_conformance(queue: &dyn WorkQueue, suffix: &str) {
-        let environment = format!("cap-env-{suffix}");
-        let session = format!("cap-session-{suffix}");
-        let work_id = queue
-            .enqueue_session(&environment, &session)
-            .await
-            .expect("C1 enqueue");
-        let first = queue
-            .claim_with_reclaim(&environment, "owner-a", "poller-a", 10, None)
-            .await
-            .expect("C1 claim")
-            .expect("C1 claimed");
-        let lease = first.session_lease.expect("C1 Session lease snapshot");
-        assert_eq!(lease.work_id, work_id, "C1/E1");
-        assert_eq!(lease.session_id, session, "C1/E1");
-        assert_eq!(lease.owner, "owner-a", "C1/E1");
-        assert_eq!(lease.epoch, 1, "C1/E1");
-        assert_eq!(
-            queue
-                .current_session_lease(&environment, &session, 11)
-                .await
-                .expect("C2 read"),
-            Some(lease.clone()),
-            "C2/E2 read is non-renewing"
-        );
-
-        for (rule, mut stale) in [
-            ("C3-owner", lease.clone()),
-            ("C3-epoch", lease.clone()),
-            ("C3-session", lease.clone()),
-        ] {
-            match rule {
-                "C3-owner" => stale.owner = "owner-b".into(),
-                "C3-epoch" => stale.epoch += 1,
-                "C3-session" => stale.session_id = "another-session".into(),
-                _ => unreachable!(),
-            }
-            assert!(!queue.release_claim(&stale).await.expect(rule), "{rule}/E3");
-        }
-        assert!(queue.release_claim(&lease).await.expect("C4"), "C4/E4");
-        assert_eq!(
-            queue
-                .get(&environment, &work_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            WorkState::Queued,
-            "C4/E4"
-        );
-        let second = queue
-            .claim_with_reclaim(&environment, "owner-b", "poller-b", 20, None)
-            .await
-            .unwrap()
-            .unwrap()
-            .session_lease
-            .unwrap();
-        assert_eq!(second.epoch, lease.epoch + 1, "C5/E5");
-        assert!(!queue.release_claim(&lease).await.unwrap(), "C5/E6");
-        assert_eq!(
-            queue
-                .current_session_lease(&environment, &session, 21)
-                .await
-                .unwrap(),
-            Some(second.clone()),
-            "C5/E6"
-        );
-        assert!(queue.release_claim(&second).await.unwrap(), "cleanup");
-
-        let health_environment = format!("cap-health-{suffix}");
-        queue
-            .enqueue_healthcheck(&health_environment)
-            .await
-            .unwrap();
-        let health = queue
-            .claim_with_reclaim(&health_environment, "owner", "poller", 0, None)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(health.session_lease.is_none(), "C6/E7");
-        queue.remove_env(&environment).await.unwrap();
-        queue.remove_env(&health_environment).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn atomic_session_claim_and_exact_compensation_match_all_local_backends() {
-        // Cause/effect graph: C1 Session versus HealthCheck payload; C2 live
-        // read; C3 owner/epoch/session mismatch; C4 exact compensation; C5 a
-        // later reclaim; C6 HealthCheck claim. Effects: E1 atomic Session lease
-        // snapshot, E2 non-renewing read, E3 mismatches cannot release, E4 exact
-        // claim returns queued, E5 epoch advances, E6 stale proof cannot release
-        // the new owner, E7 HealthCheck grants no Session authority.
-        //
-        // | Rule | payload/current tuple | effect |
-        // | C1 | Session/exact | item plus exact lease |
-        // | C2 | live read | same snapshot, no renewal |
-        // | C3 | any tuple mismatch | false, state unchanged |
-        // | C4 | all tuple fields exact | true, queued |
-        // | C5 | new owner/epoch | old proof fenced |
-        // | C6 | HealthCheck | no Session lease |
-        session_claim_capability_conformance(&q(), "sqlite").await;
-        session_claim_capability_conformance(&InMemoryWorkQueue::new(), "inmem").await;
     }
 
     #[test]
@@ -957,23 +1276,6 @@ mod tests {
             q.claim_with_reclaim("env", "worker", "worker", 1, Some(1))
                 .await
                 .map(|_| ()),
-        );
-        is_storage(
-            q.current_session_lease("env", "session", 0)
-                .await
-                .map(|_| ()),
-        );
-        is_storage(
-            q.release_claim(&SessionWorkLease {
-                work_id: "work".into(),
-                environment_id: "env".into(),
-                session_id: "session".into(),
-                owner: "worker".into(),
-                epoch: 1,
-                expires_at_unix_ms: 1,
-            })
-            .await
-            .map(|_| ()),
         );
         is_storage(q.ack("env", "work", "worker").await.map(|_| ()));
         is_storage(
@@ -1098,8 +1400,8 @@ mod tests {
             .await
             .expect("claim query")
             .expect("requested reclaim age reclaims the active lease");
-        assert_eq!(reclaimed.item.id, w1);
-        assert_eq!(reclaimed.item.state, WorkState::Active);
+        assert_eq!(reclaimed.id, w1);
+        assert_eq!(reclaimed.state, WorkState::Active);
     }
 
     #[tokio::test]
@@ -1141,6 +1443,118 @@ mod tests {
                 "the durable lease is reclaimable at its exact expiry"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
+        // Cause/effect graph: C1 HealthCheck versus Session payload; C2 token is
+        // current/corrupt; C3 store remains open/reopens; C4 lease is live/expires
+        // and is reclaimed. Effects: E1 only a Session claim returns a token;
+        // E2 only its digest is durable and the clear token authenticates after
+        // reopen; E3 wrong and expired tokens fail; E4 reclaim rotates the token
+        // and invalidates the prior epoch; C5 a request authenticated immediately
+        // before reclaim arrives after the epoch rotated. Constraints: K1 the Work row is the
+        // sole lease/token authority; K2 list/get cannot re-deliver cleartext.
+        // Decision rows T1=C1(health)->no token, T2=C1(session)+C2(current)->E1/E2,
+        // T3=C2(corrupt)->E3, T4=C3(reopen)+C4(live)->E2,
+        // T5=C4(expired/reclaimed)->E3/E4, T6=C5->PreconditionFailed without
+        // mutating the replacement lease.
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-work-token-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("queue.db");
+        let path = path.to_str().unwrap();
+        let (work_id, token, first_access) = {
+            let q = SqliteWorkQueue::open(path).expect("open first store");
+            let health = q.enqueue_healthcheck("env").await.unwrap();
+            q.enqueue_session("env", "sesn_1").await.unwrap();
+            let claimed = q
+                .claim_with_session_access("env", "owner-a", "poller", 0, None)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(claimed.item.id, health, "T1");
+            assert!(claimed.sessions_token.is_none(), "T1");
+            q.stop("env", &health, "owner-a").await.unwrap();
+            let claimed = q
+                .claim_with_session_access("env", "owner-a", "poller", 1, None)
+                .await
+                .unwrap()
+                .unwrap();
+            let token = claimed.sessions_token.expect("T2 session token");
+            let first_access = q
+                .authenticate_session_access(&token, 2)
+                .await
+                .unwrap()
+                .expect("T2 current access");
+            assert!(
+                q.authenticate_session_access(
+                    &RedactedString::from("sk-ant-req-wrong".to_string()),
+                    2,
+                )
+                .await
+                .unwrap()
+                .is_none(),
+                "T3"
+            );
+            (claimed.item.id, token, first_access)
+        };
+        let reopened = SqliteWorkQueue::open(path).expect("reopen store");
+        assert!(
+            reopened
+                .authenticate_session_access(&token, LEASE_TTL_MS)
+                .await
+                .unwrap()
+                .is_some(),
+            "T4"
+        );
+        let replacement = reopened
+            .claim_with_session_access("env", "owner-b", "poller-b", LEASE_TTL_MS + 1, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let replacement_token = replacement.sessions_token.expect("T5 replacement token");
+        assert_eq!(replacement.item.id, work_id, "T5 same Work");
+        assert!(
+            reopened
+                .authenticate_session_access(&token, LEASE_TTL_MS + 1)
+                .await
+                .unwrap()
+                .is_none(),
+            "T5 stale token"
+        );
+        let replacement_access = reopened
+            .authenticate_session_access(&replacement_token, LEASE_TTL_MS + 1)
+            .await
+            .unwrap()
+            .expect("T5 replacement token");
+        assert!(
+            matches!(
+                reopened
+                    .stop_with_session_access(&first_access)
+                    .await
+                    .unwrap(),
+                WorkMutationResult::PreconditionFailed
+            ),
+            "T6 stale epoch cannot stop replacement"
+        );
+        assert!(
+            reopened
+                .heartbeat_with_session_access(
+                    &replacement_access,
+                    LEASE_TTL_MS + 2,
+                    LeaseHeartbeat::unconditional(),
+                )
+                .await
+                .unwrap()
+                .into_receipt()
+                .is_some(),
+            "T6 replacement epoch remains live"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1292,8 +1706,6 @@ mod tests {
             .expect("schema pool");
         let q = PostgresWorkQueue::with_pool(pool).await.expect("store");
 
-        session_claim_capability_conformance(&q, "postgres").await;
-
         let hc = q.enqueue_healthcheck("env_a").await.expect("enqueue");
         let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
         let w2 = q.enqueue_session("env_a", "s2").await.expect("enqueue");
@@ -1356,6 +1768,69 @@ mod tests {
             Some("v")
         );
         assert!(q.stop("env_a", &hc, "w").await.expect("stop").is_accepted());
+        let session_claim = q
+            .claim_with_session_access("env_a", "w", "w", 1, None)
+            .await
+            .expect("session claim")
+            .expect("queued Session");
+        let token = session_claim
+            .sessions_token
+            .as_ref()
+            .expect("Postgres Session claim token");
+        let access = q
+            .authenticate_session_access(token, 1)
+            .await
+            .expect("token lookup")
+            .expect("current token");
+        assert_eq!(access.work_id, w1);
+        assert_eq!(access.session_id, "s1");
+        // Cause/effect graph for the Postgres capability parity row: C1 epoch
+        // one expires; C2 the same Work is reclaimed under epoch two; C3 an
+        // authenticated epoch-one mutation arrives late. Effects: E1 the old
+        // proof is fenced, E2 the epoch-two proof remains live. Constraint K1
+        // the row lock + lease_epoch is the sole mutation authority. Decision
+        // row PT1=C1+C2+C3->E1+E2.
+        let replacement = q
+            .claim_with_session_access(
+                "env_a",
+                "w-replacement",
+                "w-replacement",
+                LEASE_TTL_MS + 1,
+                None,
+            )
+            .await
+            .expect("replacement claim")
+            .expect("expired Work reclaimed");
+        let replacement_access = q
+            .authenticate_session_access(
+                replacement
+                    .sessions_token
+                    .as_ref()
+                    .expect("replacement token"),
+                LEASE_TTL_MS + 1,
+            )
+            .await
+            .expect("replacement lookup")
+            .expect("replacement access");
+        assert!(
+            matches!(
+                q.stop_with_session_access(&access).await.unwrap(),
+                WorkMutationResult::PreconditionFailed
+            ),
+            "PT1/E1"
+        );
+        assert!(
+            q.heartbeat_with_session_access(
+                &replacement_access,
+                LEASE_TTL_MS + 2,
+                LeaseHeartbeat::unconditional(),
+            )
+            .await
+            .unwrap()
+            .into_receipt()
+            .is_some(),
+            "PT1/E2"
+        );
         q.remove_env("env_a").await.unwrap();
         assert!(
             q.list("env_a").await.expect("list").is_empty(),

@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use awaken_agent_contract::RedactedString;
 
 /// The frozen object timestamp the managed wire uses (single-machine builds have
 /// no real clock in the *projection*; wire timestamps carry presence, not wall
@@ -244,6 +245,31 @@ pub struct WorkItem {
     pub stopped_at: Option<String>,
 }
 
+/// A freshly claimed Work item plus the one-time per-Session bearer minted by
+/// the authoritative WorkQueue transaction. The cleartext is returned only by
+/// `poll`; list/retrieve projections continue to expose `secret: null`.
+#[derive(Clone, Debug)]
+pub struct ClaimedWork {
+    pub item: WorkItem,
+    pub sessions_token: Option<RedactedString>,
+}
+
+/// Current Work lease recovered from a presented per-Session bearer.
+///
+/// The token is not a Worker identity or a second lease. This projection
+/// carries the exact owner/epoch already persisted by the WorkQueue so protocol
+/// adapters can authorize downstream Session calls and map heartbeat/stop back
+/// onto the same lease owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkSessionAccess {
+    pub work_id: String,
+    pub environment_id: String,
+    pub session_id: String,
+    pub lease_owner: String,
+    pub lease_epoch: u64,
+    pub expires_at_unix_ms: u64,
+}
+
 /// Durable authority currently binding one Session work item to one Worker.
 /// This value is intentionally not part of the Managed wire object: public
 /// workers use the standard header/heartbeat protocol, while Awaken's private
@@ -259,32 +285,6 @@ pub struct SessionWorkLease {
     pub epoch: u64,
     pub expires_at_unix_ms: u64,
 }
-
-/// One atomic WorkQueue claim result.
-///
-/// Session work carries the exact lease snapshot installed by the same store
-/// transaction as `queued -> active`. Health checks intentionally carry no
-/// Session authority. Keeping this beside [`WorkItem`] prevents a protocol
-/// adapter from re-reading mutable lease state and accidentally minting a
-/// capability for a later claimant.
-#[derive(Clone, Debug)]
-pub struct ClaimedWork {
-    pub item: WorkItem,
-    pub session_lease: Option<SessionWorkLease>,
-}
-
-impl ClaimedWork {
-    #[must_use]
-    pub fn into_item(self) -> WorkItem {
-        self.item
-    }
-}
-
-/// Authenticated proof stamped by the Coordinator edge after it has verified a
-/// Session work capability against the current WorkQueue lease. Inner protocol
-/// guards may trust this marker; bearer-token parsing alone must never create it.
-#[derive(Clone, Debug)]
-pub struct VerifiedSessionWorkLease(pub SessionWorkLease);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionWorkOwnership {
@@ -555,31 +555,72 @@ pub trait WorkQueue: Send + Sync {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
         let _ = reclaim_older_than_ms;
         let _ = poller_id;
-        self.claim(env_id, lease_owner, now_ms)
-            .await
-            .map(|claimed| {
-                claimed.map(|item| ClaimedWork {
-                    item,
-                    session_lease: None,
-                })
-            })
+        self.claim(env_id, lease_owner, now_ms).await
     }
-    /// Read the current live Session lease without acquiring, renewing, or
-    /// otherwise changing authority. Used only after a bounded token hint has
-    /// identified the Session whose signed capability must be verified.
-    async fn current_session_lease(
+    /// Claim through the public self-hosted Worker protocol and atomically mint
+    /// a per-Session bearer when the selected item is Session work. Durable
+    /// implementations persist only its digest beside the lease and return the
+    /// cleartext once in [`ClaimedWork`].
+    async fn claim_with_session_access(
         &self,
         env_id: &str,
-        session_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
         now_ms: u64,
-    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
-    /// Compensate a failed post-claim capability mint. The release succeeds
-    /// only for the exact active `(work, environment, session, owner, epoch)`
-    /// snapshot, so it can never return a later claimant's work to the queue.
-    async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        Ok(self
+            .claim_with_reclaim(
+                env_id,
+                lease_owner,
+                poller_id,
+                now_ms,
+                reclaim_older_than_ms,
+            )
+            .await?
+            .map(|item| ClaimedWork {
+                item,
+                sessions_token: None,
+            }))
+    }
+    /// Authenticate one presented per-Session bearer against the current live
+    /// Work lease. Expired, reclaimed, stopped, retired, or replaced leases
+    /// return `None`; implementations never retain the cleartext.
+    async fn authenticate_session_access(
+        &self,
+        _presented: &RedactedString,
+        _now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
+        Ok(None)
+    }
+    /// Apply an acknowledgement only while the exact lease epoch recovered
+    /// from a sessions token is still current. Backends that do not issue
+    /// sessions tokens fail closed unless they explicitly implement this seam.
+    async fn ack_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        Ok(WorkMutationResult::PreconditionFailed)
+    }
+    /// Extend only the exact lease epoch recovered from a sessions token.
+    async fn heartbeat_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+        _now_ms: u64,
+        _heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        Ok(HeartbeatResult::PreconditionFailed)
+    }
+    /// Stop only the exact lease epoch recovered from a sessions token.
+    async fn stop_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        Ok(WorkMutationResult::PreconditionFailed)
+    }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(
         &self,

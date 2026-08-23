@@ -150,6 +150,13 @@ async function main() {
   const httpPort = BASE_PORT + 1;
   const adminPort = BASE_PORT + 2;
   const env = deploymentEnv(serveRoot, {
+    // Split-surface identity decision. C1 this scenario observes only the
+    // deployment-owned readiness/metrics/drain listeners; C2 no IAM behavior
+    // is under test. C1+C2 => select the canonical no-login mode so unrelated
+    // Cloud OAuth cannot preempt topology startup. Constraint K: authentication
+    // matrices retain sole ownership of identity behavior. Rule I1=C1+C2=>boot
+    // the exact split surface; I2=identity scenarios=>use their own fixture.
+    identityMode: 'no-login',
     controlSealKey: SEAL_KEY,
     fields: {
       bind: `127.0.0.1:${httpPort}`,

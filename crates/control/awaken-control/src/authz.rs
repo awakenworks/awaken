@@ -1300,14 +1300,14 @@ pub async fn management_guard(
     req: Request,
     next: Next,
 ) -> Response {
-    if req
-        .extensions()
-        .get::<awaken_session_contract::work_queue::VerifiedSessionWorkLease>()
-        .is_some()
-    {
+    if is_public_protocol_discovery(req.method(), req.uri().path()) {
         return next.run(req).await;
     }
-    if is_public_protocol_discovery(req.method(), req.uri().path()) {
+    // The outer Managed Work guard has already authenticated the current lease,
+    // classified this exact route, and stamped its Workspace. Do not reinterpret
+    // the same bearer as a management API token; the extension is unforgeable by
+    // an HTTP caller and is absent from every non-Work route.
+    if has_work_session_access(&req) {
         return next.run(req).await;
     }
     // Fail closed on an unmapped route: the guard only wraps the management
@@ -1445,14 +1445,12 @@ pub async fn cloud_management_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
-    if req
-        .extensions()
-        .get::<awaken_session_contract::work_queue::VerifiedSessionWorkLease>()
-        .is_some()
-    {
+    if is_public_protocol_discovery(req.method(), req.uri().path()) {
         return next.run(req).await;
     }
-    if is_public_protocol_discovery(req.method(), req.uri().path()) {
+    // See `management_guard`: the WorkQueue-backed edge has already verified
+    // this Work bearer and its exact Workspace before generic Cloud IAM runs.
+    if has_work_session_access(&req) {
         return next.run(req).await;
     }
     let Some(route) = action_for(req.method(), req.uri().path()) else {
@@ -1994,6 +1992,8 @@ mod migration_tests;
 #[cfg(test)]
 #[path = "authz/model_supply_tests.rs"]
 mod model_supply_tests;
+mod work_session;
+use work_session::has_work_session_access;
 #[cfg(test)]
 #[path = "authz_tests.rs"]
 mod tests;

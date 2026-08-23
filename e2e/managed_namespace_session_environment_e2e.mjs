@@ -178,14 +178,16 @@ async function main() {
   // Causes: C1 the selected tier is Local or available Namespace; C2 a first
   // Run realizes the Session environment; C3 File/Repository bindings are
   // rejected, attached, replaced, or detached across later Runs; C4 Namespace
-  // execution restarts after a hard process loss. Effects: E1 all Runs reuse one
+  // execution restarts after a hard process loss; C5 the fixture explicitly
+  // selects no-login. Effects: E1 all Runs reuse one
   // workspace; E2 every accepted generation exposes only its current paths and
   // access policy; E3 C4 adopts the same durable environment; E4 terminal delete
-  // releases it. Constraints/invariants: the Session baseline and Resource
+  // releases it; E5 unrelated Cloud IAM cannot affect this sandbox test.
+  // Constraints/invariants: the Session baseline and Resource
   // generations are the only projection authorities; tier-specific fixture
   // paths cannot create an attempt-local or fallback mount truth. Decision rules:
   // N0 unavailable Namespace=>skip; N1 C1+C2=>E1; N2 N1+C3=>E1+E2;
-  // N3 N2+C4=>E3; N4 terminal delete=>E4.
+  // N3 N2+C4=>E3; N4 terminal delete=>E4; N5=C5=>E5.
   assert.ok(['local', 'namespace'].includes(TIER), `unsupported Session environment tier: ${TIER}`);
   if (TIER === 'namespace' && !bwrapAvailable()) {
     console.log('E2E SKIP: bwrap/unprivileged userns unavailable on this host.');
@@ -199,6 +201,7 @@ async function main() {
   fs.mkdirSync(`${home}/.awaken`, { recursive: true });
   fs.writeFileSync(`${home}/.awaken/config.toml`, [
     `data_dir = ${JSON.stringify(`${TMP}/storage`)}`,
+    'identity_mode = "no-login"',
     `sandbox_tier = ${JSON.stringify(TIER)}`,
     `sandbox_dir = ${JSON.stringify(`${TMP}/sandboxes`)}`,
     '',

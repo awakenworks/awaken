@@ -43,13 +43,8 @@ pub use common::headers::{
 };
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
-mod session_work_capability;
 pub use resources::{
     ResourcesRouterInput, files_router, memory_stores_router, resources_router, skills_router,
-};
-pub use session_work_capability::{
-    MIN_SESSION_WORK_CAPABILITY_TTL_SECONDS, SESSION_WORK_SCOPE,
-    SessionWorkCapabilityConfiguration, SessionWorkCapabilityConfigurationError,
 };
 
 /// Managed Environment wire projection over the Control-owned
@@ -64,6 +59,7 @@ mod tunnel;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 mod work_queue;
+mod work_session_access;
 
 pub use inference_policy::{
     InferenceGeoCheckpoint, InferenceGeoPolicyError, ManagedInferenceGeoPolicy, inference_geo_name,
@@ -83,7 +79,6 @@ pub use routes::credential_rollouts::{
 pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
 pub use routes::environments::{
     EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
-    environment_work_router_with_capability,
 };
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{VaultState, vault_router};
@@ -94,3 +89,4 @@ pub use routes::{
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use state::{ManagedState, StateError};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
+pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

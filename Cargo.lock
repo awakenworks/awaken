@@ -440,7 +440,6 @@ dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
- "awaken-iam-server",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -484,7 +483,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "tokio",
@@ -722,7 +720,6 @@ dependencies = [
  "awaken-worker-runtime",
  "awaken-worker-transport-security",
  "axum",
- "base64 0.22.1",
  "http-body-util",
  "reqwest 0.12.28",
  "rusqlite",
@@ -951,6 +948,7 @@ name = "awaken-environment-execution-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -1580,8 +1578,6 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-skills",
  "awaken-file-store",
- "awaken-iam-contract",
- "awaken-iam-server",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
@@ -2488,13 +2484,17 @@ name = "awaken-work-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
+ "awaken-iam-core",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "base64 0.22.1",
  "loom",
  "proptest",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
 ]

@@ -241,8 +241,10 @@ async fn prepare_control_process_with_model_supply(
         &deployment.org_id,
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
+        awaken_iam_client::CredentialCache::open(),
         managed_services.entitlement_provider.take(),
-    )?;
+    )
+    .await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
@@ -311,7 +313,6 @@ async fn prepare_control_process_with_model_supply(
             cloud_native_credential_realization: None,
             repository_transport_authorizer: None,
             inference_materializer: None,
-            session_work_capability: None,
             worker_directory: None,
             runtime_authority: None,
             worker_observations: Some(worker_observations),

@@ -21,8 +21,14 @@ loom = []
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
 # for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-contract = { workspace = true }
+awaken-agent-contract.workspace = true
+# Reuse the platform's canonical OS CSPRNG seam; WorkStore owns no parallel
+# token directory or IAM policy, only one lease-bound opaque secret digest.
+awaken-iam-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
 rusqlite = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 # The portable scoped-migration bundle (one `work_queue` schema, both backends).

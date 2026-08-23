@@ -10,9 +10,7 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{
-    RawTool, Tool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolRecoveryCapability,
-};
+use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use awaken_runtime_contract::{CredentialMaterial, CredentialRef, CredentialUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -185,84 +183,6 @@ fn url_matches_filter(url: &url::Url, filter: &WebDomainFilter) -> bool {
     match filter {
         WebDomainFilter::Allow(domains) => domains.iter().any(|domain| matches(domain)),
         WebDomainFilter::Block(domains) => !domains.iter().any(|domain| matches(domain)),
-    }
-}
-
-/// Existing Session Hand executor narrowed by the Agent's WebFetch settings.
-/// The wrapper is placement-neutral: Workdir, Namespace, Container, Native,
-/// and ACP all keep their current executor while sharing one pre/post policy.
-pub struct ConfiguredWebToolExecutor {
-    inner: Arc<dyn ToolExecutor>,
-    web_fetch: WebFetchExecutionConfiguration,
-}
-
-impl ConfiguredWebToolExecutor {
-    #[must_use]
-    pub fn new(inner: Arc<dyn ToolExecutor>, web_fetch: WebFetchExecutionConfiguration) -> Self {
-        Self { inner, web_fetch }
-    }
-}
-
-fn truncate_text_blocks(output: &mut ToolOutput, max_bytes: usize) {
-    let mut remaining = max_bytes;
-    for block in &mut output.content {
-        let awaken_runtime_contract::ContentBlock::Text { text } = block else {
-            continue;
-        };
-        if text.len() <= remaining {
-            remaining -= text.len();
-            continue;
-        }
-        let mut boundary = remaining.min(text.len());
-        while boundary > 0 && !text.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        text.truncate(boundary);
-        remaining = 0;
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for ConfiguredWebToolExecutor {
-    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
-        self.inner.recovery_capability(tool_id)
-    }
-
-    async fn invoke(
-        &self,
-        call: &awaken_runtime_contract::tool::ToolCall,
-    ) -> Result<ToolOutput, ToolError> {
-        if call.tool_id != "web_fetch" {
-            return self.inner.invoke(call).await;
-        }
-        let configuration = &self.web_fetch;
-        let url = call
-            .arguments
-            .get("url")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("url is required".into()))?;
-        let url = url::Url::parse(url)
-            .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
-        if let Some(filter) = &configuration.domains
-            && !url_matches_filter(&url, filter)
-        {
-            return Err(ToolError::Execution(
-                "web_fetch URL is outside the configured domain policy".into(),
-            ));
-        }
-        let mut output = self.inner.invoke(call).await?;
-        if let Some(max_content_tokens) = configuration.max_content_tokens
-            // Binary content is not part of the configured text-context cap.
-            // Structured binary blocks are already ignored below; preserve the
-            // explicit PDF URL case for legacy executors that return lossy text.
-            && !url.path().to_ascii_lowercase().ends_with(".pdf")
-        {
-            truncate_text_blocks(
-                &mut output,
-                usize::try_from(max_content_tokens).unwrap_or(usize::MAX),
-            );
-        }
-        Ok(output)
     }
 }
 
@@ -961,7 +881,7 @@ pub struct WebSearchPlugin {
 
 enum ConfiguredSearchRoute {
     Host(Vec<(RegisteredWebSearchProvider, WebProviderTarget)>),
-    ProviderServer(WebServerToolProviderDescriptor, Value),
+    ProviderServer(Box<WebServerToolProviderDescriptor>, Value),
 }
 
 impl WebSearchPlugin {
@@ -1008,7 +928,7 @@ impl WebSearchPlugin {
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
             return Ok(ConfiguredSearchRoute::ProviderServer(
-                provider.clone(),
+                Box::new(provider.clone()),
                 config.options,
             ));
         }
@@ -1070,14 +990,17 @@ impl WebSearchPlugin {
                     ),
                 )
             }
-            ConfiguredSearchRoute::ProviderServer(provider, options) => (
-                web_search_descriptor().with_provider_server_tool(
-                    provider.provider_kind,
-                    provider.tool_type,
-                    options,
-                ),
-                erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
-            ),
+            ConfiguredSearchRoute::ProviderServer(provider, options) => {
+                let provider = *provider;
+                (
+                    web_search_descriptor().with_provider_server_tool(
+                        provider.provider_kind,
+                        provider.tool_type,
+                        options,
+                    ),
+                    erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
+                )
+            }
         };
         Ok((descriptor, tool))
     }
@@ -1167,14 +1090,16 @@ pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
     Vec::new()
 }
 
+#[derive(Clone)]
 pub struct WebFetchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+    execution_configuration: Option<WebFetchExecutionConfiguration>,
 }
 
 enum ConfiguredFetchRoute {
     Host(Vec<(RegisteredWebFetchProvider, WebProviderTarget)>),
-    ProviderServer(WebServerToolProviderDescriptor, Value),
+    ProviderServer(Box<WebServerToolProviderDescriptor>, Value),
 }
 
 impl WebFetchPlugin {
@@ -1185,7 +1110,17 @@ impl WebFetchPlugin {
         Self {
             registry,
             credentials,
+            execution_configuration: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_execution_configuration(
+        mut self,
+        configuration: Option<WebFetchExecutionConfiguration>,
+    ) -> Self {
+        self.execution_configuration = configuration;
+        self
     }
 
     pub fn default_config() -> Value {
@@ -1213,7 +1148,7 @@ impl WebFetchPlugin {
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error))?;
             return Ok(ConfiguredFetchRoute::ProviderServer(
-                provider.clone(),
+                Box::new(provider.clone()),
                 config.options,
             ));
         }
@@ -1276,19 +1211,23 @@ impl WebFetchPlugin {
                         RoutedWebFetchTool {
                             targets,
                             credentials: self.credentials.clone(),
+                            execution_configuration: self.execution_configuration.clone(),
                         },
                         ToolExecutionTarget::Brain,
                     ),
                 ))
             }
-            ConfiguredFetchRoute::ProviderServer(provider, options) => Ok((
-                web_fetch_descriptor().with_provider_server_tool(
-                    provider.provider_kind,
-                    provider.tool_type,
-                    options,
-                ),
-                erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
-            )),
+            ConfiguredFetchRoute::ProviderServer(provider, options) => {
+                let provider = *provider;
+                Ok((
+                    web_fetch_descriptor().with_provider_server_tool(
+                        provider.provider_kind,
+                        provider.tool_type,
+                        options,
+                    ),
+                    erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
+                ))
+            }
         }
     }
 }
@@ -1333,6 +1272,7 @@ struct ConfiguredFetchTarget {
 struct RoutedWebFetchTool {
     targets: Vec<ConfiguredFetchTarget>,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+    execution_configuration: Option<WebFetchExecutionConfiguration>,
 }
 
 #[async_trait]
@@ -1343,6 +1283,18 @@ impl Tool for RoutedWebFetchTool {
     const DESCRIPTION: &'static str = "Fetch a URL through the configured platform provider";
 
     async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
+        let url = url::Url::parse(&args.url)
+            .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
+        if let Some(filter) = self
+            .execution_configuration
+            .as_ref()
+            .and_then(|configuration| configuration.domains.as_ref())
+            && !url_matches_filter(&url, filter)
+        {
+            return Err(ToolError::Execution(
+                "web_fetch URL is outside the configured domain policy".into(),
+            ));
+        }
         let mut last_unavailable = None;
         for target in &self.targets {
             let credential = resolve_credential(
@@ -1364,7 +1316,23 @@ impl Tool for RoutedWebFetchTool {
                 )
                 .await
             {
-                Ok(body) => return Ok(body),
+                Ok(mut body) => {
+                    if let Some(max_content_tokens) = self
+                        .execution_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.max_content_tokens)
+                        && !url.path().to_ascii_lowercase().ends_with(".pdf")
+                    {
+                        let mut boundary = usize::try_from(max_content_tokens)
+                            .unwrap_or(usize::MAX)
+                            .min(body.len());
+                        while boundary > 0 && !body.is_char_boundary(boundary) {
+                            boundary -= 1;
+                        }
+                        body.truncate(boundary);
+                    }
+                    return Ok(body);
+                }
                 Err(error @ ToolError::UnavailableBeforeDispatch(_)) => {
                     last_unavailable = Some(error)
                 }
@@ -1656,12 +1624,28 @@ mod tests {
         })
     }
 
-    struct EchoExecutor;
+    struct FakeFetchProvider {
+        seen_urls: Mutex<Vec<String>>,
+    }
 
     #[async_trait]
-    impl ToolExecutor for EchoExecutor {
-        async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-            Ok(ToolOutput::ok(&call.call_id, "abcdef"))
+    impl WebFetchProvider for FakeFetchProvider {
+        fn descriptor(&self) -> WebFetchProviderDescriptor {
+            WebFetchProviderDescriptor {
+                id: "fixture-fetch".into(),
+                label: "Fixture fetch".into(),
+                credential: WebSearchCredentialRequirement::None,
+                options_schema: json!({ "type": "object" }),
+            }
+        }
+
+        async fn fetch(
+            &self,
+            request: WebFetchRequest,
+            _credential: Option<&CredentialMaterial>,
+        ) -> Result<String, ToolError> {
+            self.seen_urls.lock().unwrap().push(request.url);
+            Ok("abcdef".into())
         }
     }
 
@@ -1743,25 +1727,25 @@ mod tests {
     }
 
     /// Web configuration cause/effect graph: one normalized ToolPolicyOverride
-    /// selects the WebFetch executor policy or WebSearch provider policy. Fetch
-    /// checks domains before invoking the existing placement executor and caps
+    /// selects the WebFetch or WebSearch provider policy. Fetch checks domains
+    /// before invoking its configured provider and caps
     /// text afterward; Search sends location to the provider and filters results.
     ///
     /// Decision table:
     /// | Rule | tool | domain | setting | effect |
-    /// | W1 | web_fetch | allowed | max=3 | inner invoked; text capped |
-    /// | W2 | web_fetch | outside allowlist | any | reject before inner invoke |
-    /// | W3 | non-web | n/a | fetch config present | unchanged delegation |
+    /// | W1 | web_fetch | allowed | max=3 | provider invoked; text capped |
+    /// | W2 | web_fetch | outside allowlist | any | reject before provider invoke |
+    /// | W3 | web_fetch | allowed | config absent | full provider result |
     /// | W4 | web_fetch | allowed `.PDF` URL | max=3 | legacy text projection is not policy-capped |
     /// | W5 | web_search | blocked result | location present | provider sees location; result removed |
-    /// | W6 | web_fetch | unrestricted | max=0 | inner invoked; text capped to empty |
+    /// | W6 | web_fetch | unrestricted | max=0 | provider invoked; text capped to empty |
     /// | W7 | web_fetch | wrong config tag | any | reject before executor construction |
     /// | W8 | web_search | unknown config field | any | reject before provider construction |
     /// Constraints/invariants: policy is normalized once, domain rejection
-    /// precedes I/O, the wrapper is the only Agent policy owner, `.pdf` legacy
-    /// text bypasses its context cap while the raw fetch retains its 1 MiB safety
-    /// ceiling, and malformed opaque configuration never widens into an
-    /// unconfigured Web tool.
+    /// precedes I/O, WebFetchPlugin is the only route and Agent-policy owner,
+    /// `.pdf` legacy text bypasses its context cap while the direct provider
+    /// retains its 1 MiB safety ceiling, and malformed opaque configuration
+    /// never widens into an unconfigured Web tool.
     #[tokio::test]
     async fn normalized_web_configuration_controls_existing_execution_edges() {
         use awaken_runtime_contract::agent_bindings::{
@@ -1841,9 +1825,29 @@ mod tests {
             "W8"
         );
 
-        let executor = ConfiguredWebToolExecutor::new(Arc::new(EchoExecutor), fetch);
-        let allowed = executor
-            .invoke(&ToolCall {
+        let fetch_provider = Arc::new(FakeFetchProvider {
+            seen_urls: Mutex::new(Vec::new()),
+        });
+        let mut fetch_registry = WebSearchProviderRegistry::default();
+        fetch_registry
+            .register_fetch(fetch_provider.clone())
+            .unwrap();
+        let fetch_plugin = WebFetchPlugin::new(fetch_registry, None);
+        let fetch_tool = |configuration| {
+            fetch_plugin
+                .clone()
+                .with_execution_configuration(configuration)
+                .configured_tool(Some(&json!({
+                    "provider_id": "fixture-fetch",
+                    "options": {}
+                })))
+                .unwrap()
+                .1
+        };
+
+        let configured = fetch_tool(Some(fetch.clone()));
+        let allowed = configured
+            .invoke(ToolCall {
                 call_id: "fetch-allowed".into(),
                 tool_id: "web_fetch".into(),
                 arguments: json!({ "url": "https://guide.docs.example.com/start" }),
@@ -1852,8 +1856,8 @@ mod tests {
             .unwrap();
         assert_eq!(allowed.text(), "abc", "W1");
         assert!(
-            executor
-                .invoke(&ToolCall {
+            configured
+                .invoke(ToolCall {
                     call_id: "fetch-blocked".into(),
                     tool_id: "web_fetch".into(),
                     arguments: json!({ "url": "https://example.net" }),
@@ -1862,17 +1866,18 @@ mod tests {
                 .is_err(),
             "W2"
         );
-        let other = executor
-            .invoke(&ToolCall {
-                call_id: "read".into(),
-                tool_id: "read".into(),
-                arguments: json!({}),
+        assert_eq!(fetch_provider.seen_urls.lock().unwrap().len(), 1, "W2");
+        let unrestricted = fetch_tool(None)
+            .invoke(ToolCall {
+                call_id: "fetch-unrestricted".into(),
+                tool_id: "web_fetch".into(),
+                arguments: json!({ "url": "https://example.net" }),
             })
             .await
             .unwrap();
-        assert_eq!(other.text(), "abcdef", "W3");
-        let pdf = executor
-            .invoke(&ToolCall {
+        assert_eq!(unrestricted.text(), "abcdef", "W3");
+        let pdf = configured
+            .invoke(ToolCall {
                 call_id: "fetch-pdf".into(),
                 tool_id: "web_fetch".into(),
                 arguments: json!({ "url": "https://docs.example.com/guide.PDF" }),
@@ -1881,14 +1886,11 @@ mod tests {
             .unwrap();
         assert_eq!(pdf.text(), "abcdef", "W4");
 
-        let zero_cap = ConfiguredWebToolExecutor::new(
-            Arc::new(EchoExecutor),
-            WebFetchExecutionConfiguration {
-                domains: None,
-                max_content_tokens: Some(0),
-            },
-        )
-        .invoke(&ToolCall {
+        let zero_cap = fetch_tool(Some(WebFetchExecutionConfiguration {
+            domains: None,
+            max_content_tokens: Some(0),
+        }))
+        .invoke(ToolCall {
             call_id: "fetch-zero-cap".into(),
             tool_id: "web_fetch".into(),
             arguments: json!({ "url": "https://example.net" }),

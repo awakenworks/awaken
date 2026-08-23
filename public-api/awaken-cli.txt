@@ -52,8 +52,11 @@ pub struct awaken_cli::config::CloudIamConfig
 pub awaken_cli::config::CloudIamConfig::access_token: core::option::Option<alloc::string::String>
 pub awaken_cli::config::CloudIamConfig::audience: alloc::string::String
 pub awaken_cli::config::CloudIamConfig::base_url: alloc::string::String
+pub awaken_cli::config::CloudIamConfig::developer_key_file: core::option::Option<std::path::PathBuf>
 pub awaken_cli::config::CloudIamConfig::inference_base_url: alloc::string::String
 pub awaken_cli::config::CloudIamConfig::issuer: alloc::string::String
+pub awaken_cli::config::CloudIamConfig::oauth_client_id: alloc::string::String
+pub awaken_cli::config::CloudIamConfig::oauth_redirect_uri: alloc::string::String
 pub awaken_cli::config::CloudIamConfig::service_token: core::option::Option<alloc::string::String>
 pub awaken_cli::config::CloudIamConfig::service_token_file: core::option::Option<std::path::PathBuf>
 impl core::fmt::Debug for awaken_cli::config::CloudIamConfig
@@ -114,6 +117,7 @@ pub awaken_cli::config::ResolvedDeployment::worker_trust_credentials_file: core:
 impl awaken_cli::config::ResolvedDeployment
 pub fn awaken_cli::config::ResolvedDeployment::apply_local_acp_observations(&mut self, alloc::vec::Vec<awaken_acp_application::host_discovery::AcpHostObservation>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::config::ResolvedDeployment::ensure_data_layout(&self) -> core::result::Result<(), alloc::string::String>
+impl awaken_cli::config::ResolvedDeployment
 pub fn awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides) -> core::result::Result<Self, alloc::string::String>
 impl awaken_cli::config::ResolvedDeployment
 pub fn awaken_cli::config::ResolvedDeployment::report(&self, bool) -> alloc::string::String

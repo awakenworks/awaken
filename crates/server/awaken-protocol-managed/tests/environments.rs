@@ -2,18 +2,13 @@
 //! the work lifecycle (list / poll / ack / heartbeat / stop / stats) including the
 //! single-active-lease (open-tier single-worker) cap.
 
-use awaken_protocol_managed::{
-    SessionWorkCapabilityConfiguration, environment_authoring_router, environment_work_router,
-    environment_work_router_with_capability,
-};
+use awaken_protocol_managed::{environment_authoring_router, environment_work_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-
-use base64::Engine as _;
 
 fn app() -> Router {
     let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
@@ -922,145 +917,6 @@ async fn executable_registration_seeds_work_only_for_self_hosted_environments() 
     )
     .await;
     assert!(cloud_work["data"].as_array().unwrap().is_empty(), "R2");
-}
-
-#[tokio::test]
-async fn session_poll_mints_a_distinct_capability_and_compensates_signing_failure() {
-    // Cause/effect graph: C1 HealthCheck versus Session; C2 KMS/signing succeeds
-    // or fails; C3 a failed claim is retried; C4 Environment credential K is the
-    // poll authority. Effects: E1 HealthCheck has no secret; E2 Session receives
-    // a signed token distinct from K with exact subject/scope/epoch; E3 signing
-    // failure returns 503 and atomically releases only that claim; E4 retry can
-    // reclaim at the next epoch without duplicate Work.
-    //
-    // | Rule | payload | signer | effect |
-    // | S1 | HealthCheck | any | no secret |
-    // | S2 | Session | fails | 503 plus exact compensation |
-    // | S3 | same Session retry | healthy | one claim, fenced token |
-    use awaken_iam_server::{
-        AccessTokenAuthority, CapabilityClaims, LocalSeedSigner, Signer, SignerError,
-        decode_unverified_claims, ed25519_public_jwk,
-    };
-    use awaken_session_application::SessionEnvironmentSource;
-
-    struct FailingSigner;
-
-    #[async_trait::async_trait]
-    impl Signer for FailingSigner {
-        fn kid(&self) -> &str {
-            "failing-session-work"
-        }
-
-        fn public_jwk(&self) -> awaken_iam_contract::JsonWebKey {
-            ed25519_public_jwk(self.kid(), [0x41; 32])
-        }
-
-        async fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, SignerError> {
-            Err(SignerError("fixture outage".into()))
-        }
-    }
-
-    let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
-    let create =
-        environment_authoring_router(authoring).merge(environment_work_router(execution.clone()));
-    let environment_id = make_env(&create).await;
-    let (status, health) = call_with_lease_headers(
-        &create,
-        "GET",
-        &format!("/v1/environments/{environment_id}/work/poll?block_ms="),
-        Some("worker-1"),
-        Some("environment-key"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "S1");
-    assert!(
-        health.get("secret").is_none() || health["secret"].is_null(),
-        "S1/E1"
-    );
-    let health_id = health["id"].as_str().unwrap();
-    assert_eq!(
-        call_with_lease_headers(
-            &create,
-            "POST",
-            &format!("/v1/environments/{environment_id}/work/{health_id}/stop"),
-            None,
-            Some("environment-key"),
-            None,
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    SessionEnvironmentSource::enqueue_session_work(
-        execution.as_ref(),
-        &environment_id,
-        "session-1",
-    )
-    .await
-    .unwrap();
-
-    let failing = SessionWorkCapabilityConfiguration::new(
-        AccessTokenAuthority::new(FailingSigner),
-        "urn:test",
-        "managed-session-worker",
-        600,
-    )
-    .unwrap();
-    let failing_app = environment_work_router_with_capability(execution.clone(), Some(failing));
-    assert_eq!(
-        call_with_lease_headers(
-            &failing_app,
-            "GET",
-            &format!("/v1/environments/{environment_id}/work/poll?block_ms="),
-            Some("worker-1"),
-            Some("environment-key"),
-            None,
-        )
-        .await
-        .0,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "S2/E3"
-    );
-
-    let authority = AccessTokenAuthority::new(LocalSeedSigner::new("work-key", [0x52; 32]));
-    let healthy = SessionWorkCapabilityConfiguration::new(
-        authority,
-        "urn:test",
-        "managed-session-worker",
-        600,
-    )
-    .unwrap();
-    let healthy_app =
-        environment_work_router_with_capability(execution.clone(), Some(healthy.clone()));
-    let (status, session_work) = call_with_lease_headers(
-        &healthy_app,
-        "GET",
-        &format!("/v1/environments/{environment_id}/work/poll?block_ms="),
-        Some("worker-1"),
-        Some("environment-key"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "S3/E4");
-    let encoded = session_work["secret"].as_str().expect("S3 secret");
-    let secret: Value = serde_json::from_slice(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(encoded)
-            .unwrap(),
-    )
-    .unwrap();
-    let token = secret["sessions_token"].as_str().unwrap();
-    assert_ne!(token, "environment-key", "S3/E2");
-    assert!(secret["api_base_url"].is_null(), "S3/E2");
-    let claims: CapabilityClaims = decode_unverified_claims(token).unwrap();
-    assert_eq!(claims.sub, "session-1", "S3/E2");
-    assert_eq!(
-        claims.scope,
-        [awaken_protocol_managed::SESSION_WORK_SCOPE],
-        "S3/E2"
-    );
-    assert_eq!(claims.epoch.0, 2, "S3/E4");
 }
 
 #[tokio::test]

@@ -7,14 +7,17 @@
 //
 // Test design. Causes: C1=a binary-safe Skill v1 is published and selected
 // exactly or by latest; C2=v2 supersedes it; C3=the process restarts; C4=the
-// durable aggregate is corrupt. Effects: E1=old Sessions retain v1 while new
+// durable aggregate is corrupt; C5=the fixture explicitly selects self-managed
+// IAM so its admin authoring proof is local and deterministic.
+// Effects: E1=old Sessions retain v1 while new
 // Sessions resolve v2; E2=bundle bytes and exact version survive restart;
 // E3=C4 fails closed before projection/execution; E4=the Managed filesystem
 // prompt advertises only metadata/path, the model loads the frozen body through
-// `read`, and no list_skills/Skill parallel path is used. Constraints/invariant:
-// one Skill aggregate plus each Session's frozen pin own version selection.
+// `read`, and no list_skills/Skill parallel path is used; E5=unrelated Cloud IAM
+// cannot affect this Resource test. Constraints/invariant: one Skill aggregate
+// plus each Session's frozen pin own version selection.
 // Decision rules: S1=C1=>E1(v1); S2=C1+C2=>old-v1/new-v2;
-// S3=S2+C3=>E2; S4=C4=>E3; S5=C1+filesystem tools=>E4.
+// S3=S2+C3=>E2; S4=C4=>E3; S5=C1+filesystem tools=>E4; S6=C5=>E5.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -170,6 +173,7 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(managementDir)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    'identity_mode = "self-managed"',
     'sandbox_tier = "local"',
     '',
   ].join('\n'));

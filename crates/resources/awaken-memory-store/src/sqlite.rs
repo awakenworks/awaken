@@ -39,7 +39,7 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation, sha256_hex,
+    MemoryVersionOperation, VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -226,14 +226,17 @@ fn next_counter(tx: &rusqlite::Transaction<'_>, name: &str, seed_sql: &str) -> R
 
 fn append_version(
     tx: &rusqlite::Transaction<'_>,
-    store: &str,
-    memory_id: &str,
-    operation: MemoryVersionOperation,
-    path: &str,
-    content: Option<&str>,
-    created: i64,
-    actor: Option<&MemoryActor>,
+    append: VersionAppend<'_>,
 ) -> Result<MemoryVersion, MemErr> {
+    let VersionAppend {
+        store,
+        memory_id,
+        operation,
+        path,
+        content,
+        created,
+        actor,
+    } = append;
     let ordinal = next_counter(
         tx,
         "memory_version",
@@ -436,13 +439,15 @@ impl MemoryRepository for SqliteMemoryRepository {
             .map_err(mem_err)?;
             append_version(
                 &tx,
-                &store,
-                &id,
-                MemoryVersionOperation::Created,
-                &path,
-                Some(&content),
-                now,
-                actor.as_ref(),
+                VersionAppend {
+                    store: &store,
+                    memory_id: &id,
+                    operation: MemoryVersionOperation::Created,
+                    path: &path,
+                    content: Some(&content),
+                    created: now,
+                    actor: actor.as_ref(),
+                },
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -562,24 +567,28 @@ impl MemoryRepository for SqliteMemoryRepository {
             if let Some(displaced_id) = displaced_id {
                 append_version(
                     &tx,
-                    &store,
-                    &displaced_id,
-                    MemoryVersionOperation::Deleted,
-                    &requested_path,
-                    None,
-                    now,
-                    actor.as_ref(),
+                    VersionAppend {
+                        store: &store,
+                        memory_id: &displaced_id,
+                        operation: MemoryVersionOperation::Deleted,
+                        path: &requested_path,
+                        content: None,
+                        created: now,
+                        actor: actor.as_ref(),
+                    },
                 )?;
             }
             append_version(
                 &tx,
-                &store,
-                &id,
-                MemoryVersionOperation::Modified,
-                &requested_path,
-                Some(&content),
-                now,
-                actor.as_ref(),
+                VersionAppend {
+                    store: &store,
+                    memory_id: &id,
+                    operation: MemoryVersionOperation::Modified,
+                    path: &requested_path,
+                    content: Some(&content),
+                    created: now,
+                    actor: actor.as_ref(),
+                },
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -656,25 +665,29 @@ impl MemoryRepository for SqliteMemoryRepository {
             if let Some(displaced_id) = displaced_id {
                 append_version(
                     &tx,
-                    &store,
-                    &displaced_id,
-                    MemoryVersionOperation::Deleted,
-                    &to,
-                    None,
-                    now,
-                    None,
+                    VersionAppend {
+                        store: &store,
+                        memory_id: &displaced_id,
+                        operation: MemoryVersionOperation::Deleted,
+                        path: &to,
+                        content: None,
+                        created: now,
+                        actor: None,
+                    },
                 )?;
             }
             let content = String::from_utf8(content).map_err(mem_err)?;
             append_version(
                 &tx,
-                &store,
-                &id,
-                MemoryVersionOperation::Modified,
-                &to,
-                Some(&content),
-                now,
-                None,
+                VersionAppend {
+                    store: &store,
+                    memory_id: &id,
+                    operation: MemoryVersionOperation::Modified,
+                    path: &to,
+                    content: Some(&content),
+                    created: now,
+                    actor: None,
+                },
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -723,13 +736,15 @@ impl MemoryRepository for SqliteMemoryRepository {
             .map_err(mem_err)?;
             append_version(
                 &tx,
-                &store,
-                &memory_id,
-                MemoryVersionOperation::Deleted,
-                &path,
-                None,
-                now_nanos() as i64,
-                actor.as_ref(),
+                VersionAppend {
+                    store: &store,
+                    memory_id: &memory_id,
+                    operation: MemoryVersionOperation::Deleted,
+                    path: &path,
+                    content: None,
+                    created: now_nanos() as i64,
+                    actor: actor.as_ref(),
+                },
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(())
@@ -789,13 +804,15 @@ impl MemoryRepository for SqliteMemoryRepository {
             .map_err(mem_err)?;
             append_version(
                 &tx,
-                &store,
-                &base_id,
-                MemoryVersionOperation::Deleted,
-                &path,
-                None,
-                now_nanos() as i64,
-                None,
+                VersionAppend {
+                    store: &store,
+                    memory_id: &base_id,
+                    operation: MemoryVersionOperation::Deleted,
+                    path: &path,
+                    content: None,
+                    created: now_nanos() as i64,
+                    actor: None,
+                },
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(true)

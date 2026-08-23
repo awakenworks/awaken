@@ -35,7 +35,6 @@ mod inference_publication_tests;
 mod managed_application;
 mod managed_lifecycle;
 pub mod mcp_export;
-mod session_work_capability;
 pub use managed_application::install_managed_agent_coordination;
 pub use managed_lifecycle::{ManagedLifecycleCompositionError, install_managed_lifecycle_delivery};
 mod runtime_authority;
@@ -58,7 +57,6 @@ pub use coordinator_persistence::{
 };
 pub use extraction_references::ReferenceIndexedMemoryExtractions;
 pub use runtime_authority::postgres_local_commit;
-pub use session_work_capability::SessionWorkCapabilityGuard;
 
 use std::sync::Arc;
 

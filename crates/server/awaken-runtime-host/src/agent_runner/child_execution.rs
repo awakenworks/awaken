@@ -26,8 +26,7 @@ use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
 
 use super::{AgentRunError, AgentRunSandbox, usage_from_committed};
 use crate::config::{
-    build_runtime_with_authorization, configured_web_fetch_executor, effective_tool_authorization,
-    latest_assistant_text,
+    build_runtime_with_authorization, effective_tool_authorization, latest_assistant_text,
 };
 
 /// A child task must not outlive the parent future that owns its delegation
@@ -290,6 +289,27 @@ pub(crate) async fn run_configured_agent_until_boundary(
             ),
         ));
     }
+    if config
+        .resolved_spec
+        .plugin_ids
+        .iter()
+        .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
+    {
+        let plugin = adapters.web_fetch.clone().ok_or_else(|| {
+            AgentRunError::Configuration(
+                "a child publication selects WebFetch but the Host has no WebFetch adapter"
+                    .to_string(),
+            )
+        })?;
+        runtime = runtime.with_plugin(Arc::new(
+            (*plugin).clone().with_execution_configuration(
+                awaken_ext_builtin_tools::web_fetch_execution_configuration(
+                    &config.resolved_spec.plugin_config.agent.toolsets,
+                )
+                .map_err(AgentRunError::Configuration)?,
+            ),
+        ));
+    }
     if let Some(service) = run_delegation {
         runtime = runtime.with_run_delegation(service);
     }
@@ -298,14 +318,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             "an Agent Run requires commit and history wiring".to_string(),
         ));
     }
-    let context = context.with_tool_executor(
-        configured_web_fetch_executor(
-            Some(current_tool_executor),
-            &config.resolved_spec.plugin_config.agent.toolsets,
-        )
-        .map_err(AgentRunError::Configuration)?
-        .expect("an Agent Run sandbox always supplies its current Hand executor"),
-    );
+    let context = context.with_tool_executor(current_tool_executor);
     let parent_reader = context.reader.clone().expect("checked above");
     // A root dispatch attempt reads through a claim-scoped projection containing
     // only the parent Thread. A local durable child instead reads the complete
@@ -527,6 +540,8 @@ pub(crate) struct ChildExecutionAdapters {
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_search: Option<Arc<awaken_ext_builtin_tools::WebSearchPlugin>>,
+    /// The same host-configured plugin instance shape used by a root Native Run.
+    /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_fetch: Option<Arc<awaken_ext_builtin_tools::WebFetchPlugin>>,
 }
 

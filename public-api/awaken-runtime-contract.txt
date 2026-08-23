@@ -1064,6 +1064,10 @@ pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) 
 pub struct awaken_runtime_contract::resolved::PresentedTools
 pub awaken_runtime_contract::resolved::PresentedTools::deferred: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_runtime_contract::resolved::PresentedTools::face: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub struct awaken_runtime_contract::resolved::ProviderServerTool
+pub awaken_runtime_contract::resolved::ProviderServerTool::parameters: serde_json::value::Value
+pub awaken_runtime_contract::resolved::ProviderServerTool::provider_kind: alloc::string::String
+pub awaken_runtime_contract::resolved::ProviderServerTool::tool_type: alloc::string::String
 pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
@@ -1110,6 +1114,7 @@ pub awaken_runtime_contract::resolved::ToolDescriptor::description: alloc::strin
 pub awaken_runtime_contract::resolved::ToolDescriptor::id: alloc::string::String
 pub awaken_runtime_contract::resolved::ToolDescriptor::kind: awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime_contract::resolved::ToolDescriptor::parameters: awaken_runtime_contract::resolved::ToolSchema
+pub awaken_runtime_contract::resolved::ToolDescriptor::provider_server_tool: core::option::Option<awaken_runtime_contract::resolved::ProviderServerTool>
 pub awaken_runtime_contract::resolved::ToolDescriptor::recovery_policy: awaken_runtime_contract::tool::ToolRecoveryPolicy
 impl awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::client_executed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
@@ -1120,7 +1125,10 @@ pub fn awaken_runtime_contract::resolved::ToolDescriptor::model_parameters(&self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::try_pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_kind(self, awaken_runtime_contract::resolved::ToolKind) -> Self
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_provider_server_tool(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_recovery(self, awaken_runtime_contract::tool::ToolRecoveryPolicy) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_runtime_contract::resolved::ToolFacet
 pub awaken_runtime_contract::resolved::ToolFacet::alias: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::resolved::ToolFacet::defer: bool

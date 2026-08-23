@@ -290,6 +290,18 @@ pub awaken_protocol_managed::types::environment::WorkData::HealthCheck
 pub awaken_protocol_managed::types::environment::WorkData::HealthCheck::id: alloc::string::String
 pub awaken_protocol_managed::types::environment::WorkData::Session
 pub awaken_protocol_managed::types::environment::WorkData::Session::id: alloc::string::String
+pub enum awaken_protocol_managed::types::environment::WorkHeartbeatObjectType
+pub awaken_protocol_managed::types::environment::WorkHeartbeatObjectType::WorkHeartbeat
+pub enum awaken_protocol_managed::types::environment::WorkObjectType
+pub awaken_protocol_managed::types::environment::WorkObjectType::Work
+pub enum awaken_protocol_managed::types::environment::WorkQueueStatsObjectType
+pub awaken_protocol_managed::types::environment::WorkQueueStatsObjectType::WorkQueueStats
+pub enum awaken_protocol_managed::types::environment::WorkState
+pub awaken_protocol_managed::types::environment::WorkState::Active
+pub awaken_protocol_managed::types::environment::WorkState::Queued
+pub awaken_protocol_managed::types::environment::WorkState::Starting
+pub awaken_protocol_managed::types::environment::WorkState::Stopped
+pub awaken_protocol_managed::types::environment::WorkState::Stopping
 pub struct awaken_protocol_managed::types::environment::AllowedHost(_)
 impl awaken_protocol_managed::types::environment::AllowedHost
 pub fn awaken_protocol_managed::types::environment::AllowedHost::into_inner(self) -> alloc::string::String
@@ -302,7 +314,7 @@ pub struct awaken_protocol_managed::types::environment::Environment
 pub awaken_protocol_managed::types::environment::Environment::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::config: awaken_environment_contract::EnvironmentConfig
 pub awaken_protocol_managed::types::environment::Environment::created_at: alloc::string::String
-pub awaken_protocol_managed::types::environment::Environment::description: alloc::string::String
+pub awaken_protocol_managed::types::environment::Environment::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::id: alloc::string::String
 pub awaken_protocol_managed::types::environment::Environment::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::name: alloc::string::String
@@ -342,34 +354,121 @@ pub awaken_protocol_managed::types::environment::PackagesUpdateParams::go: core:
 pub awaken_protocol_managed::types::environment::PackagesUpdateParams::kind: core::option::Option<awaken_protocol_managed::types::environment::PackagesKind>
 pub awaken_protocol_managed::types::environment::PackagesUpdateParams::npm: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::environment::PackageSpec>>>
 pub awaken_protocol_managed::types::environment::PackagesUpdateParams::pip: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::environment::PackageSpec>>>
+pub struct awaken_protocol_managed::types::environment::RequiredNullable<T>(pub core::option::Option<T>)
+impl<T> core::convert::From<core::option::Option<T>> for awaken_protocol_managed::types::environment::RequiredNullable<T>
+pub fn awaken_protocol_managed::types::environment::RequiredNullable<T>::from(core::option::Option<T>) -> Self
 pub struct awaken_protocol_managed::types::environment::Work
-pub awaken_protocol_managed::types::environment::Work::acknowledged_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::acknowledged_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Work::created_at: alloc::string::String
 pub awaken_protocol_managed::types::environment::Work::data: awaken_protocol_managed::types::environment::WorkData
 pub awaken_protocol_managed::types::environment::Work::environment_id: alloc::string::String
 pub awaken_protocol_managed::types::environment::Work::id: alloc::string::String
-pub awaken_protocol_managed::types::environment::Work::latest_heartbeat_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::latest_heartbeat_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Work::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_protocol_managed::types::environment::Work::object_type: &'static str
-pub awaken_protocol_managed::types::environment::Work::secret: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::environment::Work::started_at: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::environment::Work::state: &'static str
-pub awaken_protocol_managed::types::environment::Work::stop_requested_at: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::environment::Work::stopped_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::object_type: awaken_protocol_managed::types::environment::WorkObjectType
+pub awaken_protocol_managed::types::environment::Work::secret: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::started_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::state: awaken_protocol_managed::types::environment::WorkState
+pub awaken_protocol_managed::types::environment::Work::stop_requested_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
+pub awaken_protocol_managed::types::environment::Work::stopped_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
 pub struct awaken_protocol_managed::types::environment::WorkHeartbeat
 pub awaken_protocol_managed::types::environment::WorkHeartbeat::last_heartbeat: alloc::string::String
 pub awaken_protocol_managed::types::environment::WorkHeartbeat::lease_extended: bool
-pub awaken_protocol_managed::types::environment::WorkHeartbeat::object_type: &'static str
-pub awaken_protocol_managed::types::environment::WorkHeartbeat::state: &'static str
+pub awaken_protocol_managed::types::environment::WorkHeartbeat::object_type: awaken_protocol_managed::types::environment::WorkHeartbeatObjectType
+pub awaken_protocol_managed::types::environment::WorkHeartbeat::state: awaken_protocol_managed::types::environment::WorkState
 pub awaken_protocol_managed::types::environment::WorkHeartbeat::ttl_seconds: u64
 pub struct awaken_protocol_managed::types::environment::WorkQueueStats
 pub awaken_protocol_managed::types::environment::WorkQueueStats::depth: usize
-pub awaken_protocol_managed::types::environment::WorkQueueStats::object_type: &'static str
-pub awaken_protocol_managed::types::environment::WorkQueueStats::oldest_queued_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::WorkQueueStats::object_type: awaken_protocol_managed::types::environment::WorkQueueStatsObjectType
+pub awaken_protocol_managed::types::environment::WorkQueueStats::oldest_queued_at: awaken_protocol_managed::types::environment::RequiredNullable<alloc::string::String>
 pub awaken_protocol_managed::types::environment::WorkQueueStats::pending: usize
-pub awaken_protocol_managed::types::environment::WorkQueueStats::workers_polling: i64
+pub awaken_protocol_managed::types::environment::WorkQueueStats::workers_polling: awaken_protocol_managed::types::environment::RequiredNullable<i64>
+pub struct awaken_protocol_managed::types::environment::WorkSecret
+pub awaken_protocol_managed::types::environment::WorkSecret::api_base_url: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::WorkSecret::sessions_token: alloc::string::String
+pub struct awaken_protocol_managed::types::environment::WorkStopParams
+pub awaken_protocol_managed::types::environment::WorkStopParams::force: core::option::Option<bool>
 pub struct awaken_protocol_managed::types::environment::WorkUpdateParams
-pub awaken_protocol_managed::types::environment::WorkUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
+pub awaken_protocol_managed::types::environment::WorkUpdateParams::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>
+pub mod awaken_protocol_managed::types::file
+pub enum awaken_protocol_managed::types::file::DeletedFileObjectType
+pub awaken_protocol_managed::types::file::DeletedFileObjectType::FileDeleted
+pub enum awaken_protocol_managed::types::file::FileObjectType
+pub awaken_protocol_managed::types::file::FileObjectType::File
+pub enum awaken_protocol_managed::types::file::FileScopeObjectType
+pub awaken_protocol_managed::types::file::FileScopeObjectType::Session
+pub struct awaken_protocol_managed::types::file::BetaFileListParams
+pub awaken_protocol_managed::types::file::BetaFileListParams::after_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::file::BetaFileListParams::before_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::file::BetaFileListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::file::BetaFileListParams::scope_id: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::file::BetaFileMetadata
+pub awaken_protocol_managed::types::file::BetaFileMetadata::created_at: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileMetadata::downloadable: core::option::Option<bool>
+pub awaken_protocol_managed::types::file::BetaFileMetadata::filename: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileMetadata::id: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileMetadata::kind: awaken_protocol_managed::types::file::FileObjectType
+pub awaken_protocol_managed::types::file::BetaFileMetadata::mime_type: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileMetadata::scope: core::option::Option<awaken_protocol_managed::types::file::BetaFileScope>
+pub awaken_protocol_managed::types::file::BetaFileMetadata::size_bytes: u64
+pub struct awaken_protocol_managed::types::file::BetaFileScope
+pub awaken_protocol_managed::types::file::BetaFileScope::id: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileScope::kind: awaken_protocol_managed::types::file::FileScopeObjectType
+pub struct awaken_protocol_managed::types::file::DeletedFile
+pub awaken_protocol_managed::types::file::DeletedFile::id: alloc::string::String
+pub awaken_protocol_managed::types::file::DeletedFile::kind: awaken_protocol_managed::types::file::DeletedFileObjectType
+pub struct awaken_protocol_managed::types::file::FileExpirySeconds(_)
+impl awaken_protocol_managed::types::file::FileExpirySeconds
+pub const awaken_protocol_managed::types::file::FileExpirySeconds::MAX: u64
+pub const awaken_protocol_managed::types::file::FileExpirySeconds::MIN: u64
+pub const fn awaken_protocol_managed::types::file::FileExpirySeconds::get(self) -> u64
+pub fn awaken_protocol_managed::types::file::FileExpirySeconds::new(u64) -> core::result::Result<Self, alloc::string::String>
+pub struct awaken_protocol_managed::types::file::FileListParams
+pub awaken_protocol_managed::types::file::FileListParams::ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_protocol_managed::types::file::FileListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::file::FileListParams::page: core::option::Option<alloc::string::String>
+impl awaken_protocol_managed::types::file::FileListParams
+pub fn awaken_protocol_managed::types::file::FileListParams::from_query(&str) -> core::result::Result<Self, alloc::string::String>
+pub struct awaken_protocol_managed::types::file::FileMetadata
+pub awaken_protocol_managed::types::file::FileMetadata::created_at: alloc::string::String
+pub awaken_protocol_managed::types::file::FileMetadata::downloadable: core::option::Option<bool>
+pub awaken_protocol_managed::types::file::FileMetadata::expires_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::file::FileMetadata::filename: alloc::string::String
+pub awaken_protocol_managed::types::file::FileMetadata::id: alloc::string::String
+pub awaken_protocol_managed::types::file::FileMetadata::kind: awaken_protocol_managed::types::file::FileObjectType
+pub awaken_protocol_managed::types::file::FileMetadata::mime_type: alloc::string::String
+pub awaken_protocol_managed::types::file::FileMetadata::size_bytes: u64
+pub mod awaken_protocol_managed::types::memory
+pub enum awaken_protocol_managed::types::memory::MemoryActor
+pub awaken_protocol_managed::types::memory::MemoryActor::ApiActor
+pub awaken_protocol_managed::types::memory::MemoryActor::ApiActor::api_key_id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryActor::ServiceAccountActor
+pub awaken_protocol_managed::types::memory::MemoryActor::ServiceAccountActor::service_account_id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryActor::SessionActor
+pub awaken_protocol_managed::types::memory::MemoryActor::SessionActor::session_id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryActor::UserActor
+pub awaken_protocol_managed::types::memory::MemoryActor::UserActor::user_id: alloc::string::String
+pub enum awaken_protocol_managed::types::memory::MemoryVersionObjectType
+pub awaken_protocol_managed::types::memory::MemoryVersionObjectType::MemoryVersion
+pub enum awaken_protocol_managed::types::memory::MemoryVersionOperation
+pub awaken_protocol_managed::types::memory::MemoryVersionOperation::Created
+pub awaken_protocol_managed::types::memory::MemoryVersionOperation::Deleted
+pub awaken_protocol_managed::types::memory::MemoryVersionOperation::Modified
+pub struct awaken_protocol_managed::types::memory::AuthenticatedMemoryActor(pub awaken_resource_contract::MemoryActor)
+pub struct awaken_protocol_managed::types::memory::MemoryVersion
+pub awaken_protocol_managed::types::memory::MemoryVersion::content: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::memory::MemoryVersion::content_sha256: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::memory::MemoryVersion::content_size_bytes: core::option::Option<u64>
+pub awaken_protocol_managed::types::memory::MemoryVersion::created_at: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryVersion::created_by: core::option::Option<awaken_protocol_managed::types::memory::MemoryActor>
+pub awaken_protocol_managed::types::memory::MemoryVersion::id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryVersion::kind: awaken_protocol_managed::types::memory::MemoryVersionObjectType
+pub awaken_protocol_managed::types::memory::MemoryVersion::memory_id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryVersion::memory_store_id: alloc::string::String
+pub awaken_protocol_managed::types::memory::MemoryVersion::operation: awaken_protocol_managed::types::memory::MemoryVersionOperation
+pub awaken_protocol_managed::types::memory::MemoryVersion::path: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::memory::MemoryVersion::redacted_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::memory::MemoryVersion::redacted_by: core::option::Option<awaken_protocol_managed::types::memory::MemoryActor>
 pub mod awaken_protocol_managed::types::page
 pub struct awaken_protocol_managed::types::page::Page<T>
 pub awaken_protocol_managed::types::page::Page::data: alloc::vec::Vec<T>
@@ -908,6 +1007,72 @@ pub awaken_protocol_managed::types::session::Usage::list_cost: core::option::Opt
 pub awaken_protocol_managed::types::session::Usage::output_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
 pub type awaken_protocol_managed::types::session::McpServer = awaken_protocol_managed::types::agent::AgentMcpServer
+pub mod awaken_protocol_managed::types::skill
+pub enum awaken_protocol_managed::types::skill::DeletedSkillObjectType
+pub awaken_protocol_managed::types::skill::DeletedSkillObjectType::SkillDeleted
+pub enum awaken_protocol_managed::types::skill::DeletedSkillVersionObjectType
+pub awaken_protocol_managed::types::skill::DeletedSkillVersionObjectType::SkillVersionDeleted
+pub enum awaken_protocol_managed::types::skill::SkillObjectType
+pub awaken_protocol_managed::types::skill::SkillObjectType::Skill
+pub enum awaken_protocol_managed::types::skill::SkillSource
+pub awaken_protocol_managed::types::skill::SkillSource::Anthropic
+pub awaken_protocol_managed::types::skill::SkillSource::AnthropicExample
+pub awaken_protocol_managed::types::skill::SkillSource::Custom
+pub awaken_protocol_managed::types::skill::SkillSource::Plugin
+pub enum awaken_protocol_managed::types::skill::SkillVersionObjectType
+pub awaken_protocol_managed::types::skill::SkillVersionObjectType::SkillVersion
+pub struct awaken_protocol_managed::types::skill::BetaSkill
+pub awaken_protocol_managed::types::skill::BetaSkill::created_at: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkill::display_title: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::skill::BetaSkill::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkill::kind: awaken_protocol_managed::types::skill::SkillObjectType
+pub awaken_protocol_managed::types::skill::BetaSkill::latest_version: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::skill::BetaSkill::source: &'static str
+pub awaken_protocol_managed::types::skill::BetaSkill::updated_at: alloc::string::String
+pub struct awaken_protocol_managed::types::skill::BetaSkillListParams
+pub awaken_protocol_managed::types::skill::BetaSkillListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::skill::BetaSkillListParams::page: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::skill::BetaSkillListParams::source: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::skill::BetaSkillVersion
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::created_at: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::description: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::directory: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::kind: awaken_protocol_managed::types::skill::SkillVersionObjectType
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::name: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::skill_id: alloc::string::String
+pub awaken_protocol_managed::types::skill::BetaSkillVersion::version: alloc::string::String
+pub struct awaken_protocol_managed::types::skill::BetaSkillVersionListParams
+pub awaken_protocol_managed::types::skill::BetaSkillVersionListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::skill::BetaSkillVersionListParams::page: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::skill::DeletedSkill
+pub awaken_protocol_managed::types::skill::DeletedSkill::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::DeletedSkill::kind: awaken_protocol_managed::types::skill::DeletedSkillObjectType
+pub struct awaken_protocol_managed::types::skill::DeletedSkillVersion
+pub awaken_protocol_managed::types::skill::DeletedSkillVersion::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::DeletedSkillVersion::kind: awaken_protocol_managed::types::skill::DeletedSkillVersionObjectType
+pub struct awaken_protocol_managed::types::skill::Skill
+pub awaken_protocol_managed::types::skill::Skill::created_at: alloc::string::String
+pub awaken_protocol_managed::types::skill::Skill::display_name: alloc::string::String
+pub awaken_protocol_managed::types::skill::Skill::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::Skill::kind: awaken_protocol_managed::types::skill::SkillObjectType
+pub awaken_protocol_managed::types::skill::Skill::latest_version_id: alloc::string::String
+pub awaken_protocol_managed::types::skill::Skill::source: awaken_protocol_managed::types::skill::SkillSource
+pub awaken_protocol_managed::types::skill::Skill::updated_at: alloc::string::String
+pub struct awaken_protocol_managed::types::skill::SkillListParams
+pub awaken_protocol_managed::types::skill::SkillListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::skill::SkillListParams::page: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::skill::SkillListParams::source: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::skill::SkillVersion
+pub awaken_protocol_managed::types::skill::SkillVersion::created_at: alloc::string::String
+pub awaken_protocol_managed::types::skill::SkillVersion::description: alloc::string::String
+pub awaken_protocol_managed::types::skill::SkillVersion::id: alloc::string::String
+pub awaken_protocol_managed::types::skill::SkillVersion::kind: awaken_protocol_managed::types::skill::SkillVersionObjectType
+pub awaken_protocol_managed::types::skill::SkillVersion::name: alloc::string::String
+pub awaken_protocol_managed::types::skill::SkillVersion::skill_id: alloc::string::String
+pub struct awaken_protocol_managed::types::skill::SkillVersionListParams
+pub awaken_protocol_managed::types::skill::SkillVersionListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::skill::SkillVersionListParams::page: core::option::Option<alloc::string::String>
 pub mod awaken_protocol_managed::types::tunnel
 pub struct awaken_protocol_managed::types::tunnel::CertificateCreateParams
 pub awaken_protocol_managed::types::tunnel::CertificateCreateParams::ca_certificate_pem: alloc::string::String
@@ -1723,6 +1888,9 @@ pub fn awaken_protocol_managed::ManagedState::session_usage<'life0, 'life1, 'lif
 pub struct awaken_protocol_managed::ManagedTunnelScope
 pub awaken_protocol_managed::ManagedTunnelScope::operation_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::ManagedTunnelScope::workspace_id: alloc::string::String
+pub struct awaken_protocol_managed::ManagedWorkSessionAccess
+impl awaken_protocol_managed::ManagedWorkSessionAccess
+pub fn awaken_protocol_managed::ManagedWorkSessionAccess::new(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>, alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> alloc::sync::Arc<Self>
 pub struct awaken_protocol_managed::ModelEntry
 pub awaken_protocol_managed::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_protocol_managed::ModelEntry::display_name: alloc::string::String
@@ -1814,3 +1982,4 @@ pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::
 pub fn awaken_protocol_managed::tunnels_router(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router
+pub async fn awaken_protocol_managed::work_session_guard(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedWorkSessionAccess>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

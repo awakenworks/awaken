@@ -4,18 +4,20 @@
 //! explicitly enable `test-support`. Product composition must select SQLite or
 //! PostgreSQL so accepted work survives process loss.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats,
     SessionWorkLease, WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError,
-    WorkState,
+    WorkSessionAccess, WorkState,
 };
 
-use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
+use super::session_access::issue_session_token;
+use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at, session_token_sha256};
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -24,6 +26,7 @@ const HEARTBEAT_TTL_SECONDS: u64 = 60;
 /// work id (ascending id == enqueue order).
 pub struct InMemoryWorkQueue {
     works: Mutex<BTreeMap<String, WorkItem>>,
+    session_token_sha256: Mutex<HashMap<String, String>>,
     seq: AtomicU64,
     book: LeaseBook,
 }
@@ -39,6 +42,7 @@ impl InMemoryWorkQueue {
     pub fn new() -> Self {
         Self {
             works: Mutex::new(BTreeMap::new()),
+            session_token_sha256: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
             book: LeaseBook::default(),
         }
@@ -80,7 +84,7 @@ impl InMemoryWorkQueue {
         }
     }
 
-    fn session_lease_snapshot(
+    fn current_session_lease(
         &self,
         env_id: &str,
         session_id: &str,
@@ -107,6 +111,67 @@ impl InMemoryWorkQueue {
                 epoch,
                 expires_at_unix_ms,
             })
+    }
+
+    fn claim_inner(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+        mint_session_access: bool,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        self.book.record_poll(env_id, poller_id, now_ms);
+        let mut works = self.works.lock().unwrap();
+        for (wid, work) in works.iter_mut() {
+            if work.environment_id == env_id
+                && work.state == WorkState::Active
+                && reclaim_older_than_ms.map_or_else(
+                    || !self.book.is_leased(wid, now_ms),
+                    |age| !self.book.is_leased_with_reclaim_age(wid, now_ms, age),
+                )
+            {
+                work.state = WorkState::Queued;
+                work.latest_heartbeat_at = None;
+                self.book.release(wid);
+                self.session_token_sha256.lock().unwrap().remove(wid);
+            }
+        }
+        if works
+            .values()
+            .any(|work| work.environment_id == env_id && work.state == WorkState::Active)
+        {
+            return Ok(None);
+        }
+        let Some(wid) = works
+            .iter()
+            .filter(|(_, work)| work.environment_id == env_id && work.state.is_claimable())
+            .map(|(id, _)| id.clone())
+            .min()
+        else {
+            return Ok(None);
+        };
+        self.book
+            .claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS)
+            .map_err(|error| WorkQueueError::Storage(error.into()))?;
+        let work = works.get_mut(&wid).expect("just found");
+        work.state = WorkState::Active;
+        work.started_at = Some(OBJECT_AT.to_string());
+        work.latest_heartbeat_at = None;
+        let sessions_token = (mint_session_access
+            && matches!(work.data, WorkPayload::Session { .. }))
+        .then(issue_session_token);
+        if let Some(token) = sessions_token.as_ref() {
+            self.session_token_sha256
+                .lock()
+                .unwrap()
+                .insert(wid, session_token_sha256(token));
+        }
+        Ok(Some(ClaimedWork {
+            item: work.clone(),
+            sessions_token,
+        }))
     }
 }
 
@@ -163,6 +228,10 @@ impl WorkQueue for InMemoryWorkQueue {
                 existing.stop_requested_at = None;
                 existing.stopped_at = None;
                 self.book.release(&existing.id);
+                self.session_token_sha256
+                    .lock()
+                    .unwrap()
+                    .remove(&existing.id);
             }
             return Ok(existing.id.clone());
         }
@@ -252,7 +321,6 @@ impl WorkQueue for InMemoryWorkQueue {
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
             .await
-            .map(|claimed| claimed.map(ClaimedWork::into_item))
     }
 
     async fn claim_with_reclaim(
@@ -262,92 +330,161 @@ impl WorkQueue for InMemoryWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
-        let mut works = self.works.lock().unwrap();
-        for (wid, w) in works.iter_mut() {
-            if w.environment_id == env_id
-                && w.state == WorkState::Active
-                && reclaim_older_than_ms.map_or_else(
-                    || !self.book.is_leased(wid, now_ms),
-                    |age| !self.book.is_leased_with_reclaim_age(wid, now_ms, age),
-                )
-            {
-                w.state = WorkState::Queued;
-                w.latest_heartbeat_at = None;
-                self.book.release(wid);
-            }
-        }
-        if works
-            .values()
-            .any(|w| w.environment_id == env_id && w.state == WorkState::Active)
-        {
-            return Ok(None);
-        }
-        let Some(wid) = works
-            .iter()
-            .filter(|(_, w)| w.environment_id == env_id && w.state.is_claimable())
-            .map(|(id, _)| id.clone())
-            .min()
-        else {
-            return Ok(None);
-        };
-        self.book
-            .claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS)
-            .map_err(|error| WorkQueueError::Storage(error.into()))?;
-        let w = works.get_mut(&wid).expect("just found");
-        w.state = WorkState::Active;
-        w.started_at = Some(OBJECT_AT.to_string());
-        w.latest_heartbeat_at = None;
-        let item = w.clone();
-        let session_lease =
-            match &item.data {
-                WorkPayload::Session { id } => self.book.authority(&item.id, now_ms).map(
-                    |(owner, epoch, expires_at_unix_ms)| SessionWorkLease {
-                        work_id: item.id.clone(),
-                        environment_id: env_id.to_string(),
-                        session_id: id.clone(),
-                        owner,
-                        epoch,
-                        expires_at_unix_ms,
-                    },
-                ),
-                WorkPayload::HealthCheck { .. } => None,
-            };
-        Ok(Some(ClaimedWork {
-            item,
-            session_lease,
-        }))
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        Ok(self
+            .claim_inner(
+                env_id,
+                lease_owner,
+                poller_id,
+                now_ms,
+                reclaim_older_than_ms,
+                false,
+            )?
+            .map(|claim| claim.item))
     }
 
-    async fn current_session_lease(
+    async fn claim_with_session_access(
         &self,
         env_id: &str,
-        session_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
         now_ms: u64,
-    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        Ok(self.session_lease_snapshot(env_id, session_id, now_ms))
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        self.claim_inner(
+            env_id,
+            lease_owner,
+            poller_id,
+            now_ms,
+            reclaim_older_than_ms,
+            true,
+        )
     }
 
-    async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+    async fn authenticate_session_access(
+        &self,
+        presented: &RedactedString,
+        now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
+        let digest = session_token_sha256(presented);
+        let work_id = self
+            .session_token_sha256
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(work_id, stored)| (stored == &digest).then(|| work_id.clone()));
+        let Some(work_id) = work_id else {
+            return Ok(None);
+        };
+        let work = self.works.lock().unwrap().get(&work_id).cloned();
+        let Some(work) = work.filter(|work| work.state == WorkState::Active) else {
+            return Ok(None);
+        };
+        let WorkPayload::Session { id: session_id } = work.data else {
+            return Ok(None);
+        };
+        Ok(self.book.authority(&work_id, now_ms).map(
+            |(lease_owner, lease_epoch, expires_at_unix_ms)| WorkSessionAccess {
+                work_id,
+                environment_id: work.environment_id,
+                session_id,
+                lease_owner,
+                lease_epoch,
+                expires_at_unix_ms,
+            },
+        ))
+    }
+
+    async fn ack_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut works = self.works.lock().unwrap();
-        let Some(work) = works.get_mut(&lease.work_id).filter(|work| {
-            work.environment_id == lease.environment_id
-                && work.state == WorkState::Active
-                && matches!(&work.data, WorkPayload::Session { id } if id == &lease.session_id)
-        }) else {
-            return Ok(false);
+        let Some(work) = works
+            .get_mut(&access.work_id)
+            .filter(|work| work.environment_id == access.environment_id)
+        else {
+            return Ok(WorkMutationResult::NotFound);
         };
         if !self
             .book
-            .release_exact(&lease.work_id, &lease.owner, lease.epoch)
+            .is_owned_at_epoch(&access.work_id, &access.lease_owner, access.lease_epoch)
         {
-            return Ok(false);
+            return Ok(WorkMutationResult::PreconditionFailed);
         }
-        work.state = WorkState::Queued;
-        work.latest_heartbeat_at = None;
-        Ok(true)
+        work.acknowledged_at = Some(OBJECT_AT.to_string());
+        work.state = work.state.after_ack();
+        Ok(WorkMutationResult::accepted(work.clone()))
     }
+
+    async fn heartbeat_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        Ok(self
+            .with_owned(&access.environment_id, &access.work_id, |work| {
+                if !self.book.is_owned_at_epoch(
+                    &access.work_id,
+                    &access.lease_owner,
+                    access.lease_epoch,
+                ) || !heartbeat
+                    .condition
+                    .permits(work.latest_heartbeat_at.as_deref())
+                {
+                    return HeartbeatResult::PreconditionFailed;
+                }
+                let extended = work.state.can_extend_lease();
+                let last_heartbeat = heartbeat_at(now_ms, work.latest_heartbeat_at.as_deref());
+                let ttl_seconds = heartbeat
+                    .desired_ttl_seconds
+                    .unwrap_or(HEARTBEAT_TTL_SECONDS)
+                    .max(1);
+                if extended {
+                    work.latest_heartbeat_at = Some(last_heartbeat.clone());
+                    self.book
+                        .lease_for(&access.work_id, now_ms, ttl_seconds.saturating_mul(1000));
+                }
+                HeartbeatResult::Accepted(LeaseReceipt {
+                    last_heartbeat,
+                    lease_extended: extended,
+                    state: work.state,
+                    ttl_seconds,
+                })
+            })
+            .unwrap_or(HeartbeatResult::NotFound))
+    }
+
+    async fn stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        let Some(work) = works
+            .get_mut(&access.work_id)
+            .filter(|work| work.environment_id == access.environment_id)
+        else {
+            return Ok(WorkMutationResult::NotFound);
+        };
+        if !self
+            .book
+            .is_owned_at_epoch(&access.work_id, &access.lease_owner, access.lease_epoch)
+        {
+            return Ok(WorkMutationResult::PreconditionFailed);
+        }
+        work.stop_requested_at = Some(OBJECT_AT.to_string());
+        work.stopped_at = Some(OBJECT_AT.to_string());
+        work.state = work.state.after_stop();
+        let out = work.clone();
+        self.book.release(&access.work_id);
+        self.session_token_sha256
+            .lock()
+            .unwrap()
+            .remove(&access.work_id);
+        Ok(WorkMutationResult::accepted(out))
+    }
+
     async fn ack(
         &self,
         env_id: &str,
@@ -432,6 +569,7 @@ impl WorkQueue for InMemoryWorkQueue {
         work.state = work.state.after_stop();
         let out = work.clone();
         self.book.release(wid);
+        self.session_token_sha256.lock().unwrap().remove(wid);
         Ok(WorkMutationResult::accepted(out))
     }
 
@@ -462,6 +600,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 .is_some()
             {
                 self.book.release(&id);
+                self.session_token_sha256.lock().unwrap().remove(&id);
                 released += 1;
             }
         }
@@ -485,6 +624,7 @@ impl WorkQueue for InMemoryWorkQueue {
         work.state = WorkState::Stopped;
         let item = work.clone();
         self.book.release(wid);
+        self.session_token_sha256.lock().unwrap().remove(wid);
         Ok(Some(item))
     }
 
@@ -495,12 +635,12 @@ impl WorkQueue for InMemoryWorkQueue {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        if let Some(lease) = self.session_lease_snapshot(env_id, session_id, now_ms) {
+        if let Some(lease) = self.current_session_lease(env_id, session_id, now_ms) {
             if lease.owner != worker_owner {
                 return Ok(Some(lease));
             }
             self.book.lease(&lease.work_id, now_ms);
-            return Ok(self.session_lease_snapshot(env_id, session_id, now_ms));
+            return Ok(self.current_session_lease(env_id, session_id, now_ms));
         }
         let work_id = self.enqueue_session(env_id, session_id).await?;
         {
@@ -513,6 +653,7 @@ impl WorkQueue for InMemoryWorkQueue {
                     work.state = WorkState::Queued;
                     work.latest_heartbeat_at = None;
                     self.book.release(id);
+                    self.session_token_sha256.lock().unwrap().remove(id);
                 }
             }
             if works
@@ -534,7 +675,7 @@ impl WorkQueue for InMemoryWorkQueue {
             work.started_at = Some(OBJECT_AT.to_string());
             work.latest_heartbeat_at = None;
         }
-        Ok(self.session_lease_snapshot(env_id, session_id, now_ms))
+        Ok(self.current_session_lease(env_id, session_id, now_ms))
     }
 
     async fn update_metadata(
@@ -604,6 +745,10 @@ impl WorkQueue for InMemoryWorkQueue {
             .collect();
         works.retain(|_, w| w.environment_id != env_id);
         self.book.forget_env(env_id, &ids);
+        self.session_token_sha256
+            .lock()
+            .unwrap()
+            .retain(|work_id, _| !ids.contains(work_id));
         Ok(())
     }
 }
@@ -1041,6 +1186,83 @@ mod tests {
         assert!(
             q.get("env_a", &id).await.expect("get").is_none(),
             "env delete purges work"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_token_tracks_the_current_in_memory_lease_only() {
+        // Cause/effect graph: C1 a Session is claimed under epoch one; C2 the
+        // presented token is current/wrong; C3 the lease expires and another
+        // owner reclaims. Effects: E1 the current token resolves the exact Work,
+        // Session, owner and epoch; E2 wrong tokens fail; E3 reclaim rotates the
+        // token and makes epoch one unusable; C4 an epoch-one mutation races the
+        // replacement claim. Constraint K1 LeaseBook remains the
+        // one in-memory authority; the digest map is only its secret verifier.
+        // Decision rows I1=C1+C2(current)->E1, I2=C2(wrong)->E2,
+        // I3=C3->E3, I4=C4->PreconditionFailed and epoch two stays live.
+        let q = q();
+        let id = q.enqueue_session("env", "sesn_1").await.unwrap();
+        let first = q
+            .claim_with_session_access("env", "owner-a", "poller", 0, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let first_token = first.sessions_token.expect("I1 token");
+        let first_access = q
+            .authenticate_session_access(&first_token, 1)
+            .await
+            .unwrap()
+            .expect("I1 current");
+        assert_eq!(first_access.work_id, id);
+        assert_eq!(first_access.session_id, "sesn_1");
+        assert_eq!(first_access.lease_owner, "owner-a");
+        assert!(
+            q.authenticate_session_access(
+                &RedactedString::from("sk-ant-req-wrong".to_string()),
+                1,
+            )
+                .await
+                .unwrap()
+                .is_none(),
+            "I2"
+        );
+        let second = q
+            .claim_with_session_access("env", "owner-b", "poller-b", LEASE_TTL_MS, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_token = second.sessions_token.expect("I3 token");
+        assert!(
+            q.authenticate_session_access(&first_token, LEASE_TTL_MS)
+                .await
+                .unwrap()
+                .is_none(),
+            "I3 stale"
+        );
+        let second_access = q
+            .authenticate_session_access(&second_token, LEASE_TTL_MS)
+            .await
+            .unwrap()
+            .expect("I3 replacement");
+        assert_eq!(second_access.lease_epoch, 2);
+        assert!(
+            matches!(
+                q.stop_with_session_access(&first_access).await.unwrap(),
+                WorkMutationResult::PreconditionFailed
+            ),
+            "I4 stale epoch"
+        );
+        assert!(
+            q.heartbeat_with_session_access(
+                &second_access,
+                LEASE_TTL_MS + 1,
+                LeaseHeartbeat::unconditional(),
+            )
+            .await
+            .unwrap()
+            .into_receipt()
+            .is_some(),
+            "I4 current epoch remains live"
         );
     }
 }
