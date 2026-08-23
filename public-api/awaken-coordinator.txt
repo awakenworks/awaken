@@ -44,10 +44,10 @@ pub awaken_coordinator::application_access::IssuedApplicationToken::access_token
 pub awaken_coordinator::application_access::IssuedApplicationToken::application_scope: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::expires_at: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::id: alloc::string::String
-pub awaken_coordinator::application_access::IssuedApplicationToken::object: &'static str
+pub awaken_coordinator::application_access::IssuedApplicationToken::object: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::operations: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
-pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: &'static str
+pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: alloc::string::String
 pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
 pub mod awaken_coordinator::console
 pub fn awaken_coordinator::console::mount(axum::routing::Router, &std::path::Path) -> axum::routing::Router
