@@ -14,8 +14,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
+use awaken_provisioning_contract::{MemoryMounter, MountAccess, Realization};
+use awaken_sandbox_memoryd::MemoryStoreMounter;
 use awaken_sandbox_memoryd::fuse::spawn_mount;
-use awaken_sandbox_memoryd::{FuseMountFactory, MountCoordinator};
 
 fn fuse_unavailable_reason() -> Option<String> {
     if !Path::new("/dev/fuse").exists() {
@@ -128,7 +129,7 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
 }
 
 #[test]
-fn a_shared_mount_is_coherent_and_refcounted_across_acquirers() {
+fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independently() {
     if let Some(reason) = fuse_unavailable_reason() {
         eprintln!("SKIP kernel_vfs coherence: {reason}");
         return;
@@ -136,45 +137,58 @@ fn a_shared_mount_is_coherent_and_refcounted_across_acquirers() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store_root = unique("cstore");
     let store_db = store_root.join("memory.db");
-    let mnt_root = unique("cmnt");
+    let mnt_a = unique("cmnt-a");
+    let mnt_b = unique("cmnt-b");
     let store = "memstore_1";
 
     let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
+    let mounter = MemoryStoreMounter::new(backend.clone());
 
-    let coord = MountCoordinator::new(Box::new(FuseMountFactory::new(backend.clone(), &mnt_root)));
-
-    // Two acquirers of the same store share ONE mount (one cache) — the D5 model.
-    let mp_a = coord.acquire(store).unwrap();
-    let mp_b = coord.acquire(store).unwrap();
-    assert_eq!(mp_a, mp_b, "both acquirers see the same shared mountpoint");
-    assert_eq!(coord.refcount(store), 2);
+    // Cause/effect design (ADR-0053 D5): C1=same store, C2=two distinct sandbox
+    // paths, C3=peer cache warmed, C4=write through A, C5=A torn down first.
+    // R1 C1+C2+C3+C4 => E1 B invalidates and refetches the durable head.
+    // R2 R1+C5 => E2 B remains mounted and readable until its own teardown.
+    let mount_a = rt
+        .block_on(mounter.mount(store, &mnt_a, MountAccess::ReadWrite))
+        .unwrap();
+    let mount_b = rt
+        .block_on(mounter.mount(store, &mnt_b, MountAccess::ReadWrite))
+        .unwrap();
+    assert_eq!(mount_a.realization(), Realization::Fuse);
+    assert_eq!(mount_b.realization(), Realization::Fuse);
+    assert_ne!(mnt_a, mnt_b, "each sandbox owns a distinct projection");
     std::thread::sleep(Duration::from_millis(100));
 
-    // A write through one view is coherently visible through the other — there is no
-    // second cache to go stale.
-    std::fs::write(mp_a.join("x.md"), "two").unwrap();
+    assert_eq!(std::fs::read_to_string(mnt_b.join("x.md")).unwrap(), "one");
+    std::fs::write(mnt_a.join("x.md"), "two").unwrap();
+
+    let mut observed = None;
+    for _ in 0..50 {
+        let content = std::fs::read_to_string(mnt_b.join("x.md")).unwrap();
+        if content == "two" {
+            observed = Some(content);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(
-        std::fs::read_to_string(mp_b.join("x.md")).unwrap(),
+        observed.as_deref(),
+        Some("two"),
+        "peer cache must invalidate"
+    );
+
+    rt.block_on(mount_a.teardown());
+    assert_eq!(
+        std::fs::read_to_string(mnt_b.join("x.md")).unwrap(),
         "two",
-        "the write is coherent across the shared mount"
+        "tearing down one sandbox must not tear down its peer"
     );
-
-    // Releasing one reference keeps the mount alive for the other.
-    coord.release(store);
-    assert_eq!(coord.refcount(store), 1);
-    assert_eq!(std::fs::read_to_string(mp_a.join("x.md")).unwrap(), "two");
-
-    // The last release unmounts.
-    coord.release(store);
-    assert_eq!(
-        coord.active_mounts(),
-        0,
-        "the shared mount is torn down at refcount 0"
-    );
+    rt.block_on(mount_b.teardown());
 
     std::fs::remove_dir_all(&store_root).ok();
-    std::fs::remove_dir_all(&mnt_root).ok();
+    std::fs::remove_dir_all(&mnt_a).ok();
+    std::fs::remove_dir_all(&mnt_b).ok();
 }
 
 #[test]

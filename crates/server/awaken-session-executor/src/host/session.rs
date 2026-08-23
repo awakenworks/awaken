@@ -902,6 +902,37 @@ impl SharedHost {
                     crate::skills::DEFAULT_SKILLS_SUBDIR.to_string()
                 }
             });
+        let repository_skill_roots = if installed.is_some()
+            && self.session_allows_repository_skill_discovery(thread, installed.as_ref())
+        {
+            let mut roots = vec![skills_subdir.clone()];
+            roots.extend(
+                self.session_slots
+                    .read(thread, |slot| {
+                        slot.resources
+                            .repositories
+                            .iter()
+                            .map(|repository| {
+                                format!(
+                                    "{}/{}",
+                                    repository
+                                        .plan
+                                        .mount_path
+                                        .trim_start_matches('/')
+                                        .trim_end_matches('/'),
+                                    crate::skills::MANAGED_SKILLS_SUBDIR
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            );
+            roots.sort();
+            roots.dedup();
+            roots
+        } else {
+            Vec::new()
+        };
         let authorization =
             effective_tool_authorization(&published_configuration, &pre_authorized, &toolsets);
         let permission = authorization.policy.clone();
@@ -1038,6 +1069,7 @@ impl SharedHost {
             sub_base("skill-fork"),
             self.skill_fork_placement,
             &skills_subdir,
+            &repository_skill_roots,
             commit.clone(),
             content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem
                 && !self.deployment.disable_local_pool,

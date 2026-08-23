@@ -40,6 +40,10 @@ pub enum SkillProvenance {
     /// Authored by the agent this run in the writable workspace: usable this run
     /// (run-scoped), never pinned, never auto-promoted to the shared store.
     AgentCreated,
+    /// Discovered from the frozen checkout of a repository mounted into this
+    /// Session. Repository Skills are untrusted filesystem instructions: their
+    /// path, rather than authored frontmatter, owns this provenance.
+    Repository,
     /// Discovered from a remote MCP server's prompt catalog. The server remains
     /// the authority for the instruction body, which is resolved on activation.
     Mcp,
