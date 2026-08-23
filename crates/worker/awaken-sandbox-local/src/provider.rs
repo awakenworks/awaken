@@ -1439,13 +1439,30 @@ mod workdir_helper_tests {
             ]
         );
 
-        // A SKILL.md-bearing dir surfaces as neutral file data under a logical dir.
-        std::fs::create_dir_all(root.join("skills/greet")).unwrap();
-        std::fs::write(root.join("skills/greet/SKILL.md"), "# greet").unwrap();
-        let skills = sandbox.scan_skill_dir("skills");
+        // Managed Skill discovery decision table. C1 file is under the exact
+        // `.claude/skills` root; C2 it has exactly one Skill directory level;
+        // C3 its filename is `SKILL.md`. D1 C1+C2+C3 => discover one logical
+        // Skill. D2 wrong root, D3 root-level file, D4 extra nesting, and D5
+        // missing canonical filename => ignore. This owns Anthropic's repository
+        // discovery shape while the host remains the Skill semantic owner.
+        std::fs::create_dir_all(root.join(".claude/skills/greet")).unwrap();
+        std::fs::write(root.join(".claude/skills/greet/SKILL.md"), "# greet").unwrap();
+        std::fs::write(root.join(".claude/skills/SKILL.md"), "# root").unwrap();
+        std::fs::create_dir_all(root.join(".claude/skills/nested/too-deep")).unwrap();
+        std::fs::write(
+            root.join(".claude/skills/nested/too-deep/SKILL.md"),
+            "# nested",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".claude/skills/missing")).unwrap();
+        std::fs::write(root.join(".claude/skills/missing/skill.md"), "# wrong name").unwrap();
+        std::fs::create_dir_all(root.join("skills/outside")).unwrap();
+        std::fs::write(root.join("skills/outside/SKILL.md"), "# outside").unwrap();
+
+        let skills = sandbox.scan_skill_dir(".claude/skills");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "greet");
-        assert_eq!(skills[0].dir, "skills/greet");
+        assert_eq!(skills[0].dir, ".claude/skills/greet");
         assert_eq!(skills[0].content, "# greet");
     }
 

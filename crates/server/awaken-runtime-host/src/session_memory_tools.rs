@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[async_trait]
 pub(crate) trait SessionMemoryBinding: Send + Sync {
@@ -67,110 +69,169 @@ impl SessionMemoryBinding for crate::memory::BoundMemory {
     }
 }
 
-#[derive(Clone, Copy)]
-enum MemoryOperation {
-    List,
-    Read,
-    Write,
-    Delete,
-}
-
-impl MemoryOperation {
-    const fn id(self) -> &'static str {
-        match self {
-            Self::List => "list_memories",
-            Self::Read => "read_memory",
-            Self::Write => "write_memory",
-            Self::Delete => "delete_memory",
-        }
-    }
-}
-
-struct MemoryTool {
-    operation: MemoryOperation,
+#[derive(Clone)]
+struct MemoryToolContext {
     bindings: Arc<HashMap<String, Arc<dyn SessionMemoryBinding>>>,
 }
 
-impl MemoryTool {
-    fn binding(&self, call: &ToolCall) -> Result<&Arc<dyn SessionMemoryBinding>, String> {
-        let id = call
-            .arguments
-            .get("binding")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| "the `binding` argument is required".to_string())?;
+impl MemoryToolContext {
+    fn binding(&self, id: &str) -> Result<&Arc<dyn SessionMemoryBinding>, ToolError> {
+        let id = required("binding", id)?;
         self.bindings
             .get(id)
-            .ok_or_else(|| format!("unknown Session memory binding: {id}"))
-    }
-
-    fn string_arg<'a>(call: &'a ToolCall, name: &str) -> Result<&'a str, String> {
-        call.arguments
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("the `{name}` argument is required"))
+            .ok_or_else(|| ToolError::Execution(format!("unknown Session memory binding: {id}")))
     }
 }
 
-#[async_trait]
-impl RawTool for MemoryTool {
-    fn id(&self) -> &str {
-        self.operation.id()
+fn required<'a>(name: &str, value: &'a str) -> Result<&'a str, ToolError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(ToolError::InvalidArguments(format!(
+            "the `{name}` argument is required"
+        )))
+    } else {
+        Ok(value)
     }
+}
 
-    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let result = async {
-            let binding = self.binding(&call)?;
-            match self.operation {
-                MemoryOperation::List => {
-                    let prefix = call
-                        .arguments
-                        .get("prefix")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("/");
-                    let memories = binding.list(prefix).await?;
-                    serde_json::to_string(&serde_json::json!({"memories": memories}))
-                        .map_err(|error| error.to_string())
-                }
-                MemoryOperation::Read => {
-                    let path = Self::string_arg(&call, "path")?;
-                    let memory = binding
-                        .read(path)
-                        .await?
-                        .ok_or_else(|| format!("memory not found: {path}"))?;
-                    serde_json::to_string(&memory).map_err(|error| error.to_string())
-                }
-                MemoryOperation::Write => {
-                    let path = Self::string_arg(&call, "path")?;
-                    let content = call
-                        .arguments
-                        .get("content")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "the `content` argument is required".to_string())?;
-                    let expected = call
-                        .arguments
-                        .get("expected_sha256")
-                        .and_then(serde_json::Value::as_str);
-                    let memory = binding.write(path, content, expected).await?;
-                    serde_json::to_string(&memory).map_err(|error| error.to_string())
-                }
-                MemoryOperation::Delete => {
-                    let path = Self::string_arg(&call, "path")?;
-                    let expected_id = Self::string_arg(&call, "expected_id")?;
-                    let expected_sha256 = Self::string_arg(&call, "expected_sha256")?;
-                    let deleted = binding.delete(path, expected_id, expected_sha256).await?;
-                    Ok(serde_json::json!({"deleted": deleted}).to_string())
-                }
-            }
-        }
-        .await;
-        Ok(match result {
-            Ok(content) => ToolOutput::ok(call.call_id, content),
-            Err(error) => ToolOutput::error(call.call_id, error),
-        })
+fn default_prefix() -> String {
+    "/".into()
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListMemoriesArgs {
+    /// Frozen Session MemoryStore binding id from the system prompt.
+    binding: String,
+    /// Path prefix within the selected memory store.
+    #[serde(default = "default_prefix")]
+    prefix: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ListMemoriesOutput {
+    memories: Vec<awaken_resource_contract::MemoryEntry>,
+}
+
+struct ListMemoriesTool(MemoryToolContext);
+
+#[async_trait]
+impl Tool for ListMemoriesTool {
+    type Args = ListMemoriesArgs;
+    type Output = ListMemoriesOutput;
+    const ID: &'static str = "list_memories";
+    const DESCRIPTION: &'static str =
+        "List memory metadata in one frozen Session MemoryStore binding.";
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
+        let binding = self.0.binding(&args.binding)?;
+        let prefix = required("prefix", &args.prefix)?;
+        let memories = binding.list(prefix).await.map_err(ToolError::Execution)?;
+        Ok(ListMemoriesOutput { memories })
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReadMemoryArgs {
+    /// Frozen Session MemoryStore binding id from the system prompt.
+    binding: String,
+    /// Absolute path within the selected memory store.
+    path: String,
+}
+
+struct ReadMemoryTool(MemoryToolContext);
+
+#[async_trait]
+impl Tool for ReadMemoryTool {
+    type Args = ReadMemoryArgs;
+    type Output = awaken_resource_contract::Memory;
+    const ID: &'static str = "read_memory";
+    const DESCRIPTION: &'static str =
+        "Read one memory and its id, content hash, version, and content.";
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
+        let binding = self.0.binding(&args.binding)?;
+        let path = required("path", &args.path)?;
+        binding
+            .read(path)
+            .await
+            .map_err(ToolError::Execution)?
+            .ok_or_else(|| ToolError::Execution(format!("memory not found: {path}")))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WriteMemoryArgs {
+    /// Frozen Session MemoryStore binding id from the system prompt.
+    binding: String,
+    /// Absolute path within the selected memory store.
+    path: String,
+    /// Complete replacement content.
+    content: String,
+    /// Hash returned by read_memory; required when updating an existing path.
+    #[serde(default)]
+    expected_sha256: Option<String>,
+}
+
+struct WriteMemoryTool(MemoryToolContext);
+
+#[async_trait]
+impl Tool for WriteMemoryTool {
+    type Args = WriteMemoryArgs;
+    type Output = awaken_resource_contract::Memory;
+    const ID: &'static str = "write_memory";
+    const DESCRIPTION: &'static str = "Create or compare-and-swap one memory. Omit expected_sha256 only for create-only semantics.";
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
+        let binding = self.0.binding(&args.binding)?;
+        let path = required("path", &args.path)?;
+        binding
+            .write(path, &args.content, args.expected_sha256.as_deref())
+            .await
+            .map_err(ToolError::Execution)
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DeleteMemoryArgs {
+    /// Frozen Session MemoryStore binding id from the system prompt.
+    binding: String,
+    /// Absolute path within the selected memory store.
+    path: String,
+    /// Exact memory id returned by read_memory.
+    expected_id: String,
+    /// Exact content hash returned by read_memory.
+    expected_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteMemoryOutput {
+    deleted: bool,
+}
+
+struct DeleteMemoryTool(MemoryToolContext);
+
+#[async_trait]
+impl Tool for DeleteMemoryTool {
+    type Args = DeleteMemoryArgs;
+    type Output = DeleteMemoryOutput;
+    const ID: &'static str = "delete_memory";
+    const DESCRIPTION: &'static str =
+        "Compare-and-delete one memory using the exact id and hash returned by read_memory.";
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
+        let binding = self.0.binding(&args.binding)?;
+        let path = required("path", &args.path)?;
+        let expected_id = required("expected_id", &args.expected_id)?;
+        let expected_sha256 = required("expected_sha256", &args.expected_sha256)?;
+        let deleted = binding
+            .delete(path, expected_id, expected_sha256)
+            .await
+            .map_err(ToolError::Execution)?;
+        Ok(DeleteMemoryOutput { deleted })
     }
 }
 
@@ -192,84 +253,30 @@ impl SessionMemoryTools {
         if bindings.is_empty() {
             return None;
         }
-        let bindings = Arc::new(bindings);
-        let operations = [
-            MemoryOperation::List,
-            MemoryOperation::Read,
-            MemoryOperation::Write,
-            MemoryOperation::Delete,
-        ];
+        let context = MemoryToolContext {
+            bindings: Arc::new(bindings),
+        };
         Some(Self {
-            descriptors: operations.into_iter().map(descriptor).collect(),
-            executors: operations
-                .into_iter()
-                .map(|operation| {
-                    Arc::new(MemoryTool {
-                        operation,
-                        bindings: bindings.clone(),
-                    }) as Arc<dyn RawTool>
-                })
-                .collect(),
+            descriptors: vec![
+                ToolDescriptor::for_tool::<ListMemoriesTool>("session-memory"),
+                ToolDescriptor::for_tool::<ReadMemoryTool>("session-memory"),
+                ToolDescriptor::for_tool::<WriteMemoryTool>("session-memory"),
+                ToolDescriptor::for_tool::<DeleteMemoryTool>("session-memory"),
+            ],
+            executors: vec![
+                awaken_ext_builtin_tools::erase(ListMemoriesTool(context.clone())),
+                awaken_ext_builtin_tools::erase(ReadMemoryTool(context.clone())),
+                awaken_ext_builtin_tools::erase(WriteMemoryTool(context.clone())),
+                awaken_ext_builtin_tools::erase(DeleteMemoryTool(context)),
+            ],
         })
     }
-}
-
-fn descriptor(operation: MemoryOperation) -> ToolDescriptor {
-    let binding = serde_json::json!({
-        "type": "string",
-        "description": "Frozen Session MemoryStore binding id from the system prompt."
-    });
-    let path = serde_json::json!({"type": "string", "description": "Absolute path within the selected memory store."});
-    let (description, schema) = match operation {
-        MemoryOperation::List => (
-            "List memory metadata in one frozen Session MemoryStore binding.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {"binding": binding, "prefix": {"type": "string", "default": "/"}},
-                "required": ["binding"]
-            }),
-        ),
-        MemoryOperation::Read => (
-            "Read one memory and its id, content hash, version, and content.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {"binding": binding, "path": path},
-                "required": ["binding", "path"]
-            }),
-        ),
-        MemoryOperation::Write => (
-            "Create or compare-and-swap one memory. Omit expected_sha256 only for create-only semantics.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "binding": binding,
-                    "path": path,
-                    "content": {"type": "string"},
-                    "expected_sha256": {"type": "string", "description": "Hash returned by read_memory; required when updating an existing path."}
-                },
-                "required": ["binding", "path", "content"]
-            }),
-        ),
-        MemoryOperation::Delete => (
-            "Compare-and-delete one memory using the exact id and hash returned by read_memory.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "binding": binding,
-                    "path": path,
-                    "expected_id": {"type": "string"},
-                    "expected_sha256": {"type": "string"}
-                },
-                "required": ["binding", "path", "expected_id", "expected_sha256"]
-            }),
-        ),
-    };
-    ToolDescriptor::pinned("session-memory", operation.id(), description, schema)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::tool::ToolCall;
     use std::sync::Mutex;
 
     struct FakeBinding {
@@ -354,15 +361,21 @@ mod tests {
             serde_json::json!({"path": "/note.md"}),
             serde_json::json!({"binding": "unknown", "path": "/note.md"}),
         ] {
-            let output = read
+            let error = read
                 .invoke(ToolCall {
                     call_id: "denied".into(),
                     tool_id: "read_memory".into(),
                     arguments,
                 })
                 .await
-                .unwrap();
-            assert!(output.is_error, "R1/R2");
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    ToolError::InvalidArguments(_) | ToolError::Execution(_)
+                ),
+                "R1/R2: {error}"
+            );
         }
         let output = read
             .invoke(ToolCall {
@@ -376,5 +389,44 @@ mod tests {
         assert!(output.text().contains("beta"));
         assert!(alpha.calls.lock().unwrap().is_empty());
         assert_eq!(&*beta.calls.lock().unwrap(), &["read:/note.md"]);
+    }
+
+    #[test]
+    fn descriptors_are_generated_from_the_typed_memory_arguments() {
+        // Schema cause/effect table: T1 each typed Tool implementation contributes
+        // its ID, description, and Args-derived schema; T2 a field rename/addition
+        // changes that generated descriptor; T3 no handwritten schema authority
+        // exists to drift. Effect: the Session surface exactly equals the four
+        // canonical `ToolDescriptor::for_tool` values in execution order.
+        let wiring = SessionMemoryTools::from_bindings(HashMap::from([(
+            "memory".into(),
+            Arc::new(FakeBinding {
+                label: "memory",
+                calls: Mutex::new(Vec::new()),
+            }) as Arc<dyn SessionMemoryBinding>,
+        )]))
+        .unwrap();
+        assert_eq!(
+            wiring.descriptors,
+            vec![
+                ToolDescriptor::for_tool::<ListMemoriesTool>("session-memory"),
+                ToolDescriptor::for_tool::<ReadMemoryTool>("session-memory"),
+                ToolDescriptor::for_tool::<WriteMemoryTool>("session-memory"),
+                ToolDescriptor::for_tool::<DeleteMemoryTool>("session-memory"),
+            ]
+        );
+        assert_eq!(
+            wiring
+                .executors
+                .iter()
+                .map(|tool| tool.id())
+                .collect::<Vec<_>>(),
+            [
+                ListMemoriesTool::ID,
+                ReadMemoryTool::ID,
+                WriteMemoryTool::ID,
+                DeleteMemoryTool::ID,
+            ]
+        );
     }
 }

@@ -146,12 +146,12 @@ mod tests {
         assert!(accepted.headers().contains_key("mcp-session-id"));
     }
 
-    struct EchoSearch;
+    struct EchoTool(&'static str);
 
     #[async_trait::async_trait]
-    impl RawTool for EchoSearch {
+    impl RawTool for EchoTool {
         fn id(&self) -> &str {
-            "web_search"
+            self.0
         }
 
         async fn invoke(
@@ -160,26 +160,44 @@ mod tests {
         ) -> Result<ToolOutput, awaken_runtime_contract::tool::ToolError> {
             Ok(ToolOutput::ok(
                 call.call_id,
-                format!("same-tool:{}", call.arguments["query"]),
+                format!("same-tool:{}:{}", self.0, call.arguments),
             ))
         }
     }
 
     #[tokio::test]
-    async fn session_export_discovers_calls_and_reclaims_one_raw_tool() {
-        // Cause/effect: one descriptor/executable enters the neutral Host port;
-        // MCP discovery sees exactly it, tools/call reaches the same RawTool, and
-        // dropping the returned export owns terminal server shutdown.
+    async fn session_export_discovers_calls_and_reclaims_exact_session_tool_set() {
+        // Cause/effect decision table: A1 the exact Web + Skill + four-Memory
+        // descriptor/executor set enters the neutral Host port -> one MCP endpoint
+        // lists every id exactly once; A2 each listed family is called -> the
+        // matching RawTool executes; A3 the sole export lease is dropped -> the
+        // endpoint stops accepting connections. Constraint: transport may change
+        // Native delivery into ACP MCP, but cannot split or rewrite the set.
+        let ids = [
+            "web_search",
+            "list_skills",
+            "Skill",
+            "list_memories",
+            "read_memory",
+            "write_memory",
+            "delete_memory",
+        ];
         let export = SessionToolExporter
-            .export(
-                "awaken_web_search",
-                ToolDescriptor::pinned(
-                    "test",
-                    "web_search",
-                    "search",
-                    serde_json::json!({ "type": "object" }),
-                ),
-                Arc::new(EchoSearch),
+            .export_set(
+                "awaken_session",
+                ids.iter()
+                    .map(|id| {
+                        ToolDescriptor::pinned(
+                            "test",
+                            *id,
+                            *id,
+                            serde_json::json!({ "type": "object" }),
+                        )
+                    })
+                    .collect(),
+                ids.iter()
+                    .map(|id| Arc::new(EchoTool(id)) as Arc<dyn RawTool>)
+                    .collect(),
             )
             .await
             .unwrap();
@@ -188,17 +206,37 @@ mod tests {
         };
         let transport = HttpTransport::connect(url, Credential::None).await.unwrap();
         let tools = transport.list_tools().await.unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "web_search");
-        let result = transport
-            .call_tool("web_search", serde_json::json!({ "query": "ddd" }))
-            .await
-            .unwrap();
-        assert!(
-            serde_json::to_string(&result)
-                .unwrap()
-                .contains("same-tool")
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ids,
+            "A1 exact ordered Session tool set"
         );
+        for id in ids {
+            let result = transport
+                .call_tool(id, serde_json::json!({ "marker": id }))
+                .await
+                .unwrap();
+            let serialized = serde_json::to_string(&result).unwrap();
+            assert!(serialized.contains(&format!("same-tool:{id}")), "A2 {id}");
+        }
+        let authority = url
+            .strip_prefix("http://")
+            .and_then(|url| url.strip_suffix("/mcp"))
+            .expect("test exporter returns an HTTP MCP URL")
+            .to_string();
+        drop(transport);
         drop(export);
+        let mut stopped = false;
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(&authority).await.is_err() {
+                stopped = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(stopped, "A3 dropping the one lease stops the one endpoint");
     }
 }

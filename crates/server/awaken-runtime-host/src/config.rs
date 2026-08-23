@@ -26,7 +26,7 @@ use awaken_runtime_contract::permission::{ToolGateHook, ToolPermissionPolicy};
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::LocalSandbox;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
@@ -506,16 +506,28 @@ impl RuntimeToolSource for DeferredHandToolSource {
 /// a disabled/misrouted file tool can therefore never materialize a deferred
 /// Environment as a side effect.
 pub(crate) struct FilesystemFreeAgentToolExecutor {
-    web_fetch: Arc<dyn awaken_runtime_contract::tool::RawTool>,
+    tools: RawToolRegistry,
 }
 
 impl FilesystemFreeAgentToolExecutor {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn try_new(
+        session_tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
+    ) -> Result<Self, String> {
         let web_fetch = awaken_ext_builtin_tools::web_hand_tools()
             .into_iter()
             .find(|tool| tool.id() == "web_fetch")
             .expect("canonical web Hand contains web_fetch");
-        Self { web_fetch }
+        let mut tools = RawToolRegistry::default();
+        assert!(tools.insert(web_fetch), "canonical web_fetch is unique");
+        for tool in session_tools {
+            let id = tool.id().to_string();
+            if !tools.insert(tool) {
+                return Err(format!(
+                    "filesystem-free Session tool id `{id}` is duplicated"
+                ));
+            }
+        }
+        Ok(Self { tools })
     }
 }
 
@@ -526,12 +538,12 @@ impl ToolExecutor for FilesystemFreeAgentToolExecutor {
         call: &awaken_runtime_contract::tool::ToolCall,
     ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
     {
-        if call.tool_id != "web_fetch" {
+        if self.tools.get(&call.tool_id).is_none() {
             return Err(awaken_runtime_contract::tool::ToolError::Execution(
                 format!("filesystem-free Session cannot execute `{}`", call.tool_id),
             ));
         }
-        self.web_fetch.invoke(call.clone()).await
+        self.tools.invoke(call).await
     }
 }
 

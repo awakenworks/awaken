@@ -74,7 +74,7 @@ const groups = [
     native: evidence('e2e/managed_delegation_e2e.mjs', 'Native `researcher`'),
     ...acpPartitions('e2e/managed_native_acp_runtime_matrix_e2e.mjs', 'Test design G1'),
     a2a: evidence('e2e/managed_remote_delegation_e2e.mjs', 'remote A2A delegation round-tripped'),
-    negative: evidence('crates/server/awaken-runtime-host/src/host/session.rs', '!published_backend_is_acp'),
+    negative: evidence('crates/server/awaken-runtime-host/src/host/session/content_delivery.rs', '!published_backend_is_acp'),
   },
   {
     id: 'outcomes',

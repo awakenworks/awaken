@@ -9,10 +9,12 @@
 // exactly or by latest; C2=v2 supersedes it; C3=the process restarts; C4=the
 // durable aggregate is corrupt. Effects: E1=old Sessions retain v1 while new
 // Sessions resolve v2; E2=bundle bytes and exact version survive restart;
-// E3=C4 fails closed before projection/execution. Constraints/invariant: one
-// Skill aggregate plus each Session's frozen pin own version selection.
+// E3=C4 fails closed before projection/execution; E4=the Managed filesystem
+// prompt advertises only metadata/path, the model loads the frozen body through
+// `read`, and no list_skills/Skill parallel path is used. Constraints/invariant:
+// one Skill aggregate plus each Session's frozen pin own version selection.
 // Decision rules: S1=C1=>E1(v1); S2=C1+C2=>old-v1/new-v2;
-// S3=S2+C3=>E2; S4=C4=>E3.
+// S3=S2+C3=>E2; S4=C4=>E3; S5=C1+filesystem tools=>E4.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -129,7 +131,7 @@ async function runAndReadLastReply(client, sessionId, text) {
   );
   const replies = events.filter((event) => event.type === 'agent.message');
   assert.ok(replies.length > 0, `session emitted a new agent message for ${JSON.stringify(text)}`);
-  return JSON.stringify(replies.at(-1).content);
+  return { reply: JSON.stringify(replies.at(-1).content), events };
 }
 
 function onlySkillAggregate(storageDir) {
@@ -198,8 +200,15 @@ async function main() {
 
     await publishAgent(first.baseUrl, skillId);
     const pinned = await createSession(client);
-    const firstReply = await runAndReadLastReply(client, pinned.id, 'use the frozen skill');
+    const firstRun = await runAndReadLastReply(client, pinned.id, 'use the frozen skill');
+    const firstReply = firstRun.reply;
     assert.ok(firstReply.includes(V1), `the Session resolved Skill v1: ${firstReply}`);
+    const firstToolNames = firstRun.events
+      .filter((event) => event.type === 'agent.tool_use')
+      .map((event) => event.name);
+    assert.deepEqual(firstToolNames, ['read'], 'filesystem Skill is loaded through its advertised path');
+    assert.ok(!firstToolNames.includes('list_skills') && !firstToolNames.includes('Skill'),
+      'filesystem Skill delivery exposes no parallel semantic activation path');
 
     const version2 = await uploadBundle(
       first.baseUrl,
@@ -215,7 +224,7 @@ async function main() {
     const exactV1 = await createSession(client, [{
       type: 'custom', skill_id: skillId, version: '1',
     }]);
-    const exactReply = await runAndReadLastReply(client, exactV1.id, 'use exact version one');
+    const { reply: exactReply } = await runAndReadLastReply(client, exactV1.id, 'use exact version one');
     assert.ok(exactReply.includes(V1), `P2 exact selector resolved v1 after v2 existed: ${exactReply}`);
     assert.ok(!exactReply.includes(V2), 'P2 exact selector did not drift to latest');
     pass('create-time exact custom Skill selector replaces latest and pins v1');
@@ -238,12 +247,12 @@ async function main() {
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: adminToken, baseURL: second.baseUrl });
 
-    const restoredReply = await runAndReadLastReply(client, pinned.id, 'use it again after restart');
+    const { reply: restoredReply } = await runAndReadLastReply(client, pinned.id, 'use it again after restart');
     assert.ok(restoredReply.includes(V1), 'rehydrated old Session still loads retained v1 bytes');
     assert.ok(!restoredReply.includes(V2), 'old Session did not drift to current v2');
 
     const current = await createSession(client);
-    const currentReply = await runAndReadLastReply(client, current.id, 'use the current skill');
+    const { reply: currentReply } = await runAndReadLastReply(client, current.id, 'use the current skill');
     assert.ok(currentReply.includes(V2), 'new Session resolves current v2');
     assert.ok(!currentReply.includes(V1), 'new Session does not select retired v1');
     pass('restart preserves old Session pin while a new Session selects v2');

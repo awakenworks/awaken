@@ -208,6 +208,7 @@ pub(crate) async fn wire_skills(
     if let Some(skill) = configured
         .iter()
         .find(|skill| skill.environment == SkillEnvironment::Filesystem && skill.dir.is_none())
+        .filter(|_| !materialize_delivered_files)
     {
         return Err(format!(
             "filesystem Skill `{}` has no materialized directory",
@@ -220,6 +221,50 @@ pub(crate) async fn wire_skills(
             tracing::warn!(error = %error, "failed to seed container skill catalog");
         }
     }
+    // `.skills` is one complete runtime-owned projection. Clear it before a
+    // rebuild that carries either frozen bundles or config-only Skills, then
+    // repopulate every selected Skill through this same projection path.
+    if delivered.is_some() || (materialize_delivered_files && !configured.is_empty()) {
+        if let Some(env) = env.as_ref() {
+            env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else if materialize_delivered_files {
+            return Err(
+                "filesystem Skill delivery requires a materialized Session environment".into(),
+            );
+        }
+    }
+    let mut configured = configured.to_vec();
+    if materialize_delivered_files {
+        let env = env.as_ref().ok_or_else(|| {
+            "filesystem Skill delivery requires a materialized Session environment".to_string()
+        })?;
+        for skill in &mut configured {
+            if skill.dir.is_some() {
+                continue;
+            }
+            let directory = format!(
+                "{DELIVERED_SKILLS_SUBDIR}/{}",
+                awaken_resource_contract::skill_stem(&skill.id)
+            );
+            let name = serde_json::to_string(&skill.name)
+                .map_err(|error| format!("serialize Skill name: {error}"))?;
+            let description = serde_json::to_string(&skill.description)
+                .map_err(|error| format!("serialize Skill description: {error}"))?;
+            let content = format!(
+                "---\nname: {name}\ndescription: {description}\n---\n{}",
+                skill.body
+            );
+            env.materialize_read_only_tree(
+                &directory,
+                &[("SKILL.md".to_string(), content.into_bytes(), false)],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            skill.dir = Some(directory);
+        }
+    }
     // Delivered skills come from two trusted sources: the static configured set and —
     // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`
     // provenance), plus a live scan of the workspace for skills the agent authored
@@ -227,19 +272,9 @@ pub(crate) async fn wire_skills(
     // duplicate id.
     let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
     if !configured.is_empty() {
-        registries.push(Arc::new(FixedSkillRegistry::from_specs(
-            configured.iter().cloned(),
-        )));
+        registries.push(Arc::new(FixedSkillRegistry::from_specs(configured)));
     }
     if let Some(delivered) = delivered {
-        // `.skills` is a complete runtime-owned projection, not an append-only
-        // cache. Clear it before every rebuild so a retired Skill or a file removed
-        // by a newer immutable version cannot remain reachable through read/bash.
-        if let Some(env) = &env {
-            env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
             if awaken_resource_contract::skill_bundle_sha256(&version.files)

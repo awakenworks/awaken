@@ -1034,10 +1034,10 @@ pub fn build_remote_delegation_router() -> Router {
     mount_with_agent_source(host, publication)
 }
 
-/// A deterministic model for the skills e2e (ADR-0036). On the User Run it calls
-/// `list_skills` to discover the offered skills; given the catalog it activates the
-/// `greet` skill via the `Skill` tool; given the activation instructions it replies
-/// with them — so an e2e can assert discover → activate → use end to end. Stateless.
+/// A deterministic model for the skills e2e (ADR-0036). A Managed-filesystem
+/// prompt makes it read the advertised `SKILL.md`; a filesystem-free Session uses
+/// `list_skills` then `Skill`. Both delivery modes therefore prove their own
+/// discover → load → use path without one test fixture forcing the other mode.
 pub struct SkillDrivingModel;
 
 /// Deterministic Native model used to prove that a Session Environment-installed
@@ -1085,7 +1085,27 @@ impl LlmExecutor for SkillDrivingModel {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let last = request.messages.last().expect("a message");
         let last_text = extract_text(&last.content);
+        let system_text = request
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .map(|message| extract_text(&message.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let managed_skill_path = system_text
+            .split('`')
+            .find(|part| part.ends_with("/SKILL.md"))
+            .map(str::to_string);
         let output = match last.role {
+            Role::User if managed_skill_path.is_some() => {
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "read-skill".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({
+                        "path": managed_skill_path.expect("guarded managed Skill path")
+                    }),
+                }])
+            }
             Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "l".into(),
                 tool_id: "list_skills".into(),

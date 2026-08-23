@@ -1438,13 +1438,13 @@ impl SharedHost {
 
             let mut descriptors = Vec::new();
             let mut executors = Vec::new();
-            if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools {
-                descriptors.extend(skill_descriptors);
-                executors.extend(skill_executors);
+            if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools.as_ref() {
+                descriptors.extend(skill_descriptors.iter().cloned());
+                executors.extend(skill_executors.iter().cloned());
             }
-            if let Some(memory) = semantic_memory_tools {
-                descriptors.extend(memory.descriptors);
-                executors.extend(memory.executors);
+            if let Some(memory) = semantic_memory_tools.as_ref() {
+                descriptors.extend(memory.descriptors.iter().cloned());
+                executors.extend(memory.executors.iter().cloned());
             }
             if !descriptors.is_empty() {
                 let (servers, exports) = crate::acp_tool_export::export_tools(
@@ -1564,10 +1564,18 @@ impl SharedHost {
         let tool_executor = if a2a_only {
             None
         } else if content_delivery == crate::session_slot::ManagedContentDelivery::SemanticTools {
-            Some(
-                Arc::new(crate::config::FilesystemFreeAgentToolExecutor::new())
-                    as Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+            let mut tools = Vec::new();
+            if let Some((_, skill_tools)) = semantic_skill_tools.as_ref() {
+                tools.extend(skill_tools.iter().cloned());
+            }
+            if let Some(memory) = semantic_memory_tools.as_ref() {
+                tools.extend(memory.executors.iter().cloned());
+            }
+            Some(Arc::new(
+                crate::config::FilesystemFreeAgentToolExecutor::try_new(tools)
+                    .map_err(HostError::internal)?,
             )
+                as Arc<dyn awaken_runtime_contract::tool::ToolExecutor>)
         } else if let Some(environment) = env.as_ref() {
             // Every realized tier owns the Hand for its Session. Container uses
             // the channel-backed process; Workdir/Namespace use their rooted
