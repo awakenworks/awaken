@@ -4142,20 +4142,19 @@ impl LlmExecutor for BrainSkillModel {
     }
 }
 
-/// Published-Skill tool-face cause/effect graph. C1 the immutable Agent
-/// publication selects a Skill; C2 the Session slot contains its exact verified
-/// bundle; C3 Runtime builds the model request. Effects: E1 both stable Skill
-/// tools are model-visible; E2 their executors share the same Session registry.
-/// Without C1 or C2, neither tool may appear. Filesystem bundle realization is
-/// independently covered by L7/L8 and manifest replacement coverage below.
+/// Published-Skill Managed-filesystem cause/effect graph. C1 the immutable
+/// Agent publication selects a Skill; C2 the Session slot contains its exact
+/// verified bundle; C3 Runtime owns a Sandbox. Effects: E1 Skill metadata/path
+/// is model-visible without its full body; E2 `SKILL.md` is materialized; E3 no
+/// semantic Skill tools create a parallel activation path.
 ///
 /// | Rule | C1 selected | C2 delivered | Effect |
 /// |---|---|---|---|
-/// | S1 | yes | yes | E1 + E2 |
-/// | S2 | yes | no | no ambient Skill tools |
-/// | S3 | no | yes | no unselected Skill tools |
+/// | S1 | yes | yes | E1 + E2 + E3 |
+/// | S2 | yes | no | no metadata/materialization/read |
+/// | S3 | no | yes | no unselected Skill projection/read |
 #[tokio::test]
-async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face() {
+async fn published_agent_receives_managed_filesystem_skill_discovery() {
     use awaken_runtime_contract::StaticPublishedAgentSnapshots;
     use awaken_runtime_contract::agent_bindings::AgentBindings;
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
@@ -4169,9 +4168,33 @@ async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face
             &self,
             request: ChatRequest,
         ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-            self.0.lock().unwrap().push(request);
+            self.0.lock().unwrap().push(request.clone());
+            let system = request
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::System)
+                .map(|message| block_text(&message.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let output = if request
+                .messages
+                .last()
+                .is_some_and(|message| message.role == Role::Tool)
+            {
+                AssistantOutput::text("used managed filesystem Skill")
+            } else if system.contains(".skills/release-signal/SKILL.md") {
+                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                    call_id: "read-managed-skill".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({
+                        "path": ".skills/release-signal/SKILL.md"
+                    }),
+                }])
+            } else {
+                AssistantOutput::text("no selected managed Skill")
+            };
             Ok(ChatResponse {
-                output: AssistantOutput::text("ok"),
+                output,
                 usage: None,
                 stop_reason: None,
             })
@@ -4183,15 +4206,21 @@ async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face
         .model(test_model_binding())
         .agent_bindings(AgentBindings {
             skills: vec![awaken_agent_contract::AgentSkillBinding::custom(selected)],
+            toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Agent,
+                default: awaken_agent_contract::ToolExecutionPolicy::default(),
+                overrides: Vec::new(),
+            }],
             ..Default::default()
         })
         .build();
-    let publications =
-        StaticPublishedAgentSnapshots::try_new([snapshot]).expect("one immutable published Agent");
+    let publications = Arc::new(
+        StaticPublishedAgentSnapshots::try_new([snapshot]).expect("one immutable published Agent"),
+    );
     let recorder = ToolFaceRecorder::default();
     let observed = recorder.0.clone();
     let host = Arc::new(
-        SharedHost::new(Arc::new(recorder), "stub").with_agent_publications(Arc::new(publications)),
+        SharedHost::new(Arc::new(recorder), "stub").with_agent_publications(publications.clone()),
     );
     let files = vec![SkillBundleFile {
         path: "SKILL.md".into(),
@@ -4224,19 +4253,155 @@ async fn published_agent_receives_resource_derived_skill_tools_in_its_model_face
     .await
     .expect("published Skill run");
 
-    let requests = observed.lock().unwrap();
-    let tools = &requests.last().expect("model request").tools;
-    assert!(
-        tools
+    {
+        let requests = observed.lock().unwrap();
+        let request = requests.first().expect("initial model request");
+        let tools = &request.tools;
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.id == awaken_ext_skills::SKILL_LIST_TOOL_ID),
+            "S1/E3 list_skills is absent"
+        );
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.id == awaken_ext_skills::SKILL_TOOL_ID),
+            "S1/E3 Skill is absent"
+        );
+        let system = request
+            .messages
             .iter()
-            .any(|tool| tool.id == awaken_ext_skills::SKILL_LIST_TOOL_ID),
-        "S1/E1 list_skills is visible"
+            .filter(|message| message.role == Role::System)
+            .map(|message| block_text(&message.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(system.contains("release-signal"), "S1/E1 name");
+        assert!(
+            system.contains(".skills/release-signal/SKILL.md"),
+            "S1/E1 path"
+        );
+        assert!(
+            !system.contains("Say READY"),
+            "S1/E1 body remains on demand"
+        );
+        assert!(
+            requests
+                .last()
+                .expect("post-read model request")
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::Tool)
+                .map(|message| block_text(&message.content))
+                .any(|content| content.contains("Say READY")),
+            "S1/E1 the advertised path is readable through the real Session executor"
+        );
+    }
+    assert!(
+        host.session_environment("published-skill-thread")
+            .await
+            .expect("S1 sandbox")
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .iter()
+            .any(|file| file.id == selected),
+        "S1/E2"
     );
+
+    let missing_recorder = ToolFaceRecorder::default();
+    let missing_observed = missing_recorder.0.clone();
+    let missing_host = Arc::new(
+        SharedHost::new(Arc::new(missing_recorder), "stub").with_agent_publications(publications),
+    );
+    missing_host
+        .run(
+            Some("published-skill"),
+            "selected-without-delivery",
+            vec![Message::text(
+                MessageId("selected-without-delivery-user".into()),
+                Role::User,
+                "Release signal",
+            )],
+        )
+        .await
+        .expect("S2 selected but unavailable Skill cannot become ambient content");
+    let missing_system = missing_observed
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter(|message| message.role == Role::System)
+        .map(|message| block_text(&message.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!missing_system.contains("release-signal"), "S2");
     assert!(
-        tools
-            .iter()
-            .any(|tool| tool.id == awaken_ext_skills::SKILL_TOOL_ID),
-        "S1/E1 Skill is visible"
+        missing_host
+            .session_environment("selected-without-delivery")
+            .await
+            .expect("S2 sandbox")
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .is_empty(),
+        "S2"
+    );
+
+    let unselected_snapshot =
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("unselected-skill")
+            .model(test_model_binding())
+            .agent_bindings(AgentBindings {
+                toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                    source: awaken_agent_contract::ToolsetSource::Agent,
+                    default: awaken_agent_contract::ToolExecutionPolicy::default(),
+                    overrides: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .build();
+    let unselected_publications = StaticPublishedAgentSnapshots::try_new([unselected_snapshot])
+        .expect("one immutable unselected Agent");
+    let unselected_recorder = ToolFaceRecorder::default();
+    let unselected_observed = unselected_recorder.0.clone();
+    let unselected_host = Arc::new(
+        SharedHost::new(Arc::new(unselected_recorder), "stub")
+            .with_agent_publications(Arc::new(unselected_publications)),
+    );
+    unselected_host
+        .session_slots
+        .update("unselected-delivery", |slot| {
+            slot.skills = host
+                .session_slots
+                .read("published-skill-thread", |slot| slot.skills.clone())
+                .flatten();
+        });
+    unselected_host
+        .run(
+            Some("unselected-skill"),
+            "unselected-delivery",
+            vec![Message::text(
+                MessageId("unselected-delivery-user".into()),
+                Role::User,
+                "Release signal",
+            )],
+        )
+        .await
+        .expect("S3 unselected delivery stays unavailable");
+    let unselected_system = unselected_observed
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter(|message| message.role == Role::System)
+        .map(|message| block_text(&message.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!unselected_system.contains("release-signal"), "S3");
+    assert!(
+        unselected_host
+            .session_environment("unselected-delivery")
+            .await
+            .expect("S3 sandbox")
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .is_empty(),
+        "S3"
     );
 }
 
@@ -4272,10 +4437,16 @@ impl LlmExecutor for HandReadModel {
 /// L2: instruction-only Skill tools execute in the Brain and do not awaken Hand.
 #[tokio::test]
 async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
-    // Test design. Causes: C1 a Brain-owned skill executes without Hand/filesystem
-    // placement demand. Effects: E1 the skill completes while Environment remains
-    // absent. Constraint/Invariant: Brain-local tools cannot trigger Hand
-    // realization. Decision rule: exercise C1 and require zero Environment effects.
+    // Test design. Causes: C1 a Brain-owned Skill is selected; C2 the Agent
+    // disables every filesystem tool; C3 Environment provisioning is OnToolUse.
+    // Effects: E1 `list_skills` reaches its canonical RawTool through the final
+    // Run executor; E2 the Skill catalog is returned without an error; E3 the
+    // Environment remains absent. Rule L2: C1+C2+C3 => E1+E2+E3. Constraint:
+    // semantic delivery cannot awaken Hand or retain a parallel filesystem path.
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(
         SharedHost::new(Arc::new(BrainSkillModel), "stub").with_skills(vec![
@@ -4290,7 +4461,23 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
-                tools: None,
+                tools: Some(awaken_session_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
+                            permission: ToolPermissionRequirement::AlwaysAllow,
+                        },
+                        overrides: vec![ToolPolicyOverride::new(
+                            "web_fetch",
+                            ToolExecutionPolicy {
+                                enabled: true,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                }),
                 resource_revision: 0,
                 resources: Default::default(),
                 model: None,
@@ -4301,14 +4488,29 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
         .await
         .unwrap();
 
-    host.run(
-        Some("assistant"),
-        "deferred-brain",
-        vec![Message::text(MessageId("u2".into()), Role::User, "skills")],
-    )
-    .await
-    .unwrap();
-    assert!(host.session_environment("deferred-brain").await.is_none());
+    let result = host
+        .run(
+            Some("assistant"),
+            "deferred-brain",
+            vec![Message::text(MessageId("u2".into()), Role::User, "skills")],
+        )
+        .await
+        .unwrap();
+    let tool_results = result
+        .new_messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .map(|message| block_text(&message.content))
+        .collect::<Vec<_>>();
+    assert_eq!(tool_results.len(), 1, "L2/E1 one semantic Skill result");
+    assert!(
+        tool_results[0].contains("\"skills\"") && !tool_results[0].contains("unknown tool"),
+        "L2/E2 canonical Skill catalog: {tool_results:?}"
+    );
+    assert!(
+        host.session_environment("deferred-brain").await.is_none(),
+        "L2/E3"
+    );
 }
 
 /// L3: the Runtime's per-tool target routing sends a Sandbox tool through the
@@ -4991,6 +5193,322 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
     assert!(
         !empty.contains("BANANA-42"),
         "an unbound agent mounts nothing extra: {empty}"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() {
+    // Cause/effect graph: C1 OnToolUse Environment; C2 the exact Agent toolset
+    // disables every filesystem member but enables web tools; C3 two frozen
+    // MemoryStore bindings with different access; C4 write has absent/current/
+    // stale CAS hash. Effects: E1 no Sandbox or Memory mount; E2 prompt names
+    // every binding and semantic-tool protocol; E3 tools route only to the
+    // explicit binding; E4 create/current-CAS succeed, stale/read-only writes
+    // fail without clobbering. Decision rules M1=C1+C2+C3 -> E1..E3;
+    // M2=C4 absent -> create; M3=C4 current -> update; M4=C4 stale -> reject;
+    // M5=read-only binding -> reject; M6 a rebuild attempts to switch the
+    // delivery mode -> reject instead of exposing mounts and tools together.
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+    use awaken_runtime_contract::tool::ToolCall;
+
+    struct SemanticMemoryModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for SemanticMemoryModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            let last = request.messages.last().expect("semantic Memory message");
+            let output = if last.role == Role::Tool {
+                AssistantOutput::text(format!(
+                    "runtime-semantic-memory:{}",
+                    block_text(&last.content)
+                ))
+            } else {
+                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                    call_id: "runtime-read-memory".into(),
+                    tool_id: "read_memory".into(),
+                    arguments: serde_json::json!({
+                        "binding": "test-input-1",
+                        "path": "/preference.md"
+                    }),
+                }])
+            };
+            Ok(ChatResponse {
+                output,
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let host = Arc::new(SharedHost::new(Arc::new(SemanticMemoryModel), "stub"));
+    let managed = managed_with_resource_source(host.clone());
+    let store_a = "semantic-store-a";
+    let store_b = "semantic-store-b";
+    host.memory_repository()
+        .create(store_b, "/preference.md", "from-b")
+        .await
+        .unwrap();
+
+    let mut init = bare_session("assistant", host.local_workspace());
+    init.environment = on_tool_use_environment();
+    init.tools = Some(awaken_session_contract::SessionToolConfiguration {
+        toolsets: vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: ["web_fetch", "web_search"]
+                .into_iter()
+                .map(|name| {
+                    ToolPolicyOverride::new(
+                        name,
+                        ToolExecutionPolicy {
+                            enabled: true,
+                            permission: ToolPermissionRequirement::AlwaysAllow,
+                        },
+                    )
+                })
+                .collect(),
+        }],
+        client_tools: Vec::new(),
+    });
+    init.resources = effective_resources(vec![
+        TestInput {
+            kind: "memory_store".into(),
+            id: store_a.into(),
+            mount_path: "memory/a".into(),
+            access: ResourceAccess::ReadWrite,
+            instructions: Some("Use for durable project facts.".into()),
+            initial_branch: None,
+            initial_commit: None,
+        },
+        TestInput {
+            kind: "memory_store".into(),
+            id: store_b.into(),
+            mount_path: "memory/b".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: Some("Use for user preferences.".into()),
+            initial_branch: None,
+            initial_commit: None,
+        },
+    ]);
+    managed
+        .prepare_session("semantic-memory", init)
+        .await
+        .unwrap();
+    let context = host
+        .ctx_for("semantic-memory", Some("assistant"))
+        .await
+        .unwrap();
+
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M1/E1"
+    );
+    assert!(
+        host.sandbox_spec("semantic-memory").mounts.is_empty(),
+        "M1/E1"
+    );
+    let prompt = host.thread_session_prompts("semantic-memory").join("\n");
+    assert!(
+        prompt.contains("test-input-0") && prompt.contains("test-input-1"),
+        "M1/E2"
+    );
+    assert!(prompt.contains("through the memory tools"), "M1/E2");
+    assert!(!prompt.contains("is mounted"), "M1/E2");
+    let misplaced_file_call = context
+        .attempt_context
+        .tool_executor
+        .as_ref()
+        .expect("filesystem-free executor")
+        .invoke(&ToolCall {
+            call_id: "misplaced-read".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"path": "anything"}),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        misplaced_file_call
+            .to_string()
+            .contains("filesystem-free Session"),
+        "M1/E1 fail closed"
+    );
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M1/E1 rejected file call cannot awaken Sandbox"
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let response = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let fetched = context
+        .attempt_context
+        .tool_executor
+        .as_ref()
+        .unwrap()
+        .invoke(&ToolCall {
+            call_id: "web-fetch".into(),
+            tool_id: "web_fetch".into(),
+            arguments: serde_json::json!({"url": format!("http://{address}/")}),
+        })
+        .await
+        .unwrap();
+    response.await.unwrap();
+    assert!(!fetched.is_error && fetched.text() == "ok", "M1 web route");
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M1 web_fetch remains Sandbox-free"
+    );
+
+    assert!(
+        context
+            .config
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|descriptor| descriptor.id == "read_memory"),
+        "M1/E3 model surface"
+    );
+    let runtime_read = host
+        .run(
+            Some("assistant"),
+            "semantic-memory",
+            vec![Message::text(
+                MessageId("semantic-memory-runtime-read".into()),
+                Role::User,
+                "Read the preference memory",
+            )],
+        )
+        .await
+        .expect("M1 final Runtime dispatches read_memory");
+    assert!(
+        runtime_read
+            .new_messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .map(|message| block_text(&message.content))
+            .any(|text| text.contains("runtime-semantic-memory") && text.contains("from-b")),
+        "M1/E3 model descriptor reaches the bound executor through host.run"
+    );
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M1/E1 semantic Runtime execution remains Sandbox-free"
+    );
+
+    let bindings = host
+        .session_slots
+        .read("semantic-memory", |slot| slot.memory_bindings.clone())
+        .unwrap();
+    let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
+    let invoke = |tool_id: &str, arguments: serde_json::Value| {
+        let tool = tools
+            .executors
+            .iter()
+            .find(|tool| tool.id() == tool_id)
+            .cloned()
+            .expect("semantic Memory tool is wired");
+        let tool_id = tool_id.to_string();
+        async move {
+            tool.invoke(ToolCall {
+                call_id: format!("{tool_id}-call"),
+                tool_id,
+                arguments,
+            })
+            .await
+        }
+    };
+    let read_b = invoke(
+        "read_memory",
+        serde_json::json!({"binding": "test-input-1", "path": "/preference.md"}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !read_b.is_error && read_b.text().contains("from-b"),
+        "M1/E3"
+    );
+
+    let created = invoke(
+        "write_memory",
+        serde_json::json!({"binding": "test-input-0", "path": "/fact.md", "content": "v1"}),
+    )
+    .await
+    .unwrap();
+    assert!(!created.is_error, "M2/E4");
+    let created: awaken_resource_contract::Memory = serde_json::from_str(&created.text()).unwrap();
+    let updated = invoke(
+        "write_memory",
+        serde_json::json!({
+            "binding": "test-input-0",
+            "path": "/fact.md",
+            "content": "v2",
+            "expected_sha256": created.content_sha256
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(!updated.is_error, "M3/E4");
+    let stale = invoke(
+        "write_memory",
+        serde_json::json!({
+            "binding": "test-input-0",
+            "path": "/fact.md",
+            "content": "clobber",
+            "expected_sha256": "stale"
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(stale.to_string().contains("cas conflict"), "M4/E4: {stale}");
+    let read_only = invoke(
+        "write_memory",
+        serde_json::json!({"binding": "test-input-1", "path": "/new.md", "content": "no"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        read_only.to_string().contains("read-only"),
+        "M5/E4: {read_only}"
+    );
+    assert_eq!(
+        host.memory_repository()
+            .get_by_path(store_a, "/fact.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2"),
+        "M4 never clobbers"
+    );
+    host.session_slots.update("semantic-memory", |slot| {
+        slot.tools = None;
+        slot.runtime = None;
+    });
+    let mode_switch = host
+        .ctx_for("semantic-memory", Some("assistant"))
+        .await
+        .err()
+        .expect("M6 rejects the mode switch");
+    assert!(
+        mode_switch.message.contains("cannot change"),
+        "M6 one Session keeps one delivery path"
     );
 }
 

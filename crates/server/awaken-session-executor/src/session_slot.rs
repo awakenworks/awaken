@@ -10,6 +10,21 @@ use std::sync::{Arc, Mutex};
 use crate::memory::BoundMemory;
 use crate::provisioning::StagedResources;
 
+/// One Session-wide delivery decision for resources that can be represented
+/// either as files or as semantic tools. The frozen Resource/Skill identities
+/// remain authoritative; this value selects only their runtime projection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ManagedContentDelivery {
+    /// Anthropic Managed Agents compatible filesystem projection. Memory stores
+    /// are mounted and Skills are discovered from their `SKILL.md` paths.
+    #[default]
+    ManagedFilesystem,
+    /// Filesystem-free projection for Native agents whose published tool policy
+    /// cannot invoke a filesystem tool. The same frozen bindings are exposed by
+    /// bounded semantic tools instead.
+    SemanticTools,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum McpProjectionState {
     Staged,
@@ -88,6 +103,10 @@ pub(crate) struct SessionRuntimeSlot {
     /// immutable transcript-prefix reference. Never committed to this Thread.
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
+    /// Derived once while the Session context is built. Prompt projection,
+    /// mount realization, Native tools, and ACP export all consume this value;
+    /// none may independently choose another delivery path.
+    pub content_delivery: Option<ManagedContentDelivery>,
     /// Durable binding that recovery must adopt. If it is present while no
     /// environment is resident, cold context creation fails closed instead of
     /// manufacturing an unrelated replacement.
@@ -151,6 +170,9 @@ pub(crate) struct SessionRuntimeSlot {
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
+    /// Managed-filesystem Skill discovery metadata. Full instructions remain
+    /// in each materialized `SKILL.md` and are read on demand by file tools.
+    pub skill_prompt: Option<String>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_contract::SessionResourceManifest>,
 }
@@ -166,8 +188,17 @@ impl SessionRuntimeSlots {
     pub fn prompts(&self, session: &str) -> Vec<String> {
         self.read(session, |slot| {
             let mut prompts = slot.resources.prompts.clone();
+            prompts.extend(slot.resources.memory_prompts.iter().map(|prompt| {
+                match slot.content_delivery.unwrap_or_default() {
+                    ManagedContentDelivery::ManagedFilesystem => prompt.filesystem.clone(),
+                    ManagedContentDelivery::SemanticTools => prompt.semantic_tools.clone(),
+                }
+            }));
             if let Some(baseline) = &slot.baseline {
                 prompts.extend(baseline.prompts.clone());
+            }
+            if let Some(skill_prompt) = &slot.skill_prompt {
+                prompts.push(skill_prompt.clone());
             }
             prompts
         })

@@ -227,30 +227,21 @@ impl RunAttemptExecutor for SessionPromptAttemptExecutor {
     }
 }
 
-/// Loads selected Skills and bounded Memory recall into ACP's request-only
-/// context. Native execution keeps using its existing Skill tools and
-/// `BeforeInference` Memory hook; this adapter only bridges the external backend
-/// through the neutral `RuntimeRunContext` field.
+/// Bridges the explicitly-authored automatic Memory extension into ACP's
+/// request-only context. Standard Skills and MemoryStore bindings do not pass
+/// through this adapter: they use the shared filesystem/semantic-tool delivery
+/// selected for the Session.
 pub(crate) struct AcpContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    skills: Option<Arc<dyn awaken_ext_skills::SkillRegistry>>,
     memory: Option<awaken_ext_memory::MemoryRecall>,
-    session_id: String,
 }
 
 impl AcpContextAttemptExecutor {
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        skills: Option<Arc<dyn awaken_ext_skills::SkillRegistry>>,
         memory: Option<awaken_ext_memory::MemoryRecall>,
-        session_id: impl Into<String>,
     ) -> Self {
-        Self {
-            inner,
-            skills,
-            memory,
-            session_id: session_id.into(),
-        }
+        Self { inner, memory }
     }
 
     async fn load_context(
@@ -266,24 +257,6 @@ impl AcpContextAttemptExecutor {
             .starts_with("acp:")
         {
             return;
-        }
-        if let Some(skills) = &self.skills {
-            let loaded = skills
-                .list()
-                .into_iter()
-                .filter(|skill| skill.model_invocable)
-                .map(|skill| {
-                    awaken_ext_skills::render_backend_context(&skill, Some(&self.session_id))
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if !loaded.is_empty() {
-                context.request_context.push(Message::text(
-                    MessageId(format!("acp-skills:{}", activation.run_id.0)),
-                    Role::System,
-                    loaded,
-                ));
-            }
         }
         if let Some(memory) = &self.memory
             && let Some(recalled) = memory.context(&activation.input).await
@@ -552,25 +525,17 @@ mod acp_context_tests {
         );
     }
 
-    /// Cause/effect graph:
-    /// C1 ACP backend, C2 selected model-invocable Skill, C3 non-empty Memory
-    /// -> E1 one Skill context and E2 one bounded Memory context; a Native
-    /// backend (C1=false) -> E3 no adapter context because its existing Skill
-    /// tools and BeforeInference hook remain authoritative.
+    /// Cause/effect graph: C1 ACP backend, C2 explicitly-selected automatic
+    /// Memory extension with content -> E1 one bounded request-only context;
+    /// a Native backend (C1=false) -> E2 no adapter context. Standard Skills
+    /// are deliberately absent from both rules because discovery is no longer
+    /// duplicated by eager ACP prompt injection.
     ///
-    /// | Rule | ACP | Skill | Memory | Context messages |
-    /// | A1 | T | T | T | skill + memory |
-    /// | A2 | F | T | T | empty |
+    /// | Rule | ACP | Memory | Context messages |
+    /// | A1 | T | T | memory only |
+    /// | A2 | F | T | empty |
     #[tokio::test]
-    async fn acp_loads_selected_skills_and_memory_as_request_only_context() {
-        let skill = awaken_ext_skills::SkillSpec::new(
-            "review",
-            "Review",
-            "Review carefully",
-            "Use ${SESSION_ID} and inspect the evidence.",
-        );
-        let skills: Arc<dyn awaken_ext_skills::SkillRegistry> =
-            Arc::new(awaken_ext_skills::FixedSkillRegistry::from_specs([skill]));
+    async fn acp_loads_only_explicit_automatic_memory_as_request_context() {
         let root = std::env::temp_dir().join(format!(
             "awaken-acp-memory-{}",
             std::time::SystemTime::now()
@@ -584,27 +549,19 @@ mod acp_context_tests {
             .expect("seed memory");
         let loader = AcpContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Some(skills),
             Some(awaken_ext_memory::MemoryRecall::new(
                 Arc::new(memory),
                 awaken_ext_memory::RecallBounds::default(),
             )),
-            "session-1",
         );
 
         let acp = activation("acp:codex");
         let durable_input = acp.input.clone();
         let mut acp_context = awaken_runtime_contract::RuntimeRunContext::default();
         loader.load_context(&acp, &mut acp_context).await;
-        assert_eq!(acp_context.request_context.len(), 2, "A1");
+        assert_eq!(acp_context.request_context.len(), 1, "A1");
         assert!(
             acp_context.request_context[0]
-                .text_content()
-                .contains("Use session-1"),
-            "A1 skill template"
-        );
-        assert!(
-            acp_context.request_context[1]
                 .text_content()
                 .contains("Prefer concise answers"),
             "A1 memory"
@@ -1216,6 +1173,16 @@ impl crate::SharedHost {
                 let mut mounts = slot.resources.mounts.clone();
                 if let Some(baseline) = &slot.baseline {
                     mounts.extend(baseline.mounts.clone());
+                }
+                if slot.content_delivery
+                    == Some(crate::session_slot::ManagedContentDelivery::SemanticTools)
+                {
+                    mounts.retain(|mount| {
+                        !matches!(
+                            mount.source,
+                            awaken_provisioning_contract::MountSource::MemoryStore { .. }
+                        )
+                    });
                 }
                 mounts
             })

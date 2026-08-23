@@ -1,5 +1,6 @@
 [package]
 name = "awaken-session-executor"
+description = "Authority-free shared execution host infrastructure for Awaken Runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -70,6 +71,7 @@ base64 = "0.22"
 sha2 = "0.10"
 # Text-level PII scrubbing for the content-capture redactor (ADR-0050 D6).
 regex = "1"
+schemars = "1"
 # Host Run span (`#[instrument]`) exported through the global subscriber the service
 # binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"

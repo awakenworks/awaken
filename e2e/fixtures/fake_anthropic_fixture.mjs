@@ -510,13 +510,19 @@ export const BEHAVIORS = {
       default: return text('done: used skill greet, wrote memory + repo + artifact');
     }
   },
-  // SkillDrivingModel: on the user-triggered Run call `list_skills`; given the catalog
-  // activate `greet` via the `Skill` tool; given the activation instructions reply
-  // `USED-SKILL: <instructions>` — discover → activate → use.
+  // SkillDrivingModel supports the one delivery selected by Session capability:
+  // filesystem metadata -> `read` the advertised SKILL.md; filesystem-free ->
+  // `list_skills` then `Skill`. Both converge on the same final instruction use.
   skills(parsed) {
     const msgs = parsed.messages ?? [];
     const last = msgs[msgs.length - 1];
     const results = last && Array.isArray(last.content) ? last.content.filter((b) => b.type === 'tool_result') : [];
+    const managedSkillPath = systemText(parsed)
+      .split('`')
+      .find((part) => part.endsWith('/SKILL.md'));
+    if (results.length === 0 && managedSkillPath) {
+      return tool('r', 'read', { path: managedSkillPath });
+    }
     if (results.length === 0) return tool('l', 'list_skills', {});
     const lastText = results.map(toolResultText).join('');
     if (lastText.includes('"skills"')) {
