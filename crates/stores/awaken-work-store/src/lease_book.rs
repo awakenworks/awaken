@@ -106,6 +106,15 @@ impl LeaseBook {
             .is_some_and(|owner| owner == worker_id)
     }
 
+    pub fn is_owned_at_epoch(&self, work_id: &str, worker_id: &str, expected_epoch: u64) -> bool {
+        let authority = self.authority.lock().unwrap();
+        authority
+            .owners
+            .get(work_id)
+            .is_some_and(|owner| owner == worker_id)
+            && authority.epochs.get(work_id).copied() == Some(expected_epoch)
+    }
+
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
         let authority = self.authority.lock().unwrap();
         let lease = authority.leases.get(work_id).copied()?;

@@ -5,7 +5,12 @@
 // enforce ownership/state independently.
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  managedFileUploadForm,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38437);
 const WORKSPACE = `ephemeral-resource-${process.pid}`;
@@ -57,13 +62,10 @@ async function json(method, workspace, tail, body) {
 }
 
 async function upload(workspace, content) {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([content]), 'input.txt');
   const response = await fetch(scoped(workspace, 'files'), {
     method: 'POST',
     headers: { 'anthropic-beta': FILES_BETA },
-    body: form,
+    body: managedFileUploadForm(content, 'input.txt'),
   });
   assert.equal(response.status, 200);
   return response.json();

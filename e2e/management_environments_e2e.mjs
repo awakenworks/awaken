@@ -27,9 +27,9 @@ async function main() {
   // E2=invalid input is 400 with no resource/work side effect; E3=C3 follows one
   // lease lifecycle; E4=C4 makes update/policy/Work/delete terminally unavailable.
   // Constraints/invariant: one Environment aggregate owns config, policy, and
-  // Work availability. Nullable descriptions exist only at ingress: create
-  // omission/null normalize to `''`; update omission preserves, update null
-  // clears to `''`; every Environment response exposes a string.
+  // Work availability. Descriptions retain the official nullable contract:
+  // create omission/null projects null; update omission preserves, update null
+  // clears to null, and an explicit empty string remains distinct.
   // Decision rules: E1=C1(valid)+C2(valid); E2=C1/C2(invalid);
   // E3=E1+C3; E4=E1+C4.
   try {
@@ -55,7 +55,7 @@ async function main() {
         name: 'scoped', scope: 'organization', betas: BETAS,
       });
       assert.equal(scoped.scope, 'organization');
-      assert.equal(scoped.description, '', 'omitted description projects as the canonical string');
+      assert.equal(scoped.description, null, 'omitted description projects as official null');
       const scopedUpdate = await client.beta.environments.update(scoped.id, {
         scope: 'account', betas: BETAS,
       });
@@ -241,18 +241,18 @@ async function main() {
       assert.equal(gotEnv.id, env.id);
       // Description cause/effect graph: C1=create omits or supplies null;
       // C2=update omits description; C3=update supplies a string or null.
-      // E1=C1 authors `''`; E2=C2 preserves the current string; E3=C3 replaces
-      // with the exact string or clears to `''`. K: nullable presence belongs
-      // only to Managed ingress; the Environment aggregate, store, history,
-      // and official BetaEnvironment output share one non-null string authority.
+      // E1=C1 authors null; E2=C2 preserves the current value; E3=C3 replaces
+      // with the exact string or clears to null. K: the Environment aggregate,
+      // store, history, and official BetaEnvironment output share one nullable
+      // description authority; empty string and null remain distinct facts.
       //
       // Decision table:
       // | Rule | operation | description | durable/projected effect |
-      // | D0 | create | omitted/null | canonical empty string |
+      // | D0 | create | omitted/null | null |
       // | D1 | update | omitted | preserve prior value |
       // | D2 | update | string | replace with exact string |
-      // | D3 | update | null | clear to canonical empty string |
-      // | D4 | update | empty string | retain canonical empty string |
+      // | D3 | update | null | clear to null |
+      // | D4 | update | empty string | retain exact empty string |
       const upEnv = await client.beta.environments.update(env.id, {
         description: 'updated',
         betas: BETAS,
@@ -265,7 +265,7 @@ async function main() {
       const clearedDescription = await client.beta.environments.update(env.id, {
         description: null, betas: BETAS,
       });
-      assert.equal(clearedDescription.description, '', 'D3');
+      assert.equal(clearedDescription.description, null, 'D3');
       const emptyDescription = await client.beta.environments.update(env.id, {
         description: '', betas: BETAS,
       });

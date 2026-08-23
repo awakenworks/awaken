@@ -211,6 +211,7 @@ pub awaken_control::ControlDependencies::assistant_model_selection: core::option
 pub awaken_control::ControlDependencies::assistant_plugins: alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub awaken_control::ControlDependencies::brokered_catalog: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>
 pub awaken_control::ControlDependencies::catalog: alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>
+pub awaken_control::ControlDependencies::cloud_login: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::cloud_login::CloudLoginApplication>>
 pub awaken_control::ControlDependencies::config_store: alloc::sync::Arc<dyn awaken_agent_config::store::ScopedConfigRegistry>
 pub awaken_control::ControlDependencies::content_capture_ceiling: awaken_runtime_contract::capture::ContentCapture
 pub awaken_control::ControlDependencies::coordinator_content_eraser: alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>
@@ -254,6 +255,7 @@ pub awaken_control::ControlRouterInput::agent_repository: alloc::sync::Arc<dyn a
 pub awaken_control::ControlRouterInput::assistant_model_selection: core::option::Option<awaken_agent_config::config::ModelSelection>
 pub awaken_control::ControlRouterInput::brokered_catalog: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>
 pub awaken_control::ControlRouterInput::catalog: alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>
+pub awaken_control::ControlRouterInput::cloud_login: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::cloud_login::CloudLoginApplication>>
 pub awaken_control::ControlRouterInput::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
 pub awaken_control::ControlRouterInput::data_subject_application: alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>
 pub awaken_control::ControlRouterInput::data_subject_org: alloc::string::String

@@ -10,6 +10,7 @@ layer = "application"
 authority = "environment-execution"
 
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-environment-realization-contract.workspace = true

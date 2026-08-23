@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import {
   cleanupFixtureTree,
+  managedFileUploadForm,
   managedWorkspaceClient,
   spawnProduction,
   stopServer,
@@ -117,13 +118,10 @@ async function json(method: string, url: string, body?: unknown) {
 }
 
 async function upload(content: string, workspace = WORKSPACE): Promise<string> {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([content]), 'shared.txt');
   const response = await fetch(scoped(workspace, 'files'), {
     method: 'POST',
     headers: { 'anthropic-beta': FILES_BETA },
-    body: form,
+    body: managedFileUploadForm(content, 'shared.txt'),
   });
   assert.equal(response.status, 200);
   return (await response.json()).id;

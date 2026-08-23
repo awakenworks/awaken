@@ -1,7 +1,8 @@
 // Zero-configuration trusted-local ACP E2E through the shipped `awaken` binary.
 //
 // Cause graph:
-// catalog + PATH-local CLI + CLI-owned login -> startup discovery -> exact
+// explicit self-managed platform identity + catalog + PATH-local CLI + CLI-owned
+// login -> startup discovery -> exact
 // wrapper acquisition -> WorkerLocal binding/Worker route -> BackendDefault
 // publication -> host-HOME ACP launch. A restart reuses the resolved package;
 // missing acquisition evidence fails closed into diagnostics.
@@ -15,6 +16,12 @@
 // | L5 | present, not executable | any | any | version probe failed |
 // | L6 | present, times out | any | any | version probe failed |
 // | L7 | present, below minimum | any | any | unsupported before login/route |
+//
+// Identity constraint: C8=the fixture selects platform `self-managed`; E8=the
+// embedded admin token authorizes Agent authoring while Awaken Cloud OAuth is
+// not a competing startup cause. K8=the Codex/Gemini CLI-owned login under test
+// remains provider-local and is never promoted to platform identity. Rule
+// L8=C8=>E8; Cloud IAM behavior belongs to its dedicated matrix.
 //
 // Model-selection decision table:
 // | Rule | policy | backend/model | effect |
@@ -175,6 +182,7 @@ function writeConfig(target, dataDir, cliIds = ['codex', 'gemini']) {
     `data_dir = ${JSON.stringify(dataDir)}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
     'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+    'identity_mode = "self-managed"',
     'sandbox_tier = "local"',
     `acp_clis = ${JSON.stringify(cliIds)}`,
   ].join('\n'));

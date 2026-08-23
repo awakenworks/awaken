@@ -5,7 +5,11 @@ import Anthropic from '@anthropic-ai/sdk';
 // The shared E2E harness is intentionally JavaScript-owned and has no parallel
 // declaration shim; Node executes this import directly in the K3D lane.
 // @ts-expect-error -- harness.mjs is the canonical runtime implementation.
-import { waitForSessionEventReceipt, waitForValue } from '../harness.mjs';
+import {
+  managedFileUploadForm,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from '../harness.mjs';
 
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const BETAS = [MANAGED_BETA];
@@ -164,10 +168,12 @@ async function awaitResponsiveCoordinatorSet(
 }
 
 async function uploadFile(base: string, marker: string) {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([marker]), 'adr71-input.txt');
-  const response = await rawApi(base, 'POST', '/v1/files', form);
+  const response = await rawApi(
+    base,
+    'POST',
+    '/v1/files',
+    managedFileUploadForm(marker, 'adr71-input.txt'),
+  );
   assert.equal(response.status, 200, `POST /v1/files: ${response.text}`);
   return response.value;
 }

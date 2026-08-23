@@ -9,6 +9,7 @@ pub enum awaken_ext_skills::SkillProvenance
 pub awaken_ext_skills::SkillProvenance::AgentCreated
 pub awaken_ext_skills::SkillProvenance::Delivered
 pub awaken_ext_skills::SkillProvenance::Mcp
+pub awaken_ext_skills::SkillProvenance::Repository
 pub struct awaken_ext_skills::ActiveSkillTools
 impl awaken_ext_skills::ActiveSkillTools
 pub fn awaken_ext_skills::ActiveSkillTools::allows(&self, &str) -> bool

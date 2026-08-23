@@ -63,6 +63,14 @@
 // | B6 | 1, exact MCP confirmation reaches next request | 100 | one resume; final end_turn; cost 28 |
 // | B7 | 1, exact MCP confirmation reaches next request | null | one resume; final end_turn; cost 28 |
 // | B8 | 1, MCP confirmation + trailing System | any | 400; no receipt/effect; pending unchanged |
+// Resource cause graph: C16 the current Files upload contract carries only the
+// file plus the Managed beta selector; C17 the resulting exact file id is then
+// attached to the Session at one mount path. Effect U16 is one persisted File
+// followed by one resolvable Session resource. Constraint K16: the retired
+// multipart `purpose` field is not reintroduced by this Session-family test;
+// Files owns upload validation and Sessions owns only attachment. Decision R16:
+// C16 + C17 -> U16; malformed/extra multipart fields remain covered by the
+// Files endpoint's rejection table.
 // Constraints/invariant: one Session root revision owns update/CAS/disposition/
 // budget; Thread, resource, and Event subresources project from that same
 // aggregate and no rejected arm emits a partial Event or Run.
@@ -527,7 +535,6 @@ async function main() {
       // Upload a real file first so the attach resolves it in the blob store.
       const file = await client.beta.files.upload({
         file: await toFile(Buffer.from('resource contents'), 'in.txt'),
-        purpose: 'agent',
         betas: BETAS,
       });
       const res = await client.beta.sessions.resources.add(session.id, {

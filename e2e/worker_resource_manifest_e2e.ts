@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  managedFileUploadForm,
   spawnProduction,
   stopServer,
   waitForPort,
@@ -142,13 +143,10 @@ async function resourceRequest(method: string, pathname: string, body?: unknown)
 }
 
 async function uploadFile(): Promise<string> {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([FILE_BYTES]), 'input.txt');
   const response = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/files`, {
     method: 'POST',
     headers: { 'anthropic-beta': FILES_BETA },
-    body: form,
+    body: managedFileUploadForm(FILE_BYTES, 'input.txt'),
   });
   const text = await response.text();
   assert.equal(response.status, 200, `file upload accepted: ${text}`);
@@ -183,6 +181,14 @@ async function configureSeedModel(upstream: string): Promise<void> {
     name: SEED_AGENT,
     model: { id: SEED_MODEL },
     system: 'Produce a seed activation only.',
+    // Capability/publication decision table. C1 the frozen Skill contains a
+    // supporting asset and therefore requires Managed-filesystem delivery;
+    // C2 the Agent selects the canonical built-in toolset. C1+C2 => the Worker
+    // may realize the exact Skill tree; C1+!C2 => runtime resolution fails
+    // closed before sandbox/model effects. Constraint K: the immutable Agent
+    // publication, not the resource envelope or Worker, owns executable tool
+    // capability. Rule S1=C1+C2=>filesystem delivery; S2=C1+!C2=>reject.
+    tools: [{ type: 'agent_toolset_20260401' }],
     max_steps: 1,
   });
   assert.equal(authored.id, SEED_AGENT);
@@ -494,12 +500,15 @@ async function main(): Promise<void> {
   // carries frozen File/Skill/Memory inputs and exact Workspace; C2=attach/detach
   // operations succeed or fail; C3=Workspace mismatches or Memory is archived;
   // C4=Worker capability/placement satisfies the request. Effects: E1=valid
-  // inputs materialize exact bytes/tree/mount in one sandbox; E2=detach removes
+  // inputs plus the Agent's explicit filesystem toolset materialize exact
+  // bytes/tree/mount in one sandbox; E2=detach removes
   // only that projection; E3=C3/C4-invalid remains retryable and creates no
   // sandbox/model effect. Constraints/invariant: the dispatch activation plus
   // frozen resource envelope is the sole Worker authority; control-plane lookup
   // cannot widen it. Decision rules: M1=C1+C2+C4=>E1+E2;
-  // M2=C1+C3=>E3; M3=C1+!C4=>E3.
+  // M2=C1+C3=>E3; M3=C1+!C4=>E3. A selected filesystem-backed Skill with no
+  // filesystem tool is the separate fail-closed S2 rule beside its authoring
+  // fixture; this positive scenario must not acquire capability from resources.
   const database = await postgres();
   const upstream = await startFakeAnthropic(SEED_KEY, { models: [SEED_MODEL] });
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));

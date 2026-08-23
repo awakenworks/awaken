@@ -27,6 +27,7 @@ pub fn awaken_provider_genai::GenaiExecutor::infer_streaming<'life0, 'life1, 'as
 pub struct awaken_provider_genai::OpenAiResponsesExecutor
 impl awaken_provider_genai::OpenAiResponsesExecutor
 pub fn awaken_provider_genai::OpenAiResponsesExecutor::new(&str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::llm::Error>
+pub fn awaken_provider_genai::OpenAiResponsesExecutor::new_for_provider(impl core::convert::Into<alloc::string::String>, &str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::llm::Error>
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::OpenAiResponsesExecutor
 pub fn awaken_provider_genai::OpenAiResponsesExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::llm::ChatResponse, awaken_runtime_contract::llm::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error

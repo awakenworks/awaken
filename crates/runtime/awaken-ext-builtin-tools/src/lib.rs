@@ -30,8 +30,8 @@ pub use task::{
 };
 pub use web::{
     AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider,
-    BRAVE_PROVIDER_ID, BraveSearchProvider, ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID,
-    DuckDuckGoProvider, ManagedGatewayWebProvider, ManagedWebGatewayEndpoint, ManagedWebRouteError,
+    BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
+    ManagedGatewayWebProvider, ManagedWebGatewayEndpoint, ManagedWebRouteError,
     ManagedWebRouteResolver, OPENROUTER_PROVIDER_ID, WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID,
     WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs, WebFetchConfig,
     WebFetchExecutionConfiguration, WebFetchPlugin, WebFetchProvider, WebFetchProviderDescriptor,

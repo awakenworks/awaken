@@ -43,8 +43,8 @@ use awaken_sandbox_local::LocalSandbox;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{
-    build_runtime_with_authorization, configured_web_fetch_executor, effective_tool_authorization,
-    latest_assistant_text, server_config,
+    build_runtime_with_authorization, effective_tool_authorization, latest_assistant_text,
+    server_config,
 };
 
 mod child_execution;
@@ -240,14 +240,7 @@ async fn run_configured_agent_inner(
     if let Some(token) = cancellation {
         ctx = ctx.with_cancellation(token);
     }
-    ctx = ctx.with_tool_executor(
-        configured_web_fetch_executor(
-            Some(current_tool_executor),
-            &config.resolved_spec.plugin_config.agent.toolsets,
-        )
-        .map_err(AgentRunError::Configuration)?
-        .expect("an Agent Run sandbox always supplies its current Hand executor"),
-    );
+    ctx = ctx.with_tool_executor(current_tool_executor);
     if ctx.commit.is_none() || ctx.reader.is_none() {
         return Err(AgentRunError::Configuration(
             "an Agent Run requires commit and history wiring".to_string(),
@@ -1358,18 +1351,19 @@ mod tests {
     async fn child_runs_bind_the_current_sandbox_without_parent_web_policy_leakage() {
         // Causes: C1 execution enters the boundary or auxiliary child path; C2
         // placement is Shared, SharedLocal, or Fresh; C3 the child WebFetch
-        // configuration is absent, valid, or malformed; C4 the parent context
-        // carries a configured executor for a different sandbox. Effects: E1 a
+        // plugin configuration is absent, valid, or malformed; C4 the parent
+        // context carries an executor for a different sandbox. Effects: E1 a
         // successful child writes only through its current placement executor;
-        // E2 neither the parent's executor nor its WebFetch wrapper is inherited;
+        // E2 neither the parent's executor nor a second WebFetch route is inherited;
         // E3 malformed child configuration fails before model/tool effects.
         // Constraints: K1 the current sandbox is the sole child Hand authority;
-        // K2 configuration may wrap that base once but never replace or create it;
-        // K3 both child entry paths use the same config composition owner.
+        // K2 WebFetchPlugin is the sole WebFetch route/policy owner and remains
+        // separate from the Hand executor; K3 the durable child entry path uses
+        // the same host adapter shape as a root Run.
         //
         // | Rule | Child path | Placement | WebFetch config | Effect |
         // | R1 | boundary | Shared | absent | E1+E2 current Shared executor |
-        // | R2 | auxiliary | SharedLocal | valid | E1+E2 current wrapped executor |
+        // | R2 | boundary | SharedLocal | valid | E1+E2 current Hand + one plugin |
         // | R3 | auxiliary | Fresh | absent | E1+E2 fresh executor/root |
         // | R4 | boundary | SharedLocal | malformed | E3 fail closed |
         use awaken_runtime_contract::agent_bindings::{
@@ -1423,13 +1417,27 @@ mod tests {
                     Some(configuration),
                 ));
             }
+            let selected_web_fetch = overrides.iter().any(|item| item.name == "web_fetch");
+            let plugin_ids = if selected_web_fetch {
+                vec![awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string()]
+            } else {
+                Vec::new()
+            };
+            let plugin_config = if selected_web_fetch {
+                std::collections::BTreeMap::from([(
+                    awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string(),
+                    awaken_ext_builtin_tools::WebFetchPlugin::default_config(),
+                )])
+            } else {
+                std::collections::BTreeMap::new()
+            };
             let mut config = server_config(
                 "assistant",
                 "stub",
                 &HashSet::new(),
                 &HashSet::new(),
-                &[],
-                &Default::default(),
+                &plugin_ids,
+                &plugin_config,
                 &[],
                 awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
             );
@@ -1451,15 +1459,7 @@ mod tests {
             .unwrap();
         let parent_path = parent.workspace_path().to_path_buf();
         let parent_executor: Arc<dyn ToolExecutor> =
-            Arc::new(awaken_ext_builtin_tools::ConfiguredWebToolExecutor::new(
-                Arc::new(RawToolRegistry::new(parent.rooted_tools())),
-                awaken_ext_builtin_tools::WebFetchExecutionConfiguration {
-                    domains: Some(awaken_ext_builtin_tools::WebDomainFilter::Allow(vec![
-                        "parent.invalid".into(),
-                    ])),
-                    max_content_tokens: Some(0),
-                },
-            ));
+            Arc::new(RawToolRegistry::new(parent.rooted_tools()));
         let context = || {
             let commit = Arc::new(MemoryCommitCoordinator::new());
             RuntimeRunContext::new()
@@ -1472,6 +1472,13 @@ mod tests {
                 file_name: file_name.to_string(),
                 inferences,
             }) as Arc<dyn LlmExecutor>
+        };
+        let web_adapters = || ChildExecutionAdapters {
+            web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
+                awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+                None,
+            ))),
+            ..Default::default()
         };
 
         let shared_sandbox = LocalProvider::new(tmp.path().join("shared"))
@@ -1513,22 +1520,28 @@ mod tests {
             .unwrap();
         let shared_local_path = shared_local.workspace_path().to_path_buf();
         let valid = serde_json::json!({"type":"web_fetch", "max_content_tokens":3});
-        let configured_catalog = AgentCatalog::new().with_agent(child_config(Some(valid)));
+        let shared_local_config = child_config(Some(valid));
         let shared_local_inferences = Arc::new(AtomicUsize::new(0));
-        run_configured_agent(
-            &configured_catalog,
+        run_configured_agent_until_boundary(
+            &shared_local_config,
             AgentRunSandbox::SharedLocal(&shared_local),
             model("shared-local.txt", shared_local_inferences.clone()),
-            "assistant",
-            "shared-local-child",
-            vec![user("write")],
-            Vec::new(),
+            RunId("shared-local-child".into()),
+            DelegationOrigin::root_for_agent(
+                RunId("parent-shared-local".into()),
+                "call-shared-local",
+                "parent",
+            ),
+            Some(vec![user("write")].into()),
             None,
-            Some(context()),
+            context(),
             None,
+            ThreadId("parent-thread".into()),
+            None,
+            web_adapters(),
         )
         .await
-        .expect("R2 child uses its configured current executor");
+        .expect("R2 child uses its configured plugin and current Hand executor");
         assert!(
             shared_local_path.join("shared-local.txt").is_file(),
             "R2/E1"
@@ -1585,7 +1598,7 @@ mod tests {
             None,
             ThreadId("parent-thread".into()),
             None,
-            ChildExecutionAdapters::default(),
+            web_adapters(),
         )
         .await
         {

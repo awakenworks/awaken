@@ -59,6 +59,7 @@ mod tunnel;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 mod work_queue;
+mod work_session_access;
 
 pub use inference_policy::{
     InferenceGeoCheckpoint, InferenceGeoPolicyError, ManagedInferenceGeoPolicy, inference_geo_name,
@@ -88,3 +89,4 @@ pub use routes::{
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use state::{ManagedState, StateError};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
+pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

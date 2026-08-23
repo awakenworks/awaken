@@ -44,7 +44,7 @@ async fn verify_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation, sha256_hex,
+    MemoryVersionOperation, VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -204,14 +204,17 @@ async fn next_counter(
 
 async fn append_version(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    store: &str,
-    memory_id: &str,
-    operation: MemoryVersionOperation,
-    path: &str,
-    content: Option<&str>,
-    created: i64,
-    actor: Option<&MemoryActor>,
+    append: VersionAppend<'_>,
 ) -> Result<(), MemErr> {
+    let VersionAppend {
+        store,
+        memory_id,
+        operation,
+        path,
+        content,
+        created,
+        actor,
+    } = append;
     let ordinal = next_counter(
         tx,
         "memory_version",
@@ -404,13 +407,15 @@ impl MemoryRepository for PostgresMemoryRepository {
         })?;
         append_version(
             &mut tx,
-            store,
-            &id,
-            MemoryVersionOperation::Created,
-            path,
-            Some(content),
-            now,
-            actor,
+            VersionAppend {
+                store,
+                memory_id: &id,
+                operation: MemoryVersionOperation::Created,
+                path,
+                content: Some(content),
+                created: now,
+                actor,
+            },
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -555,25 +560,29 @@ impl MemoryRepository for PostgresMemoryRepository {
         if let Some(displaced_id) = displaced_id {
             append_version(
                 &mut tx,
-                store,
-                &displaced_id,
-                MemoryVersionOperation::Deleted,
-                requested_path,
-                None,
-                now,
-                actor,
+                VersionAppend {
+                    store,
+                    memory_id: &displaced_id,
+                    operation: MemoryVersionOperation::Deleted,
+                    path: requested_path,
+                    content: None,
+                    created: now,
+                    actor,
+                },
             )
             .await?;
         }
         append_version(
             &mut tx,
-            store,
-            id,
-            MemoryVersionOperation::Modified,
-            requested_path,
-            Some(content),
-            now,
-            actor,
+            VersionAppend {
+                store,
+                memory_id: id,
+                operation: MemoryVersionOperation::Modified,
+                path: requested_path,
+                content: Some(content),
+                created: now,
+                actor,
+            },
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -643,26 +652,30 @@ impl MemoryRepository for PostgresMemoryRepository {
         if let Some(displaced_id) = displaced_id {
             append_version(
                 &mut tx,
-                store,
-                &displaced_id,
-                MemoryVersionOperation::Deleted,
-                to,
-                None,
-                now,
-                None,
+                VersionAppend {
+                    store,
+                    memory_id: &displaced_id,
+                    operation: MemoryVersionOperation::Deleted,
+                    path: to,
+                    content: None,
+                    created: now,
+                    actor: None,
+                },
             )
             .await?;
         }
         let content = String::from_utf8(content).map_err(mem_err)?;
         append_version(
             &mut tx,
-            store,
-            &id,
-            MemoryVersionOperation::Modified,
-            to,
-            Some(&content),
-            now,
-            None,
+            VersionAppend {
+                store,
+                memory_id: &id,
+                operation: MemoryVersionOperation::Modified,
+                path: to,
+                content: Some(&content),
+                created: now,
+                actor: None,
+            },
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -710,13 +723,15 @@ impl MemoryRepository for PostgresMemoryRepository {
         .map_err(mem_err)?;
         append_version(
             &mut tx,
-            store,
-            &memory_id,
-            MemoryVersionOperation::Deleted,
-            path,
-            None,
-            now_nanos() as i64,
-            actor,
+            VersionAppend {
+                store,
+                memory_id: &memory_id,
+                operation: MemoryVersionOperation::Deleted,
+                path,
+                content: None,
+                created: now_nanos() as i64,
+                actor,
+            },
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -768,13 +783,15 @@ impl MemoryRepository for PostgresMemoryRepository {
         .map_err(mem_err)?;
         append_version(
             &mut tx,
-            store,
-            base_id,
-            MemoryVersionOperation::Deleted,
-            path,
-            None,
-            now_nanos() as i64,
-            None,
+            VersionAppend {
+                store,
+                memory_id: base_id,
+                operation: MemoryVersionOperation::Deleted,
+                path,
+                content: None,
+                created: now_nanos() as i64,
+                actor: None,
+            },
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;

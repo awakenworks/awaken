@@ -2,6 +2,11 @@ pub mod awaken_admin_config_api
 pub mod awaken_admin_config_api::schema
 pub const awaken_admin_config_api::schema::BUNDLE_ID: &str
 pub fn awaken_admin_config_api::schema::admin_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
+pub enum awaken_admin_config_api::CloudLoginState
+pub awaken_admin_config_api::CloudLoginState::Authenticated
+pub awaken_admin_config_api::CloudLoginState::Authorizing
+pub awaken_admin_config_api::CloudLoginState::Failed
+pub awaken_admin_config_api::CloudLoginState::SignInRequired
 pub enum awaken_admin_config_api::ModelCatalogDiscoveryError
 pub awaken_admin_config_api::ModelCatalogDiscoveryError::CredentialUnavailable(alloc::string::String)
 pub awaken_admin_config_api::ModelCatalogDiscoveryError::Provider(alloc::string::String)
@@ -42,6 +47,10 @@ pub awaken_admin_config_api::AdminState::probe: core::option::Option<alloc::sync
 pub awaken_admin_config_api::AdminState::profiles: alloc::sync::Arc<dyn awaken_config_resolver::stores::InferenceProfileStore>
 pub awaken_admin_config_api::AdminState::resources: alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>
 pub awaken_admin_config_api::AdminState::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
+pub struct awaken_admin_config_api::CloudLoginStatusView
+pub awaken_admin_config_api::CloudLoginStatusView::authorize_url: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CloudLoginStatusView::error_code: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CloudLoginStatusView::state: awaken_admin_config_api::CloudLoginState
 pub struct awaken_admin_config_api::ConfigCapabilitiesView
 pub awaken_admin_config_api::ConfigCapabilitiesView::identity: awaken_admin_config_api::IdentityCapabilityView
 pub awaken_admin_config_api::ConfigCapabilitiesView::models: awaken_admin_config_api::ModelSupplyCapabilityView
@@ -142,6 +151,12 @@ pub struct awaken_admin_config_api::ValidateCredentialRequest
 pub const awaken_admin_config_api::API_VERSION: &str
 pub trait awaken_admin_config_api::BrokeredCatalogDiscovery: core::marker::Send + core::marker::Sync
 pub fn awaken_admin_config_api::BrokeredCatalogDiscovery::projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::BrokeredCatalogProjection, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_admin_config_api::CloudLoginApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_config_api::CloudLoginApplication::logout<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_admin_config_api::CloudLoginApplication::start<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_config_api::CloudLoginStatusView> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_admin_config_api::CloudLoginApplication::status<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_config_api::CloudLoginStatusView> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_admin_config_api::ConfigCapabilitiesSource: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_config_api::ConfigCapabilitiesSource::current(&self) -> awaken_admin_config_api::ConfigCapabilitiesView
 pub trait awaken_admin_config_api::CredentialProbe: core::marker::Send + core::marker::Sync
 pub fn awaken_admin_config_api::CredentialProbe::probe<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_config_api::ProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_admin_config_api::ModelCatalogDiscovery: core::marker::Send + core::marker::Sync
@@ -149,4 +164,5 @@ pub fn awaken_admin_config_api::ModelCatalogDiscovery::discover<'life0, 'life1, 
 pub fn awaken_admin_config_api::ModelCatalogDiscovery::discover_with_secret<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpoint, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, awaken_admin_config_api::ModelCatalogDiscoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_admin_config_api::admin_router(awaken_admin_config_api::AdminState) -> axum::routing::Router
 pub fn awaken_admin_config_api::admin_router_with_capabilities(awaken_admin_config_api::AdminState, awaken_admin_config_api::ConfigCapabilitiesView) -> axum::routing::Router
+pub fn awaken_admin_config_api::admin_router_with_runtime_capabilities(awaken_admin_config_api::AdminState, alloc::sync::Arc<dyn awaken_admin_config_api::ConfigCapabilitiesSource>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::CloudLoginApplication>>) -> axum::routing::Router
 pub async fn awaken_admin_config_api::reconcile_brokered_catalog(&dyn awaken_admin_config_api::BrokeredCatalogDiscovery, &dyn awaken_model_catalog::repo::CatalogRepo) -> core::result::Result<awaken_model_catalog::CatalogSyncResult, alloc::string::String>

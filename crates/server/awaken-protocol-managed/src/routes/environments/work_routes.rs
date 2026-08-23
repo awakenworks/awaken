@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Extension, Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
-use base64::Engine as _;
 
 use super::{WireError, bad_request, not_found};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    Work, WorkHeartbeat, WorkQueueStats, WorkSecret, WorkStopParams, WorkUpdateParams,
+    Work, WorkHeartbeat, WorkHeartbeatObjectType, WorkQueueStats, WorkQueueStatsObjectType,
+    WorkStopParams, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
@@ -71,7 +71,7 @@ pub(super) async fn poll_work(
     let started = tokio::time::Instant::now();
     loop {
         let claimed = state
-            .claim_work(
+            .claim_work_with_session_access(
                 &id,
                 &lease_owner,
                 poller_id,
@@ -81,17 +81,7 @@ pub(super) async fn poll_work(
             .await
             .map_err(map_execution_error)?;
         if let Some(work) = claimed {
-            let secret = match &work.data {
-                awaken_session_contract::work_queue::WorkPayload::Session { .. } => {
-                    environment_credential(&headers)
-                        .map(encode_work_secret)
-                        .transpose()?
-                }
-                awaken_session_contract::work_queue::WorkPayload::HealthCheck { .. } => None,
-            };
-            return Ok(Json(Some(crate::work_queue::project_work_with_secret(
-                &work, secret,
-            ))));
+            return Ok(Json(Some(crate::work_queue::project_claim(&work))));
         }
         let Some(wait) = poll.block_ms else {
             return Ok(Json(None));
@@ -105,15 +95,6 @@ pub(super) async fn poll_work(
         )
         .await;
     }
-}
-
-fn encode_work_secret(sessions_token: &str) -> Result<String, WireError> {
-    let payload = serde_json::to_vec(&WorkSecret {
-        sessions_token: sessions_token.to_string(),
-        api_base_url: None,
-    })
-    .map_err(|error| bad_request(format!("could not encode Work secret: {error}")))?;
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload))
 }
 
 /// Parsed poll timing. `None` means the caller explicitly sent `block_ms=null`
@@ -172,7 +153,7 @@ pub(super) async fn work_stats(
         .await
         .map_err(map_execution_error)?;
     Ok(Json(WorkQueueStats {
-        object_type: crate::types::environment::WorkQueueStatsObjectType::WorkQueueStats,
+        object_type: WorkQueueStatsObjectType::WorkQueueStats,
         depth: s.depth,
         pending: s.pending,
         oldest_queued_at: s.oldest_queued_at.into(),
@@ -210,12 +191,15 @@ pub(super) async fn ack_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
+    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
 ) -> Result<Json<Work>, WireError> {
-    let owner = work_lease_owner(&headers)?;
-    let result = state
-        .acknowledge_work(&id, &wid, &owner)
-        .await
-        .map_err(map_execution_error)?;
+    let result = if let Some(access) = access.as_deref() {
+        state.acknowledge_work_with_session_access(access).await
+    } else {
+        let owner = work_lease_owner(&headers)?;
+        state.acknowledge_work(&id, &wid, &owner).await
+    }
+    .map_err(map_execution_error)?;
     let work = worker_mutation(result)?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
@@ -225,6 +209,7 @@ pub(super) async fn heartbeat_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
+    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
     Query(params): Query<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let command = LeaseHeartbeat {
@@ -233,12 +218,19 @@ pub(super) async fn heartbeat_work(
         ),
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
-    let owner = work_lease_owner(&headers)?;
-    let hb = match state
-        .heartbeat_work(&id, &wid, &owner, now_ms(), command)
-        .await
-        .map_err(map_execution_error)?
-    {
+    let now_ms = now_ms();
+    let heartbeat = if let Some(access) = access.as_deref() {
+        state
+            .heartbeat_work_with_session_access(access, now_ms, command)
+            .await
+    } else {
+        let owner = work_lease_owner(&headers)?;
+        state
+            .heartbeat_work(&id, &wid, &owner, now_ms, command)
+            .await
+    }
+    .map_err(map_execution_error)?;
+    let hb = match heartbeat {
         HeartbeatResult::Accepted(receipt) => receipt,
         HeartbeatResult::PreconditionFailed => {
             return Err((
@@ -252,7 +244,7 @@ pub(super) async fn heartbeat_work(
         HeartbeatResult::NotFound => return Err(not_found("work")),
     };
     Ok(Json(WorkHeartbeat {
-        object_type: crate::types::environment::WorkHeartbeatObjectType::WorkHeartbeat,
+        object_type: WorkHeartbeatObjectType::WorkHeartbeat,
         last_heartbeat: hb.last_heartbeat,
         lease_extended: hb.lease_extended,
         state: crate::work_queue::project_state(hb.state),
@@ -325,6 +317,7 @@ pub(super) async fn stop_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
+    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
     body: Bytes,
 ) -> Result<Json<Work>, WireError> {
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
@@ -336,11 +329,13 @@ pub(super) async fn stop_work(
         serde_json::from_slice::<WorkStopParams>(&body)
             .map_err(|error| bad_request(format!("invalid Work stop request: {error}")))?
     };
-    let owner = work_lease_owner(&headers)?;
-    let result = state
-        .stop_work(&id, &wid, &owner)
-        .await
-        .map_err(map_execution_error)?;
+    let result = if let Some(access) = access.as_deref() {
+        state.stop_work_with_session_access(access).await
+    } else {
+        let owner = work_lease_owner(&headers)?;
+        state.stop_work(&id, &wid, &owner).await
+    }
+    .map_err(map_execution_error)?;
     if matches!(
         result,
         awaken_session_contract::work_queue::WorkMutationResult::PreconditionFailed
@@ -418,21 +413,5 @@ mod tests {
         ] {
             assert_eq!(map_execution_error(error).0, expected, "{rule}");
         }
-    }
-
-    #[test]
-    fn poll_secret_is_the_exact_sdk_base64url_dto() {
-        // Cause/effect graph: C1 a Session Work poll carries the already-authenticated
-        // Environment credential; C2 list/retrieve use the ordinary projector.
-        // Effects: E1 poll encodes exactly BetaWorkSecret with sessions_token and no
-        // leaked lease owner; E2 non-poll projections remain null. Decision table:
-        // R1 C1->E1; R2 C2->E2. No signer/store/credential authority is duplicated.
-        let encoded = encode_work_secret("environment-key").expect("R1");
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(encoded)
-            .expect("R1 base64url");
-        let secret: WorkSecret = serde_json::from_slice(&decoded).expect("R1 typed JSON");
-        assert_eq!(secret.sessions_token, "environment-key", "R1/E1");
-        assert_eq!(secret.api_base_url, None, "R1/E1");
     }
 }

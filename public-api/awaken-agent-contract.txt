@@ -72,6 +72,8 @@ pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::tool_call(&self) ->
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_data_subject(self, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_deadline(self, core::option::Option<u64>) -> Self
 pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::with_delegation_origin(self, core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::awaiting::ResumeTicket
+pub fn awaken_agent_contract::agent::awaiting::ResumeTicket::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub mod awaken_agent_contract::agent::content
 pub enum awaken_agent_contract::agent::content::ContentBlock
 pub awaken_agent_contract::agent::content::ContentBlock::Document

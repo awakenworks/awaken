@@ -604,7 +604,7 @@ use tower::ServiceExt as _;
 
 /// A fresh embedded IAM over a throwaway directory; the tempdir is returned so
 /// the caller keeps it alive for the test.
-fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
+pub(super) fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
     let dir = tempfile::tempdir().unwrap();
     let iam = embedded_iam(dir.path());
     (dir, iam)

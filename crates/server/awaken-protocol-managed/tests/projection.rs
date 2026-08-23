@@ -1217,7 +1217,9 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 /// Causes: C1 one title+metadata patch targets an active Session. Effects: E1
 /// the mutation commits one `session.updated`; E2 its payload carries the new
 /// title and full metadata bag so listing clients observe the same mutation as
-/// the Session view. Decision rule U1=C1=>E1+E2.
+/// the Session view. Decision rule U1=C1=>E1+E2. Constraint K1: the Session
+/// aggregate/repository remains the mutation authority; this event is its
+/// projection and owns no second title or metadata state.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
@@ -1249,6 +1251,8 @@ async fn updating_a_session_commits_a_session_updated_event() {
 /// `session.status_terminated` is committed; E2 C2 fails with the public 409
 /// read-only error; E3 C3 returns the same terminal state without another event.
 /// Decision rules: A1=C1=>E1; A2=C1+C2=>E1+E2; A3=C1+C3=>E1+E3.
+/// Constraint K1: the archived Session aggregate is the terminal authority;
+/// projection and replay may neither reopen it nor mint another terminal fact.
 #[tokio::test]
 async fn archiving_commits_a_terminal_event_and_fences_writes() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {

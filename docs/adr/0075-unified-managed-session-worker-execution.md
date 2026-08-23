@@ -76,6 +76,27 @@ fallback observation coordinate. Header-only callers use Worker ID for both
 roles. All forms enter the same atomic `WorkQueue` claim and mutation fence; no
 credential map or second lease registry exists.
 
+The claim of a Session Work additionally returns the official one-time
+base64url Work `secret`, whose JSON payload contains a random
+`sessions_token`. The WorkQueue stores only a domain-separated SHA-256 digest
+on the same Work row and binds it to the current owner, lease epoch, and expiry.
+The token is never returned by list/retrieve, is rotated on reclaim, and is
+cleared by stop, wake, release, retirement, or expiry. HealthCheck Work never
+receives one. The outer Managed capability edge maps a current token only to
+that Work, its Session event surface, the Session's frozen Skill versions, and
+its attached MemoryStores (including read-only write denial). Generic local or
+Cloud IAM remains authoritative for every other route and credential.
+
+This token is not the Environment credential, a registered-Worker identity, an
+egress credential, or a model/provider secret. Native Awaken Workers continue
+to realize Memory through the canonical `MemoryStoreMounter`; only an external
+official `EnvironmentWorker` uses its SDK Memory client, against the same
+MemoryRepository API. One execution therefore never runs two Memory sync
+owners, and a Work token cannot be reused as an outbound gateway capability.
+Every token-authenticated ack, heartbeat, and stop compares the recovered owner
+and lease epoch inside the WorkQueue mutation transaction, so an in-flight
+request from a reclaimed token cannot mutate its replacement lease.
+
 ### D3: a Run claim is an attempt fence, not another placement decision
 
 When Awaken's registered Worker transport executes a Run for that Session, the
@@ -164,6 +185,8 @@ create trigger
 Worker trigger
   -> Managed edge separates poller observation from credential-derived owner
   -> claim Work under that one owner
+  -> Session Work only: mint one epoch-bound sessions token; persist its digest
+  -> outer capability edge maps that token to exact Session/Skill/Memory routes
   -> registered adapter only: atomically acquire the exact same Work item
   -> optionally claim a subordinate Run attempt
   -> authenticate Worker incarnation and verify live Work + Run epochs
@@ -186,6 +209,10 @@ Failure and retry rules:
   not manufacture readiness;
 - stale Work/Run ownership or a mismatched Environment bearer fails before
   Worker effects;
+- a missing, wrong, expired, reclaimed, or stopped Work sessions token is
+  rejected before Session/Skill/Memory access; read-only Memory rejects writes;
+- a token request authenticated just before reclaim still fails its atomic
+  Work mutation when the persisted lease epoch has advanced;
 - response loss replays the same Work id, root revision, realization lease, and
   generation receipts;
 - a physical effect failure records the existing realization failure state and

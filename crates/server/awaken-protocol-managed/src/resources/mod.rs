@@ -13,7 +13,7 @@ pub use memory_stores::memory_stores_router;
 pub use skills::skills_router;
 
 mod files;
-mod flavor;
+pub(crate) mod flavor;
 mod memory_stores;
 mod skills;
 

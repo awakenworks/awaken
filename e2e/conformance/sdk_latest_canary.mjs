@@ -1,18 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { latestCanaryPlan } from './sdk_latest_canary_lib.mjs';
+import { sdkVersionBinding } from './catalog.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E = resolve(HERE, '..');
-const manifest = JSON.parse(readFileSync(resolve(E2E, 'package.json'), 'utf8'));
-const pinned = manifest.dependencies['@anthropic-ai/sdk'];
+const { pinned, installed } = sdkVersionBinding();
 const latest = JSON.parse(execFileSync(
   'npm', ['view', '@anthropic-ai/sdk', 'version', '--json'], { encoding: 'utf8' },
 ));
-const plan = latestCanaryPlan(pinned, latest);
+const plan = latestCanaryPlan(pinned, latest, installed);
 let temporary;
 
 try {
