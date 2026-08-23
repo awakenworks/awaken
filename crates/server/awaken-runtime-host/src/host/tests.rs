@@ -5199,22 +5199,27 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 #[tokio::test]
 async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() {
     // Cause/effect graph: C1 OnToolUse Environment; C2 the exact Agent toolset
-    // disables every filesystem member but enables web tools; C3 two frozen
+    // disables every filesystem member but allows web ids without publishing a
+    // web plugin; C3 two frozen
     // MemoryStore bindings with different access; C4 write has absent/current/
     // stale CAS hash. Effects: E1 no Sandbox or Memory mount; E2 prompt names
     // every binding and semantic-tool protocol; E3 tools route only to the
     // explicit binding; E4 create/current-CAS succeed, stale/read-only writes
-    // fail without clobbering. Decision rules M1=C1+C2+C3 -> E1..E3;
+    // fail without clobbering; E5 a policy-only WebFetch does not manufacture a
+    // capability or materialize a Sandbox. Decision rules M1=C1+C2+C3 -> E1..E3;
     // M2=C4 absent -> create; M3=C4 current -> update; M4=C4 stale -> reject;
     // M5=read-only binding -> reject; M6 a rebuild attempts to switch the
-    // delivery mode -> reject instead of exposing mounts and tools together.
+    // delivery mode -> reject instead of exposing mounts and tools together;
+    // M7=C1+C2+unpublished WebFetch -> E5.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
     use awaken_runtime_contract::tool::ToolCall;
 
-    struct SemanticMemoryModel;
+    struct SemanticMemoryModel {
+        fetch_url: Mutex<Option<String>>,
+    }
 
     #[async_trait::async_trait]
     impl LlmExecutor for SemanticMemoryModel {
@@ -5225,9 +5230,15 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             let last = request.messages.last().expect("semantic Memory message");
             let output = if last.role == Role::Tool {
                 AssistantOutput::text(format!(
-                    "runtime-semantic-memory:{}",
+                    "runtime-semantic-tool:{}",
                     block_text(&last.content)
                 ))
+            } else if let Some(url) = self.fetch_url.lock().unwrap().clone() {
+                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                    call_id: "runtime-web-fetch".into(),
+                    tool_id: "web_fetch".into(),
+                    arguments: serde_json::json!({ "url": url }),
+                }])
             } else {
                 AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
                     call_id: "runtime-read-memory".into(),
@@ -5246,7 +5257,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         }
     }
 
-    let host = Arc::new(SharedHost::new(Arc::new(SemanticMemoryModel), "stub"));
+    let model = Arc::new(SemanticMemoryModel {
+        fetch_url: Mutex::new(None),
+    });
+    let host = Arc::new(SharedHost::new(model.clone(), "stub"));
     let managed = managed_with_resource_source(host.clone());
     let store_a = "semantic-store-a";
     let store_b = "semantic-store-b";
@@ -5345,37 +5359,6 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.session_environment("semantic-memory").await.is_none(),
         "M1/E1 rejected file call cannot awaken Sandbox"
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let response = tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut request = [0_u8; 1024];
-        let _ = socket.read(&mut request).await.unwrap();
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-            .await
-            .unwrap();
-    });
-    let fetched = context
-        .attempt_context
-        .tool_executor
-        .as_ref()
-        .unwrap()
-        .invoke(&ToolCall {
-            call_id: "web-fetch".into(),
-            tool_id: "web_fetch".into(),
-            arguments: serde_json::json!({"url": format!("http://{address}/")}),
-        })
-        .await
-        .unwrap();
-    response.await.unwrap();
-    assert!(!fetched.is_error && fetched.text() == "ok", "M1 web route");
-    assert!(
-        host.session_environment("semantic-memory").await.is_none(),
-        "M1 web_fetch remains Sandbox-free"
-    );
-
     assert!(
         context
             .config
@@ -5403,12 +5386,40 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             .iter()
             .filter(|message| message.role == Role::Assistant)
             .map(|message| block_text(&message.content))
-            .any(|text| text.contains("runtime-semantic-memory") && text.contains("from-b")),
+            .any(|text| text.contains("runtime-semantic-tool") && text.contains("from-b")),
         "M1/E3 model descriptor reaches the bound executor through host.run"
     );
     assert!(
         host.session_environment("semantic-memory").await.is_none(),
         "M1/E1 semantic Runtime execution remains Sandbox-free"
+    );
+
+    *model.fetch_url.lock().unwrap() = Some("https://fixture.invalid/value".into());
+    let runtime_fetch = host
+        .run(
+            Some("assistant"),
+            "semantic-memory",
+            vec![Message::text(
+                MessageId("semantic-memory-runtime-fetch".into()),
+                Role::User,
+                "Fetch the configured URL",
+            )],
+        )
+        .await
+        .expect("M7 unpublished WebFetch fails within the Runtime tool result");
+    assert!(
+        runtime_fetch
+            .new_messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .map(|message| block_text(&message.content))
+            .any(|text| text.contains("runtime-semantic-tool:unknown tool: web_fetch")),
+        "M7/E5 tool policy cannot manufacture WebFetch: {:?}",
+        runtime_fetch.new_messages
+    );
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M7/E5 rejected WebFetch remains Sandbox-free"
     );
 
     let bindings = host

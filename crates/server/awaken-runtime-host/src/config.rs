@@ -501,10 +501,9 @@ impl RuntimeToolSource for DeferredHandToolSource {
     }
 }
 
-/// The only Hand route installed for a filesystem-free Session. It reuses the
-/// canonical WebFetch RawTool in-process and rejects every other Sandbox target;
-/// a disabled/misrouted file tool can therefore never materialize a deferred
-/// Environment as a side effect.
+/// The only Hand route installed for a filesystem-free Session. It contains the
+/// Session-scoped semantic tools and rejects every Sandbox target; host-owned web
+/// plugins remain Brain tools and therefore never enter this executor.
 pub(crate) struct FilesystemFreeAgentToolExecutor {
     tools: RawToolRegistry,
 }
@@ -513,12 +512,7 @@ impl FilesystemFreeAgentToolExecutor {
     pub(crate) fn try_new(
         session_tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
     ) -> Result<Self, String> {
-        let web_fetch = awaken_ext_builtin_tools::web_hand_tools()
-            .into_iter()
-            .find(|tool| tool.id() == "web_fetch")
-            .expect("canonical web Hand contains web_fetch");
         let mut tools = RawToolRegistry::default();
-        assert!(tools.insert(web_fetch), "canonical web_fetch is unique");
         for tool in session_tools {
             let id = tool.id().to_string();
             if !tools.insert(tool) {
