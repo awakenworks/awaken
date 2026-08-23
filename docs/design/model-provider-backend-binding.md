@@ -200,16 +200,23 @@ once at startup from `~/.awaken/config.toml`, with explicit CLI overrides:
 
 ```toml
 # "no-login" | "self-managed" | "awaken-cloud"
-identity_mode = "no-login"
+identity_mode = "awaken-cloud" # interactive all-in-one default
 
-# "disabled" (default) | "enabled"
-cloud_models = "disabled"
+# "disabled" | "enabled" (interactive all-in-one default)
+cloud_models = "enabled"
 ```
 
 Equivalent startup overrides are `--identity-mode <mode>` and
 `--cloud-models disabled|enabled`. Enabling Cloud models requires
 `identity_mode = "awaken-cloud"`; invalid combinations fail startup rather than
 silently enabling a network path.
+
+The defaults above apply only to the interactive local `all-in-one` product and
+are resolved from the two existing axes. If an operator explicitly selects
+`no-login` or `self-managed`, omitted `cloud_models` resolves to `disabled`.
+Server and split-service roles have no interactive default and retain explicit
+deployment/service-credential requirements. No `product_mode` field or second
+model catalogue is introduced.
 
 | Identity | `cloud_models` | Login | Local catalog/BYOK | Cloud catalog and brokered inference |
 |---|---|---:|---:|---:|
@@ -218,6 +225,22 @@ silently enabling a network path.
 | `awaken-cloud` | `disabled` | Cloud | on | off |
 | `awaken-cloud` | `enabled` | Cloud | on | on, after authentication/entitlement |
 | any non-Cloud identity | `enabled` | — | — | invalid; startup fails closed |
+
+Default first-run sequence:
+
+```text
+resolve interactive preset
+  -> reuse/refresh IAM CredentialCache, else loopback PKCE login
+  -> construct the existing remote IAM guard from that token source
+  -> refresh the authenticated Cloud model projection
+  -> publish exact model/provider/protocol bindings
+  -> open the existing local Console
+```
+
+The explicit local bypass stops before IAM discovery and keeps the existing
+local catalogue, Workspace BYOK and builtin-tool providers available. Cloud
+login authorizes identity; each brokered model or hosted tool still requires
+its own exact capability and commercial admission.
 
 `GET /v1/config/capabilities` is the UI/runtime contract for these axes. When
 Cloud models are disabled, brokered rows already persisted locally are projected
@@ -236,8 +259,8 @@ by a timer; model limits such as context window and maximum output tokens are
 optional, provenance-carrying facts, with manual values retained when APIs do not
 publish trustworthy values.
 
-Cloud discovery is an authenticated on-demand API projection, not a timer and
-not a second writable local catalog. It may publish optional context/output
+Cloud discovery is an authenticated startup and explicit-refresh API projection,
+not a timer and not a second writable local catalog. It may publish optional context/output
 limits with `brokered` field provenance. Unknown remains absent, stale Cloud
 facts may clear only prior `brokered` facts, and manually authored facts win.
 Capabilities that vary by protocol remain Offering/endpoint evidence rather

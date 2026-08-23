@@ -130,6 +130,26 @@ pub(super) async fn prepare_runtime_routers(
         cloud_api_base_url.as_deref(),
         &platform_workspace,
     );
+    // Cloud-catalog startup decision table:
+    // | Cloud models | authenticated brokered client | effect |
+    // | disabled | absent | retain local/BYOK catalog; zero Cloud reads |
+    // | enabled | present | reconcile once into the authoritative catalog |
+    // | enabled | construction/admission failure | fail startup closed |
+    // Explicit refresh remains the same ConfigService command; this adds no
+    // timer, second catalog, or alternate discovery path.
+    if let Some(client) = brokered_client.as_ref() {
+        let catalog = stores
+            .control
+            .as_ref()
+            .expect("AllInOne Cloud model discovery owns Control stores")
+            .catalog
+            .clone();
+        awaken_admin_config_api::reconcile_brokered_catalog(client.as_ref(), catalog.as_ref())
+            .await
+            .map_err(|error| {
+                format!("initial Cloud model catalog reconciliation failed: {error}")
+            })?;
+    }
     let credential_materializer = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {

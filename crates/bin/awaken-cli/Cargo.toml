@@ -107,7 +107,7 @@ awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Shared Awaken Cloud login cache; credential acquisition stays in the
 # process startup, outside the authorization/resource services.
-awaken-iam-client = { workspace = true, features = ["credential-cache"] }
+awaken-iam-client = { workspace = true, features = ["desktop-oauth"] }
 awaken-iam-core.workspace = true
 # The live credential probe backing the admin router — the only place the model SDK
 # is named in the startup (mirrors the standalone's GenaiProbe).

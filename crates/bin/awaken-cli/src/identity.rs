@@ -9,6 +9,35 @@ use awaken_runtime_host::SharedHost;
 
 use crate::config;
 
+pub(crate) fn ensure_cloud_login<F>(
+    config: &config::CloudIamConfig,
+    cache: awaken_iam_client::CredentialCache,
+    launch: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    if config.access_token.is_some()
+        || config.service_token.is_some()
+        || config.service_token_file.is_some()
+    {
+        return Ok(());
+    }
+    let oauth = awaken_iam_client::DesktopOAuthClient::new(
+        awaken_iam_client::DesktopOAuthConfig::new(
+            config.issuer.clone(),
+            config.oauth_client_id.clone(),
+            config.oauth_redirect_uri.clone(),
+        ),
+        cache,
+    )
+    .map_err(|error| format!("configure Awaken Cloud login: {error}"))?;
+    oauth
+        .ensure_credential(launch)
+        .map(|_| ())
+        .map_err(|error| format!("Awaken Cloud login failed: {error}"))
+}
+
 pub(crate) struct IdentityWiring {
     pub(crate) iam: Option<Arc<ManagementAuthz>>,
     pub(crate) remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -79,10 +108,10 @@ fn awaken_cloud_authz(
     let user_token_source: Arc<RedactedStringSource> = match config.access_token.clone() {
         Some(token) => Arc::new(move || Ok(RedactedString::new(token.clone()))),
         None => {
-            let base_url = config.base_url.clone();
+            let issuer = config.issuer.clone();
             Arc::new(move || {
                 awaken_iam_client::CredentialCache::open()
-                    .load(&base_url)
+                    .load(&issuer)
                     .map(|entry| RedactedString::new(entry.token.expose().to_owned()))
                     .ok_or_else(|| {
                         "Awaken Cloud login credential is missing or expired".to_string()
@@ -97,4 +126,81 @@ fn awaken_cloud_authz(
         user_token_source,
         config.service_token.clone(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_iam_client::{CachedCredential, CredentialCache, RedactedString as IamSecret};
+    use awaken_iam_contract::{AccountId as IamAccountId, PrincipalRef};
+
+    /// Startup credential decision table:
+    ///
+    /// | explicit access | service credential | live cache | effect |
+    /// | yes | any | any | preserve explicit credential; no OAuth/network |
+    /// | no | inline/projected | any | preserve service credential; no desktop login |
+    /// | no | no | yes | reuse IAM cache; no browser launch |
+    /// | no | no | absent/expired | IAM client owns refresh or interactive PKCE |
+    #[test]
+    fn existing_credentials_satisfy_cloud_startup_without_browser_login() {
+        fn config() -> config::CloudIamConfig {
+            config::CloudIamConfig {
+                base_url: "https://accounts.example".into(),
+                inference_base_url: "https://api.example".into(),
+                audience: "awaken-runtime".into(),
+                issuer: "https://accounts.example".into(),
+                oauth_client_id: "awaken-desktop".into(),
+                oauth_redirect_uri: "http://127.0.0.1:34115/callback".into(),
+                access_token: None,
+                service_token: None,
+                service_token_file: None,
+            }
+        }
+
+        for mut configured in [
+            {
+                let mut configured = config();
+                configured.access_token = Some("explicit-access".into());
+                configured
+            },
+            {
+                let mut configured = config();
+                configured.service_token = Some("inline-service".into());
+                configured
+            },
+            {
+                let mut configured = config();
+                configured.service_token_file = Some("/run/secrets/cloud-token".into());
+                configured
+            },
+        ] {
+            configured.issuer = "not a valid issuer".into();
+            let directory = tempfile::tempdir().unwrap();
+            ensure_cloud_login(
+                &configured,
+                CredentialCache::at(directory.path().join("credentials.json")),
+                |_| panic!("browser must not launch"),
+            )
+            .unwrap();
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = CredentialCache::at(directory.path().join("credentials.json"));
+        let config = config();
+        cache
+            .store(
+                &config.issuer,
+                CachedCredential {
+                    token: IamSecret::new("cached-access"),
+                    principal: PrincipalRef::Account {
+                        account_id: IamAccountId("acct-cached".into()),
+                    },
+                    expires_at: u64::MAX / 2,
+                    oauth: None,
+                },
+            )
+            .unwrap();
+
+        ensure_cloud_login(&config, cache, |_| panic!("browser must not launch")).unwrap();
+    }
 }

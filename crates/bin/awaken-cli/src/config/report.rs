@@ -60,6 +60,13 @@ impl ResolvedDeployment {
                 "explicit `awaken database migrate`; startup verifies only"
             }
         };
+        let cloud_credential_source = if self.cloud_iam.service_token_file.is_some() {
+            "projected service token"
+        } else if self.cloud_iam.access_token.is_some() {
+            "explicit access token"
+        } else {
+            "IAM credential cache"
+        };
         if json {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "role": self.role.as_str(),
@@ -73,6 +80,13 @@ impl ResolvedDeployment {
                 "run_local_pool": self.run_local_pool,
                 "identity_mode": identity_mode_name(self.identity_mode),
                 "cloud_models": self.cloud_models.as_str(),
+                "cloud_identity": {
+                    "base_url": self.cloud_iam.base_url,
+                    "issuer": self.cloud_iam.issuer,
+                    "oauth_client_id": self.cloud_iam.oauth_client_id,
+                    "oauth_redirect_uri": self.cloud_iam.oauth_redirect_uri,
+                    "credential_source": cloud_credential_source,
+                },
                 "runtime_dispatch_backend": runtime_backend,
                 "resource_backend": resource_backend,
                 "control_databases": control_databases,
@@ -85,7 +99,7 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  Cloud issuer         {cloud_issuer}\n  OAuth client         {oauth_client}\n  OAuth callback       {oauth_callback}\n  credential source    {credential_source}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,
@@ -100,6 +114,10 @@ impl ResolvedDeployment {
             pool = self.run_local_pool,
             identity = identity_mode_name(self.identity_mode),
             cloud_models = self.cloud_models.as_str(),
+            cloud_issuer = self.cloud_iam.issuer,
+            oauth_client = self.cloud_iam.oauth_client_id,
+            oauth_callback = self.cloud_iam.oauth_redirect_uri,
+            credential_source = cloud_credential_source,
             runtime = runtime_backend,
             resources = resource_backend,
             key = self.seal_key.description(),

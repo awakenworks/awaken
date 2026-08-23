@@ -11,13 +11,15 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use awaken_runtime_host::{AcpWorkerProfile, DeploymentConfig, DispatchBackend, StoreKind};
 #[cfg(test)]
 use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
+use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
+mod cloud_iam;
 mod deployment;
 mod deployment_backing;
 mod file_schema;
 mod file_support;
+mod local_product;
 mod report;
 mod role;
 mod runtime_settings;
@@ -26,6 +28,7 @@ mod service_boundary;
 mod worker_bootstrap;
 
 pub use awaken_worker::WorkerBootstrap;
+pub use cloud_iam::CloudIamConfig;
 pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
@@ -92,38 +95,6 @@ pub struct ResolvedDeployment {
 pub struct CoordinatorStoreConfig {
     pub sessions: awaken_control::StoreBackend,
     pub captured_content: awaken_control::StoreBackend,
-}
-
-#[derive(Clone)]
-pub struct CloudIamConfig {
-    pub base_url: String,
-    pub inference_base_url: String,
-    pub audience: String,
-    pub issuer: String,
-    pub access_token: Option<String>,
-    pub service_token: Option<String>,
-    pub service_token_file: Option<PathBuf>,
-}
-
-impl std::fmt::Debug for CloudIamConfig {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CloudIamConfig")
-            .field("base_url", &self.base_url)
-            .field("inference_base_url", &self.inference_base_url)
-            .field("audience", &self.audience)
-            .field("issuer", &self.issuer)
-            .field(
-                "access_token",
-                &self.access_token.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "service_token",
-                &self.service_token.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("service_token_file", &self.service_token_file)
-            .finish()
-    }
 }
 
 impl ResolvedDeployment {
@@ -549,6 +520,7 @@ impl ResolvedDeployment {
                 );
             }
         };
+        let interactive_product = mode == OperatingMode::Local && role == Role::AllInOne;
         let identity_mode = overrides
             .identity_mode
             .or(file
@@ -560,7 +532,11 @@ impl ResolvedDeployment {
                     })
                 })
                 .transpose()?)
-            .unwrap_or(awaken_control::ManagementIdentityMode::SelfManaged);
+            .unwrap_or(if interactive_product {
+                awaken_control::ManagementIdentityMode::AwakenCloud
+            } else {
+                awaken_control::ManagementIdentityMode::SelfManaged
+            });
         let cloud_models = overrides
             .cloud_models
             .or(file
@@ -568,7 +544,15 @@ impl ResolvedDeployment {
                 .as_deref()
                 .map(CloudModelMode::parse)
                 .transpose()?)
-            .unwrap_or_default();
+            .unwrap_or(
+                if interactive_product
+                    && identity_mode == awaken_control::ManagementIdentityMode::AwakenCloud
+                {
+                    CloudModelMode::Enabled
+                } else {
+                    CloudModelMode::Disabled
+                },
+            );
         if cloud_models.is_enabled()
             && identity_mode != awaken_control::ManagementIdentityMode::AwakenCloud
         {
@@ -609,6 +593,14 @@ impl ResolvedDeployment {
                 .cloud_iam_issuer
                 .clone()
                 .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
+            oauth_client_id: file
+                .cloud_oauth_client_id
+                .clone()
+                .unwrap_or_else(|| "awaken-desktop".to_owned()),
+            oauth_redirect_uri: file
+                .cloud_oauth_redirect_uri
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:34115/callback".to_owned()),
             access_token: file.cloud_access_token.clone(),
             service_token: file.cloud_iam_service_token.clone(),
             service_token_file: file.cloud_iam_service_token_file.clone(),
@@ -669,37 +661,6 @@ impl ResolvedDeployment {
             deprecations: Vec::new(),
             origins,
         })
-    }
-
-    pub fn ensure_data_layout(&self) -> Result<(), String> {
-        for path in [
-            self.data_dir.clone(),
-            self.data_dir.join("runtime"),
-            self.data_dir.join("sandboxes"),
-            self.data_dir.join("logs"),
-        ] {
-            fs::create_dir_all(&path)
-                .map_err(|error| format!("create data directory {}: {error}", path.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Apply the canonical host-discovery result to the one runtime profile.
-    /// Explicit `acp_clis` constrain the discovered set; an unconfigured Local
-    /// install advertises every detected catalog row. Missing/broken CLIs are
-    /// retained only in the diagnostic read model and never in Worker routes.
-    pub fn apply_local_acp_observations(
-        &mut self,
-        observations: Vec<awaken_acp_application::AcpHostObservation>,
-        routable_cli_ids: Vec<String>,
-    ) -> Result<(), String> {
-        self.runtime.acp = if routable_cli_ids.is_empty() {
-            None
-        } else {
-            Some(AcpWorkerProfile::new(routable_cli_ids)?)
-        };
-        self.local_acp_observations = observations;
-        Ok(())
     }
 }
 
@@ -1398,53 +1359,79 @@ mod tests {
 
     #[test]
     fn cloud_login_and_cloud_model_supply_are_independent_and_fail_closed() {
-        // Cause graph: C1 selects Cloud identity; C2 enables Cloud models.
-        // E1 identity alone keeps model supply local; E2 C1+C2 enables brokered
-        // supply; E3 C2 without C1 is rejected before any network wiring.
+        // Cause graph: C1 is interactive all-in-one; C2 explicitly selects an
+        // identity; C3 explicitly selects Cloud models. Effects are the
+        // product preset, an explicit local bypass, BYOK-only Cloud login, or a
+        // fail-closed incompatible pair.
         //
-        // | Rule | C1 Cloud identity | C2 Cloud models | Result |
-        // |---|---:|---:|---|
-        // | F1 | 0 | 0 | self-managed local session + local/BYOK only |
-        // | F2 | 1 | 0 | Cloud login + local/BYOK only |
-        // | F3 | 1 | 1 | Cloud login + brokered supply |
-        // | F4 | 0 | 1 | startup configuration error |
+        // | Rule | product | explicit identity | explicit supply | Result |
+        // |---|---|---|---|---|
+        // | F1 | interactive | absent | absent | Cloud login + brokered supply |
+        // | F2 | interactive | no-login/self-managed | absent | local/BYOK only |
+        // | F3 | interactive | awaken-cloud | disabled | Cloud login + local/BYOK only |
+        // | F4 | any | non-Cloud | enabled | startup configuration error |
+        // | F5 | server/split | absent | absent | non-interactive existing defaults |
         let local = resolve(FileConfig::default(), ConfigOverrides::default());
         assert_eq!(
             local.identity_mode,
-            awaken_control::ManagementIdentityMode::SelfManaged
+            awaken_control::ManagementIdentityMode::AwakenCloud,
+            "F1"
         );
-        assert_eq!(local.cloud_models, CloudModelMode::Disabled);
+        assert_eq!(local.cloud_models, CloudModelMode::Enabled, "F1");
+
+        for identity in ["no-login", "self-managed"] {
+            let bypass = resolve(
+                FileConfig {
+                    identity_mode: Some(identity.into()),
+                    ..FileConfig::default()
+                },
+                ConfigOverrides::default(),
+            );
+            assert_eq!(bypass.cloud_models, CloudModelMode::Disabled, "F2");
+        }
 
         let login_only = resolve(
             FileConfig {
                 identity_mode: Some("awaken-cloud".into()),
+                cloud_models: Some("disabled".into()),
                 ..FileConfig::default()
             },
             ConfigOverrides::default(),
         );
-        assert_eq!(login_only.cloud_models, CloudModelMode::Disabled);
-
-        let full = resolve(
-            FileConfig {
-                identity_mode: Some("awaken-cloud".into()),
-                cloud_models: Some("enabled".into()),
-                ..FileConfig::default()
-            },
-            ConfigOverrides::default(),
-        );
-        assert_eq!(full.cloud_models, CloudModelMode::Enabled);
+        assert_eq!(login_only.cloud_models, CloudModelMode::Disabled, "F3");
 
         let error = ResolvedDeployment::resolve_file(
             ConfigOverrides::default(),
             Some(PathBuf::from("/home/dev")),
             PathBuf::from("/home/dev/.awaken/config.toml"),
             FileConfig {
+                identity_mode: Some("no-login".into()),
                 cloud_models: Some("enabled".into()),
                 ..FileConfig::default()
             },
         )
         .unwrap_err();
-        assert!(error.contains("cloud_models_require_awaken_cloud_identity"));
+        assert!(
+            error.contains("cloud_models_require_awaken_cloud_identity"),
+            "F4"
+        );
+
+        let server = resolve(
+            FileConfig {
+                mode: Some("server".into()),
+                control_seal_key: Some(
+                    "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                ),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            server.identity_mode,
+            awaken_control::ManagementIdentityMode::SelfManaged,
+            "F5"
+        );
+        assert_eq!(server.cloud_models, CloudModelMode::Disabled, "F5");
     }
 
     #[test]
@@ -1466,6 +1453,29 @@ mod tests {
             awaken_control::ManagementIdentityMode::AwakenCloud
         );
         assert_eq!(config.cloud_models, CloudModelMode::Enabled);
+    }
+
+    #[test]
+    fn cloud_login_diagnostics_show_coordinates_and_redact_credentials() {
+        // Diagnostic cause/effect rules: public OAuth coordinates are visible
+        // for configuration diagnosis; credential presence is classified by
+        // source; cleartext token material is absent from both renderings.
+        let config = resolve(
+            FileConfig {
+                cloud_iam_issuer: Some("https://accounts.example".into()),
+                cloud_oauth_client_id: Some("desktop-example".into()),
+                cloud_oauth_redirect_uri: Some("http://127.0.0.1:34115/callback".into()),
+                cloud_access_token: Some("must-not-render".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        for report in [config.report(false), config.report(true)] {
+            assert!(report.contains("https://accounts.example"));
+            assert!(report.contains("desktop-example"));
+            assert!(report.contains("explicit access token"));
+            assert!(!report.contains("must-not-render"));
+        }
     }
 
     #[test]
