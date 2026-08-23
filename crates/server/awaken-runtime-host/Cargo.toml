@@ -1,5 +1,6 @@
 [package]
 name = "awaken-runtime-host"
+description = "Authority-free shared execution host infrastructure for Awaken Runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

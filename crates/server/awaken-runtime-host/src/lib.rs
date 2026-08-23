@@ -1,12 +1,17 @@
-//! `awaken-runtime-host` — the managed-agents SERVICE layer.
+//! `awaken-runtime-host` — authority-free shared execution host infrastructure.
 //!
-//! It owns the protocol-neutral [`SharedHost`] plus two adapters: [`ManagedHost`]
-//! for Managed Agents and [`RunApplicationHost`] for AI SDK / AG-UI / A2A. Both
-//! share one host, so a run may resume or be observed through another protocol.
+//! It owns protocol-neutral execution coordination, Session-environment
+//! realization, capability assembly, and the [`SharedHost`] used by every
+//! driving protocol. [`ManagedHost`] and [`RunApplicationHost`] adapt Managed
+//! Agents and AI SDK / AG-UI / A2A onto that one host, so they cannot create
+//! protocol-specific run, resume, or terminal-state implementations.
 //!
-//! The product process (`awaken-coordinator`) exposes these through routers;
-//! this crate owns the Runtime services behind its config, files, memory-store,
-//! and durable-operation HTTP surfaces.
+//! This crate consumes capabilities selected by process startup. It never opens
+//! or selects a SQL/filesystem authority Store, never owns a public protocol or
+//! domain aggregate, and never decides the deployment topology. Coordinator
+//! injects the sole durable [`RuntimeAuthority`]; a database-less Worker injects
+//! claim-fenced transports. Product composition mounts the corresponding
+//! routers around these protocol-neutral behaviors.
 
 mod acp_backend;
 mod acp_capability_probe;
