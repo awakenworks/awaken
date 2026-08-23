@@ -53,6 +53,10 @@ pub use provider_connections::{
 };
 use provider_connections::{list_executable_models, list_provider_connections};
 
+mod cloud_login;
+pub use cloud_login::{CloudLoginApplication, CloudLoginState, CloudLoginStatusView};
+use cloud_login::{CloudLoginHandle, cloud_login_router};
+
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
 /// wiring and a sqlite/postgres deployment (ADR-0043, split/merge-friendly).
@@ -148,10 +152,27 @@ impl Default for ConfigCapabilitiesView {
     }
 }
 
+/// Live presentation projection for deployment and identity capabilities.
+/// The source owns no authentication protocol; it derives status from the
+/// composition root's canonical identity owner on every request.
+pub trait ConfigCapabilitiesSource: Send + Sync {
+    fn current(&self) -> ConfigCapabilitiesView;
+}
+
+#[derive(Clone)]
+struct StaticConfigCapabilities(ConfigCapabilitiesView);
+
+impl ConfigCapabilitiesSource for StaticConfigCapabilities {
+    fn current(&self) -> ConfigCapabilitiesView {
+        self.0.clone()
+    }
+}
+
 #[derive(Clone)]
 struct AdminRouterState {
     admin: AdminState,
-    capabilities: ConfigCapabilitiesView,
+    capabilities: Arc<dyn ConfigCapabilitiesSource>,
+    cloud_login: CloudLoginHandle,
 }
 
 impl FromRef<AdminRouterState> for AdminState {
@@ -162,7 +183,13 @@ impl FromRef<AdminRouterState> for AdminState {
 
 impl FromRef<AdminRouterState> for ConfigCapabilitiesView {
     fn from_ref(state: &AdminRouterState) -> Self {
-        state.capabilities.clone()
+        state.capabilities.current()
+    }
+}
+
+impl FromRef<AdminRouterState> for CloudLoginHandle {
+    fn from_ref(state: &AdminRouterState) -> Self {
+        state.cloud_login.clone()
     }
 }
 
@@ -214,7 +241,20 @@ pub fn admin_router_with_capabilities(
     state: AdminState,
     capabilities: ConfigCapabilitiesView,
 ) -> Router {
+    admin_router_with_runtime_capabilities(
+        state,
+        Arc::new(StaticConfigCapabilities(capabilities)),
+        None,
+    )
+}
+
+pub fn admin_router_with_runtime_capabilities(
+    state: AdminState,
+    capabilities: Arc<dyn ConfigCapabilitiesSource>,
+    cloud_login: Option<Arc<dyn CloudLoginApplication>>,
+) -> Router {
     Router::new()
+        .merge(cloud_login_router())
         .route("/v1/config/capabilities", get(get_config_capabilities))
         .route(
             "/v1/config/provider-descriptors",
@@ -287,6 +327,7 @@ pub fn admin_router_with_capabilities(
         .with_state(AdminRouterState {
             admin: state,
             capabilities,
+            cloud_login: CloudLoginHandle(cloud_login),
         })
 }
 

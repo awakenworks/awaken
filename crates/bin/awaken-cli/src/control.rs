@@ -299,6 +299,7 @@ async fn prepare_control_process_with_model_supply(
                 profile_authoring_enabled: false,
             },
             brokered_catalog,
+            cloud_login: identity.cloud_login,
             local_acp_observations: Vec::new(),
             web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
             web_search_publication_resolver: web_search.map(|value| value.1),

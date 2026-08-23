@@ -59,6 +59,7 @@ pub(super) async fn prepare_runtime_routers(
     let model_capabilities = process.model_supply.clone();
     let cloud_models_enabled = model_capabilities.cloud_models_enabled;
     let injected_brokered_catalog = process.brokered_catalog.clone();
+    let cloud_login = process.cloud_login.clone();
     let org_id = process.org_id.unwrap_or_else(local_org_id);
     let enrollment_signing_key = match (role, process.enrollment_signing_key) {
         (config::Role::AllInOne, Some(key)) => key,
@@ -171,9 +172,16 @@ pub(super) async fn prepare_runtime_routers(
             })
         })
         .flatten();
-    let web_search_providers = process
+    let mut web_search_providers = process
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
+    if let Some(client) = brokered_client.as_ref()
+        && let Err(error) = client
+            .install_managed_web_routes(&mut web_search_providers)
+            .await
+    {
+        eprintln!("Awaken Cloud Web tools are unavailable: {error}");
+    }
     let model_services = (role == config::Role::AllInOne).then(|| {
         resolve_model_services(
             model_supply,
@@ -306,6 +314,7 @@ pub(super) async fn prepare_runtime_routers(
                 iam.clone(),
                 local_browser_auth,
                 remote_iam.clone(),
+                cloud_login,
             )
             .await,
         ),

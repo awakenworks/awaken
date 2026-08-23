@@ -317,6 +317,197 @@ struct GrantBody {
     grant_expires_at: i64,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BrokeredToolRoute {
+    tool_id: String,
+    provider_id: String,
+    provider_label: String,
+    route_ref: String,
+    options_schema: serde_json::Value,
+}
+
+#[derive(serde::Serialize)]
+struct CreateToolGrantBody<'a> {
+    client_instance_id: &'a str,
+    local_run_correlation: Option<&'a str>,
+    operation_id: &'a str,
+    tool_id: &'a str,
+    route_ref: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct ToolGrantBody {
+    tool_id: String,
+    provider_id: String,
+    route_ref: String,
+    gateway_base_url: String,
+    capability: String,
+}
+
+impl HttpBrokeredInferenceClient {
+    async fn list_tool_routes(&self) -> Result<Vec<BrokeredToolRoute>, BrokeredInferenceError> {
+        #[derive(serde::Deserialize)]
+        struct Page {
+            data: Vec<BrokeredToolRoute>,
+        }
+        let response = self
+            .send_with_access_token(|token| {
+                self.request(reqwest::Method::GET, "/v1/inference/tools", token)
+            })
+            .await?;
+        if !response.status().is_success() {
+            return Err(Self::classify(response).await);
+        }
+        response
+            .json::<Page>()
+            .await
+            .map(|page| page.data)
+            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)
+    }
+
+    /// Add only currently discoverable Cloud routes to the shared builtin
+    /// provider catalog. Missing tool kinds remain absent rather than exposing
+    /// a provider that cannot obtain a grant.
+    pub async fn install_managed_web_routes(
+        &self,
+        registry: &mut awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    ) -> Result<usize, BrokeredInferenceError> {
+        let routes = self.list_tool_routes().await?;
+        let search = routes
+            .iter()
+            .filter(|route| {
+                route.provider_id == awaken_ext_builtin_tools::AWAKEN_CLOUD_PROVIDER_ID
+                    && route.tool_id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let fetch = routes
+            .iter()
+            .filter(|route| {
+                route.provider_id == awaken_ext_builtin_tools::AWAKEN_CLOUD_PROVIDER_ID
+                    && route.tool_id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if search.is_empty() && fetch.is_empty() {
+            return Ok(0);
+        }
+        let search_schema = discovered_tool_options_schema(&search);
+        let fetch_schema = discovered_tool_options_schema(&fetch);
+        let provider = Arc::new(
+            awaken_ext_builtin_tools::ManagedGatewayWebProvider::new(Arc::new(self.clone()))
+                .with_descriptors(
+                    "Awaken Cloud · Web Search",
+                    search_schema,
+                    search.iter().map(|route| route.route_ref.clone()),
+                    "Awaken Cloud · Web Fetch",
+                    fetch_schema,
+                    fetch.iter().map(|route| route.route_ref.clone()),
+                ),
+        );
+        if !search.is_empty() {
+            registry
+                .register(provider.clone())
+                .map_err(|_| BrokeredInferenceError::InvalidRequest)?;
+        }
+        if !fetch.is_empty() {
+            registry
+                .register_fetch(provider)
+                .map_err(|_| BrokeredInferenceError::InvalidRequest)?;
+        }
+        Ok(search.len() + fetch.len())
+    }
+}
+
+fn discovered_tool_options_schema(routes: &[BrokeredToolRoute]) -> serde_json::Value {
+    let variants = routes
+        .iter()
+        .map(|route| {
+            let mut schema = route.options_schema.clone();
+            if let Some(object) = schema.as_object_mut() {
+                object.insert(
+                    "title".into(),
+                    serde_json::Value::String(route.provider_label.clone()),
+                );
+            }
+            schema
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({"oneOf": variants})
+}
+
+#[async_trait]
+impl awaken_ext_builtin_tools::ManagedWebRouteResolver for HttpBrokeredInferenceClient {
+    async fn resolve(
+        &self,
+        context: &awaken_runtime_contract::tool::ToolOperationContext,
+        tool_id: &str,
+        route_ref: &str,
+    ) -> Result<
+        awaken_ext_builtin_tools::ManagedWebGatewayEndpoint,
+        awaken_ext_builtin_tools::ManagedWebRouteError,
+    > {
+        let run = context
+            .run_id
+            .as_ref()
+            .ok_or(awaken_ext_builtin_tools::ManagedWebRouteError::Invalid)?;
+        let response = self
+            .send_with_access_token(|token| {
+                self.request(reqwest::Method::POST, "/v1/inference/tools/grants", token)
+                    .json(&CreateToolGrantBody {
+                        client_instance_id: &self.client_instance_id,
+                        local_run_correlation: Some(&run.0),
+                        operation_id: &context.operation_id,
+                        tool_id,
+                        route_ref,
+                    })
+            })
+            .await
+            .map_err(map_managed_web_error)?;
+        if !response.status().is_success() {
+            return Err(map_managed_web_error(Self::classify(response).await));
+        }
+        let body = response
+            .json::<ToolGrantBody>()
+            .await
+            .map_err(|_| awaken_ext_builtin_tools::ManagedWebRouteError::Unavailable)?;
+        if body.tool_id != tool_id
+            || body.provider_id != awaken_ext_builtin_tools::AWAKEN_CLOUD_PROVIDER_ID
+            || body.route_ref != route_ref
+            || body.gateway_base_url.trim().is_empty()
+            || body.capability.trim().is_empty()
+        {
+            return Err(awaken_ext_builtin_tools::ManagedWebRouteError::Invalid);
+        }
+        Ok(awaken_ext_builtin_tools::ManagedWebGatewayEndpoint {
+            gateway_base_url: body.gateway_base_url,
+            route_ref: body.route_ref,
+            lease_token: RedactedString::new(body.capability),
+        })
+    }
+}
+
+fn map_managed_web_error(
+    error: BrokeredInferenceError,
+) -> awaken_ext_builtin_tools::ManagedWebRouteError {
+    match error {
+        BrokeredInferenceError::AuthenticationRequired
+        | BrokeredInferenceError::AccountSelectionRequired
+        | BrokeredInferenceError::SubscriptionRequired
+        | BrokeredInferenceError::ModelNotEntitled
+        | BrokeredInferenceError::InsufficientBalance => {
+            awaken_ext_builtin_tools::ManagedWebRouteError::Forbidden
+        }
+        BrokeredInferenceError::ModelUnavailable | BrokeredInferenceError::InvalidRequest => {
+            awaken_ext_builtin_tools::ManagedWebRouteError::Invalid
+        }
+        BrokeredInferenceError::QuotaExceeded { .. }
+        | BrokeredInferenceError::TemporarilyUnavailable => {
+            awaken_ext_builtin_tools::ManagedWebRouteError::Unavailable
+        }
+    }
+}
+
 #[async_trait]
 impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
     async fn create_grant(
@@ -694,9 +885,178 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
+    fn brokered_tool_test_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let responses = [
+                serde_json::json!({"data":[
+                    {
+                        "tool_id":"web_search",
+                        "provider_id":"awaken-cloud",
+                        "provider_label":"Awaken Cloud · Brave",
+                        "route_ref":"web-search:brave@7",
+                        "funding":"platform",
+                        "options_schema":{
+                            "type":"object",
+                            "properties":{"route_ref":{"type":"string","const":"web-search:brave@7"}},
+                            "required":["route_ref"],
+                            "additionalProperties":false
+                        }
+                    },
+                    {
+                        "tool_id":"web_fetch",
+                        "provider_id":"awaken-cloud",
+                        "provider_label":"Awaken Cloud · Reader",
+                        "route_ref":"web-fetch:reader@2",
+                        "funding":"platform",
+                        "options_schema":{
+                            "type":"object",
+                            "properties":{"route_ref":{"type":"string","const":"web-fetch:reader@2"}},
+                            "required":["route_ref"],
+                            "additionalProperties":false
+                        }
+                    }
+                ]})
+                .to_string(),
+                serde_json::json!({
+                    "tool_id":"web_search",
+                    "provider_id":"awaken-cloud",
+                    "provider_label":"Awaken Cloud · Brave",
+                    "route_ref":"web-search:brave@7",
+                    "funding":"platform",
+                    "gateway_base_url":"https://gateway.example",
+                    "capability":"route-capability",
+                    "capability_token_type":"Bearer",
+                    "grant_expires_at":1800000000,
+                    "local_run_correlation":"run-7",
+                    "operation_id":"op-7"
+                })
+                .to_string(),
+            ];
+            for body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                let mut expected = None;
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if expected.is_none()
+                        && let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        expected = Some(end + 4 + length);
+                    }
+                    if expected.is_some_and(|size| bytes.len() >= size) {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8(bytes).unwrap());
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
+    }
+
     #[derive(Default)]
     struct RecordingClient {
         requests: Mutex<Vec<BrokeredInferenceRequest>>,
+    }
+
+    #[tokio::test]
+    async fn brokered_web_discovery_and_resolution_share_the_cloud_client() {
+        // Cause/effect graph: C1 authenticated tool discovery returns exact
+        // search/fetch routes -> E1 both are installed in the existing registry
+        // with discovery-derived schemas. C2 Runtime run+operation + selected
+        // exact route -> E2 the same client requests a route grant and returns a
+        // redacted Gateway endpoint. No Provider credential is represented.
+        //
+        // Decision table:
+        // | Rule | discovery | operation context | effect |
+        // | W1 | two valid Cloud routes | n/a | two provider capabilities |
+        // | W2 | installed search route | run+operation | exact grant request |
+        // Invalid route/provider responses are rejected by the exact equality
+        // checks and Cloud endpoint tests own the denial combinations.
+        let (base_url, server) = brokered_tool_test_server();
+        let client = HttpBrokeredInferenceClient::new(
+            base_url,
+            static_access_token("cloud-access"),
+            "desktop-tools",
+        )
+        .unwrap();
+        let mut registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
+        assert_eq!(
+            client
+                .install_managed_web_routes(&mut registry)
+                .await
+                .unwrap(),
+            2,
+            "W1"
+        );
+        assert!(
+            registry
+                .config_schema()
+                .to_string()
+                .contains("web-search:brave@7"),
+            "W1"
+        );
+        assert!(
+            registry
+                .fetch_config_schema()
+                .to_string()
+                .contains("web-fetch:reader@2"),
+            "W1"
+        );
+
+        let endpoint = awaken_ext_builtin_tools::ManagedWebRouteResolver::resolve(
+            &client,
+            &awaken_runtime_contract::tool::ToolOperationContext::for_run("run-7", "op-7"),
+            "web_search",
+            "web-search:brave@7",
+        )
+        .await
+        .unwrap();
+        assert_eq!(endpoint.route_ref, "web-search:brave@7", "W2");
+        assert_eq!(
+            endpoint.lease_token.expose_secret(),
+            "route-capability",
+            "W2"
+        );
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /v1/inference/tools "), "W1");
+        assert!(
+            requests[1].contains("POST /v1/inference/tools/grants "),
+            "W2"
+        );
+        assert!(requests[1].contains("\"operation_id\":\"op-7\""), "W2");
+        assert!(
+            requests[1].contains("authorization: Bearer cloud-access"),
+            "W2"
+        );
     }
 
     #[async_trait]

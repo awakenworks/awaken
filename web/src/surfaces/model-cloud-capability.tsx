@@ -59,7 +59,15 @@ export function CloudModelRefresh({
   );
 }
 
-export function CloudModelNotice({ state }: { state: CloudModelUiState }) {
+export function CloudModelNotice({
+  state,
+  loginPending = false,
+  onSignIn,
+}: {
+  state: CloudModelUiState;
+  loginPending?: boolean;
+  onSignIn?: () => void;
+}) {
   const app = useApp();
   const message =
     state === "local"
@@ -83,6 +91,13 @@ export function CloudModelNotice({ state }: { state: CloudModelUiState }) {
     <div className="banner info" style={{ margin: "0 16px 12px" }}>
       <span>ⓘ</span>
       <span>{message}</span>
+      {state === "sign_in_required" && onSignIn && (
+        <Button disabled={loginPending} onClick={onSignIn}>
+          {loginPending
+            ? app.t("Waiting for sign-in…", "等待登录…")
+            : app.t("Sign in to Awaken Cloud", "登录 Awaken Cloud")}
+        </Button>
+      )}
     </div>
   );
 }

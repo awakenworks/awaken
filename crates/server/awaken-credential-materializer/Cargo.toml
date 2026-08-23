@@ -20,6 +20,7 @@ awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-provider-genai.workspace = true
 awaken-model-catalog = { workspace = true, optional = true }
+awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
@@ -42,6 +43,7 @@ authority = [
 brokered = [
     "dep:awaken-admin-config-api",
     "dep:awaken-model-catalog",
+    "dep:awaken-ext-builtin-tools",
     "dep:reqwest",
     "dep:tokio",
 ]

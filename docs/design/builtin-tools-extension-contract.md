@@ -64,6 +64,16 @@ or both ports and a Workspace may bind several accounts for the same provider.
 Search and Fetch route plans select one primary target and explicit ordered
 fallbacks. They never infer a fallback across credential custody or funding.
 
+Gateway-routed providers share one infrastructure adapter for both local and
+hosted compositions. The adapter receives a `ManagedWebRouteResolver`; the
+resolver alone exchanges trusted Runtime operation coordinates for an exact,
+short-lived route capability. The adapter never receives Provider credentials,
+never lists Cloud-internal accounts, and never owns entitlement or billing.
+Hosted and local Cloud use different resolver implementations over the same
+adapter, so they cannot drift into parallel WebSearch/WebFetch execution paths.
+The resulting provider descriptor is registered into this same catalog only
+after its route is discoverable.
+
 A resolved target has exactly one realization for one model attempt:
 
 - `HostExecuted` invokes a configured provider through the ordinary permission

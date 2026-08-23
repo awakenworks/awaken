@@ -237,6 +237,14 @@ resolve interactive preset
   -> open the existing local Console
 ```
 
+The startup login is not a one-shot assumption. The same IAM desktop client and
+credential-cache entry also own runtime refresh, interactive reauthentication,
+and logout. `GET /v1/config/capabilities` derives authentication from that live
+source. The Console starts at most one loopback PKCE operation, opens the
+returned IAM authorization URL, and polls secret-free status; it does not hold a
+token or implement OAuth. A successful login enables discovery, but every model
+grant and Web tool route remains independently admitted by Cloud.
+
 The explicit local bypass stops before IAM discovery and keeps the existing
 local catalogue, Workspace BYOK and builtin-tool providers available. Cloud
 login authorizes identity; each brokered model or hosted tool still requires
@@ -271,6 +279,16 @@ Billing, subscription, price, quota, usage and charge remain entirely in
 public attributes, local Profile policy, and opaque grant correlation; it never
 stores Cloud internal routes, Provider credentials, prices, balances or usage
 ledger facts.
+
+Cloud-funded `web_search` and `web_fetch` reuse the builtin Web provider catalog
+instead of introducing Cloud-specific tool ids. The open infrastructure adapter
+owns request normalization and Gateway invocation behind one injected exact-
+route resolver. Hosted Workers resolve with their run claim; a signed-in local
+product resolves with its user credential and operation correlation. Both
+receive only a short-lived route-scoped capability, and the Cloud provider is
+discoverable only when Cloud returns an eligible route. Direct/BYOK providers,
+OpenRouter server tools, and Cloud routes therefore remain peer targets in the
+same ordered route plan.
 
 Names follow `awaken-management-contract` (our Agents-product sibling), not raw
 oversight-next; the execution side keeps our existing `ResolvedSpec` /

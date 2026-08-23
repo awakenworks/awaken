@@ -34,6 +34,7 @@ pub fn contract_schemas() -> Map<String, Value> {
         awaken_model_catalog::ProviderDriverDescriptor
     );
     add!("ConfigCapabilitiesView", crate::ConfigCapabilitiesView);
+    add!("CloudLoginStatusView", crate::CloudLoginStatusView);
     add!(
         "SaveProviderConnectionRequest",
         crate::SaveProviderConnectionRequest
@@ -241,6 +242,14 @@ fn paths() -> Value {
         "/v1/config/capabilities": {
             "get": op("get_config_capabilities", "catalog", "Report identity and local/BYOK/Cloud model feature posture without probing external services",
                 &[], None, 200, schema_ref("ConfigCapabilitiesView"))
+        },
+        "/v1/config/cloud-login": {
+            "get": op("get_cloud_login", "identity", "Read secret-free state for the canonical desktop Cloud login operation",
+                &[], None, 200, schema_ref("CloudLoginStatusView")),
+            "post": op("start_cloud_login", "identity", "Start or join the one canonical desktop Cloud login operation",
+                &[], None, 200, schema_ref("CloudLoginStatusView")),
+            "delete": op("logout_cloud_login", "identity", "Clear the canonical desktop Cloud credential cache entry",
+                &[], None, 204, json!({}))
         },
         "/v1/config/provider-descriptors": {
             "get": op("get_provider_descriptors", "catalog", "List supported provider form descriptors without creating configuration",

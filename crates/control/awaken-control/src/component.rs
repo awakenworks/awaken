@@ -121,6 +121,7 @@ pub struct ControlDependencies {
     pub iam: Option<Arc<ManagementAuthz>>,
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
 }
 
 /// The complete Control application component exported to a process assembly.
@@ -191,6 +192,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         iam,
         local_browser_auth,
         remote_iam,
+        cloud_login,
     } = dependencies;
     let request_scoped_execution_workspace = remote_iam.is_some();
     let managed_credentials = credentials.clone();
@@ -361,6 +363,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         iam,
         local_browser_auth,
         remote_iam,
+        cloud_login,
     })
     .merge(crate::consent_router(
         data_subject_application.clone(),

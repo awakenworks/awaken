@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::{RedactedString, RedactedStringSource};
 use awaken_control::{
@@ -43,6 +44,7 @@ pub(crate) struct IdentityWiring {
     pub(crate) remote_iam: Option<Arc<RemoteManagementAuthz>>,
     pub(crate) local_browser_auth: Option<LocalBrowserAuth>,
     pub(crate) local_setup: Option<LocalSetupHandoff>,
+    pub(crate) cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
 }
 
 pub(crate) fn identity_wiring(
@@ -77,25 +79,183 @@ pub(crate) fn identity_wiring(
                 remote_iam: None,
                 local_browser_auth: Some(browser),
                 local_setup: Some(handoff),
+                cloud_login: None,
             })
         }
-        ManagementIdentityMode::AwakenCloud => Ok(IdentityWiring {
-            iam: None,
-            remote_iam: Some(awaken_cloud_authz(cloud_iam)?),
-            local_browser_auth: None,
-            local_setup: None,
-        }),
+        ManagementIdentityMode::AwakenCloud => cloud_identity_wiring(cloud_iam),
         ManagementIdentityMode::NoLogin => Ok(IdentityWiring {
             iam: None,
             remote_iam: None,
             local_browser_auth: None,
             local_setup: None,
+            cloud_login: None,
         }),
+    }
+}
+
+fn cloud_identity_wiring(config: &config::CloudIamConfig) -> Result<IdentityWiring, String> {
+    let interactive = config.access_token.is_none()
+        && config.service_token.is_none()
+        && config.service_token_file.is_none();
+    let login = interactive
+        .then(|| DesktopCloudLogin::new(config, awaken_iam_client::CredentialCache::open()))
+        .transpose()?
+        .map(Arc::new);
+    let remote_iam = awaken_cloud_authz(config, login.clone())?;
+    Ok(IdentityWiring {
+        iam: None,
+        remote_iam: Some(remote_iam),
+        local_browser_auth: None,
+        local_setup: None,
+        cloud_login: login
+            .map(|login| login as Arc<dyn awaken_admin_config_api::CloudLoginApplication>),
+    })
+}
+
+struct DesktopCloudLogin {
+    oauth: awaken_iam_client::DesktopOAuthClient,
+    cache: awaken_iam_client::CredentialCache,
+    issuer: String,
+    operation: Arc<std::sync::Mutex<()>>,
+    running: Arc<AtomicBool>,
+    state: Arc<std::sync::Mutex<awaken_admin_config_api::CloudLoginStatusView>>,
+}
+
+impl DesktopCloudLogin {
+    fn new(
+        config: &config::CloudIamConfig,
+        cache: awaken_iam_client::CredentialCache,
+    ) -> Result<Self, String> {
+        let oauth = awaken_iam_client::DesktopOAuthClient::new(
+            awaken_iam_client::DesktopOAuthConfig::new(
+                config.issuer.clone(),
+                config.oauth_client_id.clone(),
+                config.oauth_redirect_uri.clone(),
+            ),
+            cache.clone(),
+        )
+        .map_err(|error| format!("configure Awaken Cloud login: {error}"))?;
+        Ok(Self {
+            oauth,
+            cache,
+            issuer: config.issuer.trim_end_matches('/').to_owned(),
+            operation: Arc::new(std::sync::Mutex::new(())),
+            running: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(std::sync::Mutex::new(cloud_login_status(
+                awaken_admin_config_api::CloudLoginState::SignInRequired,
+            ))),
+        })
+    }
+
+    fn credential(&self) -> Result<Option<awaken_iam_client::CachedCredential>, String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Awaken Cloud credential operation is unavailable".to_owned())?;
+        self.oauth
+            .cached_credential()
+            .map_err(|error| format!("Awaken Cloud credential refresh failed: {error}"))
+    }
+
+    fn observed_status(&self) -> awaken_admin_config_api::CloudLoginStatusView {
+        if self.cache.load(&self.issuer).is_some() {
+            return cloud_login_status(awaken_admin_config_api::CloudLoginState::Authenticated);
+        }
+        self.state.lock().map_or_else(
+            |_| {
+                let mut status =
+                    cloud_login_status(awaken_admin_config_api::CloudLoginState::Failed);
+                status.error_code = Some("cloud_login_state_unavailable".into());
+                status
+            },
+            |status| status.clone(),
+        )
+    }
+}
+
+fn cloud_login_status(
+    state: awaken_admin_config_api::CloudLoginState,
+) -> awaken_admin_config_api::CloudLoginStatusView {
+    awaken_admin_config_api::CloudLoginStatusView {
+        state,
+        authorize_url: None,
+        error_code: None,
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_admin_config_api::CloudLoginApplication for DesktopCloudLogin {
+    async fn status(&self) -> awaken_admin_config_api::CloudLoginStatusView {
+        self.observed_status()
+    }
+
+    async fn start(&self) -> awaken_admin_config_api::CloudLoginStatusView {
+        if self.cache.load(&self.issuer).is_some() {
+            return cloud_login_status(awaken_admin_config_api::CloudLoginState::Authenticated);
+        }
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return self.observed_status();
+        }
+        if let Ok(mut status) = self.state.lock() {
+            *status = cloud_login_status(awaken_admin_config_api::CloudLoginState::Authorizing);
+        }
+        let oauth = self.oauth.clone();
+        let operation = Arc::clone(&self.operation);
+        let state = Arc::clone(&self.state);
+        let running = Arc::clone(&self.running);
+        tokio::task::spawn_blocking(move || {
+            let result = operation.lock().map_err(|_| ()).and_then(|_guard| {
+                oauth
+                    .ensure_credential(|url| {
+                        let mut status = state
+                            .lock()
+                            .map_err(|_| "login state unavailable".to_owned())?;
+                        status.state = awaken_admin_config_api::CloudLoginState::Authorizing;
+                        status.authorize_url = Some(url.to_owned());
+                        status.error_code = None;
+                        Ok(())
+                    })
+                    .map_err(|_| ())
+            });
+            if let Ok(mut status) = state.lock() {
+                *status = match result {
+                    Ok(_) => {
+                        cloud_login_status(awaken_admin_config_api::CloudLoginState::Authenticated)
+                    }
+                    Err(()) => {
+                        let mut failed =
+                            cloud_login_status(awaken_admin_config_api::CloudLoginState::Failed);
+                        failed.error_code = Some("cloud_login_failed".into());
+                        failed
+                    }
+                };
+            }
+            running.store(false, Ordering::Release);
+        });
+        self.observed_status()
+    }
+
+    async fn logout(&self) -> Result<(), String> {
+        if self.running.load(Ordering::Acquire) {
+            return Err("Awaken Cloud login is still in progress".into());
+        }
+        self.cache
+            .clear(&self.issuer)
+            .map_err(|error| format!("clear Awaken Cloud login: {error}"))?;
+        if let Ok(mut status) = self.state.lock() {
+            *status = cloud_login_status(awaken_admin_config_api::CloudLoginState::SignInRequired);
+        }
+        Ok(())
     }
 }
 
 fn awaken_cloud_authz(
     config: &config::CloudIamConfig,
+    desktop: Option<Arc<DesktopCloudLogin>>,
 ) -> Result<Arc<RemoteManagementAuthz>, String> {
     if let Some(path) = &config.service_token_file {
         return RemoteManagementAuthz::connect_with_projected_service_token(
@@ -107,17 +267,25 @@ fn awaken_cloud_authz(
     }
     let user_token_source: Arc<RedactedStringSource> = match config.access_token.clone() {
         Some(token) => Arc::new(move || Ok(RedactedString::new(token.clone()))),
-        None => {
-            let issuer = config.issuer.clone();
-            Arc::new(move || {
-                awaken_iam_client::CredentialCache::open()
-                    .load(&issuer)
+        None => match desktop {
+            Some(desktop) => Arc::new(move || {
+                desktop
+                    .credential()?
                     .map(|entry| RedactedString::new(entry.token.expose().to_owned()))
-                    .ok_or_else(|| {
-                        "Awaken Cloud login credential is missing or expired".to_string()
-                    })
-            })
-        }
+                    .ok_or_else(|| "Awaken Cloud login credential is missing or expired".into())
+            }),
+            None => {
+                let issuer = config.issuer.clone();
+                Arc::new(move || {
+                    awaken_iam_client::CredentialCache::open()
+                        .load(&issuer)
+                        .map(|entry| RedactedString::new(entry.token.expose().to_owned()))
+                        .ok_or_else(|| {
+                            "Awaken Cloud login credential is missing or expired".to_string()
+                        })
+                })
+            }
+        },
     };
     RemoteManagementAuthz::connect_with_user_token_source(
         config.base_url.clone(),
@@ -134,6 +302,20 @@ mod tests {
     use awaken_iam_client::{CachedCredential, CredentialCache, RedactedString as IamSecret};
     use awaken_iam_contract::{AccountId as IamAccountId, PrincipalRef};
 
+    fn cloud_config() -> config::CloudIamConfig {
+        config::CloudIamConfig {
+            base_url: "https://accounts.example".into(),
+            inference_base_url: "https://api.example".into(),
+            audience: "awaken-runtime".into(),
+            issuer: "https://accounts.example".into(),
+            oauth_client_id: "awaken-desktop".into(),
+            oauth_redirect_uri: "http://127.0.0.1:34115/callback".into(),
+            access_token: None,
+            service_token: None,
+            service_token_file: None,
+        }
+    }
+
     /// Startup credential decision table:
     ///
     /// | explicit access | service credential | live cache | effect |
@@ -143,33 +325,19 @@ mod tests {
     /// | no | no | absent/expired | IAM client owns refresh or interactive PKCE |
     #[test]
     fn existing_credentials_satisfy_cloud_startup_without_browser_login() {
-        fn config() -> config::CloudIamConfig {
-            config::CloudIamConfig {
-                base_url: "https://accounts.example".into(),
-                inference_base_url: "https://api.example".into(),
-                audience: "awaken-runtime".into(),
-                issuer: "https://accounts.example".into(),
-                oauth_client_id: "awaken-desktop".into(),
-                oauth_redirect_uri: "http://127.0.0.1:34115/callback".into(),
-                access_token: None,
-                service_token: None,
-                service_token_file: None,
-            }
-        }
-
         for mut configured in [
             {
-                let mut configured = config();
+                let mut configured = cloud_config();
                 configured.access_token = Some("explicit-access".into());
                 configured
             },
             {
-                let mut configured = config();
+                let mut configured = cloud_config();
                 configured.service_token = Some("inline-service".into());
                 configured
             },
             {
-                let mut configured = config();
+                let mut configured = cloud_config();
                 configured.service_token_file = Some("/run/secrets/cloud-token".into());
                 configured
             },
@@ -186,7 +354,7 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let cache = CredentialCache::at(directory.path().join("credentials.json"));
-        let config = config();
+        let config = cloud_config();
         cache
             .store(
                 &config.issuer,
@@ -202,5 +370,57 @@ mod tests {
             .unwrap();
 
         ensure_cloud_login(&config, cache, |_| panic!("browser must not launch")).unwrap();
+    }
+
+    /// Runtime identity cause/effect decision table:
+    /// C1 canonical cache contains a live account credential -> status and
+    /// request token both authenticate; C2 logout while no PKCE operation is in
+    /// flight -> clear that same entry and project sign-in-required. Missing or
+    /// expired grants enter IAM's tested refresh/interactive rules rather than a
+    /// product-owned token path.
+    #[test]
+    fn desktop_cloud_login_projects_and_clears_the_canonical_cache() {
+        use awaken_admin_config_api::CloudLoginApplication as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = CredentialCache::at(directory.path().join("credentials.json"));
+        let config = cloud_config();
+        cache
+            .store(
+                &config.issuer,
+                CachedCredential {
+                    token: IamSecret::new("runtime-access"),
+                    principal: PrincipalRef::Account {
+                        account_id: IamAccountId("acct-runtime".into()),
+                    },
+                    expires_at: u64::MAX / 2,
+                    oauth: None,
+                },
+            )
+            .unwrap();
+        let login = DesktopCloudLogin::new(&config, cache.clone()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert_eq!(
+                login.status().await.state,
+                awaken_admin_config_api::CloudLoginState::Authenticated,
+                "C1"
+            );
+            assert_eq!(
+                login.credential().unwrap().unwrap().token.expose(),
+                "runtime-access",
+                "C1"
+            );
+            login.logout().await.unwrap();
+            assert!(cache.load(&config.issuer).is_none(), "C2");
+            assert_eq!(
+                login.status().await.state,
+                awaken_admin_config_api::CloudLoginState::SignInRequired,
+                "C2"
+            );
+        });
     }
 }

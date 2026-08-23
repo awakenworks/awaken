@@ -29,17 +29,19 @@ pub use task::{
     SendMessageTool, TaskCanceller, task_tools,
 };
 pub use web::{
-    AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider, BRAVE_PROVIDER_ID, BraveSearchProvider,
-    ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider, OPENROUTER_PROVIDER_ID,
-    WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID, WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID,
-    WebDomainFilter, WebFetchArgs, WebFetchConfig, WebFetchExecutionConfiguration, WebFetchPlugin,
-    WebFetchProvider, WebFetchProviderDescriptor, WebFetchRequest, WebFetchTool, WebProviderTarget,
-    WebSearchArgs, WebSearchConfig, WebSearchCredentialRequirement, WebSearchCredentialResolver,
-    WebSearchExecutionConfiguration, WebSearchPlugin, WebSearchProvider,
-    WebSearchProviderDescriptor, WebSearchProviderRegistry, WebSearchRegistryError,
-    WebSearchRequest, WebSearchResult, WebSearchTool, WebSearchUserLocation,
-    WebServerToolProviderDescriptor, web_fetch_descriptor, web_fetch_execution_configuration,
-    web_hand_tools, web_search_descriptor, web_search_execution_configuration,
+    AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider,
+    BRAVE_PROVIDER_ID, BraveSearchProvider, ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID,
+    DuckDuckGoProvider, ManagedGatewayWebProvider, ManagedWebGatewayEndpoint, ManagedWebRouteError,
+    ManagedWebRouteResolver, OPENROUTER_PROVIDER_ID, WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID,
+    WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs, WebFetchConfig,
+    WebFetchExecutionConfiguration, WebFetchPlugin, WebFetchProvider, WebFetchProviderDescriptor,
+    WebFetchRequest, WebFetchTool, WebProviderTarget, WebSearchArgs, WebSearchConfig,
+    WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
+    WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
+    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchTool,
+    WebSearchUserLocation, WebServerToolProviderDescriptor, web_fetch_descriptor,
+    web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
+    web_search_execution_configuration,
 };
 
 /// The one complete static Hand registry used by every SessionEnvironment.
