@@ -31,6 +31,71 @@ impl PlatformMemoryHandle {
         }
     }
 
+    pub(crate) async fn list(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
+        self.fs
+            .list(&self.store_id, prefix)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn read(
+        &self,
+        path: &str,
+    ) -> Result<Option<awaken_resource_contract::Memory>, String> {
+        self.fs
+            .get_by_path(&self.store_id, path)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn write_exact(
+        &self,
+        path: &str,
+        content: &str,
+        expected_sha256: Option<&str>,
+    ) -> Result<awaken_resource_contract::Memory, String> {
+        if !self.writable {
+            return Err("memory store binding is read-only".into());
+        }
+        match expected_sha256 {
+            None => self
+                .fs
+                .create(&self.store_id, path, content)
+                .await
+                .map_err(|error| error.to_string()),
+            Some(expected) => {
+                let current = self
+                    .fs
+                    .get_by_path(&self.store_id, path)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("memory not found: {path}"))?;
+                self.fs
+                    .update(&self.store_id, &current.id, content, expected)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    pub(crate) async fn delete_exact(
+        &self,
+        path: &str,
+        expected_id: &str,
+        expected_sha256: &str,
+    ) -> Result<bool, String> {
+        if !self.writable {
+            return Err("memory store binding is read-only".into());
+        }
+        self.fs
+            .delete_if_match(&self.store_id, path, expected_id, expected_sha256)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) async fn plan_mutations(
         &self,
         writes: BTreeMap<String, String>,

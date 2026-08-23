@@ -1,16 +1,15 @@
 //! End-to-end skill lifecycle through the *Managed Agents* protocol (ADR-0036).
 //!
 //! Drives the real kernel over the public `/v1/sessions...` wire and proves the
-//! two-tool skill surface from **discover** to **use**:
+//! Anthropic-compatible filesystem Skill surface from **discover** to **use**:
 //!
-//!   offer   (SkillSpec → registry → `list_skills` + `Skill`, both catalog-free)
-//!     → discover (model calls `list_skills`; the catalog comes back as data)
-//!     → activate (model calls `Skill { skill }`; instructions returned)
+//!   offer   (SkillSpec → frozen `SKILL.md` projection)
+//!     → discover (prompt carries metadata + path, never the body)
+//!     → load     (model calls ordinary `read`; instructions returned)
 //!     → use      (the loop continues; the model replies)
 //!
-//! Also proves discovery is not baked into the descriptors (they carry neither the
-//! catalog nor the body — ADR-0036 D2/D7), and that the tools are not ambient when
-//! no skill is offered.
+//! Also proves semantic Skill tools are not exposed as a parallel path and that
+//! no Skill discovery is ambient when none is offered.
 
 mod support;
 
@@ -119,9 +118,8 @@ fn skill_spec() -> SkillSpec {
 
 // ── the model under test ─────────────────────────────────────────────────────
 
-/// Step 0: assert both skill tools are advertised and carry no catalog/body, then
-/// discover with `list_skills`. Step 1: activate with `Skill`. Step 2: reply.
-/// Steps are told apart by how many tool results are already in the transcript.
+/// Step 0: find the prompt-advertised SKILL.md path and load it with `read`.
+/// Step 1: reply after the file body returns.
 struct SkillUserModel;
 
 #[async_trait::async_trait]
@@ -137,46 +135,44 @@ impl LlmExecutor for SkillUserModel {
             .count();
         match tool_results {
             0 => {
-                let has_list = request.tools.iter().any(|t| t.id == LIST_TOOL);
-                let has_skill = request.tools.iter().any(|t| t.id == SKILL_TOOL);
-                if !has_list || !has_skill {
+                let system = request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == Role::System)
+                    .flat_map(|message| message.content.iter())
+                    .filter_map(|block| match block {
+                        awaken_agent_contract::agent::content::ContentBlock::Text { text } => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let skill_path = system.split('`').find(|part| part.ends_with("/SKILL.md"));
+                if skill_path.is_none() {
                     return Ok(ChatResponse {
                         output: AssistantOutput::text("NO_SKILL_ADVERTISED"),
                         usage: None,
                         stop_reason: None,
                     });
                 }
-                // Discovery is a `list_skills` call, not the descriptor: neither
-                // tool descriptor may carry the catalog (id) or the body.
-                let leaked = request.tools.iter().any(|t| {
-                    t.description.contains(SKILL_ID) || t.description.contains(SKILL_BODY)
-                });
-                if leaked {
+                if system.contains(SKILL_BODY) {
                     return Ok(ChatResponse {
-                        output: AssistantOutput::text("CATALOG_IN_DESCRIPTOR"),
+                        output: AssistantOutput::text("BODY_IN_PROMPT"),
                         usage: None,
                         stop_reason: None,
                     });
                 }
                 Ok(ChatResponse {
                     output: AssistantOutput::from_tool_calls(vec![ToolCall {
-                        call_id: "l1".into(),
-                        tool_id: LIST_TOOL.into(),
-                        arguments: serde_json::json!({}),
+                        call_id: "read-skill".into(),
+                        tool_id: "read".into(),
+                        arguments: serde_json::json!({"path": skill_path.unwrap()}),
                     }]),
                     usage: None,
                     stop_reason: None,
                 })
             }
-            1 => Ok(ChatResponse {
-                output: AssistantOutput::from_tool_calls(vec![ToolCall {
-                    call_id: "s1".into(),
-                    tool_id: SKILL_TOOL.into(),
-                    arguments: serde_json::json!({ "skill": SKILL_ID }),
-                }]),
-                usage: None,
-                stop_reason: None,
-            }),
             _ => Ok(ChatResponse {
                 output: AssistantOutput::text("USED_SKILL"),
                 usage: None,
@@ -191,52 +187,36 @@ impl LlmExecutor for SkillUserModel {
 #[tokio::test]
 async fn offered_skill_is_discovered_activated_and_used() {
     // Causes: C1 the Session is offered one Skill; C2 the model requests the
-    // catalog; C3 it activates `deploy`; C4 the instructions return to the same
-    // Run. Effects: E1 only the two generic Skill tools are advertised; E2 the
-    // catalog contains metadata but not the body; E3 activation returns the exact
-    // body; E4 the Run commits `USED_SKILL` and an end_turn terminal Event.
-    // Constraints/invariants: descriptors never become a second catalog/body
-    // owner, and the receipt-aware observer never drives Session/Run lifecycle.
-    // Decision rule: L1=C1+C2 -> E1+E2; L2=L1+C3+C4 -> E3+E4.
+    // prompt path; C3 it reads `deploy/SKILL.md`; C4 the instructions return to
+    // the same Run. Effects: E1 only `read` is invoked; E2 prompt contains
+    // metadata/path but not body; E3 read returns the exact body; E4 the Run
+    // commits `USED_SKILL`. Rule L1=C1+C2 -> E1+E2; L2=L1+C3+C4 -> E3+E4.
     let app = build_router_with_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()]);
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;
     let texts = message_texts(&list);
 
-    // descriptors stayed catalog-free (else the model would have flagged it).
-    assert!(!texts.contains(&"CATALOG_IN_DESCRIPTOR".to_string()));
+    assert!(!texts.contains(&"BODY_IN_PROMPT".to_string()));
     assert!(!texts.contains(&"NO_SKILL_ADVERTISED".to_string()));
 
-    // discovered + activated: both tools were invoked, in order.
+    // Filesystem delivery invokes only the ordinary read tool.
     let tool_uses: Vec<String> = events_of(&list, "agent.tool_use")
         .iter()
         .map(|e| e["name"].as_str().unwrap().to_string())
         .collect();
-    assert!(
-        tool_uses.contains(&LIST_TOOL.to_string()),
-        "list_skills invoked: {tool_uses:?}"
-    );
-    assert!(
-        tool_uses.contains(&SKILL_TOOL.to_string()),
-        "Skill invoked: {tool_uses:?}"
-    );
+    assert_eq!(tool_uses, ["read"]);
+    assert!(!tool_uses.contains(&LIST_TOOL.to_string()));
+    assert!(!tool_uses.contains(&SKILL_TOOL.to_string()));
 
-    // the catalog came back from `list_skills` as data (id present, body absent);
-    // the activation returned the body.
+    // The body arrives only through the on-demand file read.
     let results: Vec<String> = events_of(&list, "agent.tool_result")
         .iter()
         .map(|e| e["content"][0]["text"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(
-        results
-            .iter()
-            .any(|r| r.contains(SKILL_ID) && !r.contains(SKILL_BODY)),
-        "list_skills returned the catalog (metadata, no body): {results:?}"
-    );
-    assert!(
         results.iter().any(|r| r.contains(SKILL_BODY)),
-        "Skill returned the instructions body: {results:?}"
+        "read returned the instructions body: {results:?}"
     );
 
     // used: the loop continued and the model replied; ended cleanly.

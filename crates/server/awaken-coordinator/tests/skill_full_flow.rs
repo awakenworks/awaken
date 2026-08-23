@@ -1,19 +1,17 @@
-//! End-to-end skill lifecycle over the Managed Agents wire, in one session:
-//! **discover → author → fork → /name** (ADR-0036).
+//! End-to-end filesystem Skill lifecycle over the Managed Agents wire:
+//! **discover/read → author → read authored Skill** (ADR-0036).
 //!
-//!   discover — the model calls `list_skills`; the delivered catalog comes back.
+//!   discover — prompt metadata advertises an exact `SKILL.md`, then `read` loads it.
 //!   author   — the model authors a new skill via `bash` (awaits on the gate,
-//!              the client confirms); a live re-scan surfaces it (AgentCreated).
-//!   fork     — activating a `context: fork` skill runs a sub-agent whose reply
-//!              is returned as the tool result.
-//!   /name    — a user `/greet` invocation is expanded into the skill body.
+//!              the client confirms) at the canonical repository path.
+//!   use      — the confirmed Run reads the authored repository Skill.
 
 mod support;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_coordinator::{SkillContext, SkillSpec};
+use awaken_coordinator::SkillSpec;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -182,41 +180,47 @@ impl LlmExecutor for FullFlowModel {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let last = request.messages.last().expect("a message");
         let last_text = text_of(last);
+        let system = request
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .map(text_of)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let advertised = |suffix: &str| {
+            system
+                .split('`')
+                .find(|part| part.ends_with(suffix))
+                .map(str::to_string)
+        };
         let output = match last.role {
             Role::User => {
-                if last_text.contains("FORK-REVIEW-BODY") {
-                    // This is the forked sub-agent's Run (its input is the body).
-                    AssistantOutput::text("FORK-DONE")
-                } else if last_text.contains("GREETING for") {
-                    // The /name expansion replaced the user's text with the body.
-                    AssistantOutput::text(format!("NAMED:{last_text}"))
-                } else if last_text.contains("discover") {
-                    tool("l1", "list_skills", serde_json::json!({}))
+                if last_text.contains("discover") {
+                    match advertised("greet/SKILL.md") {
+                        Some(path) => tool("read-greet", "read", serde_json::json!({"path": path})),
+                        None => AssistantOutput::text("MISSING-GREET-METADATA"),
+                    }
                 } else if last_text.contains("author") {
                     tool(
                         "w",
                         "bash",
-                        serde_json::json!({ "command": "mkdir -p skills/notes && echo NOTE-BODY > skills/notes/SKILL.md" }),
+                        serde_json::json!({ "command": "mkdir -p .claude/skills/notes && printf '%s' '---\nname: notes\ndescription: authored notes\n---\nNOTE-BODY' > .claude/skills/notes/SKILL.md" }),
                     )
-                } else if last_text.contains("fork") {
-                    tool("s1", "Skill", serde_json::json!({ "skill": "review" }))
                 } else {
                     AssistantOutput::text("hmm")
                 }
             }
             Role::Tool => {
-                if last_text == "FORK-DONE" {
-                    AssistantOutput::text("FORKED")
-                } else if last_text.contains("\"skills\"") {
-                    // a list_skills catalog: notes present only after authoring.
-                    if last_text.contains("notes") {
-                        AssistantOutput::text("AUTHORED")
-                    } else {
-                        AssistantOutput::text("DISCOVERED")
-                    }
+                if last_text.contains("GREETING") {
+                    AssistantOutput::text("DISCOVERED")
+                } else if last_text.contains("NOTE-BODY") {
+                    AssistantOutput::text("AUTHORED-SKILL-USED")
                 } else {
-                    // the bash result: now list to observe the authored skill.
-                    tool("l2", "list_skills", serde_json::json!({}))
+                    tool(
+                        "read-authored",
+                        "read",
+                        serde_json::json!({"path": ".claude/skills/notes/SKILL.md"}),
+                    )
                 }
             }
             _ => AssistantOutput::text("hmm"),
@@ -240,32 +244,27 @@ fn tool(call_id: &str, tool_id: &str, arguments: serde_json::Value) -> Assistant
 // ── the test ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn discover_author_fork_and_slash_name_end_to_end() {
-    // Causes: C1 two published skills include inline and fork contexts; C2 the
-    // model requests discovery; C3 authoring invokes approval-gated bash and the
-    // client confirms it; C4 a fork skill is activated; C5 `/greet World` is sent.
-    // Effects: E1 discovery returns the initial catalog; E2 the approval stop
-    // names the exact public bash Event and the authored skill appears only after
-    // confirming that identity; E3 the child Run result returns through the
-    // parent tool result; E4 slash expansion reaches the model verbatim.
+async fn discover_read_author_and_use_authored_skill_end_to_end() {
+    // Causes: C1 a frozen Skill is offered; C2 the model follows its prompt path;
+    // C3 authoring invokes approval-gated bash and the client confirms it; C4 a
+    // confirmed Run continues to the authored Skill. Effects: E1 `read` returns the
+    // frozen body with no semantic tools; E2 approval names the exact public
+    // bash Event; E3 `.claude/skills/notes/SKILL.md` is readable through the same
+    // sandbox boundary; E4 its body reaches the final reply.
     // Constraints/invariants: every observation is anchored to its accepted
     // receipt and committed terminal Event; Session/Run remains the sole driver,
     // and one canonical read-only wait helper performs no execution or retry.
     // Decision rules: F1=C1+C2 -> E1; F2=F1+C3 -> E2;
-    // F3=F2+C4 -> E3; F4=F3+C5 -> E4.
+    // F3=F2+C4 -> E3+E4.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
-    let review = SkillSpec::new("review", "Review", "review code", "FORK-REVIEW-BODY")
-        .with_context(SkillContext::Fork);
-    let app = build_router_with_skills(Arc::new(FullFlowModel), "scripted", vec![greet, review]);
+    let app = build_router_with_skills(Arc::new(FullFlowModel), "scripted", vec![greet]);
     let id = create_session(&app).await;
 
-    // 1) discover — the delivered catalog comes back (no `notes` yet).
+    // 1) discover and load the frozen Skill through its advertised path.
     let list = send_message(&app, &id, "please discover").await;
-    assert!(tool_uses(&list).contains(&"list_skills".to_string()));
+    assert_eq!(tool_uses(&list), ["read"]);
     assert!(messages(&list).contains(&"DISCOVERED".to_string()));
-    let catalog = tool_results(&list).join("");
-    assert!(catalog.contains("greet") && catalog.contains("review"));
-    assert!(!catalog.contains("notes"), "notes not authored yet");
+    assert!(tool_results(&list).join("").contains("GREETING"));
 
     // 2) author — the model writes a skill via bash; it awaits on the gate.
     let awaiting = send_message(&app, &id, "please author").await;
@@ -281,111 +280,12 @@ async fn discover_author_fork_and_slash_name_end_to_end() {
         .find(|event| event["type"] == "agent.tool_use" && event["name"] == "bash")
         .expect("the approval-gated bash Event is projected");
     assert_eq!(bash["id"], public_tool_id, "F2 public identity");
-    // Confirm → bash runs (rooted) → a re-scan surfaces the authored skill.
+    // Confirm → bash writes the canonical repository Skill path → read loads it.
     let done = confirm(&app, &id, public_tool_id).await;
-    assert!(messages(&done).contains(&"AUTHORED".to_string()));
     assert!(
-        tool_results(&done)
-            .iter()
-            .any(|r| r.contains("notes") && r.contains("agent_created")),
-        "authored skill surfaces as agent_created: {:?}",
-        tool_results(&done)
+        messages(&done).contains(&"AUTHORED-SKILL-USED".to_string()),
+        "authored Skill body reached the model: {:?}",
+        messages(&done)
     );
-
-    // 3) fork — activating the fork skill runs a sub-agent; its reply comes back.
-    let forked = send_message(&app, &id, "please fork").await;
-    assert!(tool_uses(&forked).contains(&"Skill".to_string()));
-    assert!(
-        tool_results(&forked)
-            .iter()
-            .any(|r| r.contains("FORK-DONE"))
-    );
-    assert!(messages(&forked).contains(&"FORKED".to_string()));
-
-    // 4) /name — the user invocation is expanded into the skill body.
-    let named = send_message(&app, &id, "/greet World").await;
-    assert!(
-        messages(&named)
-            .iter()
-            .any(|m| m.contains("NAMED:") && m.contains("GREETING for World")),
-        "slash-name expanded to the skill body: {:?}",
-        messages(&named)
-    );
-}
-
-/// Lists, reads a matching `.rs` file, lists again: the `paths`-conditional skill
-/// is hidden until the read touches a matching path, then surfaces (ADR-0036 ③).
-struct PathProbeModel;
-
-#[async_trait::async_trait]
-impl LlmExecutor for PathProbeModel {
-    async fn infer(
-        &self,
-        request: ChatRequest,
-    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let last = request.messages.last().expect("a message");
-        let last_text = text_of(last);
-        let output = match last.role {
-            Role::User => tool("l1", "list_skills", serde_json::json!({})),
-            Role::Tool => {
-                if last_text.contains("\"skills\"") {
-                    // A catalog: `rusty` appears only after the read touched a match.
-                    if last_text.contains("rusty") {
-                        AssistantOutput::text("DONE")
-                    } else {
-                        // `read` is allowed (no await); the gate records its path.
-                        tool(
-                            "rd",
-                            "read",
-                            serde_json::json!({ "path": "src/app/main.rs" }),
-                        )
-                    }
-                } else {
-                    // the read result — list again to observe the surfaced skill.
-                    tool("l2", "list_skills", serde_json::json!({}))
-                }
-            }
-            _ => AssistantOutput::text("hmm"),
-        };
-        Ok(ChatResponse {
-            output,
-            usage: None,
-            stop_reason: None,
-        })
-    }
-}
-
-#[tokio::test]
-async fn conditional_paths_skill_surfaces_after_touching_a_matching_file() {
-    // Causes: C1 a conditional skill requires `src/**/*.rs`; C2 the first list
-    // occurs before a matching path is touched; C3 the allowed read touches
-    // `src/app/main.rs`; C4 the model lists again after that committed result.
-    // Effects: E1 the first catalog hides `rusty`; E2 the second catalog exposes
-    // it; E3 the model reaches its terminal `DONE` message.
-    // Constraints/invariants: the path gate is Session-local, the read remains
-    // the only path-touch authority, and observations are receipt-anchored rather
-    // than racing asynchronous lifecycle supervision.
-    // Decision rules: P1=C1+C2+!C3 -> E1; P2=P1+C3+C4 -> E2+E3.
-    let greet = SkillSpec::new("greet", "Greet", "say hello", "hi");
-    let rusty = SkillSpec::new("rusty", "Rusty", "rust review", "RUST-BODY")
-        .with_paths(vec!["src/**/*.rs".into()]);
-    let app = build_router_with_skills(Arc::new(PathProbeModel), "scripted", vec![greet, rusty]);
-    let id = create_session(&app).await;
-
-    let list = send_message(&app, &id, "go").await;
-    let results = tool_results(&list);
-
-    // Before the read: a catalog with `greet` but not the conditional `rusty`.
-    assert!(
-        results
-            .iter()
-            .any(|r| r.contains("greet") && !r.contains("rusty")),
-        "conditional skill hidden before a matching file is touched: {results:?}"
-    );
-    // After reading src/app/main.rs (path recorded at the gate): `rusty` surfaces.
-    assert!(
-        results.iter().any(|r| r.contains("rusty")),
-        "conditional skill surfaces after a matching path is touched: {results:?}"
-    );
-    assert!(messages(&list).contains(&"DONE".to_string()));
+    assert_eq!(tool_uses(&done), ["read", "bash", "read"]);
 }

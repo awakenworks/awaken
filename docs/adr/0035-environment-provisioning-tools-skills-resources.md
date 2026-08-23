@@ -75,9 +75,11 @@ D5 covers only the model-visible presentation. Full run identity =
 ### D4: Skills are environment-provisioned `RawTool`s, not a kernel or runtime-ext concept
 
 > **Superseded by [ADR-0036](0036-skills-as-runtime-extension-single-tool.md).**
-> The per-skill `RawTool` shape below (one dynamic tool per skill) is withdrawn: skills are now
-> fronted by a single `Skill` tool with the catalog carried as data, implemented
-> in the `awaken-ext-skills` extension (still outside the kernel). D1–D3 and
+> The per-skill `RawTool` shape below (one dynamic tool per skill) is withdrawn.
+> ADR-0036's 2026-08-23 amendment now selects either Anthropic-compatible
+> filesystem discovery or the fixed `list_skills`/`Skill` semantic surface from
+> the effective filesystem capability. Both are implemented over the same
+> `awaken-ext-skills` registry (still outside the kernel). D1–D3 and
 > D5–D8 of this ADR are unaffected — provisioning still materializes resources
 > and the per-run substrate.
 

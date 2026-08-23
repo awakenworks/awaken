@@ -442,6 +442,46 @@ impl BoundMemory {
             })
     }
 
+    pub(crate) async fn list_bound_memories(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
+        self.validate_live_resource()?;
+        self.platform.list(prefix).await
+    }
+
+    pub(crate) async fn read_bound_memory(
+        &self,
+        path: &str,
+    ) -> Result<Option<awaken_resource_contract::Memory>, String> {
+        self.validate_live_resource()?;
+        self.platform.read(path).await
+    }
+
+    pub(crate) async fn write_bound_memory(
+        &self,
+        path: &str,
+        content: &str,
+        expected_sha256: Option<&str>,
+    ) -> Result<awaken_resource_contract::Memory, String> {
+        self.validate_live_resource()?;
+        self.platform
+            .write_exact(path, content, expected_sha256)
+            .await
+    }
+
+    pub(crate) async fn delete_bound_memory(
+        &self,
+        path: &str,
+        expected_id: &str,
+        expected_sha256: &str,
+    ) -> Result<bool, String> {
+        self.validate_live_resource()?;
+        self.platform
+            .delete_exact(path, expected_id, expected_sha256)
+            .await
+    }
+
     /// Durably enqueue one extraction keyed by the terminal commit, then drive it
     /// asynchronously. Returning from this method means the intent is persistent,
     /// not that extraction has completed.
@@ -1338,6 +1378,72 @@ mod tests {
                 .is_none()
         );
         assert_eq!(read_only.entries().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn platform_semantic_mutations_preserve_repository_cas_and_aba_fences() {
+        // Cause/effect decision table: R1 absent expected hash + absent path ->
+        // create; R2 absent hash + present path -> path conflict; R3 current hash
+        // -> update; R4 stale hash -> conflict/no clobber; R5 exact id+hash ->
+        // delete; R6 recreated path + stale id/hash -> conflict/no ABA delete.
+        let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+        let handle = PlatformMemoryHandle::new(fs.clone(), "store".into(), true);
+        let created = handle
+            .write_exact("/note.md", "v1", None)
+            .await
+            .expect("R1");
+        assert!(
+            handle
+                .write_exact("/note.md", "duplicate", None)
+                .await
+                .is_err(),
+            "R2"
+        );
+        let updated = handle
+            .write_exact("/note.md", "v2", Some(&created.content_sha256))
+            .await
+            .expect("R3");
+        assert!(
+            handle
+                .write_exact("/note.md", "clobber", Some(&created.content_sha256))
+                .await
+                .is_err(),
+            "R4"
+        );
+        assert_eq!(
+            handle
+                .read("/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v2"),
+            "R4"
+        );
+        assert!(
+            handle
+                .delete_exact("/note.md", &updated.id, &updated.content_sha256)
+                .await
+                .expect("R5"),
+            "R5"
+        );
+        let recreated = handle
+            .write_exact("/note.md", "v3", None)
+            .await
+            .expect("recreate");
+        assert!(
+            handle
+                .delete_exact("/note.md", &updated.id, &updated.content_sha256)
+                .await
+                .is_err(),
+            "R6"
+        );
+        assert_eq!(
+            handle.read("/note.md").await.unwrap().unwrap().id,
+            recreated.id,
+            "R6"
+        );
     }
 
     /// Cause/effect decision table for Recall reads:
