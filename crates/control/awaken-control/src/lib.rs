@@ -348,6 +348,37 @@ pub struct ControlRouterInput {
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    /// Optional application coordinator for IAM's canonical desktop OAuth
+    /// operation. Present only in interactive local Cloud composition.
+    pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
+}
+
+struct LiveControlCapabilities {
+    identity_mode: String,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    cloud_login_enabled: bool,
+    local_iam: bool,
+    model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
+    managed_runtime_available: bool,
+}
+
+impl awaken_admin_config_api::ConfigCapabilitiesSource for LiveControlCapabilities {
+    fn current(&self) -> awaken_admin_config_api::ConfigCapabilitiesView {
+        awaken_admin_config_api::ConfigCapabilitiesView {
+            identity: awaken_admin_config_api::IdentityCapabilityView {
+                mode: self.identity_mode.clone(),
+                cloud_login_enabled: self.cloud_login_enabled,
+                authenticated: self.remote_iam.as_ref().is_some_and(|authz| {
+                    authz.cloud_user_token().is_ok_and(|token| token.is_some())
+                }),
+            },
+            models: self.model_supply.clone(),
+            surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView {
+                managed_runtime: self.managed_runtime_available,
+                access_management: self.local_iam,
+            },
+        }
+    }
 }
 
 /// Build the authoring / authz management router over the shared handles. The
@@ -385,6 +416,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         iam,
         local_browser_auth,
         remote_iam,
+        cloud_login,
     } = input;
 
     let identity_mode = if remote_iam.is_some() {
@@ -394,21 +426,17 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     } else {
         "no-login"
     };
-    let capabilities = awaken_admin_config_api::ConfigCapabilitiesView {
-        identity: awaken_admin_config_api::IdentityCapabilityView {
-            mode: identity_mode.into(),
-            cloud_login_enabled: remote_iam.is_some(),
-            authenticated: remote_iam
-                .as_ref()
-                .is_some_and(|authz| authz.cloud_user_token().is_ok_and(|token| token.is_some())),
-        },
-        models: model_supply,
-        surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView {
-            managed_runtime: managed_runtime_available,
-            access_management: iam.is_some(),
-        },
-    };
-    let admin = awaken_admin_config_api::admin_router_with_capabilities(
+    let cloud_login_enabled = cloud_login.is_some();
+    let capabilities: Arc<dyn awaken_admin_config_api::ConfigCapabilitiesSource> =
+        Arc::new(LiveControlCapabilities {
+            identity_mode: identity_mode.into(),
+            remote_iam: remote_iam.clone(),
+            cloud_login_enabled,
+            local_iam: iam.is_some(),
+            model_supply,
+            managed_runtime_available,
+        });
+    let admin = awaken_admin_config_api::admin_router_with_runtime_capabilities(
         AdminState {
             catalog,
             credentials: credentials.clone(),
@@ -426,6 +454,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             availability: Default::default(),
         },
         capabilities,
+        cloud_login,
     );
     // The webhook plane (ADR-0048): subscriptions are an id-addressed config resource
     // in the same admin store, their `whsec_` secret sealed in the shared vault. Merge

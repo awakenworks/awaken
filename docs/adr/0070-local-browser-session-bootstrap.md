@@ -84,3 +84,35 @@ The restart sequence is:
 The server-side session and browser cookie keep the existing 30-day bound.
 `last_seen_at` is durable activity metadata, not sliding expiry. Logout writes
 `revoked_at` to the same row, so restart cannot revive a logged-out browser.
+
+## Amendment — 2026-08-23: Cloud-connected interactive default
+
+The self-managed local default above is superseded for the interactive
+`all-in-one` product. When neither identity nor model supply is explicitly
+configured, `awaken` resolves the existing axes to
+`identity_mode = "awaken-cloud"` and `cloud_models = "enabled"`, then uses
+awaken-iam-client's canonical native authorization-code-with-PKCE adapter before
+starting Cloud model discovery.
+
+This is a product preset, not a new persisted mode. An explicit `no-login` or
+`self-managed` identity keeps Cloud models disabled unless a valid compatible
+combination is authored; an explicit `awaken-cloud` identity may still select
+`cloud_models = "disabled"` for Cloud login plus Workspace-BYOK-only use.
+Server and split-service roles do not start an interactive browser login and
+continue to require explicit deployment identity and service credentials.
+
+Static ownership remains singular:
+
+```text
+Awaken CLI       -> loopback/browser adapter + existing CredentialCache port
+awaken-iam       -> OP discovery, provider selection, PKCE/code, refresh, UserInfo
+Awaken Cloud     -> desktop-client registration, tenant/model/tool admission
+Awaken runtime   -> exact published local or brokered model/tool capability
+```
+
+At startup a live cached token is reused; an expired token with refresh state is
+rotated; otherwise the browser enters IAM's unified authorization endpoint.
+Failure to bind the registered loopback address, authenticate, refresh, discover
+models, or satisfy entitlement fails closed with a typed startup/readiness
+error. Choosing an explicit local identity bypasses this network flow and reuses
+the existing embedded/no-login behavior unchanged.

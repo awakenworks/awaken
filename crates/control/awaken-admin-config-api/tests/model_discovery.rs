@@ -39,12 +39,14 @@
 //! typed 409 and retained brokered history is runtime-unavailable; B3 enabled
 //! without login adapter -> typed 401; adapter failure -> typed 503.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_admin_config_api::{
-    AdminState, BrokeredCatalogDiscovery, ConfigCapabilitiesView, IdentityCapabilityView,
+    AdminState, BrokeredCatalogDiscovery, CloudLoginApplication, CloudLoginState,
+    CloudLoginStatusView, ConfigCapabilitiesSource, ConfigCapabilitiesView, IdentityCapabilityView,
     ModelCatalogDiscovery, ModelCatalogDiscoveryError, ModelSupplyCapabilityView, admin_router,
-    admin_router_with_capabilities,
+    admin_router_with_capabilities, admin_router_with_runtime_capabilities,
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -197,6 +199,140 @@ fn harness_with_capabilities(capabilities: ConfigCapabilitiesView) -> Harness {
         discovery,
         credentials,
     }
+}
+
+struct LiveCloudCapabilities(Arc<AtomicBool>);
+
+impl ConfigCapabilitiesSource for LiveCloudCapabilities {
+    fn current(&self) -> ConfigCapabilitiesView {
+        cloud_capabilities(self.0.load(Ordering::Acquire))
+    }
+}
+
+struct FixedCloudLogin(Arc<AtomicBool>);
+
+#[async_trait::async_trait]
+impl CloudLoginApplication for FixedCloudLogin {
+    async fn status(&self) -> CloudLoginStatusView {
+        CloudLoginStatusView {
+            state: if self.0.load(Ordering::Acquire) {
+                CloudLoginState::Authenticated
+            } else {
+                CloudLoginState::SignInRequired
+            },
+            authorize_url: None,
+            error_code: None,
+        }
+    }
+
+    async fn start(&self) -> CloudLoginStatusView {
+        self.0.store(true, Ordering::Release);
+        self.status().await
+    }
+
+    async fn logout(&self) -> Result<(), String> {
+        self.0.store(false, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn cloud_login_commands_update_the_live_capability_projection() {
+    // Cause/effect graph: C1 one unauthenticated canonical login owner + C2
+    // start => E1 authenticated status and E2 the next capability read changes;
+    // C3 logout => E3 no-content and E4 the next read returns unauthenticated.
+    // The static deployment/model axes remain unchanged throughout.
+    //
+    // Decision table:
+    // | Rule | command | prior auth | status | next capability auth |
+    // | L1 | GET | false | sign_in_required | false |
+    // | L2 | POST | false | authenticated | true |
+    // | L3 | DELETE | true | 204 | false |
+    let authenticated = Arc::new(AtomicBool::new(false));
+    let harness = harness();
+    let app = admin_router_with_runtime_capabilities(
+        AdminState {
+            catalog: harness.catalog,
+            credentials: harness.credentials,
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            profiles: Arc::new(awaken_config_resolver::InMemoryProfileStore::new()),
+            resources: Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
+            probe: None,
+            model_discovery: None,
+            brokered_catalog: None,
+            availability: Arc::new(AvailabilityLedger::new()),
+        },
+        Arc::new(LiveCloudCapabilities(authenticated.clone())),
+        Some(Arc::new(FixedCloudLogin(authenticated))),
+    );
+
+    let before = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/config/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let before: Value =
+        serde_json::from_slice(&before.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(before["identity"]["authenticated"], false, "L1");
+
+    let started = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/config/cloud-login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.status(), StatusCode::OK, "L2");
+    let after: Value = serde_json::from_slice(
+        &app.clone()
+            .oneshot(
+                Request::get("/v1/config/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(after["identity"]["authenticated"], true, "L2");
+
+    let logged_out = app
+        .clone()
+        .oneshot(
+            Request::delete("/v1/config/cloud-login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logged_out.status(), StatusCode::NO_CONTENT, "L3");
+    let final_view: Value = serde_json::from_slice(
+        &app.oneshot(
+            Request::get("/v1/config/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(final_view["identity"]["authenticated"], false, "L3");
 }
 
 #[tokio::test]

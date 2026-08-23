@@ -263,6 +263,15 @@
 - Kept Managed Session creation and MCP normalization authoritative; hosted
   applications retain no local credential or Session fallback.
 
+## 2026-08-23 — Local Cloud login and Web tools reuse their canonical owners
+
+- Made desktop reauthentication a live capability source over IAM's one OAuth
+  client and credential cache; the Console coordinates only secret-free status.
+- Consolidated hosted and signed-in-local Cloud WebSearch/WebFetch on one open
+  Gateway-routed builtin adapter. Cloud supplies exact route grants while the
+  existing provider catalog, tool ids, Runtime operation identity, and Gateway
+  remain authoritative.
+
 ## 2026-08-13 (Hosted governance credentials reuse canonical CRUD)
 
 - Extended the existing Credential CRUD with stable operation identity lookup

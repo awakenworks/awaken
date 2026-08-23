@@ -152,6 +152,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
             brokered_catalog: None,
+            cloud_login: identity.cloud_login,
             local_acp_observations: deployment.local_acp_observations.clone(),
             web_search_providers: None,
             web_search_publication_resolver: None,
