@@ -87,6 +87,10 @@ pub awaken_admin_config_api::CredentialValidation::adapter_kind: alloc::string::
 pub awaken_admin_config_api::CredentialValidation::credential_version: core::option::Option<i64>
 pub awaken_admin_config_api::CredentialValidation::status: awaken_admin_config_api::ProbeStatus
 pub struct awaken_admin_config_api::EnterCredentialRequest
+impl awaken_admin_config_api::EnterCredentialRequest
+pub fn awaken_admin_config_api::EnterCredentialRequest::hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
+pub fn awaken_admin_config_api::EnterCredentialRequest::provider_id(&self) -> core::option::Option<&str>
+pub fn awaken_admin_config_api::EnterCredentialRequest::workspace_id(&self) -> &str
 pub struct awaken_admin_config_api::IdentityCapabilityView
 pub awaken_admin_config_api::IdentityCapabilityView::authenticated: bool
 pub awaken_admin_config_api::IdentityCapabilityView::cloud_login_enabled: bool
