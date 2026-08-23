@@ -3,7 +3,7 @@ use awaken_model_catalog::ProviderCatalog;
 
 use crate::credential_can_supply;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutableModelReadiness {
@@ -112,7 +112,7 @@ impl ExecutorModelCapability {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecutableModelOption {
     pub backend_ref: String,
@@ -232,6 +232,71 @@ mod tests {
             status: OfferingStatus::Active,
             last_seen_at_unix_ms: None,
         }
+    }
+
+    #[test]
+    fn executable_model_wire_deserializes_into_the_canonical_read_model() {
+        // Causes: C1 the response has every required ExecutableModelOption
+        // field; C2 readiness is one canonical snake_case token; C3 readiness
+        // is unknown or absent. Effects: E1 decode directly into the canonical
+        // DTO and nested enum; E2 reject an unknown token; E3 reject an
+        // incomplete option. Decision rules: C1+C2 -> E1; C1+C3(unknown) -> E2;
+        // !C1+C3(absent) -> E3. No client-side compatibility DTO participates.
+        let cases = [
+            ("ready", ExecutableModelReadiness::Ready),
+            (
+                "offering_unavailable",
+                ExecutableModelReadiness::OfferingUnavailable,
+            ),
+            (
+                "credential_unavailable",
+                ExecutableModelReadiness::CredentialUnavailable,
+            ),
+            (
+                "runtime_unavailable",
+                ExecutableModelReadiness::RuntimeUnavailable,
+            ),
+            (
+                "dialect_unavailable",
+                ExecutableModelReadiness::DialectUnavailable,
+            ),
+        ];
+        for (readiness, expected) in cases {
+            let options: Vec<ExecutableModelOption> = serde_json::from_value(serde_json::json!([{
+                "backend_ref": "genai",
+                "provider_id": "provider",
+                "model_id": "model",
+                "endpoint_id": "provider.open_ai_chat",
+                "dialect": "open_ai_chat",
+                "readiness": readiness,
+            }]))
+            .expect("canonical executable-model response deserializes");
+            assert_eq!(options[0].readiness, expected, "E1: {readiness}");
+        }
+
+        let unknown = serde_json::json!([{
+            "backend_ref": "genai",
+            "provider_id": "provider",
+            "model_id": "model",
+            "endpoint_id": "provider.open_ai_chat",
+            "dialect": "open_ai_chat",
+            "readiness": "future_state",
+        }]);
+        assert!(
+            serde_json::from_value::<Vec<ExecutableModelOption>>(unknown).is_err(),
+            "E2"
+        );
+        let incomplete = serde_json::json!([{
+            "backend_ref": "genai",
+            "provider_id": "provider",
+            "model_id": "model",
+            "endpoint_id": "provider.open_ai_chat",
+            "dialect": "open_ai_chat",
+        }]);
+        assert!(
+            serde_json::from_value::<Vec<ExecutableModelOption>>(incomplete).is_err(),
+            "E3"
+        );
     }
 
     #[test]
