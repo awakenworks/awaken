@@ -17,7 +17,7 @@ import {
 const packageRoot = process.env.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
 assert.ok(packageRoot, 'ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT is required');
 const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'));
-const { default: Anthropic } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
+const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
 
 await withRealServer('echo', 38190, async (baseURL) => {
   // Cause/effect graph: C0=Session Event send returns one exact durable
@@ -72,7 +72,39 @@ await withRealServer('echo', 38190, async (baseURL) => {
   await client.beta.memoryStores.archive(store.id);
   await client.beta.memoryStores.delete(store.id);
 
-  pass(`registry SDK ${manifest.version} runs Session and Memory defaults`);
+  // Cause/effect graph: C3=0.120 exposes GA Files and Skills outside `beta`;
+  // C4=both project the existing FileCatalog/SkillStore; C5=GA Files expiry and
+  // ids[] pagination, and GA Skill source/latest-version fields differ from beta.
+  // Effects: E3 generated GA paths run without a beta header, E4 exact GA DTOs
+  // decode, E5 the same created ids remain visible through their one repository.
+  // Decision table: R3 C3+C4+C5 -> create/list/retrieve/delete both families;
+  // any accidental beta projection, missing expiry, or duplicate store fails.
+  const file = await client.files.upload({
+    file: await toFile(Buffer.from(manifest.version), 'latest.txt'),
+    expires_in_seconds: 3600,
+  });
+  assert.equal(file.type, 'file', 'R3/E3');
+  assert.equal(typeof file.expires_at, 'string', 'R3/E4 expiry');
+  const files = await client.files.list({ ids: [file.id, 'file_missing'] });
+  assert.deepEqual(files.data.map((item) => item.id), [file.id], 'R3/E5 ids[]');
+  assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id);
+  await client.files.delete(file.id);
+
+  const skill = await client.skills.create({
+    display_name: `Latest ${manifest.version}`,
+    files: [await toFile(
+      Buffer.from(`---\nname: latest-skill\ndescription: SDK ${manifest.version}\n---\n`),
+      'latest-skill/SKILL.md',
+    )],
+  });
+  assert.equal(skill.source.type, 'custom', 'R3/E4 source object');
+  assert.equal(typeof skill.latest_version_id, 'string', 'R3/E4 version id');
+  assert.equal((await client.skills.retrieve(skill.id)).id, skill.id);
+  const skillPage = await client.skills.list({ source: 'custom' });
+  assert.ok(skillPage.data.some((item) => item.id === skill.id), 'R3/E5 Skill list');
+  await client.skills.delete(skill.id);
+
+  pass(`registry SDK ${manifest.version} runs Session, Memory, GA Files and GA Skills defaults`);
 });
 
 // UserProfiles is Control-owned and intentionally absent from the echo runtime
@@ -96,7 +128,9 @@ await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
   });
   assert.equal(profile.access_type, 'application');
   assert.equal(profile.relationship, 'external');
-  assert.equal((await client.beta.userProfiles.retrieve(profile.id)).id, profile.id);
+  const response = await client.beta.userProfiles.retrieve(profile.id).withResponse();
+  assert.equal(response.data.id, profile.id);
+  assert.equal(typeof response.workspace_id, 'string', '0.120 workspace response header');
   pass(`registry SDK ${manifest.version} runs UserProfile default beta`);
 });
 

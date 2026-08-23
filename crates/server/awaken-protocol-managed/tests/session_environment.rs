@@ -106,7 +106,7 @@ async fn app() -> (Router, String) {
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "session-environment-test".into(),
             name: "Custom".into(),
-            description: String::new(),
+            description: None,
             metadata: Default::default(),
             scope: None,
             config: awaken_environment_contract::EnvironmentConfig::SelfHosted,

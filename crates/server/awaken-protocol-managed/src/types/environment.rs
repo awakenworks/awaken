@@ -152,8 +152,8 @@ pub struct EnvironmentCreateParams {
 }
 
 /// `EnvironmentUpdateParams` — a partial update. `name` / `description` / `config`
-/// replace when present; an explicit nullable `description` clear normalizes to
-/// the canonical empty string, while omission preserves the authored value.
+/// replace when present; an explicit nullable `description` clears the value,
+/// while omission preserves the authored value.
 /// `metadata` is a patch where an entry's `null` value removes the key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -234,10 +234,29 @@ impl EnvironmentScope {
 /// `BetaSelfHostedWorkUpdateRequest` — the `POST .../work/:wid` body: a metadata
 /// merge (a string upserts and null deletes the key).
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkUpdateParams {
+    pub metadata: BTreeMap<String, Option<String>>,
+}
+
+/// `BetaSelfHostedWorkStopRequest`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct WorkStopParams {
     #[serde(default)]
-    pub metadata: Option<BTreeMap<String, Option<String>>>,
+    pub force: Option<bool>,
+}
+
+/// `BetaWorkSecret` before base64url encoding into `BetaSelfHostedWork.secret`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct WorkSecret {
+    pub sessions_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base_url: Option<String>,
 }
 
 /// `BetaEnvironment` — where a self-hosted worker runs sessions.
@@ -250,7 +269,7 @@ pub struct Environment {
     pub created_at: String,
     pub updated_at: String,
     pub name: String,
-    pub description: String,
+    pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -269,6 +288,7 @@ pub struct DeletedEnvironment {
 /// environment is seeded with a `healthcheck`; a session assigned to a self-hosted
 /// environment is enqueued as `session` work (its `id` is the session id).
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type")]
 pub enum WorkData {
     #[serde(rename = "healthcheck")]
@@ -277,48 +297,97 @@ pub enum WorkData {
     Session { id: String },
 }
 
-/// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` (a lease
-/// token) is always `null` here (no lease secret is minted).
+/// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` is
+/// populated only by the claim/poll projection and remains null on list/retrieve.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkState {
+    Queued,
+    Starting,
+    Active,
+    Stopping,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum WorkObjectType {
+    #[serde(rename = "work")]
+    Work,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum WorkQueueStatsObjectType {
+    #[serde(rename = "work_queue_stats")]
+    WorkQueueStats,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum WorkHeartbeatObjectType {
+    #[serde(rename = "work_heartbeat")]
+    WorkHeartbeat,
+}
+
+/// A response field that is required on the wire while its value may be JSON
+/// `null`. Keeping this distinct from `Option<T>` prevents generated schemas
+/// from confusing Anthropic's `field: T | null` with `field?: T | null`.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(inline))]
+#[serde(transparent)]
+pub struct RequiredNullable<T>(pub Option<T>);
+
+impl<T> From<Option<T>> for RequiredNullable<T> {
+    fn from(value: Option<T>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Work {
     pub id: String,
     #[serde(rename = "type")]
-    pub object_type: &'static str,
+    pub object_type: WorkObjectType,
     pub environment_id: String,
     pub data: WorkData,
     pub metadata: BTreeMap<String, String>,
-    /// `queued` | `starting` | `active` | `stopping` | `stopped`.
-    pub state: &'static str,
-    pub secret: Option<String>,
-    pub acknowledged_at: Option<String>,
-    pub latest_heartbeat_at: Option<String>,
+    pub state: WorkState,
+    pub secret: RequiredNullable<String>,
+    pub acknowledged_at: RequiredNullable<String>,
+    pub latest_heartbeat_at: RequiredNullable<String>,
     pub created_at: String,
-    pub started_at: Option<String>,
-    pub stop_requested_at: Option<String>,
-    pub stopped_at: Option<String>,
+    pub started_at: RequiredNullable<String>,
+    pub stop_requested_at: RequiredNullable<String>,
+    pub stopped_at: RequiredNullable<String>,
 }
 
 /// `BetaSelfHostedWorkQueueStats` — the queue's depth + pending count
 /// (`GET .../work/stats`).
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkQueueStats {
     #[serde(rename = "type")]
-    pub object_type: &'static str,
+    pub object_type: WorkQueueStatsObjectType,
     pub depth: usize,
     pub pending: usize,
-    pub oldest_queued_at: Option<String>,
-    pub workers_polling: i64,
+    pub oldest_queued_at: RequiredNullable<String>,
+    pub workers_polling: RequiredNullable<i64>,
 }
 
 /// `BetaSelfHostedWorkHeartbeatResponse` — the heartbeat receipt
 /// (`POST .../work/:wid/heartbeat`): lease extended + TTL.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkHeartbeat {
     #[serde(rename = "type")]
-    pub object_type: &'static str,
+    pub object_type: WorkHeartbeatObjectType,
     pub last_heartbeat: String,
     pub lease_extended: bool,
-    pub state: &'static str,
+    pub state: WorkState,
     pub ttl_seconds: u64,
 }
 
@@ -379,7 +448,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             name: "browser".into(),
-            description: "managed environment".into(),
+            description: Some("managed environment".into()),
             metadata: BTreeMap::new(),
             scope: Some("organization".into()),
             config: awaken_environment_contract::EnvironmentConfig::Cloud {

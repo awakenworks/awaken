@@ -380,7 +380,7 @@ mod tests {
                 id: environment_id.into(),
                 revision: EnvironmentRevision(1),
                 name: "browser".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config,
@@ -627,7 +627,7 @@ mod tests {
             .create(CreateEnvironmentCommand {
                 command_id: "full-environment-flow".into(),
                 name: "browser".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::Cloud {

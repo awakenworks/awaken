@@ -1,4 +1,5 @@
-// Compatibility gate for the oldest supported and current Anthropic SDKs.
+// Compatibility gate for the oldest supported, prior reviewed, and current
+// Anthropic SDKs.
 // Session calls intentionally send the same official Managed beta. Memory
 // calls intentionally omit `betas`: SDK 0.105 injects the legacy Managed beta
 // while SDK 0.117 injects the replacement Memory beta. The server must expose
@@ -7,6 +8,7 @@
 import assert from 'node:assert/strict';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
+import Anthropic0120 from '@anthropic-ai/sdk-0-120';
 import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38137);
@@ -15,6 +17,7 @@ const MEMORY_BETA = 'agent-memory-2026-07-22';
 const CLIENTS = [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
+  ['0.120.0', Anthropic0120],
 ];
 
 async function drain(items) {
@@ -50,13 +53,20 @@ function assertSdkCapabilityBoundary() {
     ['dreams', 'tunnels'],
     'Dreams and current Tunnels are explicit current-SDK capability boundaries',
   );
+  assert.deepEqual(
+    keys[1],
+    keys[2],
+    '0.120 retains the reviewed 0.117 Beta resource families while adding GA roots',
+  );
   const shared = keys[0].filter((key) => keys[1].includes(key));
   for (const key of shared) {
-    assert.deepEqual(
-      resourceMethods(resources[0][1][key]),
-      resourceMethods(resources[1][1][key]),
-      `${key}: generated method/nested-resource surface differs across supported SDKs`,
-    );
+    for (const [, beta] of resources.slice(1)) {
+      assert.deepEqual(
+        resourceMethods(resources[0][1][key]),
+        resourceMethods(beta[key]),
+        `${key}: generated method/nested-resource surface differs across supported SDKs`,
+      );
+    }
   }
   pass(`${shared.length} shared Beta resource families have identical generated method surfaces`);
   pass('Dreams and Tunnels remain tested as explicit current-SDK-only capabilities');
@@ -364,16 +374,18 @@ async function main() {
     for (const [version, Client] of CLIENTS) {
       memoryShapes.push(await exerciseMemory(version, Client, baseURL, options));
     }
-    assert.deepEqual(
-      memoryShapes[0],
-      memoryShapes[1],
-      'legacy and current Memory SDKs receive one additive response schema',
-    );
-    pass('Memory SDK 0.105.0 and 0.117.1 share response and cursor contracts');
+    for (const shape of memoryShapes.slice(1)) {
+      assert.deepEqual(
+        memoryShapes[0],
+        shape,
+        'legacy and current Memory SDKs receive one additive response schema',
+      );
+    }
+    pass('Memory SDK 0.105.0, 0.117.1 and 0.120.0 share response and cursor contracts');
   };
   if (remoteBaseURL) await run(remoteBaseURL);
   else await withRealServer('echo', PORT, run);
-  console.log('E2E PASS: Managed Agents supports Anthropic SDK 0.105.0 and 0.117.1 across Managed and Memory beta selectors.');
+  console.log('E2E PASS: Managed Agents supports Anthropic SDK 0.105.0, 0.117.1 and 0.120.0 across Managed and Memory beta selectors.');
 }
 
 main().catch((error) => {

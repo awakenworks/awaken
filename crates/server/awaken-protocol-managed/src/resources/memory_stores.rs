@@ -15,10 +15,12 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, MemErr, Memory, MemoryRepository, MemoryStoreApplicationError,
-    MemoryStoreApplicationService, MemoryStoreDefinition, MemoryVersion, MemoryVersionOperation,
-    ResourceRegistryError, ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
+    CreateMemoryStoreCommand, MemErr, Memory, MemoryActor as DomainMemoryActor, MemoryRepository,
+    MemoryStoreApplicationError, MemoryStoreApplicationService, MemoryStoreDefinition,
+    MemoryVersion, MemoryVersionOperation, ResourceRegistryError, ResourceState,
+    UpdateMemoryStoreCommand, memory_sha256_hex,
 };
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -28,6 +30,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::sessions::ManagedJson;
+use crate::types::memory::{
+    AuthenticatedMemoryActor, MemoryActor, MemoryVersion as MemoryVersionObject,
+    MemoryVersionOperation as MemoryVersionOperationObject,
+};
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 
 fn timestamp(nanos: u128) -> String {
@@ -74,30 +80,6 @@ fn parse_page_query(
         limit,
         page: query.get("page").cloned(),
     })
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum MemoryVersionOperationObject {
-    Created,
-    Modified,
-    Deleted,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct MemoryVersionObject {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    created_at: String,
-    memory_id: String,
-    memory_store_id: String,
-    operation: MemoryVersionOperationObject,
-    content: Option<String>,
-    content_sha256: Option<String>,
-    content_size_bytes: Option<u64>,
-    path: Option<String>,
-    redacted_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -232,9 +214,25 @@ fn project_version(
         MemoryVersionOperation::Modified => MemoryVersionOperationObject::Modified,
         MemoryVersionOperation::Deleted => MemoryVersionOperationObject::Deleted,
     };
+    let actor = |actor: &DomainMemoryActor| match actor {
+        DomainMemoryActor::ApiActor { api_key_id } => MemoryActor::ApiActor {
+            api_key_id: api_key_id.clone(),
+        },
+        DomainMemoryActor::SessionActor { session_id } => MemoryActor::SessionActor {
+            session_id: session_id.clone(),
+        },
+        DomainMemoryActor::UserActor { user_id } => MemoryActor::UserActor {
+            user_id: user_id.clone(),
+        },
+        DomainMemoryActor::ServiceAccountActor { service_account_id } => {
+            MemoryActor::ServiceAccountActor {
+                service_account_id: service_account_id.clone(),
+            }
+        }
+    };
     MemoryVersionObject {
         id: version.id.clone(),
-        kind: "memory_version",
+        kind: crate::types::memory::MemoryVersionObjectType::MemoryVersion,
         created_at: timestamp(version.created_unix_nanos),
         memory_id: version.memory_id.clone(),
         memory_store_id: store_id.to_string(),
@@ -245,8 +243,10 @@ fn project_version(
             .flatten(),
         content_sha256: sha,
         content_size_bytes: size.map(|size| size as u64),
+        created_by: version.created_by.as_ref().map(actor),
         path: Some(version.path.clone()),
         redacted_at: version.redacted_unix_nanos.map(timestamp),
+        redacted_by: version.redacted_by.as_ref().map(actor),
     }
 }
 
@@ -565,6 +565,7 @@ async fn create_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
+    actor: Option<Extension<AuthenticatedMemoryActor>>,
     ManagedJson(body): ManagedJson<MemoryCreateParams>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
@@ -578,7 +579,16 @@ async fn create_memory(
         Err(error) => return application_error(error),
     }
     // The durable path-addressed store is the source of truth for the head.
-    match state.memories.create(&id, &body.path, &content).await {
+    match state
+        .memories
+        .create_as(
+            &id,
+            &body.path,
+            &content,
+            actor.as_ref().map(|actor| &actor.0.0),
+        )
+        .await
+    {
         Ok(mem) => match project_current_memory(&state, &mem, &id, view).await {
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -749,6 +759,7 @@ async fn update_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
     Query(query): Query<std::collections::HashMap<String, String>>,
+    actor: Option<Extension<AuthenticatedMemoryActor>>,
     ManagedJson(body): ManagedJson<MemoryUpdateParams>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
@@ -781,7 +792,14 @@ async fn update_memory(
 
     match state
         .memories
-        .update_head(&id, &mid, &new_content, &base_sha, target_path.as_deref())
+        .update_head_as(
+            &id,
+            &mid,
+            &new_content,
+            &base_sha,
+            target_path.as_deref(),
+            actor.as_ref().map(|actor| &actor.0.0),
+        )
         .await
     {
         Ok(updated) => match project_current_memory(&state, &updated, &id, view).await {
@@ -801,6 +819,7 @@ async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
+    actor: Option<Extension<AuthenticatedMemoryActor>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
@@ -810,7 +829,12 @@ async fn delete_memory(
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
-    if state.memories.delete_by_path(&id, &path).await.is_err() {
+    if state
+        .memories
+        .delete_by_path_as(&id, &path, actor.as_ref().map(|actor| &actor.0.0))
+        .await
+        .is_err()
+    {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "delete failed");
     }
     (
@@ -865,15 +889,19 @@ fn filter_versions(
         .get("created_at[lte]")
         .map(|value| parse_version_time(value, "created_at[lte]"))
         .transpose()?;
-    let actor_filter = query.contains_key("api_key_id")
-        || query.contains_key("session_id")
-        || query.contains_key("service_account_id");
     Ok(versions
         .into_iter()
         .filter(|version| {
             let created_at =
                 i64::try_from(version.created_unix_nanos / 1_000_000_000).unwrap_or(i64::MAX);
-            !actor_filter
+            let actor_matches = query.get("api_key_id").is_none_or(|expected| {
+                matches!(&version.created_by, Some(DomainMemoryActor::ApiActor { api_key_id }) if api_key_id == expected)
+            }) && query.get("session_id").is_none_or(|expected| {
+                matches!(&version.created_by, Some(DomainMemoryActor::SessionActor { session_id }) if session_id == expected)
+            }) && query.get("service_account_id").is_none_or(|expected| {
+                matches!(&version.created_by, Some(DomainMemoryActor::ServiceAccountActor { service_account_id }) if service_account_id == expected)
+            });
+            actor_matches
                 && query
                     .get("memory_id")
                     .is_none_or(|memory_id| memory_id == &version.memory_id)
@@ -958,13 +986,18 @@ async fn redact_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
+    actor: Option<Extension<AuthenticatedMemoryActor>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    match state.memories.redact_version(&id, &vid).await {
+    match state
+        .memories
+        .redact_version_as(&id, &vid, actor.as_ref().map(|actor| &actor.0.0))
+        .await
+    {
         Ok(Some(version)) => {
             return (
                 StatusCode::OK,

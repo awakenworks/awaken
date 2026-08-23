@@ -190,7 +190,7 @@ mod tests {
                 id: "env-browser".into(),
                 revision: EnvironmentRevision(1),
                 name: "browser".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::Cloud {

@@ -182,6 +182,10 @@ pub struct FileRecord {
     pub mime_type: String,
     pub size_bytes: u64,
     pub created_at: String,
+    /// RFC 3339 download-expiry instant. Metadata remains visible after expiry;
+    /// immutable bytes are no longer served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
     pub downloadable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_id: Option<String>,
@@ -284,13 +288,25 @@ pub trait FileApplicationService: Send + Sync {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, ResourcePurgeError>;
 
+    async fn create_uploaded_file_with_expiry(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        expires_at: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError>;
+
     async fn create_uploaded_file(
         &self,
         workspace_id: &str,
         filename: String,
         mime_type: String,
         bytes: &[u8],
-    ) -> Result<FileRecord, ResourcePurgeError>;
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.create_uploaded_file_with_expiry(workspace_id, filename, mime_type, bytes, None)
+            .await
+    }
 
     async fn create_generated_file(
         &self,
@@ -633,6 +649,18 @@ pub enum MemoryVersionOperation {
     Deleted,
 }
 
+/// Neutral attribution captured on a Memory version mutation. Protocol adapters
+/// lower authenticated identities into one of these variants; repositories do
+/// not infer actors from paths or credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MemoryActor {
+    ApiActor { api_key_id: String },
+    SessionActor { session_id: String },
+    UserActor { user_id: String },
+    ServiceAccountActor { service_account_id: String },
+}
+
 /// One immutable audit/version row emitted by the same repository transaction
 /// that mutates the live memory head. Redaction removes only the historical
 /// content; it never rewrites the live head.
@@ -646,7 +674,11 @@ pub struct MemoryVersion {
     pub content: Option<String>,
     pub created_unix_nanos: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<MemoryActor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redacted_unix_nanos: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted_by: Option<MemoryActor>,
 }
 
 /// Idempotent whole-store physical reclamation result.
@@ -715,6 +747,17 @@ pub trait MemoryRepository: Send + Sync {
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
     /// Create a memory at `path`. `PathConflict` if it already exists.
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
+    /// The canonical create mutation with optional authenticated attribution.
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        let _ = actor;
+        self.create(store, path, content).await
+    }
     /// Atomically compare-and-swap the head of memory `id`, optionally moving it to
     /// `target_path` in the same repository operation. Content, path, displaced-target
     /// deletion, and history either all commit or all roll back. A stale `base_sha`
@@ -728,6 +771,20 @@ pub trait MemoryRepository: Send + Sync {
         base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr>;
+    /// The canonical CAS mutation with optional authenticated attribution.
+    async fn update_head_as(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        let _ = actor;
+        self.update_head(store, id, content, base_sha, target_path)
+            .await
+    }
     /// Content-only convenience over [`MemoryRepository::update_head`].
     async fn update(
         &self,
@@ -744,6 +801,16 @@ pub trait MemoryRepository: Send + Sync {
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
     /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
+    /// The canonical path delete with optional authenticated attribution.
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        let _ = actor;
+        self.delete_by_path(store, path).await
+    }
     /// Delete `path` only while it is still the exact head observed by a caller.
     /// Returns `false` when the path is already absent (the requested outcome is
     /// already true). A different id or sha returns [`MemErr::Conflict`] carrying
@@ -765,6 +832,16 @@ pub trait MemoryRepository: Send + Sync {
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr>;
+    /// The canonical redaction with optional authenticated attribution.
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        let _ = actor;
+        self.redact_version(store, version_id).await
+    }
     /// Physically remove every live head and immutable history row in `store`.
     /// The lifecycle reclaimer calls this only after tombstone, retention,
     /// activation and extraction guards pass. Repeated calls return zero counts.

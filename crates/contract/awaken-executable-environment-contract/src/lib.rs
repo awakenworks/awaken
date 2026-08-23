@@ -170,7 +170,7 @@ mod tests {
             id: "env-a".into(),
             revision: EnvironmentRevision(2),
             name: "A".into(),
-            description: String::new(),
+            description: None,
             metadata: Default::default(),
             scope: None,
             config: EnvironmentConfig::SelfHosted,

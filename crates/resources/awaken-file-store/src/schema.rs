@@ -55,6 +55,11 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                  CREATE INDEX {prefix}_file_scope \
                  ON {prefix}_file(workspace_id, scope_id, created_at, id)",
             )?,
+            Migration::new(
+                3,
+                "optional GA Files download expiry",
+                "ALTER TABLE {prefix}_file ADD COLUMN expires_at TEXT",
+            )?,
         ],
     )
 }

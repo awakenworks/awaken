@@ -167,6 +167,7 @@ mod tests {
                     mime_type: "text/plain".into(),
                     size_bytes: 1,
                     created_at: "2026-01-01T00:00:00Z".into(),
+                    expires_at: None,
                     downloadable: true,
                     scope_id: None,
                     logical_path: None,

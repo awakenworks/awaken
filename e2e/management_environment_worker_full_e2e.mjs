@@ -8,12 +8,25 @@
 //   W2 handleItem(explicit)-> no second claim; same per-item effects
 //   W3 handleItem(env)     -> ANTHROPIC_* fallback has the same effects
 //   W4 missing field       -> AnthropicError before any network side effect
-//   W5 abort               -> in-flight helper unwinds and force-stops
+//   W5 pinned Skill        -> exact version download and cleanup
+//   W6 abort               -> in-flight helper unwinds and force-stops
+//   W7 stop failure        -> completed helper result survives; lease stays retryable
+//   W8 memory + secret     -> download, local edit, final sync, directory cleanup
 
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
@@ -51,7 +64,7 @@ function instrumentedTool(counters) {
   });
 }
 
-async function createClaimableSession(client, name, agent = 'assistant') {
+async function createClaimableSession(client, name, agent = 'assistant', resources = undefined) {
   const environment = await client.beta.environments.create({
     name: `${name}-environment`,
     config: { type: 'self_hosted' },
@@ -69,6 +82,7 @@ async function createClaimableSession(client, name, agent = 'assistant') {
   const session = await client.beta.sessions.create({
     agent,
     environment_id: environment.id,
+    ...(resources === undefined ? {} : { resources }),
     betas: BETAS,
   });
   return { environment, session };
@@ -434,6 +448,91 @@ async function main() {
       pass('W7 force-stop failure is non-masking and leaves authority available for retry');
     }
 
+    // W8 cause/effect rule: C1=attached read-write MemoryStore; C2=claimed
+    // Work carries the SDK-defined secret; C3=remote seed; C4=local edit.
+    // C1&&!C2 => official helper refuses an amnesiac mount (SDK-owned negative
+    // test); C1+C2+C3 => E1 download before tools factory; +C4 => E2 final CAS
+    // sync and E3 owned mount cleanup. This rule proves our WorkSecret and
+    // Session projection drive the unmodified 0.120 helper end to end.
+    {
+      const management = spawnServer('management', PORT + 2);
+      try {
+        await waitForPort(PORT + 2, 900_000, management.server);
+        const managementClient = new Anthropic({
+          apiKey: 'e2e-dummy',
+          baseURL: management.baseUrl,
+        });
+        const store = await managementClient.beta.memoryStores.create({
+          name: `worker-memory-${Date.now()}`,
+          betas: ['agent-memory-2026-07-22'],
+        });
+        const seeded = await managementClient.beta.memoryStores.memories.create(store.id, {
+          path: '/notes.md',
+          content: 'REMOTE_MEMORY_SEED',
+          betas: ['agent-memory-2026-07-22'],
+        });
+        const { environment, session } = await createClaimableSession(
+          managementClient,
+          'worker-memory-secret',
+          'assistant',
+          [{ type: 'memory_store', memory_store_id: store.id, access: 'read_write' }],
+        );
+        const environmentClient = new Anthropic({
+          authToken: 'e2e-env-key', // awaken-allow: secret
+          baseURL: management.baseUrl,
+        });
+        const work = await environmentClient.beta.environments.work.poll(environment.id, {
+          betas: BETAS,
+        });
+        assert.equal(work?.data.id, session.id);
+        assert.equal(typeof work.secret, 'string', 'poll projection carries BetaWorkSecret');
+        await environmentClient.beta.environments.work.ack(work.id, {
+          environment_id: environment.id,
+          betas: BETAS,
+        });
+
+        let mountedRoot;
+        await managementClient.beta.environments.work.worker({
+          workdir,
+          tools: (ctx) => {
+            assert.equal(ctx.allowedRoots?.length, 1, 'one attached store exposes one root');
+            [mountedRoot] = ctx.allowedRoots;
+            assert.equal(
+              readFileSync(join(mountedRoot, 'notes.md'), 'utf8'),
+              'REMOTE_MEMORY_SEED',
+              'remote memory is present before tool construction',
+            );
+            writeFileSync(join(mountedRoot, 'notes.md'), 'UPDATED_BY_OFFICIAL_WORKER');
+            return [];
+          },
+          maxIdleMs: 50,
+          memorySyncIntervalMs: 5_000,
+        }).handleItem({
+          workId: work.id,
+          environmentId: environment.id,
+          sessionId: session.id,
+          environmentKey: 'e2e-env-key',
+          workSecret: work.secret,
+          signal: AbortSignal.timeout(500),
+        });
+
+        const synced = await managementClient.beta.memoryStores.memories.retrieve(seeded.id, {
+          memory_store_id: store.id,
+          view: 'full',
+          betas: ['agent-memory-2026-07-22'],
+        });
+        assert.equal(synced.content, 'UPDATED_BY_OFFICIAL_WORKER');
+        assert.equal(existsSync(mountedRoot), false, 'SDK-owned memory mount is disposed');
+        assert.equal((await managementClient.beta.environments.work.retrieve(work.id, {
+          environment_id: environment.id,
+          betas: BETAS,
+        })).state, 'stopped');
+        pass('W8 WorkSecret drives official MemoryStore download, sync, and cleanup');
+      } finally {
+        await stopServer(management.server);
+      }
+    }
+
     assert.deepEqual(
       readdirSync(join(workdir, 'skills')),
       [],
@@ -450,4 +549,33 @@ async function main() {
   }
 }
 
-main();
+// The 0.120 response contract deliberately returns sandbox-absolute MemoryStore
+// paths under /mnt/memory. Re-exec this fixture in the same bubblewrap shape as
+// Awaken's Namespace sandbox so the test proves that exact path instead of
+// weakening the projection for an unprivileged host checkout.
+if (process.env.AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE === '1') {
+  main();
+} else {
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const targetDir = join(repositoryRoot, 'target');
+  const result = spawnSync('bwrap', [
+    '--unshare-user',
+    '--uid', '0',
+    '--gid', '0',
+    '--ro-bind', '/', '/',
+    '--bind', targetDir, targetDir,
+    '--dev-bind', '/dev', '/dev',
+    '--proc', '/proc',
+    '--tmpfs', '/tmp',
+    '--tmpfs', '/mnt',
+    '--dir', '/mnt/memory',
+    '--', process.execPath, fileURLToPath(import.meta.url),
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE: '1' },
+    stdio: 'inherit',
+  });
+  if (result.error) throw result.error;
+  if (result.signal) throw new Error(`managed worker fixture terminated by ${result.signal}`);
+  process.exitCode = result.status ?? 1;
+}

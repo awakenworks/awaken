@@ -10,6 +10,17 @@
 
 use std::sync::Arc;
 
+use crate::common::scope::RequiredWorkspaceScope;
+use crate::resources::flavor::{
+    ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
+};
+use crate::types::skill::{
+    BetaSkill, BetaSkillListParams, BetaSkillVersion, BetaSkillVersionListParams, DeletedSkill,
+    DeletedSkillObjectType, DeletedSkillVersion, DeletedSkillVersionObjectType, Skill,
+    SkillListParams, SkillObjectType, SkillSource, SkillVersion as SkillVersionDto,
+    SkillVersionListParams, SkillVersionObjectType, SkillVersionWire, SkillWire,
+};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_resource_application::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, UploadedSkillBundleFile,
     canonicalize_skill_bundle, normalize_bundle_path,
@@ -18,15 +29,13 @@ use awaken_resource_contract::{
     ResourceKind, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
     skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
 
-use crate::common::scope::RequiredWorkspaceScope;
-use crate::types::{ErrorResponse, PageCursor};
+const SKILLS_BETA: &str = "skills-2025-10-02";
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -39,60 +48,56 @@ fn timestamp(nanos: u64) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(nanos / 1_000_000)
 }
 
-#[derive(Debug, Serialize)]
-struct SkillObject<'a> {
-    id: &'a str,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    created_at: String,
-    updated_at: String,
-    display_title: Option<&'a str>,
-    latest_version: Option<String>,
-    source: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct SkillVersionObject {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    created_at: String,
-    description: String,
-    directory: String,
-    name: String,
-    skill_id: String,
-    version: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DeletedSkill {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
-
-fn project_definition(definition: &SkillDefinition) -> SkillObject<'_> {
-    SkillObject {
-        id: definition.id.as_str(),
-        kind: "skill",
-        created_at: timestamp(definition.timestamps.created_unix_nanos),
-        updated_at: timestamp(definition.timestamps.updated_unix_nanos),
-        display_title: definition.display_title.as_deref(),
-        latest_version: Some(definition.latest_version.to_string()),
-        source: "custom",
+fn project_definition(
+    definition: &SkillDefinition,
+    latest: &SkillVersion,
+    flavor: ManagedResourceApiFlavor,
+) -> SkillWire {
+    match flavor {
+        ManagedResourceApiFlavor::Beta => SkillWire::Beta(BetaSkill {
+            id: definition.id.to_string(),
+            kind: SkillObjectType::Skill,
+            created_at: timestamp(definition.timestamps.created_unix_nanos),
+            updated_at: timestamp(definition.timestamps.updated_unix_nanos),
+            display_title: definition.display_title.clone(),
+            latest_version: Some(definition.latest_version.to_string()),
+            source: "custom",
+        }),
+        ManagedResourceApiFlavor::Ga => SkillWire::Ga(Skill {
+            id: definition.id.to_string(),
+            kind: SkillObjectType::Skill,
+            created_at: timestamp(definition.timestamps.created_unix_nanos),
+            updated_at: timestamp(definition.timestamps.updated_unix_nanos),
+            display_name: definition
+                .display_title
+                .clone()
+                .unwrap_or_else(|| latest.name.clone()),
+            latest_version_id: latest.id.to_string(),
+            source: SkillSource::Custom,
+        }),
     }
 }
 
-fn project_version(version: &SkillVersion) -> SkillVersionObject {
-    SkillVersionObject {
-        id: version.id.to_string(),
-        kind: "skill_version",
-        created_at: timestamp(version.created_unix_nanos),
-        description: version.description.clone(),
-        directory: version.directory.clone(),
-        name: version.name.clone(),
-        skill_id: version.skill_id.to_string(),
-        version: version.version.to_string(),
+fn project_version(version: &SkillVersion, flavor: ManagedResourceApiFlavor) -> SkillVersionWire {
+    match flavor {
+        ManagedResourceApiFlavor::Beta => SkillVersionWire::Beta(BetaSkillVersion {
+            id: version.id.to_string(),
+            kind: SkillVersionObjectType::SkillVersion,
+            created_at: timestamp(version.created_unix_nanos),
+            description: version.description.clone(),
+            directory: version.directory.clone(),
+            name: version.name.clone(),
+            skill_id: version.skill_id.to_string(),
+            version: version.version.to_string(),
+        }),
+        ManagedResourceApiFlavor::Ga => SkillVersionWire::Ga(SkillVersionDto {
+            id: version.id.to_string(),
+            kind: SkillVersionObjectType::SkillVersion,
+            created_at: timestamp(version.created_unix_nanos),
+            description: version.description.clone(),
+            name: version.name.clone(),
+            skill_id: version.skill_id.to_string(),
+        }),
     }
 }
 
@@ -234,7 +239,10 @@ async fn read_multipart(
                 content: bytes.to_vec(),
                 executable: false,
             });
-        } else if name.as_deref() == Some("display_title") {
+        } else if matches!(name.as_deref(), Some("display_title" | "display_name")) {
+            if display_title.is_some() {
+                return Err("display_name/display_title may be supplied only once".into());
+            }
             display_title = Some(field.text().await.map_err(|error| error.to_string())?);
         } else if name.as_deref() == Some("executable_paths") {
             if executable_paths.is_some() {
@@ -335,8 +343,14 @@ fn store_error(error: SkillStoreError) -> axum::response::Response {
 async fn create_skill(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     let (display_title, files) = match read_multipart(multipart).await {
         Ok(upload) => upload,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
@@ -362,6 +376,7 @@ async fn create_skill(
             version.created_unix_nanos,
         ),
     };
+    let projected = project_definition(&definition, &version, flavor);
     let Some(result) = state.create(definition.clone(), version).await else {
         return err(
             StatusCode::CONFLICT,
@@ -369,7 +384,7 @@ async fn create_skill(
         );
     };
     match result {
-        Ok(()) => (StatusCode::OK, Json(project_definition(&definition))).into_response(),
+        Ok(()) => (StatusCode::OK, Json(projected)).into_response(),
         Err(error) => store_error(error),
     }
 }
@@ -381,27 +396,114 @@ async fn create_skill(
 async fn list_skills(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
+    let (page, source) = match flavor {
+        ManagedResourceApiFlavor::Beta => {
+            match serde_urlencoded::from_str::<BetaSkillListParams>(&without_beta_selector(
+                raw.as_deref(),
+            )) {
+                Ok(query) => (
+                    PageQuery {
+                        page: query.page,
+                        limit: query.limit.map(usize::from),
+                    },
+                    query.source,
+                ),
+                Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+            }
+        }
+        ManagedResourceApiFlavor::Ga => {
+            match serde_urlencoded::from_str::<SkillListParams>(raw.as_deref().unwrap_or_default())
+            {
+                Ok(query) => (
+                    PageQuery {
+                        page: query.page,
+                        limit: query.limit.map(usize::from),
+                    },
+                    query.source,
+                ),
+                Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+            }
+        }
+    };
+    if source
+        .as_deref()
+        .is_some_and(|source| !matches!(source, "custom" | "anthropic"))
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "source must be `custom` or `anthropic`",
+        );
+    }
     let definitions = match state.definitions(&workspace).await {
         Ok(definitions) => definitions,
         Err(error) => return store_error(error),
     };
-    let data = definitions
-        .iter()
-        .map(project_definition)
-        .collect::<Vec<_>>();
-    (StatusCode::OK, Json(PageCursor::single(data))).into_response()
+    if source.as_deref() == Some("anthropic") {
+        return (
+            StatusCode::OK,
+            Json(PageCursor::<SkillWire>::single(Vec::new())),
+        )
+            .into_response();
+    }
+    let mut data = Vec::with_capacity(definitions.len());
+    for definition in &definitions {
+        let versions = match state.versions(&workspace, definition.id.as_str()).await {
+            Some(Ok(versions)) => versions,
+            Some(Err(error)) => return store_error(error),
+            None => Vec::new(),
+        };
+        let Some(latest) = versions
+            .iter()
+            .find(|version| version.version == definition.latest_version)
+        else {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "skill latest version is missing",
+            );
+        };
+        data.push(project_definition(definition, latest, flavor));
+    }
+    (
+        StatusCode::OK,
+        Json(paginate(data, &page, |skill| match skill {
+            SkillWire::Beta(skill) => skill.id.as_str(),
+            SkillWire::Ga(skill) => skill.id.as_str(),
+        })),
+    )
+        .into_response()
 }
 
 async fn retrieve_skill(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     match state.definition(&workspace, &id).await {
-        Some(Ok(Some(definition))) => {
-            (StatusCode::OK, Json(project_definition(&definition))).into_response()
-        }
+        Some(Ok(Some(definition))) => match find_version(&state, &workspace, &id, "latest").await {
+            Ok(Some(latest)) => (
+                StatusCode::OK,
+                Json(project_definition(&definition, &latest, flavor)),
+            )
+                .into_response(),
+            Ok(None) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "skill latest version is missing",
+            ),
+            Err(error) => store_error(error),
+        },
         Some(Err(error)) => store_error(error),
         None => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),
         Some(Ok(None)) => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),
@@ -412,7 +514,12 @@ async fn delete_skill(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        return err(StatusCode::BAD_REQUEST, message);
+    }
     let definition = match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
         Some(Err(error)) => return store_error(error),
@@ -441,7 +548,7 @@ async fn delete_skill(
             StatusCode::OK,
             Json(DeletedSkill {
                 id,
-                kind: "skill_deleted",
+                kind: DeletedSkillObjectType::SkillDeleted,
             }),
         )
             .into_response(),
@@ -457,8 +564,13 @@ async fn create_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
+    RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     let definition = match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
         Some(Err(error)) => return store_error(error),
@@ -493,7 +605,7 @@ async fn create_version(
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
     let version = build_version(&id, &content, definition.last_version + 1, bundle);
-    let projected = project_version(&version);
+    let projected = project_version(&version, flavor);
     match state.append_version(&workspace, &id, version).await {
         Some(Ok(())) => (StatusCode::OK, Json(projected)).into_response(),
         Some(Err(error)) => store_error(error),
@@ -508,11 +620,47 @@ async fn list_versions(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
+    let page = match flavor {
+        ManagedResourceApiFlavor::Beta => serde_urlencoded::from_str::<BetaSkillVersionListParams>(
+            &without_beta_selector(raw.as_deref()),
+        )
+        .map(|query| PageQuery {
+            page: query.page,
+            limit: query.limit.map(usize::from),
+        }),
+        ManagedResourceApiFlavor::Ga => {
+            serde_urlencoded::from_str::<SkillVersionListParams>(raw.as_deref().unwrap_or_default())
+                .map(|query| PageQuery {
+                    page: query.page,
+                    limit: query.limit.map(usize::from),
+                })
+        }
+    };
+    let page = match page {
+        Ok(page) => page,
+        Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+    };
     match state.versions(&workspace, &id).await {
         Some(Ok(versions)) if !versions.is_empty() => {
-            let data: Vec<_> = versions.iter().map(project_version).collect();
-            (StatusCode::OK, Json(PageCursor::single(data))).into_response()
+            let data: Vec<_> = versions
+                .iter()
+                .map(|version| project_version(version, flavor))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(paginate(data, &page, |version| match version {
+                    SkillVersionWire::Beta(version) => version.id.as_str(),
+                    SkillVersionWire::Ga(version) => version.id.as_str(),
+                })),
+            )
+                .into_response()
         }
         Some(Err(error)) => store_error(error),
         Some(Ok(_)) | None => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),
@@ -541,9 +689,17 @@ async fn retrieve_version(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(flavor) => flavor,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     match find_version(&state, &workspace, &id, &version).await {
-        Ok(Some(version)) => (StatusCode::OK, Json(project_version(&version))).into_response(),
+        Ok(Some(version)) => {
+            (StatusCode::OK, Json(project_version(&version, flavor))).into_response()
+        }
         Ok(None) => err(StatusCode::NOT_FOUND, "skill version not found"),
         Err(error) => store_error(error),
     }
@@ -553,7 +709,12 @@ async fn delete_version(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        return err(StatusCode::BAD_REQUEST, message);
+    }
     let found = match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => version,
         Ok(None) => return err(StatusCode::NOT_FOUND, "skill version not found"),
@@ -562,9 +723,9 @@ async fn delete_version(
     match state.delete_version(&workspace, &id, found.version).await {
         Some(Ok(true)) => (
             StatusCode::OK,
-            Json(DeletedSkill {
+            Json(DeletedSkillVersion {
                 id: found.id.to_string(),
-                kind: "skill_version_deleted",
+                kind: DeletedSkillVersionObjectType::SkillVersionDeleted,
             }),
         )
             .into_response(),
@@ -604,7 +765,16 @@ async fn version_content(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(ManagedResourceApiFlavor::Beta) => {}
+        Ok(ManagedResourceApiFlavor::Ga) => {
+            return err(StatusCode::NOT_FOUND, "GA Skills has no content endpoint");
+        }
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    }
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => match version_archive(&version) {
             Ok(content) => {
@@ -632,7 +802,16 @@ async fn version_file(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version, path)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+        Ok(ManagedResourceApiFlavor::Beta) => {}
+        Ok(ManagedResourceApiFlavor::Ga) => {
+            return err(StatusCode::NOT_FOUND, "GA Skills has no file endpoint");
+        }
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    }
     let normalized = match normalize_bundle_path(&path) {
         Ok(path) => path,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
@@ -670,8 +849,6 @@ mod tests {
             last_version: 2,
             timestamps: awaken_resource_contract::ResourceTimestamps::created(1_000_000),
         };
-        let skill = serde_json::to_value(project_definition(&definition)).unwrap();
-        assert_eq!(skill.as_object().unwrap().len(), 7, "S1");
         let version = SkillVersion {
             id: "skver_1".into(),
             skill_id: "skill_1".into(),
@@ -683,12 +860,35 @@ mod tests {
             files: Vec::new(),
             created_unix_nanos: 1_000_000,
         };
-        let version = serde_json::to_value(project_version(&version)).unwrap();
-        assert_eq!(version.as_object().unwrap().len(), 8, "S2");
-        assert!(version.get("files").is_none(), "S2 no extension fields");
+        let beta_skill = serde_json::to_value(project_definition(
+            &definition,
+            &version,
+            ManagedResourceApiFlavor::Beta,
+        ))
+        .unwrap();
+        assert_eq!(beta_skill.as_object().unwrap().len(), 7, "S1 beta");
+        let ga_skill = serde_json::to_value(project_definition(
+            &definition,
+            &version,
+            ManagedResourceApiFlavor::Ga,
+        ))
+        .unwrap();
+        assert_eq!(ga_skill.as_object().unwrap().len(), 7, "S1 GA");
+        assert!(ga_skill["source"].is_object(), "S1 GA source object");
+        assert_eq!(ga_skill["latest_version_id"], "skver_1", "S1 GA");
+
+        let beta_version =
+            serde_json::to_value(project_version(&version, ManagedResourceApiFlavor::Beta))
+                .unwrap();
+        assert_eq!(beta_version.as_object().unwrap().len(), 8, "S2 beta");
+        let ga_version =
+            serde_json::to_value(project_version(&version, ManagedResourceApiFlavor::Ga)).unwrap();
+        assert_eq!(ga_version.as_object().unwrap().len(), 6, "S2 GA");
+        assert!(ga_version.get("directory").is_none(), "S2 no beta fields");
+        assert!(ga_version.get("files").is_none(), "S2 no extension fields");
         let deleted = serde_json::to_value(DeletedSkill {
             id: "skill_1".into(),
-            kind: "skill_deleted",
+            kind: DeletedSkillObjectType::SkillDeleted,
         })
         .unwrap();
         assert_eq!(deleted.as_object().unwrap().len(), 2, "S3");
@@ -718,6 +918,24 @@ mod tests {
 
     async fn get_in(router: &Router, uri: &str, workspace: &str) -> (StatusCode, String) {
         let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope(workspace.to_string()));
+        let resp = router.clone().oneshot(request).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    async fn get_beta_in(router: &Router, uri: &str, workspace: &str) -> (StatusCode, String) {
+        let separator = if uri.contains('?') { '&' } else { '?' };
+        let mut request = Request::builder()
+            .uri(format!("{uri}{separator}beta=true"))
+            .header("anthropic-beta", SKILLS_BETA)
+            .body(Body::empty())
+            .unwrap();
         request
             .extensions_mut()
             .insert(WorkspaceScope(workspace.to_string()));
@@ -816,7 +1034,7 @@ mod tests {
         let (status, _) = get_in(&router, &format!("/v1/skills/{cid}"), &workspace).await;
         assert_eq!(status, StatusCode::OK, "catalog id retrieves the skill");
         // …and `version: "latest"` downloads its content (what the worker fetches).
-        let (status, body) = get_in(
+        let (status, body) = get_beta_in(
             &router,
             &format!("/v1/skills/{cid}/versions/latest/content"),
             &workspace,

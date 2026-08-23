@@ -140,11 +140,14 @@ mod clock;
 mod credentials;
 mod entitlement;
 mod local_browser;
+mod managed_context;
 mod profiles;
 use credentials::{
     authorization_bearer_token, bearer_token, is_legacy_tunnel_route, is_tunnel_route,
     query_workspace_id,
 };
+pub(crate) use managed_context::fixed_workspace_header_guard;
+use managed_context::{memory_actor, with_workspace_header};
 mod remote;
 
 use bootstrap::bootstrap_admin_token;
@@ -1347,10 +1350,12 @@ pub async fn management_guard(
             // decides (Global binding ⇒ any workspace; workspace binding ⇒
             // that workspace only).
             let mut req = req;
+            req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(AuthedPrincipal(principal));
+            let workspace_id = workspace.0;
             req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace.0));
-            return next.run(req).await;
+                .insert(awaken_tenancy::WorkspaceScope(workspace_id.clone()));
+            return with_workspace_header(next.run(req).await, &workspace_id);
         }
     };
 
@@ -1409,8 +1414,9 @@ pub async fn management_guard(
         authz.authorize_action(principal.clone(), action, target_scope, action_namespace);
     match decision {
         AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(AuthedPrincipal(principal));
-            next.run(req).await
+            with_workspace_header(next.run(req).await, &workspace.0)
         }
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
@@ -1506,10 +1512,11 @@ pub async fn cloud_management_guard(
     };
     match decision {
         AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(principal);
             req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace));
-            next.run(req).await
+                .insert(awaken_tenancy::WorkspaceScope(workspace.clone()));
+            with_workspace_header(next.run(req).await, &workspace)
         }
         AuthorizationDecision::RequireApproval => {
             forbidden(&format!("{denial_detail}; approval is required"))

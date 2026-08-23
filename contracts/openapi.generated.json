@@ -4,6 +4,7 @@
       "AgentInputConfig": {
         "$defs": {
           "AgentEnvironmentBinding": {
+            "additionalProperties": false,
             "properties": {
               "environment_id": {
                 "type": "string"
@@ -110,7 +111,8 @@
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "An Agent's authored default inputs. The repository supplies Workspace as the\naggregate key, so this value contains only Agent-local configuration. The same\ntyped [`InputBinding`] language is used by Session attachments; no authorization\nsubject, policy, API key, secret, content pin, Project, or WorkUnit enters it.",
+        "additionalProperties": false,
+        "description": "An Agent's authored default Environment and Resource inputs. Workspace is\nthe repository aggregate key; this value contains only Agent-local intent.",
         "properties": {
           "agent_id": {
             "type": "string"
@@ -123,8 +125,7 @@
               {
                 "type": "null"
               }
-            ],
-            "description": "Exact Environment revision selected as this Agent's Session default.\nIt is secret-free and shares the same CAS revision as Resource bindings,\nso callers cannot observe a mixed default bundle."
+            ]
           },
           "inputs": {
             "items": {
@@ -330,6 +331,43 @@
           "observed_at_unix_ms"
         ],
         "title": "CatalogSyncResult",
+        "type": "object"
+      },
+      "CloudLoginStatusView": {
+        "$defs": {
+          "CloudLoginState": {
+            "enum": [
+              "sign_in_required",
+              "authorizing",
+              "authenticated",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Secret-free state of the one product-coordinated Cloud login operation.",
+        "properties": {
+          "authorize_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/CloudLoginState"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CloudLoginStatusView",
         "type": "object"
       },
       "ConfigCapabilitiesView": {
@@ -809,6 +847,14 @@
           "adapter_kind": {
             "type": "string"
           },
+          "credential_version": {
+            "description": "Current durable revision for an exact hosted reference validation.\nModel live-probe responses omit it.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "status": {
             "$ref": "#/$defs/ProbeStatus"
           }
@@ -883,6 +929,14 @@
         "properties": {
           "env_key": {
             "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "default": null,
+            "description": "Stable hosted-governance operation identity. When present, `provider_id`\nis required and the exact tuple is the idempotent credential identity.",
             "type": [
               "string",
               "null"
@@ -1075,6 +1129,13 @@
           "ModelTarget": {
             "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
             "properties": {
+              "api_dialect": {
+                "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "endpoint_name": {
                 "type": [
                   "string",
@@ -1241,6 +1302,13 @@
           "ModelTarget": {
             "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
             "properties": {
+              "api_dialect": {
+                "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "endpoint_name": {
                 "type": [
                   "string",
@@ -1404,6 +1472,13 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
         "properties": {
+          "api_dialect": {
+            "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "endpoint_name": {
             "type": [
               "string",
@@ -2605,6 +2680,13 @@
           "ModelTarget": {
             "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
             "properties": {
+              "api_dialect": {
+                "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "endpoint_name": {
                 "type": [
                   "string",
@@ -2747,20 +2829,55 @@
         "type": "object"
       },
       "RotateCredentialRequest": {
+        "$defs": {
+          "CredentialMaterialInput": {
+            "properties": {
+              "fields": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Opaque named secret fields. Core stores and transports them but never\nassign protocol meaning; the matching consumer owns validation.",
+                "type": "object"
+              },
+              "type_id": {
+                "description": "Namespaced, versioned type owned by the installed consumer extension,\nfor example `acme.ssh-key/v1`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type_id",
+              "fields"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Rotate the primary material of one exact active Vault credential revision.\nThe secret is write-only and the response remains a secret-free source view.",
+        "description": "Rotate the primary material of one exact active Vault credential revision.\nScalar or typed material is write-only and the response remains a\nsecret-free source view.",
         "properties": {
           "expected_version": {
             "format": "int64",
             "type": "integer"
           },
+          "material": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CredentialMaterialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "secret": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "expected_version",
-          "secret"
+          "expected_version"
         ],
         "title": "RotateCredentialRequest",
         "type": "object"
@@ -2813,6 +2930,7 @@
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "properties": {
           "base_url": {
             "default": null,
@@ -2912,15 +3030,26 @@
         "description": "Live-validate a credential against a model's resolved provider endpoint.",
         "properties": {
           "model_id": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "default": null,
+            "description": "Generic hosted-governance validation mode. The durable source id is the\npath identity, so this field is mutually exclusive with `model_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "workspace_id": {
             "type": "string"
           }
         },
         "required": [
-          "workspace_id",
-          "model_id"
+          "workspace_id"
         ],
         "title": "ValidateCredentialRequest",
         "type": "object"
@@ -3119,6 +3248,93 @@
         ]
       }
     },
+    "/v1/config/cloud-login": {
+      "delete": {
+        "operationId": "logout_cloud_login",
+        "responses": {
+          "204": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Clear the canonical desktop Cloud credential cache entry",
+        "tags": [
+          "identity"
+        ]
+      },
+      "get": {
+        "operationId": "get_cloud_login",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudLoginStatusView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Read secret-free state for the canonical desktop Cloud login operation",
+        "tags": [
+          "identity"
+        ]
+      },
+      "post": {
+        "operationId": "start_cloud_login",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudLoginStatusView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Start or join the one canonical desktop Cloud login operation",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/v1/config/credential-pools/{id}": {
       "get": {
         "operationId": "get_pool",
@@ -3265,6 +3481,35 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Opaque hosted provider reference; requires idempotency_key",
+            "in": "query",
+            "name": "provider_ref",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable hosted operation identity; requires provider_ref",
+            "in": "query",
+            "name": "idempotency_key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return only hosted governance Credential Resource receipts",
+            "in": "query",
+            "name": "hosted_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3292,7 +3537,7 @@
             "description": "Error (RFC 9457 problem details)"
           }
         },
-        "summary": "List a workspace's credential sources (secret-free)",
+        "summary": "List secret-free credential sources or look up one exact hosted operation identity",
         "tags": [
           "credentials"
         ]
@@ -3331,7 +3576,7 @@
             "description": "Error (RFC 9457 problem details)"
           }
         },
-        "summary": "Enter a credential (secret-in; the secret is sealed and never echoed)",
+        "summary": "Enter a credential, optionally under a stable hosted operation identity (secret-in; material is sealed and never echoed)",
         "tags": [
           "credentials"
         ]
@@ -3613,7 +3858,7 @@
             "description": "Error (RFC 9457 problem details)"
           }
         },
-        "summary": "Live-probe a credential against its provider endpoint (secret-free result)",
+        "summary": "Live-probe a model credential or validate an exact hosted Credential Resource reference (secret-free result)",
         "tags": [
           "credentials"
         ]

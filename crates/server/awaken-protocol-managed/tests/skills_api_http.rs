@@ -45,6 +45,9 @@ const BOUNDARY: &str = "X-SKILL-BOUNDARY";
 
 fn in_test_workspace(mut request: Request<Body>) -> Request<Body> {
     request
+        .headers_mut()
+        .insert("anthropic-beta", "skills-2025-10-02".parse().unwrap());
+    request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     request
@@ -178,6 +181,77 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+#[tokio::test]
+async fn ga_skill_and_version_projection_match_sdk_0120() {
+    // Cause/effect graph: C1 no beta selector, C2 GA display_name multipart,
+    // C3 source=custom list, C4 latest version retrieval. Effects: E1 Skill uses
+    // display_name/latest_version_id/source object and no beta fields; E2 list is
+    // PageCursor; E3 SkillVersion omits beta directory/version. Decision table:
+    // G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3. All projections read the same
+    // SkillStore aggregate and immutable version rows.
+    let (router, _store, dir) = router_with_store();
+    let body = multipart_files_with_fields(
+        &[(
+            "ga-skill/SKILL.md",
+            b"---\nname: ga-skill\ndescription: ga\n---\n",
+        )],
+        &[("display_name", "GA Skill")],
+    );
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/skills")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, skill) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G1 {skill}");
+    assert_eq!(skill["display_name"], "GA Skill", "G1/E1");
+    assert_eq!(skill["source"]["type"], "custom", "G1/E1");
+    assert!(skill["latest_version_id"].is_string(), "G1/E1");
+    assert!(skill.get("display_title").is_none(), "G1/E1");
+    let id = skill["id"].as_str().unwrap();
+
+    let mut request = Request::builder()
+        .uri("/v1/skills?source=custom")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, list) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G2");
+    assert!(list["next_page"].is_null(), "G2/E2");
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == id),
+        "G2/E2"
+    );
+
+    let latest = skill["latest_version_id"].as_str().unwrap();
+    let mut request = Request::builder()
+        .uri(format!("/v1/skills/{id}/versions/{latest}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, version) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G3 {version}");
+    assert!(version.get("directory").is_none(), "G3/E3");
+    assert!(version.get("version").is_none(), "G3/E3");
+    assert_eq!(version["name"], "ga-skill", "G3/E3");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 const SKILL_V1: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay hello";

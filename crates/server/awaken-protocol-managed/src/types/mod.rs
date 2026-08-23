@@ -36,11 +36,14 @@
 pub mod agent;
 pub mod deployment;
 pub mod environment;
+pub mod file;
 pub(crate) mod initial_event;
+pub mod memory;
 pub mod page;
 pub(crate) mod presence;
 pub mod resource;
 pub mod session;
+pub mod skill;
 pub mod tunnel;
 pub mod user_profile;
 pub mod vault;

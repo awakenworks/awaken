@@ -352,7 +352,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 HeartbeatResult::Accepted(LeaseReceipt {
                     last_heartbeat,
                     lease_extended: extended,
-                    state: w.state.as_str(),
+                    state: w.state,
                     ttl_seconds: heartbeat
                         .desired_ttl_seconds
                         .unwrap_or(HEARTBEAT_TTL_SECONDS)

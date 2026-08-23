@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
+import Anthropic0120 from '@anthropic-ai/sdk-0-120';
 import { pass } from './harness.mjs';
 
 const keyBytes = Buffer.from('managed-webhook-test-key!');
@@ -42,6 +43,7 @@ const headers = {
 for (const [version, Anthropic] of [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
+  ['0.120.0', Anthropic0120],
 ]) {
   const client = new Anthropic({ apiKey: 'inert', webhookKey: key });
   const parsed = client.beta.webhooks.unwrap(body, { headers });
@@ -59,4 +61,4 @@ for (const [version, Anthropic] of [
     'verification must fail closed when no key is configured',
   );
 }
-pass('old/current official SDK webhooks.unwrap reject tampering and missing key');
+pass('all pinned official SDKs webhooks.unwrap reject tampering and missing key');
