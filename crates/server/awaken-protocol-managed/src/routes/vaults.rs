@@ -37,8 +37,8 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::{CredentialCustodyPublication, CredentialEnvelopeIssuance};
+use awaken_credential_contract::{CredentialSourceId, http_basic_material};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialMutationError, ManagedCredentialNetworking,
@@ -56,7 +56,7 @@ use awaken_credential_vault::repo::{
 };
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
-    OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore, StructuredCredentialMaterial,
+    OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
 use awaken_session_application::{RepositoryCredentialIngress, SessionCredentialSource};
 use axum::extract::{Path, Query, State};
@@ -409,14 +409,7 @@ impl VaultState {
         workspace_id: &str,
         token: String,
     ) -> Result<CredentialSourceId, awaken_credential_vault::CredentialError> {
-        let material = StructuredCredentialMaterial {
-            type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.to_string(),
-            fields: BTreeMap::from([
-                ("username".into(), RedactedString::new("x-access-token")),
-                ("password".into(), RedactedString::from(token)),
-            ]),
-        };
-        let material = awaken_credential_vault::encode_structured_material(material)?;
+        let material = repository_http_basic_material(RedactedString::from(token))?;
         enter_credential(
             DomainCredentialCreateParams {
                 workspace_id: workspace_id.to_string(),
@@ -942,13 +935,10 @@ impl RepositoryCredentialIngress for VaultState {
 fn repository_http_basic_material(
     token: RedactedString,
 ) -> Result<RedactedString, awaken_credential_vault::CredentialError> {
-    awaken_credential_vault::encode_structured_material(StructuredCredentialMaterial {
-        type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.to_string(),
-        fields: BTreeMap::from([
-            ("username".into(), RedactedString::new("x-access-token")),
-            ("password".into(), token),
-        ]),
-    })
+    awaken_credential_vault::encode_structured_material(http_basic_material(
+        RedactedString::new("x-access-token"),
+        token,
+    ))
 }
 
 // ---- Router -----------------------------------------------------------------

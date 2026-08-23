@@ -12,8 +12,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use awaken_admin_config_api::{AdminState, CredentialProbe, ProbeStatus, admin_router};
+use awaken_admin_config_api::{
+    AdminState, CredentialProbe, EnterCredentialRequest, ProbeStatus, admin_router,
+};
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::{CredentialMaterial, OAuthCredentialMaterial};
 use awaken_credential_vault::AvailabilityLedger;
 use axum::Router;
 use axum::body::Body;
@@ -614,31 +617,53 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
 }
 
 /// Hosted Credential Resource cause/effect graph:
-/// C1 exact Workspace/provider/operation tuple is valid; C2 a source exists;
+/// C0 material is storable rather than OAuth; C1 exact Workspace/provider/operation tuple is valid;
+/// C2 a source exists;
 /// C3 submitted material equals the sealed material; C4 operation lookup repeats
 /// the exact tuple; C5 validation supplies the durable source id plus its exact
 /// Workspace/provider. Effects are E1 one stable secret-free receipt,
 /// E2 exact replay is the same receipt without desired-state drift, E3 different
 /// material conflicts, E4 a mismatched operation tuple is undiscoverable, and E5
-/// the durable reference validates without retaining a second operation mapping.
+/// the durable reference validates without retaining a second operation mapping;
+/// OAuth is rejected by the canonical hosted body before any HTTP write (E0).
 ///
-/// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
-/// |---|---|---|---|---|---|---|
-/// | H1 | T | F | - | T | - | E1 |
-/// | H2 | T | T | T | T | - | E2 |
-/// | H3 | T | T | F | T | - | E3 |
-/// | H4 | T | T | - | F | - | E4 |
-/// | H5 | - | T | - | - | T | E5 |
+/// | Rule | C0 | C1 | C2 | C3 | C4 | C5 | Effect |
+/// |---|---|---|---|---|---|---|---|
+/// | H0 | F | T | - | - | - | - | E0 |
+/// | H1 | T | T | F | - | T | - | E1 |
+/// | H2 | T | T | T | T | T | - | E2 |
+/// | H3 | T | T | T | F | T | - | E3 |
+/// | H4 | T | T | T | - | F | - | E4 |
+/// | H5 | T | - | T | - | - | T | E5 |
 #[tokio::test]
 async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     let h = harness();
-    let request = json!({
-        "workspace_id": "workspace-a",
-        "kind": "vault",
-        "provider_id": "domain-pack/provider",
-        "idempotency_key": "credential-resource:create:42",
-        "secret": "hosted-business-secret" // awaken-allow: secret
-    });
+    assert!(
+        EnterCredentialRequest::hosted_vault(
+            "workspace-a".into(),
+            "domain-pack/provider".into(),
+            "oauth-operation".into(),
+            CredentialMaterial::OAuth(OAuthCredentialMaterial {
+                access_token: RedactedString::new("access-token"),
+                refresh_token: RedactedString::new("refresh-token"),
+                expires_at_unix_ms: None,
+                account_id: None,
+                account_plan: None,
+            }),
+        )
+        .is_err(),
+        "H0"
+    );
+    let request = serde_json::to_value(
+        EnterCredentialRequest::hosted_vault(
+            "workspace-a".into(),
+            "domain-pack/provider".into(),
+            "credential-resource:create:42".into(),
+            CredentialMaterial::secret(RedactedString::new("hosted-business-secret")), // awaken-allow: secret
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let (status, first) = call(
         &h.app,
         "POST",

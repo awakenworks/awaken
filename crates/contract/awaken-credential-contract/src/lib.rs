@@ -14,6 +14,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 mod http_effect;
 pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
+mod http_basic;
+pub use http_basic::{HTTP_BASIC_MATERIAL_TYPE, http_basic_material};
 mod custody;
 pub use custody::{
     CredentialCustodyPublication, CredentialMaterialCustodian, CredentialMaterialDelivery,
@@ -809,8 +811,6 @@ pub struct OAuthCredentialMaterial {
     pub account_id: Option<String>,
     pub account_plan: Option<String>,
 }
-
-pub const HTTP_BASIC_MATERIAL_TYPE: &str = "awaken.http-basic/v1";
 
 /// Capability-discovery record published by an external last-mile consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
