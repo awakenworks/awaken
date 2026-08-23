@@ -70,6 +70,9 @@ pub(super) struct FileConfig {
     pub(super) cloud_oauth_client_id: Option<String>,
     pub(super) cloud_oauth_redirect_uri: Option<String>,
     pub(super) cloud_access_token: Option<String>,
+    /// Workspace-bound Developer Key used only to exchange for short-lived
+    /// model/tool grants. The key remains in the Coordinator process.
+    pub(super) cloud_api_key_file: Option<PathBuf>,
     pub(super) cloud_iam_service_token: Option<String>,
     pub(super) coordinator_internal_url: Option<String>,
     pub(super) executable_agent_registration_token_file: Option<PathBuf>,

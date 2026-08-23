@@ -23,9 +23,13 @@ pub(crate) fn authenticator(
 ) -> Result<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, String> {
     let Some(path) = deployment.worker_trust_credentials_file.as_deref() else {
         return match deployment.mode {
-            OperatingMode::Local => Ok(Arc::new(
+            OperatingMode::Local if listeners_are_loopback(deployment) => Ok(Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             )),
+            OperatingMode::Local => Err(
+                "bare Worker header authentication is limited to loopback listeners; configure worker_trust_credentials_file"
+                    .to_owned(),
+            ),
             OperatingMode::Server => Err(
                 "server-mode Coordinator/AllInOne requires worker_trust_credentials_file"
                     .to_owned(),
@@ -46,6 +50,17 @@ pub(crate) fn authenticator(
     Ok(Arc::new(authenticator))
 }
 
+fn listeners_are_loopback(deployment: &ResolvedDeployment) -> bool {
+    std::iter::once(Some(deployment.bind.as_str()))
+        .chain(std::iter::once(deployment.internal_bind.as_deref()))
+        .flatten()
+        .all(|value| {
+            value
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|address| address.ip().is_loopback())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,12 +69,14 @@ mod tests {
     #[tokio::test]
     async fn coordinator_transport_posture_follows_the_deployment_decision_table() {
         // Causes: C1 operating mode Local/Server; C2 trust file absent/present;
-        // C3 enrollment empty/valid. Effects: E1 Local may use the compatibility
-        // header; E2 Server fails startup without trust; E3 empty trust fails;
+        // C3 enrollment empty/valid; C4 every listener is loopback. Effects:
+        // E1 Local may use the compatibility header only with C4; E2 Server
+        // fails startup without trust; E3 empty trust fails;
         // E4 valid trust installs signed authentication and rejects a bare header.
         //
         // | Rule | C1     | C2      | C3    | Effect |
-        // | R1   | Local  | absent  | -     | E1     |
+        // | R1   | Local  | absent  | loopback | E1  |
+        // | R1b  | Local  | absent  | public/private network | startup denial |
         // | R2   | Server | absent  | -     | E2     |
         // | R3   | Server | present | empty | E3     |
         // | R4   | Server | present | valid | E4     |
@@ -78,6 +95,16 @@ mod tests {
             .into_parts()
             .0;
         assert!(local.authenticate(&local_parts).await.is_ok(), "R1");
+
+        deployment.bind = "0.0.0.0:8080".into();
+        assert!(
+            authenticator(&deployment)
+                .err()
+                .expect("R1b non-loopback error")
+                .contains("limited to loopback"),
+            "R1b"
+        );
+        deployment.bind = "127.0.0.1:8080".into();
 
         deployment.mode = OperatingMode::Server;
         assert!(

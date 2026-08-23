@@ -980,18 +980,34 @@ pub async fn build_secured_all_in_one_router(
 fn brokered_inference_client(
     cloud_models_enabled: bool,
     remote_iam: Option<&Arc<RemoteManagementAuthz>>,
+    developer_key_file: Option<&std::path::Path>,
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
+    client_instance_id: &str,
 ) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
     if !cloud_models_enabled {
         return None;
     }
-    let authz = Arc::clone(remote_iam?);
-    let token_source: Arc<awaken_agent_contract::RedactedStringSource> = Arc::new(move || {
-        authz
-            .cloud_user_token()?
-            .ok_or_else(|| "Cloud login credential is unavailable".to_string())
-    });
+    let token_source: Arc<awaken_agent_contract::RedactedStringSource> =
+        if let Some(path) = developer_key_file {
+            let path = path.to_owned();
+            Arc::new(move || {
+                let value = std::fs::read_to_string(&path)
+                    .map_err(|error| format!("read Cloud Developer Key file: {error}"))?;
+                let value = value.trim();
+                if !value.starts_with("sk-awaken-") || value.chars().any(char::is_whitespace) {
+                    return Err("Cloud Developer Key file does not contain one valid key".into());
+                }
+                Ok(awaken_agent_contract::RedactedString::new(value.to_owned()))
+            })
+        } else {
+            let authz = Arc::clone(remote_iam?);
+            Arc::new(move || {
+                authz
+                    .cloud_user_token()?
+                    .ok_or_else(|| "Cloud login credential is unavailable".to_string())
+            })
+        };
     let base_url =
         cloud_api_base_url.expect("Awaken Cloud identity requires a Cloud inference API URL");
     Some(Arc::new(
@@ -999,9 +1015,64 @@ fn brokered_inference_client(
             base_url,
             token_source,
             execution_workspace,
+            client_instance_id,
         )
         .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
     ))
+}
+
+fn local_client_instance_id(workspace_root: Option<&std::path::Path>) -> String {
+    let coordinate = workspace_root
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ephemeral".to_owned());
+    let fingerprint = awaken_runtime_contract::content_fingerprint(&coordinate)
+        .unwrap_or_else(|_| "unavailable".to_owned());
+    format!("awaken-installation:{fingerprint}")
+}
+
+#[cfg(test)]
+mod brokered_client_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn projected_developer_key_and_workspace_use_distinct_client_coordinates() {
+        // Cause/effect graph: C1=Cloud models enabled, C2=projected Developer
+        // Key is valid, C3=Workspace and installation root are present.
+        // Effects: one brokered client is constructed without an OAuth fallback;
+        // Workspace identity remains distinct from the stable installation id.
+        // R1 all true => client; !C2 => fail construction before network.
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("cloud-api-key");
+        std::fs::write(&key, "sk-awaken-fixture.secret\n").unwrap();
+        let workspace = "awaken:workspace-a";
+        let instance = local_client_instance_id(Some(dir.path()));
+        assert_ne!(workspace, instance);
+        assert!(instance.starts_with("awaken-installation:"));
+        assert!(
+            brokered_inference_client(
+                true,
+                None,
+                Some(&key),
+                Some("https://api.awaken.test"),
+                workspace,
+                &instance,
+            )
+            .is_some()
+        );
+
+        std::fs::write(&key, "not-a-developer-key").unwrap();
+        let result = std::panic::catch_unwind(|| {
+            brokered_inference_client(
+                true,
+                None,
+                Some(&key),
+                Some("https://api.awaken.test"),
+                workspace,
+                &instance,
+            )
+        });
+        assert!(result.is_err());
+    }
 }
 
 fn resolve_model_services(
@@ -1591,6 +1662,9 @@ mod process_role_surface_tests {
                 worker_observations: Some(
                     worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
                 ),
+                worker_authenticator: Some(Arc::new(
+                    awaken_worker_transport_security::HeaderWorkerAuthenticator,
+                )),
                 ..Default::default()
             },
             None,

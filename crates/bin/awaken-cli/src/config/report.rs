@@ -62,6 +62,8 @@ impl ResolvedDeployment {
         };
         let cloud_credential_source = if self.cloud_iam.service_token_file.is_some() {
             "projected service token"
+        } else if self.cloud_iam.developer_key_file.is_some() {
+            "workspace Developer Key file plus IAM credential cache"
         } else if self.cloud_iam.access_token.is_some() {
             "explicit access token"
         } else {
