@@ -39,8 +39,8 @@ pub use web::{
     WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
     WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
     WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchTool,
-    WebSearchUserLocation, WebServerToolProviderDescriptor, web_fetch_descriptor,
-    web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
+    WebSearchUserLocation, WebServerToolProviderDescriptor, managed_web_route_ref,
+    web_fetch_descriptor, web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
     web_search_execution_configuration,
 };
 
