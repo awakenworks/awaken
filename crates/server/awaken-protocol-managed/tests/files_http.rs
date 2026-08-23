@@ -22,6 +22,9 @@ const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
 
 fn in_test_workspace(mut request: Request<Body>) -> Request<Body> {
     request
+        .headers_mut()
+        .insert("anthropic-beta", "files-api-2025-04-14".parse().unwrap());
+    request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     request
@@ -180,6 +183,77 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
 }
 
 #[tokio::test]
+async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
+    // Cause/effect graph: C1 no beta selector, C2 valid expiry boundary, C3 ids[]
+    // contains one visible and one missing id, C4 ids[] combines with page/limit.
+    // Effects: E1 GA metadata has expires_at and no beta scope, E2 ids[] returns a
+    // single next_page:null page and silently omits missing ids, E3 mixed pagination
+    // is rejected without mutation. Decision table: G1 C1+C2->E1; G2 C1+C3->E2;
+    // G3 C1+C4->E3. The same FileApplication/FileCatalog owns every rule.
+    let router = router();
+    let mut body = multipart_file("ga.txt", b"ga");
+    let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
+    body.truncate(body.len() - closing.len());
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n3600\r\n",
+    );
+    body.extend_from_slice(&closing);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/files")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G1");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(created["expires_at"].is_string(), "G1/E1 {created}");
+    assert!(created.get("scope").is_none(), "G1/E1 {created}");
+    let id = created["id"].as_str().unwrap();
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/files?ids%5B%5D={id}&ids%5B%5D=file_missing"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G2");
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "G2/E2");
+    assert!(body["next_page"].is_null(), "G2/E2");
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/files?ids%5B%5D={id}&limit=1"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::BAD_REQUEST,
+        "G3/E3"
+    );
+}
+
+#[tokio::test]
 async fn error_arms_are_fail_closed() {
     // Rules R4/R5: missing file part or unknown opaque id → 400/404 with no
     // catalog mutation or cross-resource fallback.
@@ -214,7 +288,7 @@ async fn error_arms_are_fail_closed() {
 async fn standard_global_and_scoped_lists_reject_private_filters() {
     // Causes: C1 standard global list; C2 official `scope_id` filter; C3 private
     // `purpose` filter; C4 the official SDK serializes its `betas` option as the
-    // `beta` list query. Effects: E1 catalog page; E2 scoped page; E3 invalid
+    // hard-coded `beta=true` query plus its beta header. Effects: E1 catalog page; E2 scoped page; E3 invalid
     // request; E4 the same catalog page (beta selection changes no File truth).
     // Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3; C1+C4 -> E4.
     let router = router();
@@ -228,11 +302,7 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     assert_eq!(list["first_id"], uploaded["id"]);
     assert_eq!(list["last_id"], uploaded["id"]);
 
-    let (status, body) = get(
-        &router,
-        "/v1/files?beta=managed-agents-2026-04-01&limit=100",
-    )
-    .await;
+    let (status, body) = get(&router, "/v1/files?beta=true&limit=100").await;
     assert_eq!(status, StatusCode::OK, "R4 official SDK query");
     let sdk_list: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(sdk_list["data"][0]["id"], uploaded["id"], "R4");
@@ -269,6 +339,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         mime_type: "text/plain".into(),
         size_bytes: 15,
         created_at: "2026-01-01T00:00:00Z".into(),
+        expires_at: None,
         downloadable: true,
         scope_id: Some("deleted-session".into()),
         logical_path: Some("report.txt".into()),
@@ -378,6 +449,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
             mime_type: "application/octet-stream".into(),
             size_bytes: 500 * 1024 * 1024 * 1024,
             created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
             downloadable: false,
             scope_id: None,
             logical_path: None,

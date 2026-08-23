@@ -2,7 +2,7 @@
 // every mutating subresource's beta rejection, cross-beta cursors, cursor
 // invalidation safety, and literal HTTP/1 header framing.
 //
-// Cause/effect graph: SDK/header selector -> one Memory aggregate/cursor ->
+// Cause/effect graph: SDK 0.105/0.117/0.120 or header selector -> one Memory aggregate/cursor ->
 // mutation or read. Valid old/current selectors share state; ambiguous/invalid
 // selectors fail before mutation; stale cursors never resurrect removed heads.
 // Decision table coverage is grouped in the assertions below by handoff, CAS,
@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
+import Anthropic0120 from '@anthropic-ai/sdk-0-120';
 import { pass, withScenarioServer } from '../harness.mjs';
 
 const LEGACY_BETA = 'managed-agents-2026-04-01';
@@ -19,6 +20,7 @@ const MEMORY_BETA = 'agent-memory-2026-07-22';
 const CLIENTS = [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
+  ['0.120.0', Anthropic0120],
 ];
 
 async function drain(items) {
@@ -297,6 +299,8 @@ await withScenarioServer('management', 'mcp', 38189, async (baseURL) => {
   const apiKey = 'e2e-dummy';
   await exerciseHandoff(baseURL, apiKey, CLIENTS[0], CLIENTS[1]);
   await exerciseHandoff(baseURL, apiKey, CLIENTS[1], CLIENTS[0]);
+  await exerciseHandoff(baseURL, apiKey, CLIENTS[1], CLIENTS[2]);
+  await exerciseHandoff(baseURL, apiKey, CLIENTS[2], CLIENTS[1]);
   await exerciseConcurrentCAS(baseURL, apiKey);
   await exerciseMutationAdmissionAndCursors(baseURL, apiKey);
   await exerciseRawHeaders(baseURL);

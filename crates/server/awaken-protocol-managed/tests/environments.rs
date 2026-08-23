@@ -172,25 +172,24 @@ async fn environment_scope_follows_the_official_decision_table() {
 }
 
 #[tokio::test]
-async fn environment_description_normalizes_nullable_wire_input_to_one_string_domain() {
+async fn environment_description_preserves_sdk_nullable_semantics() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Causes: C1 create description is omitted, C2 explicit null, C3 a string;
     // C4 update omits description, C5 supplies null, C6 supplies a string.
-    // Effects: E1 C1/C2 author the canonical empty string, E2 C3/C6
-    // author the exact string, E3 C4 preserves the current value, and E4 every
-    // response exposes a JSON string. Constraints/invariants: nullable presence
-    // belongs only to this Managed ingress edge; the Environment aggregate,
-    // history, and stores have one non-null String representation.
+    // Effects: E1 C1/C2 author absence and return null, E2 C3/C6 author the exact
+    // string, E3 C4 preserves the current value. Constraints/invariants: the
+    // Environment aggregate/history is the one nullable source of truth; no wire
+    // adapter or store collapses null into a competing empty-string meaning.
     //
     // Decision table:
     // | Rule | Operation | Wire description | Domain/response effect |
-    // | D1 | create | omitted | empty string (E1,E4) |
-    // | D2 | create | null | empty string (E1,E4) |
-    // | D3 | create | "seed" | exact string (E2,E4) |
-    // | D4 | update D3 | omitted | preserve "seed" (E3,E4) |
-    // | D5 | update D3 | null | empty string (E1,E4) |
-    // | D6 | update D3 | "next" | exact string (E2,E4) |
+    // | D1 | create | omitted | null (E1) |
+    // | D2 | create | null | null (E1) |
+    // | D3 | create | "seed" | exact string (E2) |
+    // | D4 | update D3 | omitted | preserve "seed" (E3) |
+    // | D5 | update D3 | null | null (E1) |
+    // | D6 | update D3 | "next" | exact string (E2) |
     let app = app();
     for (rule, body) in [
         ("D1", json!({"name": "omitted"})),
@@ -198,7 +197,7 @@ async fn environment_description_normalizes_nullable_wire_input_to_one_string_do
     ] {
         let (status, environment) = call(&app, "POST", "/v1/environments", Some(body)).await;
         assert_eq!(status, StatusCode::OK, "{rule}");
-        assert_eq!(environment["description"], "", "{rule}/E1+E4");
+        assert!(environment["description"].is_null(), "{rule}/E1");
     }
 
     let (status, created) = call(
@@ -213,15 +212,14 @@ async fn environment_description_normalizes_nullable_wire_input_to_one_string_do
     let id = created["id"].as_str().unwrap();
 
     for (rule, body, expected) in [
-        ("D4", json!({"name": "renamed"}), "seed"),
-        ("D5", json!({"description": null}), ""),
-        ("D6", json!({"description": "next"}), "next"),
+        ("D4", json!({"name": "renamed"}), json!("seed")),
+        ("D5", json!({"description": null}), Value::Null),
+        ("D6", json!({"description": "next"}), json!("next")),
     ] {
         let (status, environment) =
             call(&app, "POST", &format!("/v1/environments/{id}"), Some(body)).await;
         assert_eq!(status, StatusCode::OK, "{rule}");
-        assert_eq!(environment["description"], expected, "{rule}/E1-E4");
-        assert!(environment["description"].is_string(), "{rule}/E4");
+        assert_eq!(environment["description"], expected, "{rule}/E1-E3");
     }
 }
 
@@ -860,7 +858,7 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
     let command = awaken_environment_contract::CreateEnvironmentCommand {
         command_id: "control:call-1".into(),
         name: "stable".into(),
-        description: String::new(),
+        description: None,
         metadata: Default::default(),
         scope: None,
         config: awaken_environment_contract::EnvironmentConfig::SelfHosted,

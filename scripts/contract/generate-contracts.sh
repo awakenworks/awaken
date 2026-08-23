@@ -4,7 +4,8 @@
 #   Rust #[derive(JsonSchema)]  ->  export_schemas (JSON Schema SSOT)  ->  TS types.
 #
 # We generate TS only for OUR surfaces (admin config API). The Managed Agents wire
-# is the official @anthropic-ai/sdk — never regenerated here.
+# remains owned by the official @anthropic-ai/sdk; its Rust compatibility DTOs are
+# exported as reviewable JSON Schema and never used to generate a rival SDK.
 #
 #   scripts/contract/generate-contracts.sh          # regenerate committed artifacts
 #   scripts/contract/generate-contracts.sh --check   # fail if committed artifacts are stale
@@ -16,6 +17,7 @@ schema_json="$out_dir/model-schemas.generated.json"
 openapi_json="$out_dir/openapi.generated.json"
 ts_out="$out_dir/model-config.d.ts"
 model_selection_ts="$out_dir/model-selection.generated.d.ts"
+managed_agents_json="$out_dir/anthropic-managed-agents-0.120.schemas.generated.json"
 check=0
 [ "${1:-}" = "--check" ] && check=1
 
@@ -29,6 +31,8 @@ cargo run --locked -q -p awaken-admin-config-api --features schema --example exp
     > "$tmp/schemas.json"
 cargo run --locked -q -p awaken-admin-config-api --features schema --example export_openapi \
     > "$tmp/openapi.generated.json"
+cargo run --locked -q -p awaken-protocol-managed --features schema --example export_schemas \
+    > "$tmp/managed-agents.schemas.json"
 
 # 2. TS types via the lockfile-pinned generators. Split the bundle into
 #    one file per type so quicktype emits a single deduped .d.ts.
@@ -115,11 +119,14 @@ if [ "$check" = 1 ]; then
         || { echo "✗ $ts_out is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
     diff -u "$model_selection_ts" "$tmp/model-selection.generated.d.ts" >/dev/null \
         || { echo "✗ $model_selection_ts is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
+    diff -u "$managed_agents_json" "$tmp/managed-agents.schemas.json" >/dev/null \
+        || { echo "✗ $managed_agents_json is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
     echo "OK - contracts up to date."
 else
     cp "$tmp/schemas.json" "$schema_json"
     cp "$tmp/openapi.generated.json" "$openapi_json"
     cp "$tmp/final.d.ts" "$ts_out"
     cp "$tmp/model-selection.generated.d.ts" "$model_selection_ts"
-    echo "wrote $schema_json + $openapi_json + $ts_out + $model_selection_ts"
+    cp "$tmp/managed-agents.schemas.json" "$managed_agents_json"
+    echo "wrote $schema_json + $openapi_json + $ts_out + $model_selection_ts + $managed_agents_json"
 fi

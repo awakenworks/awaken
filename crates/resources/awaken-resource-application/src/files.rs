@@ -22,6 +22,7 @@ pub struct CreateFileCommand<'a> {
     pub mime_type: String,
     pub bytes: &'a [u8],
     pub downloadable: bool,
+    pub expires_at: Option<String>,
     pub scope_id: Option<String>,
     pub logical_path: Option<String>,
     pub idempotency_key: Option<String>,
@@ -105,6 +106,7 @@ impl FileApplication {
             mime_type: command.mime_type,
             size_bytes: command.bytes.len() as u64,
             created_at: now_rfc3339(),
+            expires_at: command.expires_at,
             downloadable: command.downloadable,
             scope_id: command.scope_id,
             logical_path: command.logical_path,
@@ -146,12 +148,25 @@ impl FileApplication {
         mime_type: String,
         bytes: &[u8],
     ) -> Result<FileRecord, ResourcePurgeError> {
+        self.create_uploaded_file_with_expiry(workspace_id, filename, mime_type, bytes, None)
+            .await
+    }
+
+    pub async fn create_uploaded_file_with_expiry(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        expires_at: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
         self.create(CreateFileCommand {
             workspace_id,
             filename,
             mime_type,
             bytes,
             downloadable: false,
+            expires_at,
             scope_id: None,
             logical_path: None,
             idempotency_key: None,
@@ -173,6 +188,7 @@ impl FileApplication {
             mime_type,
             bytes,
             downloadable: true,
+            expires_at: None,
             scope_id: None,
             logical_path: None,
             idempotency_key: Some(idempotency_key),
@@ -253,14 +269,23 @@ impl FileApplicationService for FileApplication {
         FileApplication::list(self, workspace_id, scope_id).await
     }
 
-    async fn create_uploaded_file(
+    async fn create_uploaded_file_with_expiry(
         &self,
         workspace_id: &str,
         filename: String,
         mime_type: String,
         bytes: &[u8],
+        expires_at: Option<String>,
     ) -> Result<FileRecord, ResourcePurgeError> {
-        FileApplication::create_uploaded_file(self, workspace_id, filename, mime_type, bytes).await
+        FileApplication::create_uploaded_file_with_expiry(
+            self,
+            workspace_id,
+            filename,
+            mime_type,
+            bytes,
+            expires_at,
+        )
+        .await
     }
 
     async fn create_generated_file(
@@ -299,6 +324,7 @@ impl FileApplicationService for FileApplication {
                 mime_type,
                 bytes,
                 downloadable: true,
+                expires_at: None,
                 scope_id: Some(session_id.to_string()),
                 logical_path: Some(logical_path),
                 idempotency_key: Some(idempotency_key),
@@ -418,6 +444,7 @@ mod tests {
             mime_type: "text/plain".into(),
             bytes: b"report",
             downloadable: true,
+            expires_at: None,
             scope_id: Some("session-a".into()),
             logical_path: Some("report.txt".into()),
             idempotency_key: Some("session-a/report".into()),

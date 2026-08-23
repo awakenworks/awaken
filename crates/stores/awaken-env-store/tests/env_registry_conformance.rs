@@ -376,7 +376,7 @@ async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
     let command = CreateEnvironmentCommand {
         command_id: "command-1".into(),
         name: "stable".into(),
-        description: String::new(),
+        description: None,
         metadata: Default::default(),
         scope: None,
         config: EnvironmentConfig::SelfHosted,

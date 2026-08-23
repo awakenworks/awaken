@@ -27,6 +27,8 @@ mod rate_limit;
 /// Routing: the axum routers and handlers for every surface, over [`state::ManagedState`]
 /// and the resource stores.
 mod routes;
+#[cfg(feature = "schema")]
+pub mod schema;
 /// Native Managed Agents wire transfer objects, 1:1 with the `@anthropic-ai/sdk`
 /// beta `managed-agents` types. Pure serde shapes; the logic that *assembles* them
 /// from neutral domain state lives in [`project`] and the private adapter state.

@@ -60,6 +60,12 @@ export interface AcpSessionConfiguration {
  * a target containing both.
  */
 export interface ModelTarget {
+  /**
+   * Public API-dialect qualifier (for example `anthropic_messages` or
+   * `open_ai_responses`). It narrows a provider's protocol surfaces without
+   * exposing the catalog's internal endpoint identity.
+   */
+  api_dialect?: string | null;
   endpoint_name?: string | null;
   model_id: string;
   protocol_endpoint_id?: string | null;

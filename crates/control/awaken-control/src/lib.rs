@@ -501,7 +501,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         )],
         runtimes,
     );
-    let fallback_workspace = platform_workspace;
+    let fallback_workspace = platform_workspace.clone();
     let presentation_identity_mode = identity_mode;
     let workspace_context = Router::new().route(
         "/v1/config/workspace-context",
@@ -557,6 +557,12 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     }
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
+    }
+    if iam.is_none() && remote_iam.is_none() {
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            platform_workspace,
+            crate::authz::fixed_workspace_header_guard,
+        ));
     }
     mgmt = protect_management_router(mgmt, audit_plane, iam, remote_iam, managed_request_limiter);
     if let Some(local_browser_auth) = local_browser_auth {

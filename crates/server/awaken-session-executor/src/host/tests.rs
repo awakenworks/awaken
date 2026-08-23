@@ -5784,6 +5784,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
             mime_type: "application/octet-stream".into(),
             size_bytes: 14,
             created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
             downloadable: false,
             scope_id: None,
             logical_path: None,

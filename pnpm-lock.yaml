@@ -18,8 +18,8 @@ importers:
   packages/managed-session-projection:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: 0.116.0
-        version: 0.116.0(zod@4.4.3)
+        specifier: 0.120.0
+        version: 0.120.0(zod@4.4.3)
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -107,8 +107,8 @@ packages:
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@anthropic-ai/sdk@0.116.0':
-    resolution: {integrity: sha512-4UEapYQ+epLEMsAuLZDvW8ExVSOtHD8a7zTyLzhw0H9RXJ1eilPgmqhjwgcdg22diwx13spw6fJ4rONZ+bS7Ww==}
+  '@anthropic-ai/sdk@0.120.0':
+    resolution: {integrity: sha512-ZlvmNFT/iIF6JD13rxbbMWD8nvGR0RaUp6yMQnoc+4Af0YjVVe/bIdW1XSQQsoxXAtg1NaT6Vak0LKFlJ4d37Q==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -1582,7 +1582,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@anthropic-ai/sdk@0.116.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.120.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0

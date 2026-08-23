@@ -34,16 +34,17 @@ fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
         mime_type: row.get(4)?,
         size_bytes: row.get::<_, i64>(5)? as u64,
         created_at: row.get(6)?,
-        downloadable: row.get::<_, i64>(7)? != 0,
-        scope_id: row.get(8)?,
-        logical_path: row.get(9)?,
-        harvest_key: row.get(10)?,
-        deleted: row.get::<_, i64>(11)? != 0,
+        expires_at: row.get(7)?,
+        downloadable: row.get::<_, i64>(8)? != 0,
+        scope_id: row.get(9)?,
+        logical_path: row.get(10)?,
+        harvest_key: row.get(11)?,
+        deleted: row.get::<_, i64>(12)? != 0,
     })
 }
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, \
-size_bytes, created_at, downloadable, scope_id, logical_path, harvest_key, deleted";
+size_bytes, created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, deleted";
 
 /// A SQLite-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct SqliteFileStore {
@@ -181,7 +182,7 @@ impl FileCatalog for SqliteFileStore {
                 .execute(
                     &format!(
                         "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
                     ),
                     params![
                         record.id,
@@ -191,6 +192,7 @@ impl FileCatalog for SqliteFileStore {
                         record.mime_type,
                         record.size_bytes as i64,
                         record.created_at,
+                        record.expires_at,
                         i64::from(record.downloadable),
                         record.scope_id,
                         record.logical_path,

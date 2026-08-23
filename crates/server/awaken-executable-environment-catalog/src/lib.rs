@@ -268,7 +268,7 @@ mod tests {
                 id: "env-a".into(),
                 revision: EnvironmentRevision(revision),
                 name: name.into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,

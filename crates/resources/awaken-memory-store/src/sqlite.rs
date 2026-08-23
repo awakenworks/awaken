@@ -38,7 +38,7 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
 
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
     MemoryVersionOperation, sha256_hex,
 };
 
@@ -170,6 +170,19 @@ fn row_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryVersion> {
                 Box::new(error),
             )
         })?;
+    let actor = |index| -> rusqlite::Result<Option<MemoryActor>> {
+        row.get::<_, Option<String>>(index)?
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        index,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()
+    };
     Ok(MemoryVersion {
         id: row.get(0)?,
         memory_id: row.get(1)?,
@@ -183,7 +196,9 @@ fn row_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryVersion> {
         path: row.get(3)?,
         content,
         created_unix_nanos: row.get::<_, i64>(5)? as u128,
+        created_by: actor(7)?,
         redacted_unix_nanos: row.get::<_, Option<i64>>(6)?.map(|value| value as u128),
+        redacted_by: actor(8)?,
     })
 }
 
@@ -217,6 +232,7 @@ fn append_version(
     path: &str,
     content: Option<&str>,
     created: i64,
+    actor: Option<&MemoryActor>,
 ) -> Result<MemoryVersion, MemErr> {
     let ordinal = next_counter(
         tx,
@@ -230,13 +246,15 @@ fn append_version(
         path: path.to_string(),
         content: content.map(str::to_string),
         created_unix_nanos: created as u128,
+        created_by: actor.cloned(),
         redacted_unix_nanos: None,
+        redacted_by: None,
     };
     tx.execute(
         &format!(
             "INSERT INTO {NS}_versions \
-             (store_id, ordinal, id, memory_id, operation, path, content, created, redacted) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)"
+             (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)"
         ),
         params![
             store,
@@ -247,6 +265,7 @@ fn append_version(
             path,
             content.map(str::as_bytes),
             created,
+            actor.map(serde_json::to_string).transpose().map_err(mem_err)?,
         ],
     )
     .map_err(mem_err)?;
@@ -360,9 +379,20 @@ impl MemoryRepository for SqliteMemoryRepository {
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as(store, path, content, None).await
+    }
+
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(path)?;
         validate_size(content)?;
         let (store, path, content) = (store.to_string(), path.to_string(), content.to_string());
+        let actor = actor.cloned();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let exists = tx
@@ -412,6 +442,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &path,
                 Some(&content),
                 now,
+                actor.as_ref(),
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -436,6 +467,19 @@ impl MemoryRepository for SqliteMemoryRepository {
         base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
+        self.update_head_as(store, id, content, base_sha, target_path, None)
+            .await
+    }
+
+    async fn update_head_as(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_size(content)?;
         if let Some(path) = target_path {
             validate_path(path)?;
@@ -447,6 +491,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             base_sha.to_string(),
             target_path.map(str::to_string),
         );
+        let actor = actor.cloned();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let row = tx
@@ -523,6 +568,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                     &requested_path,
                     None,
                     now,
+                    actor.as_ref(),
                 )?;
             }
             append_version(
@@ -533,6 +579,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &requested_path,
                 Some(&content),
                 now,
+                actor.as_ref(),
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -615,6 +662,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                     &to,
                     None,
                     now,
+                    None,
                 )?;
             }
             let content = String::from_utf8(content).map_err(mem_err)?;
@@ -626,6 +674,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &to,
                 Some(&content),
                 now,
+                None,
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
@@ -643,7 +692,17 @@ impl MemoryRepository for SqliteMemoryRepository {
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as(store, path, None).await
+    }
+
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
         let (store, path) = (store.to_string(), path.to_string());
+        let actor = actor.cloned();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let memory_id = tx
@@ -670,6 +729,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &path,
                 None,
                 now_nanos() as i64,
+                actor.as_ref(),
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(())
@@ -735,6 +795,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &path,
                 None,
                 now_nanos() as i64,
+                None,
             )?;
             tx.commit().map_err(mem_err)?;
             Ok(true)
@@ -747,7 +808,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         with_conn_mem(&self.conn, move |conn| {
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT id, memory_id, operation, path, content, created, redacted \
+                    "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
                      FROM {NS}_versions WHERE store_id = ?1 ORDER BY ordinal"
                 ))
                 .map_err(mem_err)?;
@@ -764,13 +825,23 @@ impl MemoryRepository for SqliteMemoryRepository {
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
+        self.redact_version_as(store, version_id, None).await
+    }
+
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
         let (store, version_id) = (store.to_string(), version_id.to_string());
+        let actor = actor.cloned();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let existing = tx
                 .query_row(
                     &format!(
-                        "SELECT id, memory_id, operation, path, content, created, redacted \
+                        "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
                          FROM {NS}_versions WHERE store_id = ?1 AND id = ?2"
                     ),
                     params![store, version_id],
@@ -785,14 +856,20 @@ impl MemoryRepository for SqliteMemoryRepository {
                 let redacted = now_nanos() as i64;
                 tx.execute(
                     &format!(
-                        "UPDATE {NS}_versions SET content = NULL, redacted = ?1 \
-                         WHERE store_id = ?2 AND id = ?3"
+                        "UPDATE {NS}_versions SET content = NULL, redacted = ?1, redacted_by_json = ?2 \
+                         WHERE store_id = ?3 AND id = ?4"
                     ),
-                    params![redacted, store, version_id],
+                    params![
+                        redacted,
+                        actor.as_ref().map(serde_json::to_string).transpose().map_err(mem_err)?,
+                        store,
+                        version_id
+                    ],
                 )
                 .map_err(mem_err)?;
                 version.content = None;
                 version.redacted_unix_nanos = Some(redacted as u128);
+                version.redacted_by = actor.clone();
             }
             tx.commit().map_err(mem_err)?;
             Ok(Some(version))
@@ -832,7 +909,7 @@ mod migration_seam_tests {
 
     #[test]
     fn current_baseline_exposes_only_the_memory_aggregate() {
-        // Causes: C1 empty ledger; C2 current V1/V2 stream; C3 exact replay.
+        // Causes: C1 empty ledger; C2 current V1/V2/V3 stream; C3 exact replay.
         // Effects: E1 create heads, versions, and counters only; E2 apply both
         // versions once; E3 apply nothing. Decision rules M1=C1+C2=>E1+E2;
         // M2=C3=>E3. Drift rejection is owned by the common runner tests.
@@ -841,10 +918,10 @@ mod migration_seam_tests {
         let runner =
             awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
 
-        let first = runner.run_bundle(&conn, &full).expect("M1 apply V1/V2");
+        let first = runner.run_bundle(&conn, &full).expect("M1 apply V1/V2/V3");
         assert_eq!(
             first.iter().map(|m| m.version).collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![1, 2, 3]
         );
         let tables = conn
             .prepare(
@@ -1220,6 +1297,10 @@ mod memory_repository_tests {
 
     #[tokio::test]
     async fn sqlite_memory_repository_survives_reopen() {
+        // Actor durability decision table: D1 attributed create -> created_by;
+        // D2 attributed update -> its own created_by; D3 attributed redact ->
+        // redacted_by while created_by is immutable; D4 reopen -> all actor DTOs
+        // remain byte-equivalent. Actor JSON shares the version transaction.
         let dir = std::env::temp_dir().join(format!("awaken-sql-memory-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("m.db");
@@ -1227,12 +1308,31 @@ mod memory_repository_tests {
         let version_id;
         {
             let fs = SqliteMemoryRepository::open(path_str).unwrap();
-            let created = fs.create("s", "/keep.md", "durable").await.unwrap();
-            fs.update("s", &created.id, "updated", &created.content_sha256)
+            let api_actor = MemoryActor::ApiActor {
+                api_key_id: "api_durable".into(),
+            };
+            let redact_actor = MemoryActor::ServiceAccountActor {
+                service_account_id: "svac_redactor".into(),
+            };
+            let created = fs
+                .create_as("s", "/keep.md", "durable", Some(&api_actor))
                 .await
                 .unwrap();
+            fs.update_head_as(
+                "s",
+                &created.id,
+                "updated",
+                &created.content_sha256,
+                None,
+                Some(&api_actor),
+            )
+            .await
+            .unwrap();
             version_id = fs.list_versions("s").await.unwrap()[0].id.clone();
-            fs.redact_version("s", &version_id).await.unwrap().unwrap();
+            fs.redact_version_as("s", &version_id, Some(&redact_actor))
+                .await
+                .unwrap()
+                .unwrap();
         }
         let fs = SqliteMemoryRepository::open(path_str).unwrap();
         assert_eq!(
@@ -1249,6 +1349,21 @@ mod memory_repository_tests {
         assert_eq!(versions[0].id, version_id);
         assert!(versions[0].content.is_none());
         assert!(versions[0].redacted_unix_nanos.is_some());
+        assert_eq!(
+            versions[0].created_by,
+            Some(MemoryActor::ApiActor {
+                api_key_id: "api_durable".into()
+            }),
+            "D1/D4"
+        );
+        assert_eq!(
+            versions[0].redacted_by,
+            Some(MemoryActor::ServiceAccountActor {
+                service_account_id: "svac_redactor".into()
+            }),
+            "D3/D4"
+        );
+        assert_eq!(versions[1].created_by, versions[0].created_by, "D2/D4");
         assert_eq!(versions[1].content.as_deref(), Some("updated"));
         std::fs::remove_dir_all(&dir).ok();
     }

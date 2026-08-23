@@ -16,8 +16,8 @@ pub use awaken_resource_contract::memory_store_stem as sanitize_stem;
 #[cfg(any(test, feature = "test-support"))]
 pub use repository::VolatileMemoryRepository;
 pub use repository::{
-    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation, sha256_hex,
+    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MemErr, Memory, MemoryActor, MemoryEntry,
+    MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]

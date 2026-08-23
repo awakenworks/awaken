@@ -5,17 +5,20 @@
 // Cause/effect graph: creator SDK -> canonical resource row -> operator SDK ->
 // update/list/subresource/terminal mutation. Effect: one wire schema and one
 // aggregate survive the client change without a compatibility copy.
-// Decision table: creator/operator = 0.105/0.117 and 0.117/0.105; each resource
-// must cross the handoff and terminate through the opposite generated client.
+// Decision table: creator/operator = 0.105/0.117, 0.117/0.105,
+// 0.117/0.120 and 0.120/0.117; each resource must cross the handoff and
+// terminate through the opposite generated client.
 
 import assert from 'node:assert/strict';
 import Anthropic0105, { toFile as toFile0105 } from '@anthropic-ai/sdk-0-105';
 import Anthropic0117, { toFile as toFile0117 } from '@anthropic-ai/sdk-0-117';
+import Anthropic0120, { toFile as toFile0120 } from '@anthropic-ai/sdk-0-120';
 import { FAKE_KEY, pass, withScenarioServer } from '../harness.mjs';
 
 const CLIENTS = [
   ['0.105.0', Anthropic0105, toFile0105],
   ['0.117.1', Anthropic0117, toFile0117],
+  ['0.120.0', Anthropic0120, toFile0120],
 ];
 
 async function drain(items) {
@@ -131,7 +134,6 @@ async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
 
   const file = await creator.beta.files.upload({
     file: await creatorToFile(Buffer.from(`file-${suffix}`), `compat-${suffix}.txt`),
-    purpose: 'agent',
   });
   assert.equal((await operator.beta.files.retrieveMetadata(file.id)).id, file.id);
   assert.equal((await operator.beta.files.delete(file.id)).type, 'file_deleted');
@@ -189,6 +191,8 @@ await withScenarioServer(
   async (baseURL) => {
     await exerciseResources(baseURL, CLIENTS[0], CLIENTS[1]);
     await exerciseResources(baseURL, CLIENTS[1], CLIENTS[0]);
+    await exerciseResources(baseURL, CLIENTS[1], CLIENTS[2]);
+    await exerciseResources(baseURL, CLIENTS[2], CLIENTS[1]);
   },
 );
 
@@ -200,8 +204,10 @@ await withScenarioServer(
     await configureModelDirectory(baseURL, upstream.url);
     const oldClient = new Anthropic0105({ apiKey: 'e2e-dummy', baseURL });
     const currentClient = new Anthropic0117({ apiKey: 'e2e-dummy', baseURL });
+    const latestClient = new Anthropic0120({ apiKey: 'e2e-dummy', baseURL });
     const oldModels = await drain(oldClient.beta.models.list());
     const currentModels = await drain(currentClient.beta.models.list());
+    const latestModels = await drain(latestClient.beta.models.list());
     assert.deepEqual(
       oldModels.map((model) => [model.id, Object.keys(model).sort()]),
       currentModels.map((model) => [model.id, Object.keys(model).sort()]),
@@ -209,7 +215,9 @@ await withScenarioServer(
     );
     assert.equal((await oldClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
     assert.equal((await currentClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
-    pass('Models list/retrieve decode identically in SDK 0.105 and 0.117');
+    assert.deepEqual(latestModels, currentModels, '0.120 Beta Models retains the 0.117 DTO');
+    assert.equal((await latestClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
+    pass('Models list/retrieve decode identically in SDK 0.105, 0.117 and 0.120');
   },
   {},
   { upstream: { models: ['fake-haiku'] } },

@@ -899,7 +899,7 @@ async fn draft_environment_assembles_and_persists_the_config() {
         let command = &commands[0];
         assert_eq!(command.command_id, "control:c1");
         assert_eq!(command.name, "cloud-box");
-        assert!(command.description.is_empty());
+        assert_eq!(command.description, None);
         assert!(command.metadata.is_empty());
         assert_eq!(command.scope, None);
         let config = serde_json::to_value(&command.config).unwrap();

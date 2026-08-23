@@ -437,7 +437,7 @@ pub struct LeaseReceipt {
     /// Opaque RFC-3339 compare token to echo on the next heartbeat.
     pub last_heartbeat: String,
     pub lease_extended: bool,
-    pub state: &'static str,
+    pub state: WorkState,
     pub ttl_seconds: u64,
 }
 
