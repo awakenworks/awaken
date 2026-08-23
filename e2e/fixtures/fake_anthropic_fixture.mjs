@@ -472,6 +472,14 @@ export const BEHAVIORS = {
   // so it needs no transcript parsing; every write is host-gated and harvested.
   fullChain(parsed) {
     const prompt = lastUserText(parsed);
+    if (prompt === 'probe-repository-skill-snapshot') {
+      // This probe deliberately returns only prompt metadata and invokes no tool:
+      // the E2E can distinguish startup discovery from successful file access.
+      const paths = systemText(parsed)
+        .split('`')
+        .filter((part) => part.includes('/.claude/skills/') && part.endsWith('/SKILL.md'));
+      return text(JSON.stringify(paths));
+    }
     if (prompt === 'author-skill-v1' || prompt === 'author-skill-v2') {
       if (toolResults(parsed).length > 0) return text(`authored ${prompt}`);
       const body = prompt.endsWith('v2') ? 'AUTHORED_SKILL_V2' : 'AUTHORED_SKILL_V1';

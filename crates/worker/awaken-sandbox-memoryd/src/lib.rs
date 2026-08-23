@@ -14,16 +14,12 @@ use std::collections::BTreeMap;
 
 use awaken_resource_contract::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 
-pub mod coordinator;
 pub mod copy;
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod fuse;
 pub mod invalidate;
 pub mod mounter;
 
-#[cfg(all(feature = "fuse", target_os = "linux"))]
-pub use coordinator::FuseMountFactory;
-pub use coordinator::{Mount, MountCoordinator, MountFactory};
 pub use copy::{
     CopySnapshot, HarvestConflict, HarvestReport, fuse_available, harvest, materialize,
 };

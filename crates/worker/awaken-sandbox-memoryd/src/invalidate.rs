@@ -1,13 +1,12 @@
-//! Cross-host cache coherence (ADR-0053 D5, distributed model).
+//! Cross-projection cache coherence (ADR-0053 D5).
 //!
-//! Single-host concurrent mounts share ONE cache (the `MountCoordinator`), so reads
-//! are coherent by construction. When the same store is mounted on **different
-//! hosts**, each keeps its own cache and a write on host A must invalidate host B's
-//! cached path. The [`Invalidator`] port is that broadcast: a write publishes
+//! Every sandbox has its own projection and FUSE cache, so a write through one
+//! projection must invalidate the same path in every peer cache. The [`Invalidator`]
+//! port is that broadcast: a write publishes
 //! `(store, path)`, and each mount's listener drops that path from its LRU (the next
 //! read refetches the durable head). [`LocalInvalidator`] is the in-process bus; a
-//! NATS / pg-notify transport swaps in behind the same trait without touching the
-//! store or the FUSE.
+//! distributed transport can implement the same trait without touching the store or
+//! FUSE realization.
 
 use std::sync::Arc;
 
@@ -17,14 +16,14 @@ use tokio::sync::broadcast;
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
 pub type Invalidation = (String, String);
 
-/// Announces that a memory path changed so other-host mounts drop it from cache.
+/// Announces that a memory path changed so peer projections drop it from cache.
 pub trait Invalidator: Send + Sync {
     /// Publish that `path` in `store` changed.
     fn publish(&self, store: &str, path: &str);
 }
 
-/// The in-process invalidation bus (a broadcast). The distributed transport
-/// (NATS / pg-notify) implements [`Invalidator`] the same way over the network.
+/// The in-process invalidation bus (a broadcast). A future distributed transport
+/// can implement [`Invalidator`] over the network.
 pub struct LocalInvalidator {
     tx: broadcast::Sender<Invalidation>,
 }
@@ -58,8 +57,8 @@ impl Invalidator for LocalInvalidator {
 }
 
 /// Wrap a [`MemoryRepository`] so every mutation publishes an invalidation — the write side
-/// of cross-host coherence. Reads pass through unchanged (the durable store is the
-/// source of truth; the invalidation only prompts *other* hosts' caches to refetch).
+/// of cross-projection coherence. Reads pass through unchanged (the durable store is
+/// the source of truth; invalidation only prompts peer caches to refetch).
 pub struct InvalidatingMemoryRepository {
     inner: Arc<dyn MemoryRepository>,
     invalidator: Arc<dyn Invalidator>,

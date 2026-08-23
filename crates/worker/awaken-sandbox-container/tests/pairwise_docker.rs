@@ -13,14 +13,19 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test pairwise_docker`
 #![cfg(feature = "docker")]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ForwardProxy, command_of};
+use awaken_sandbox_memoryd::MemoryStoreMounter;
+use common::memory_mount;
 
 const AGENT_PORT: u16 = 8080;
 
@@ -232,6 +237,99 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         exit,
         Some(0),
         "inline content must be materialized to a host file and readable in the container"
+    );
+}
+
+#[tokio::test]
+async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real_docker() {
+    let Some((provider, rt)) = setup().await else {
+        return;
+    };
+    let memory = Arc::new(VolatileMemoryRepository::new());
+    memory
+        .create("rw-store", "/note.md", "rw-seed")
+        .await
+        .unwrap();
+    memory
+        .create("ro-store", "/note.md", "ro-seed")
+        .await
+        .unwrap();
+    provider.install_memory_mounter(Arc::new(MemoryStoreMounter::copy_only(memory.clone())));
+
+    // Cause/effect decision table for the real runtime boundary:
+    // C1=two stores share only `/mnt/memory`; C2=RW child; C3=RO child;
+    // C4=write targets unbound parent. R1 C1+C2 => E1 read+write and durable
+    // harvest; R2 C1+C3 => E2 read succeeds, write fails, durable head unchanged;
+    // R3 C1+C4 => E3 parent write fails and cannot create an unowned store path.
+    // Constraint: assertions execute as the real container user against daemon
+    // bind flags and the read-only image root, not against the planner model.
+    let spec = pc::SandboxSpec {
+        scope: "pw-memory-boundary".into(),
+        isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            concat!(
+                "test \"$(cat /mnt/memory/rw/note.md)\" = rw-seed && ",
+                "test \"$(cat /mnt/memory/ro/note.md)\" = ro-seed && ",
+                "printf rw-updated > /mnt/memory/rw/note.md && ",
+                "! sh -c 'printf forbidden > /mnt/memory/ro/note.md' && ",
+                "! sh -c 'printf escaped > /mnt/memory/unbound.md'"
+            )
+            .into(),
+        ],
+        deny_tool_egress: false,
+        mounts: vec![
+            memory_mount(
+                "rw-memory",
+                "rw-store",
+                "/mnt/memory/rw",
+                pc::MountAccess::ReadWrite,
+            ),
+            memory_mount(
+                "ro-memory",
+                "ro-store",
+                "/mnt/memory/ro",
+                pc::MountAccess::ReadOnly,
+            ),
+        ],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+    };
+
+    assert_eq!(
+        run_to_exit(&provider, &rt, "pw-memory-boundary", &spec).await,
+        Some(0),
+        "real Docker must enforce both child access modes and the sealed parent",
+    );
+    assert_eq!(
+        memory
+            .get_by_path("rw-store", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("rw-updated"),
+        "RW copy is harvested through the canonical mounter",
+    );
+    assert_eq!(
+        memory
+            .get_by_path("ro-store", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("ro-seed"),
+        "RO copy cannot mutate the durable head",
     );
 }
 

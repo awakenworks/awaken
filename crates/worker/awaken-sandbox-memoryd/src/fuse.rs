@@ -24,7 +24,7 @@ use tokio::sync::broadcast;
 use crate::invalidate::Invalidation;
 use crate::{FuseError, immediate_children, splice_bytes};
 
-/// Poll cadence for the cross-host invalidation listener (ADR-0053 D5). An
+/// Poll cadence for the peer-projection invalidation listener (ADR-0053 D5). An
 /// invalidation only prompts a cache refetch, so sub-frame latency is unnecessary;
 /// polling (rather than a blocking recv) lets the listener honour its stop flag
 /// promptly at unmount without a second wakeup channel.
@@ -59,7 +59,7 @@ pub struct MemoryMountHandle {
     listener: Option<InvalidationListener>,
 }
 
-/// A background thread draining cross-host invalidations into a mount's cache
+/// A background thread draining peer-projection invalidations into a mount's cache
 /// (ADR-0053 D5). Stops when its flag is set (at unmount) or the bus closes.
 struct InvalidationListener {
     stop: Arc<AtomicBool>,
@@ -168,10 +168,10 @@ pub fn spawn_mount(
     spawn_mount_inner(fs, store_id, mountpoint, None)
 }
 
-/// Like [`spawn_mount`], but the mount also drains `invalidations` — a cross-host
-/// invalidation feed (ADR-0053 D5) — dropping stale paths from its cache so a write
-/// on another node is reflected here. Pass a [`LocalInvalidator`](crate::LocalInvalidator)
-/// subscription (or a NATS/pg-notify bridge over the same broadcast).
+/// Like [`spawn_mount`], but the mount also drains `invalidations` and drops stale
+/// paths from its cache so a write through a peer projection is reflected here.
+/// Pass a [`LocalInvalidator`](crate::LocalInvalidator) subscription for same-process
+/// coherence; a distributed adapter can feed the same broadcast receiver.
 pub fn spawn_mount_with_invalidations(
     fs: Arc<dyn MemoryRepository>,
     store_id: String,
@@ -519,7 +519,7 @@ impl MemoryFuse {
         fh
     }
 
-    /// A shared handle to the content cache, so a cross-host invalidation listener
+    /// A shared handle to the content cache, so a peer-projection invalidation listener
     /// can drop stale paths after the fuse is moved into the kernel session.
     fn cache_handle(&self) -> Arc<Mutex<ContentLruCache>> {
         self.content_cache.clone()
@@ -1811,7 +1811,7 @@ mod tests {
             "B has cached the seed content"
         );
 
-        // Host B's cross-host listener drains the shared bus into its cache. It
+        // Projection B's listener drains the shared bus into its cache. It
         // subscribes AFTER the seed create, so it only sees the write below.
         let stop = Arc::new(AtomicBool::new(false));
         let listener = {

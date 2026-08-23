@@ -10,11 +10,14 @@
 //! `scripts/e2e/k8s_container_e2e.sh`, which runs this test.
 #![cfg(feature = "k8s")]
 
+mod common;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{
@@ -25,6 +28,8 @@ use awaken_sandbox_container::{
     ContainerEnvironment, ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime,
     ContainerSandbox, ContainerState, ResidentHandConfig, WarmContainerPool, command_of,
 };
+use awaken_sandbox_memoryd::MemoryStoreMounter;
+use common::memory_mount;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Default)]
@@ -856,6 +861,100 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     assert!(
         String::from_utf8_lossy(&after.stdout).trim().is_empty(),
         "dispose must reap the inline-content ConfigMap"
+    );
+}
+
+#[tokio::test]
+async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
+    if !require_live_cluster() {
+        return;
+    }
+    let memory = Arc::new(VolatileMemoryRepository::new());
+    memory
+        .create("k8s-rw", "/note.md", "rw-seed")
+        .await
+        .unwrap();
+    memory
+        .create("k8s-ro", "/note.md", "ro-seed")
+        .await
+        .unwrap();
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image());
+    provider.install_memory_mounter(Arc::new(MemoryStoreMounter::copy_only(memory.clone())));
+
+    // Live Pod Memory decision table:
+    // C1=two authoritative snapshots; C2=RW Agent volume; C3=RO Agent volume;
+    // C4=unbound parent path; C5=terminal dispose. R1 C1+C2 => E1 seeded read,
+    // mutation and harvested durable update; R2 C1+C3 => E2 seeded read, kernel
+    // rejects mutation and durable head stays unchanged; R3 C1+C4 => E3 sealed
+    // parent rejects an unowned path; R4 R1+R2+C5 => E4 one projector harvests
+    // both exact volumes through the retained MemoryMounter.
+    let scope = format!("k8s-memory-boundary-{}", std::process::id());
+    let mut memory_spec = spec(&scope, fixture_image());
+    memory_spec.mounts = vec![
+        memory_mount(
+            "rw-memory",
+            "k8s-rw",
+            "/mnt/memory/rw",
+            pc::MountAccess::ReadWrite,
+        ),
+        memory_mount(
+            "ro-memory",
+            "k8s-ro",
+            "/mnt/memory/ro",
+            pc::MountAccess::ReadOnly,
+        ),
+    ];
+    let sandbox = provider
+        .create_container(&memory_spec)
+        .await
+        .expect("create Pod with two MemoryStore volumes");
+    let probe = concat!(
+        "read _p; ",
+        "test \"$(cat /mnt/memory/rw/note.md)\" = rw-seed; ",
+        "test \"$(cat /mnt/memory/ro/note.md)\" = ro-seed; ",
+        "printf rw-updated > /mnt/memory/rw/note.md; ",
+        "! sh -c 'printf forbidden > /mnt/memory/ro/note.md'; ",
+        "! sh -c 'printf escaped > /mnt/memory/unbound.md'; ",
+        "printf '%s\\n' '{\"type\":\"message\",\"text\":\"memory-boundary-ok\"}'; ",
+        "printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'"
+    );
+    let got = exchange(&sandbox, vec!["sh".into(), "-ec".into(), probe.into()])
+        .await
+        .expect("exercise MemoryStore paths through a real Pod exec");
+    assert!(
+        got.contains("memory-boundary-ok"),
+        "live probe completed: {got:?}"
+    );
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("terminal disposal harvests both Memory volumes");
+
+    assert_eq!(
+        memory
+            .get_by_path("k8s-rw", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("rw-updated"),
+        "RW Pod volume is harvested to the authoritative repository",
+    );
+    assert_eq!(
+        memory
+            .get_by_path("k8s-ro", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("ro-seed"),
+        "RO Pod volume cannot alter the authoritative repository",
     );
 }
 

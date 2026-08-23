@@ -177,49 +177,25 @@ hard boundary:
   there is no cross-file transaction. Acceptable because memories are independent
   files; documented so callers never assume it.
 
-### D5 — Concurrent mounts: one shared FUSE per `store_id`, refcounted (single-host)
+### D5 — Concurrent mounts: independent projections over one repository
 
-The root cause of cross-mount incoherence is "one cache per mount". On a single
-host we eliminate it structurally instead of importing `awaken-next`'s NATS
-broadcast: **a `store_id` is mounted exactly once**, and every sandbox that binds it
-shares that one mount.
+Each sandbox owns its mount path and teardown guard. `MemoryStoreMounter`, constructed
+once per host, wraps the configured `MemoryRepository` with one `LocalInvalidator`;
+every FUSE projection subscribes to that bus. A successful mutation publishes
+`(store_id, path)`, peer projections evict the matching cache entry, and their next
+read fetches the durable head. This avoids a privileged bind/namespace splice and
+keeps one production realization path across Workdir and Namespace providers.
 
-A **`MountCoordinator`**, keyed by `store_id`, reference-counts the shared mount:
-
-```
-acquire(store_id, dest):
-    lock the store_id entry
-    if not mounted -> spawn one MemoryFuse at a neutral host path
-                      (e.g. /run/awaken/memory/{store_id})
-    expose that mount at dest (bind on the namespace tier; direct mount / bind on
-      the workdir tier)
-    refcount += 1
-release(store_id, dest):
-    detach dest; refcount -= 1
-    if refcount == 0 -> unmount()  (drains open fds, ≤5 s)
-```
-
-- One `store_id` ↔ one `MemoryFuse` ↔ one `ContentLruCache`/inode table. N sandboxes
-  are N views of the **same** fs, so **reads are constructively coherent** — there is
-  no second cache to go stale, and no invalidation machinery is needed.
-- **Writes stay CAS-serialized.** Two sandboxes opening the same file get two fds
-  (two buffers, two base_shas) on the one `MemoryFuse`; the first flush wins and
-  advances the store sha, the second conflicts → `EAGAIN`, keeps its buffer, and the
-  agent reopens to retry. Concurrent mounts give **coherent reads + CAS-safe writes**,
-  **not** merged concurrent edits (no CRDT) — stated plainly for callers.
-- **Lifecycle safety via refcount:** one sandbox exiting only `release`s; the shared
-  mount survives for the others and is unmounted only at refcount 0. A daemon crash
-  surfaces `EIO` to all bound sandboxes (no hang); the supervisor re-establishes the
-  mount without leaving the mountpoint dangling.
-
-**Cross-host (distributed) is a later evolution**, not this ADR's target: when the
-same store is mounted on two hosts a single shared mount is impossible, so each host
-keeps a **version-validated cache** (revalidate the cached `(path, version)` against
-the store — the in-memory `path → version` index D1 already maintains is the local
-oracle; a remote oracle is a cheap version query) plus an **`Invalidator`** seam
-(in-process bus now; NATS / pg-notify later). CAS write-safety is identical in both
-models. The interface is designed so the distributed model bolts on without
-reworking `MemoryRepository` or the FUSE.
+- **Writes stay CAS-serialized.** Concurrent file descriptors carry independent base
+  SHAs; the first flush advances the durable head and a stale second flush fails with
+  `EAGAIN`. Edits are not merged and there is no CRDT.
+- **Lifecycle is projection-local.** Disposing one sandbox tears down only its own
+  mount. Other projections remain mounted and coherent through the shared repository
+  and invalidation bus.
+- **Cross-host transport remains deferred.** `Invalidator` is the transport port, but
+  only the in-process `LocalInvalidator` is implemented. A distributed transport must
+  reuse that port and the same repository authority; it must not add another store or
+  mount coordinator.
 
 ### D6 — The unit of work is the provisioning-contract mount, not a legacy bolt-on
 
@@ -241,7 +217,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   `MountRequirement`, and stamps `RealizedMount { realization: Fuse, mount_path:
   /mnt/memory/{store_id} }`. The provider itself takes no `fuser`/resources
   dependency; the realizer (a `server`-bucket `awaken-sandbox-memoryd` crate, D2)
-  implements `MemoryMounter` and owns the `MountCoordinator` (D5).
+  implements `MemoryMounter` and owns the shared invalidation bus (D5).
 - **The Host has no Memory write-back registry.** The memory-store family routes
   through the neutral provider contract. A `MemoryMount` guard owns the complete
   realization lifetime; FUSE writes through and copy-mode teardown reconciles its
@@ -272,8 +248,8 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
 |---|---|---|
 | **P0** | `MemoryRepository` port + `PathAddressedMemoryStore` (inmem+fs): path-unique, CAS, monotonic version, stored timestamps, atomic rename-replace | Rust unit: create / update-CAS-conflict / rename-replace / delete / list |
 | **P1** | `awaken-sandbox-memoryd`: port `fuse.rs` over `MemoryRepository`; conformance floor; real timestamps in `attr` | Ported unit tests: dirty-budget fail-closed, rename-keeps-open-fd, stale-fd-no-clobber |
-| **P2** | `MountCoordinator` (refcounted shared mount per `store_id`) + mount handle drain | Unit: refcount acquire/release, open-fd drain |
-| **P2.5** | Concurrency tests | (1) mount A writes → mount B reads fresh; (2) concurrent write same file → one wins, one `EAGAIN`, no lost update; (3) create-create race → one wins; (4) two sandboxes share store, release one, other still R/W, unmount only at 0 |
+| **P2** | Per-projection mount guards + one host-local invalidation bus | Unit: independent teardown, publish/subscribe; kernel: warmed peer cache observes write |
+| **P2.5** | Concurrency tests | (1) mount A writes → warmed mount B invalidates and reads fresh; (2) concurrent write same file → one wins, one `EAGAIN`, no lost update; (3) create-create race → one wins; (4) tear down A while B remains mounted and readable |
 | **P3** | Contract provider wiring: `LocalProvider` realizes `MemoryStore` → `Realization::Fuse` via the injected `MemoryMounter`; route the host memory-store family through the contract provider (retire copy-in/harvest for it) | Kernel-VFS integration test (gated on `/dev/fuse`) + TS e2e: agent writes memory files, readable across Runs and after restart |
 | **P4** | sqlite/pg backends + repoint `memory_store_api.rs` at the new store | Existing managed-memory e2e green + durability e2e |
 | **P5** | Bwrap namespace splice (mount propagation + `--bind`) | Bwrap integration test (gated); failure does not affect P3 |
@@ -297,7 +273,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   hard boundary so no caller assumes otherwise.
 - **The FUSE risk is bought proven.** The load-bearing FUSE logic is ported from
   `awaken-next`'s tested implementation; the genuinely new work — and the new risk —
-  is the store-model upgrade (D1) and the single-host concurrent wiring (D5), which
+  is the store-model upgrade (D1) and the concurrent invalidation wiring (D5), which
   are ordinary async-Rust and are unit-testable without a kernel.
 - **Cost / dependency footprint.** Adds a `fuser` dependency (in the worker-tier
   `awaken-sandbox-memoryd`; boundary allowlist updated), needs `/dev/fuse` for the
@@ -310,7 +286,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   `awaken-sandbox-memoryd` (worker) and is the only crate that links `fuser`; the
   composition root injects it.
 - **Delivered:** P0 (`MemoryRepository` port + CAS store, including conditional delete), P1 (the FUSE port, proven by a
-  real kernel-VFS integration test), P2/P2.5 (`MountCoordinator` + concurrency),
+  real kernel-VFS integration test), P2/P2.5 (per-projection lifecycle + invalidation concurrency),
   P3 (95% changed-code coverage), P4 (the durable path-addressed store backs the
   `/memories` HTTP endpoints, with a restart-durable TS e2e), and P5 minus the bwrap
   splice (see below). `awaken-sandbox-local` **and** `awaken-sandbox-memoryd` were
