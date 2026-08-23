@@ -18,7 +18,8 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentWithdrawalOutcome,
 };
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
+    ClaimedWork, HeartbeatResult, LeaseHeartbeat, QueueStats, SessionWorkLease, WorkItem,
+    WorkQueue, WorkQueueError,
 };
 
 /// Application-level failure returned to outer transports.
@@ -237,7 +238,7 @@ impl EnvironmentExecutionApplication {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
+    ) -> Result<Option<ClaimedWork>, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self
             .work
@@ -249,6 +250,27 @@ impl EnvironmentExecutionApplication {
                 reclaim_older_than_ms,
             )
             .await?)
+    }
+
+    pub async fn current_session_work_lease(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, EnvironmentExecutionError> {
+        self.require_environment(environment_id).await?;
+        Ok(self
+            .work
+            .current_session_lease(environment_id, session_id, now_ms)
+            .await?)
+    }
+
+    pub async fn release_claim(
+        &self,
+        lease: &SessionWorkLease,
+    ) -> Result<bool, EnvironmentExecutionError> {
+        self.require_environment(&lease.environment_id).await?;
+        Ok(self.work.release_claim(lease).await?)
     }
 
     pub async fn work_stats(
@@ -1213,7 +1235,7 @@ mod tests {
         let accepted = application
             .heartbeat_work(
                 "worker",
-                &claimed.id,
+                &claimed.item.id,
                 "worker-a",
                 11,
                 LeaseHeartbeat {
@@ -1227,7 +1249,7 @@ mod tests {
         let stale = application
             .heartbeat_work(
                 "worker",
-                &claimed.id,
+                &claimed.item.id,
                 "worker-a",
                 12,
                 LeaseHeartbeat {
@@ -1286,6 +1308,17 @@ mod tests {
             now: u64,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.claim(env, worker, now).await
+        }
+        async fn current_session_lease(
+            &self,
+            env: &str,
+            session: &str,
+            now: u64,
+        ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+            self.inner.current_session_lease(env, session, now).await
+        }
+        async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+            self.inner.release_claim(lease).await
         }
         async fn ack(
             &self,

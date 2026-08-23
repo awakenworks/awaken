@@ -16,6 +16,20 @@ use axum::Router;
 use super::{EchoModel, SharedHost, resource_host};
 use crate::deployment::ScenarioPlatform;
 
+fn scenario_session_work_capability() -> awaken_protocol_managed::SessionWorkCapabilityConfiguration
+{
+    awaken_protocol_managed::SessionWorkCapabilityConfiguration::new(
+        awaken_iam_server::AccessTokenAuthority::new(awaken_iam_server::LocalSeedSigner::new(
+            "scenario-session-work-v1",
+            [0x53; 32],
+        )),
+        "urn:awaken:scenario-host",
+        "awaken-managed-session-work",
+        600,
+    )
+    .expect("the fixed scenario Session Work capability is valid")
+}
+
 /// Scenario equivalent of the production service wiring: one secret-free
 /// Resource Registry is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
@@ -122,17 +136,29 @@ pub(super) fn mount_with_environments_and_agent_source(
             environment_execution.clone(),
         ),
     };
-    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
-        .merge(awaken_protocol_managed::environment_authoring_router(
-            environment_authoring.clone(),
-        ))
-        .merge(awaken_protocol_managed::environment_work_router(
-            environment_execution,
-        ))
-        .merge(awaken_protocol_awaken::environment_extensions_router(
-            environment_authoring.application(),
-            environment_authoring.sandbox_policy_store(),
-        ))
+    let session_repository = managed.session_application().session_repository_handle();
+    let capability = scenario_session_work_capability();
+    let router =
+        awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
+            .merge(awaken_protocol_managed::environment_authoring_router(
+                environment_authoring.clone(),
+            ))
+            .merge(
+                awaken_protocol_managed::environment_work_router_with_capability(
+                    environment_execution.clone(),
+                    Some(capability.clone()),
+                ),
+            )
+            .merge(awaken_protocol_awaken::environment_extensions_router(
+                environment_authoring.application(),
+                environment_authoring.sandbox_policy_store(),
+            ));
+    awaken_coordinator::SessionWorkCapabilityGuard::new(
+        capability,
+        environment_execution,
+        session_repository,
+    )
+    .protect(router)
 }
 
 pub(super) struct FixedAgentPublication {

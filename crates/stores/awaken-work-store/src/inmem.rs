@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, SessionWorkLease,
-    WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkState,
+    ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats,
+    SessionWorkLease, WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError,
+    WorkState,
 };
 
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
@@ -79,7 +80,7 @@ impl InMemoryWorkQueue {
         }
     }
 
-    fn current_session_lease(
+    fn session_lease_snapshot(
         &self,
         env_id: &str,
         session_id: &str,
@@ -251,6 +252,7 @@ impl WorkQueue for InMemoryWorkQueue {
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
             .await
+            .map(|claimed| claimed.map(ClaimedWork::into_item))
     }
 
     async fn claim_with_reclaim(
@@ -260,7 +262,7 @@ impl WorkQueue for InMemoryWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
         self.book.record_poll(env_id, poller_id, now_ms);
         let mut works = self.works.lock().unwrap();
         for (wid, w) in works.iter_mut() {
@@ -297,7 +299,54 @@ impl WorkQueue for InMemoryWorkQueue {
         w.state = WorkState::Active;
         w.started_at = Some(OBJECT_AT.to_string());
         w.latest_heartbeat_at = None;
-        Ok(Some(w.clone()))
+        let item = w.clone();
+        let session_lease =
+            match &item.data {
+                WorkPayload::Session { id } => self.book.authority(&item.id, now_ms).map(
+                    |(owner, epoch, expires_at_unix_ms)| SessionWorkLease {
+                        work_id: item.id.clone(),
+                        environment_id: env_id.to_string(),
+                        session_id: id.clone(),
+                        owner,
+                        epoch,
+                        expires_at_unix_ms,
+                    },
+                ),
+                WorkPayload::HealthCheck { .. } => None,
+            };
+        Ok(Some(ClaimedWork {
+            item,
+            session_lease,
+        }))
+    }
+
+    async fn current_session_lease(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        Ok(self.session_lease_snapshot(env_id, session_id, now_ms))
+    }
+
+    async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        let Some(work) = works.get_mut(&lease.work_id).filter(|work| {
+            work.environment_id == lease.environment_id
+                && work.state == WorkState::Active
+                && matches!(&work.data, WorkPayload::Session { id } if id == &lease.session_id)
+        }) else {
+            return Ok(false);
+        };
+        if !self
+            .book
+            .release_exact(&lease.work_id, &lease.owner, lease.epoch)
+        {
+            return Ok(false);
+        }
+        work.state = WorkState::Queued;
+        work.latest_heartbeat_at = None;
+        Ok(true)
     }
     async fn ack(
         &self,
@@ -446,12 +495,12 @@ impl WorkQueue for InMemoryWorkQueue {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        if let Some(lease) = self.current_session_lease(env_id, session_id, now_ms) {
+        if let Some(lease) = self.session_lease_snapshot(env_id, session_id, now_ms) {
             if lease.owner != worker_owner {
                 return Ok(Some(lease));
             }
             self.book.lease(&lease.work_id, now_ms);
-            return Ok(self.current_session_lease(env_id, session_id, now_ms));
+            return Ok(self.session_lease_snapshot(env_id, session_id, now_ms));
         }
         let work_id = self.enqueue_session(env_id, session_id).await?;
         {
@@ -485,7 +534,7 @@ impl WorkQueue for InMemoryWorkQueue {
             work.started_at = Some(OBJECT_AT.to_string());
             work.latest_heartbeat_at = None;
         }
-        Ok(self.current_session_lease(env_id, session_id, now_ms))
+        Ok(self.session_lease_snapshot(env_id, session_id, now_ms))
     }
 
     async fn update_metadata(

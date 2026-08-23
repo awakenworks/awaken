@@ -2,9 +2,9 @@
 //! object in the official Managed Agents wire shapes: the built-in tools fold into a
 //! single `agent_toolset_20260401` reference (unregistered tools disabled,
 //! confirmation-gated tools `always_ask`), client tools become `custom` definitions,
-//! offered skills become `custom` skill references, and a delegate roster becomes a
-//! `coordinator` multiagent object. This drives the full `ManagedHost::capabilities`
-//! → host accessors → `project` wiring over the public wire.
+//! only resolved Session Resource skills become downloadable skill references, and a
+//! delegate roster becomes a `coordinator` multiagent object. This drives the full
+//! `ManagedHost::capabilities` → host accessors → `project` wiring over the public wire.
 
 use std::sync::Arc;
 
@@ -39,25 +39,27 @@ async fn create_session(app: &Router) -> serde_json::Value {
 
 /// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
 /// registered tools stay (read/glob/grep auto-allowed → toolset default;
-/// bash/write/edit/web_fetch gated → `always_ask`), while configurable
-/// `web_search` is disabled when no search connector is published. Offered skills
-/// appear on `agent.skills`.
+/// bash/write/edit gated → `always_ask`), while host-owned `web_fetch` and
+/// configurable `web_search` stay disabled when no corresponding web capability
+/// is published. A host-only instruction skill is not advertised as a downloadable
+/// Session Resource.
 ///
 /// Cause/effect graph and decision table:
 /// C1=the host registers a static tool, C2=the effective policy requires approval,
-/// C3=a configurable connector is absent, C4=an override names a closed Agent
-/// toolset member; E1=the tool remains enabled, E2=its wire policy is
+/// C3=a host-owned web capability is absent, C4=an override names a closed Agent
+/// toolset member, C5=a Skill exists only in the host instruction registry and has
+/// no resolved Resource pin. E1=the tool remains enabled, E2=its wire policy is
 /// `always_ask`, E3=the tool is disabled, E4=the config's `type` repeats the
-/// closed member discriminator.
-/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers `web_fetch`;
-/// R2(!C1,!C2,C3,C4)->E3+E4 covers `web_search`;
+/// closed member discriminator, E5=no downloadable Skill is projected.
+/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers bash/write/edit;
+/// R2(!C1,!C2,C3,C4)->E3+E4 covers `web_fetch` and `web_search`;
 /// R3(C1,!C2,!C3)->the default config covers read/glob/grep;
-/// R4(C4)->E4 covers every emitted override.
+/// R4(C4)->E4 covers every emitted override; R5(C5)->E5.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
 /// the Managed projector is the only wire owner, and has no legacy type-less path.
-/// FMECA: advertising absent search would create an inexecutable tool (fail closed
-/// through E3); disabling fetch would hide a real capability (caught by R1); losing
-/// the approval policy could perform network I/O without consent (caught by E2).
+/// FMECA: advertising either absent web capability would create an inexecutable
+/// tool (fail closed through E3); losing the approval policy on a published mutating
+/// tool could perform an operation without consent (caught by E2).
 #[tokio::test]
 async fn managed_session_folds_builtins_into_the_agent_toolset() {
     let skill = SkillSpec::new(
@@ -82,16 +84,13 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
                 { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "type": "web_fetch", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
                 { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
         }])
     );
-    assert_eq!(
-        session["agent"]["skills"],
-        serde_json::json!([{ "type": "custom", "skill_id": "deploy", "version": "latest" }])
-    );
+    assert_eq!(session["agent"]["skills"], serde_json::json!([]), "R5/E5");
     assert!(session["agent"]["multiagent"].is_null());
     assert!(session["resources"].as_array().unwrap().is_empty());
 }

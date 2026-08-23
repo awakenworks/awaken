@@ -70,6 +70,10 @@ pub struct CoordinatorDependencies {
         Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
     pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
+    /// One IAM authority shared by WorkSecret minting and the outer
+    /// Coordinator capability guard. `None` is test-only/non-Session wiring.
+    pub session_work_capability:
+        Option<awaken_protocol_managed::SessionWorkCapabilityConfiguration>,
     pub default_workspace: String,
     /// Authenticated executable Agent and Environment registration routes.
     /// Application consumers refresh through the injected neutral port; these
@@ -99,6 +103,9 @@ pub struct CoordinatorComponent {
     /// Coordinator-owned management commands before the process-level audit/IAM
     /// edge is applied.
     pub management_router: Router,
+    /// Installed by process composition outside the ordinary IAM guard so a
+    /// capability-shaped credential is verified before any fallback family.
+    pub session_work_capability_guard: Option<crate::SessionWorkCapabilityGuard>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +166,7 @@ pub async fn build_coordinator_component(
         executable_projection_refresh,
         environments,
         sessions,
+        session_work_capability,
         default_workspace,
         private_router,
         service_authenticator,
@@ -208,14 +216,20 @@ pub async fn build_coordinator_component(
         None => private_router,
     };
     let private_router = private_router.merge(worker_transport);
+    let session_work_capability_guard = session_work_capability.clone().map(|capability| {
+        crate::SessionWorkCapabilityGuard::new(capability, environments.clone(), sessions.clone())
+    });
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(
                 dream_application.clone(),
             ))
-            .merge(awaken_protocol_managed::environment_work_router(
-                environments,
-            ))
+            .merge(
+                awaken_protocol_managed::environment_work_router_with_capability(
+                    environments,
+                    session_work_capability,
+                ),
+            )
             .merge(crate::application_access::router(
                 application_access,
                 sessions,
@@ -256,6 +270,7 @@ pub async fn build_coordinator_component(
         managed_router: managed,
         private_router,
         management_router,
+        session_work_capability_guard,
     })
 }
 

@@ -66,6 +66,7 @@ awaken-tenancy.workspace = true
 # and the ACL that maps its rows ⇄ the Anthropic Managed wire tags.
 awaken-credential-vault.workspace = true
 awaken-service-auth-contract.workspace = true
+awaken-iam-server.workspace = true
 # Neutral sandbox egress vocabulary (`NetworkPolicy`): the environments ACL maps
 # the Anthropic `BetaEnvironment.networking` wire config onto this typed policy, so
 # the egress decision is a shared neutral fact rather than an inline string match.
@@ -143,6 +144,7 @@ name = "streaming"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-iam-contract.workspace = true
 awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }

@@ -929,10 +929,17 @@ impl SessionRuntime for CapableFake {
     }
 }
 
-/// A created session advertises the runtime's surface on its agent object: the
-/// built-in toolset, a custom tool, skills, and a multiagent roster — not an empty set.
+/// A created session advertises the runtime's executable surface on its agent
+/// object. Host-only instruction skills remain internal unless Session resource
+/// resolution freezes an immutable version for worker download.
 #[tokio::test]
 async fn create_session_advertises_capabilities() {
+    // Cause/effect graph: C1=runtime tool/delegate capability, C2=host-only Skill,
+    // C3=resolved Session Skill Resource. E1=project tools/delegate, E2=omit the
+    // non-downloadable Skill, E3=project an exact numeric Skill pin. This fixture
+    // selects R1(C1+C2+!C3)->E1+E2; `session_resources` owns R2(C3)->E3.
+    // Constraint: the durable Resource manifest, not runtime capability metadata,
+    // is the sole authority for official worker Skill downloads.
     let app = router(Arc::new(ManagedState::new(CapableFake)));
     let s = json_call(
         &app,
@@ -947,7 +954,7 @@ async fn create_session_advertises_capabilities() {
     assert_eq!(tools[1]["type"], "custom");
     assert_eq!(tools[1]["name"], "submit");
     assert!(s["agent"]["mcp_servers"].as_array().unwrap().is_empty());
-    assert_eq!(s["agent"]["skills"][0]["skill_id"], "deploy");
+    assert_eq!(s["agent"]["skills"], serde_json::json!([]), "R1/E2");
     assert_eq!(s["agent"]["multiagent"]["type"], "coordinator");
     assert!(s["resources"].as_array().unwrap().is_empty());
 }
@@ -983,9 +990,9 @@ async fn create_session_defaults_to_empty_surface() {
 /// Golden wire contract for the created session's agent object: the exact Managed
 /// Agents shapes the SDK parses — one `agent_toolset_20260401` reference (with the
 /// required per-tool 0.120 output discriminant, unregistered tools disabled, and
-/// the confirmation-gated ones `always_ask`), a
-/// `custom` tool, a `custom` skill reference, a `coordinator` multiagent roster, and
-/// empty `mcp_servers` / `resources`. A field rename or extra key breaks this.
+/// the confirmation-gated ones `always_ask`), a `custom` tool, a `coordinator`
+/// multiagent roster, and empty `skills` / `mcp_servers` / `resources`. A field
+/// rename, extra key, or projection of a non-Resource Skill breaks this.
 #[tokio::test]
 async fn session_capability_objects_match_wire_contract() {
     // Causes: the fixtures below establish `session capability objects match wire contract` with
@@ -1032,10 +1039,7 @@ async fn session_capability_objects_match_wire_contract() {
         ])
     );
     assert_eq!(s["agent"]["mcp_servers"], serde_json::json!([]));
-    assert_eq!(
-        s["agent"]["skills"],
-        serde_json::json!([{ "type": "custom", "skill_id": "deploy", "version": "latest" }])
-    );
+    assert_eq!(s["agent"]["skills"], serde_json::json!([]));
     assert_eq!(s["agent"]["multiagent"]["type"], "coordinator");
     let child = &s["agent"]["multiagent"]["agents"][0];
     assert_eq!(child["id"], "researcher");

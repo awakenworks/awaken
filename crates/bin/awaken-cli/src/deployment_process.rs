@@ -1,6 +1,31 @@
 //! Deployment-selected runtime process and migration process.
 
 use super::*;
+use sha2::Digest as _;
+
+const LOCAL_SESSION_WORK_CAPABILITY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+pub(super) fn local_session_work_capability(
+    seal_key: &[u8; 32],
+    org_id: &str,
+) -> Result<awaken_protocol_managed::SessionWorkCapabilityConfiguration, String> {
+    let digest = sha2::Sha256::new()
+        .chain_update(b"awaken/session-work-capability/signing-seed/v1\0")
+        .chain_update(seal_key)
+        .finalize();
+    let mut seed = [0_u8; 32];
+    seed.copy_from_slice(&digest);
+    awaken_protocol_managed::SessionWorkCapabilityConfiguration::new(
+        awaken_iam_server::AccessTokenAuthority::new(awaken_iam_server::LocalSeedSigner::new(
+            "awaken-session-work-local-v1",
+            seed,
+        )),
+        format!("urn:awaken:self-hosted:{org_id}"),
+        "awaken-managed-session-work",
+        LOCAL_SESSION_WORK_CAPABILITY_TTL_SECONDS,
+    )
+    .map_err(|error| error.to_string())
+}
 
 pub(super) async fn prepare_runtime_process(
     deployment: &config::ResolvedDeployment,
@@ -123,6 +148,12 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         Some(authenticator) => authenticator,
         None => worker_transport_security::authenticator(deployment)?,
     };
+    let session_work_capability = match coordinator_services.session_work_capability {
+        Some(capability) => Some(capability),
+        None => key
+            .map(|key| local_session_work_capability(key, &deployment.org_id))
+            .transpose()?,
+    };
     let control_service = if role == config::Role::Coordinator {
         let (url, token_source) = deployment.control_service.coordinator_credentials()?;
         Some(ControlServices::remote(Arc::new(
@@ -165,6 +196,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
                 .cloud_native_credential_realization,
             repository_transport_authorizer: coordinator_services.repository_transport_authorizer,
             inference_materializer: coordinator_services.inference_materializer,
+            session_work_capability,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority.clone()),
             worker_observations: Some(worker_observations),

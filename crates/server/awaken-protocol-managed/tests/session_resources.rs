@@ -1893,7 +1893,17 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     );
     assert_eq!(
         session["agent"]["skills"][0],
-        json!({"type": "custom", "skill_id": "skill_release", "version": "latest"})
+        json!({"type": "custom", "skill_id": "skill_release", "version": "1"}),
+        "the wire exposes the exact durable pin so the official worker never re-resolves latest"
+    );
+    let session_id = session["id"].as_str().unwrap();
+    let (retrieved_status, retrieved) =
+        call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(retrieved_status, StatusCode::OK);
+    assert_eq!(
+        retrieved["agent"]["skills"][0],
+        json!({"type": "custom", "skill_id": "skill_release", "version": "1"}),
+        "create and rehydrated retrieval share the persisted Skill authority"
     );
     let child = &session["agent"]["multiagent"]["agents"][0];
     assert_eq!(session["agent"]["name"], "Published Coordinator");

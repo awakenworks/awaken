@@ -183,6 +183,10 @@ pub struct CoordinatorServiceAdapters {
     /// lifecycle ownership.
     pub inference_materializer:
         Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>,
+    /// Shared issuer/verifier configuration for official Managed Agents
+    /// `WorkSecret.sessions_token` capabilities.
+    pub session_work_capability:
+        Option<awaken_protocol_managed::SessionWorkCapabilityConfiguration>,
 }
 
 impl CoordinatorServiceAdapters {
@@ -230,6 +234,15 @@ impl CoordinatorServiceAdapters {
         materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
     ) -> Self {
         self.inference_materializer = Some(materializer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_work_capability(
+        mut self,
+        capability: awaken_protocol_managed::SessionWorkCapabilityConfiguration,
+    ) -> Self {
+        self.session_work_capability = Some(capability);
         self
     }
 }

@@ -260,6 +260,32 @@ pub struct SessionWorkLease {
     pub expires_at_unix_ms: u64,
 }
 
+/// One atomic WorkQueue claim result.
+///
+/// Session work carries the exact lease snapshot installed by the same store
+/// transaction as `queued -> active`. Health checks intentionally carry no
+/// Session authority. Keeping this beside [`WorkItem`] prevents a protocol
+/// adapter from re-reading mutable lease state and accidentally minting a
+/// capability for a later claimant.
+#[derive(Clone, Debug)]
+pub struct ClaimedWork {
+    pub item: WorkItem,
+    pub session_lease: Option<SessionWorkLease>,
+}
+
+impl ClaimedWork {
+    #[must_use]
+    pub fn into_item(self) -> WorkItem {
+        self.item
+    }
+}
+
+/// Authenticated proof stamped by the Coordinator edge after it has verified a
+/// Session work capability against the current WorkQueue lease. Inner protocol
+/// guards may trust this marker; bearer-token parsing alone must never create it.
+#[derive(Clone, Debug)]
+pub struct VerifiedSessionWorkLease(pub SessionWorkLease);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionWorkOwnership {
     NotRequired,
@@ -529,11 +555,31 @@ pub trait WorkQueue: Send + Sync {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
         let _ = reclaim_older_than_ms;
         let _ = poller_id;
-        self.claim(env_id, lease_owner, now_ms).await
+        self.claim(env_id, lease_owner, now_ms)
+            .await
+            .map(|claimed| {
+                claimed.map(|item| ClaimedWork {
+                    item,
+                    session_lease: None,
+                })
+            })
     }
+    /// Read the current live Session lease without acquiring, renewing, or
+    /// otherwise changing authority. Used only after a bounded token hint has
+    /// identified the Session whose signed capability must be verified.
+    async fn current_session_lease(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
+    /// Compensate a failed post-claim capability mint. The release succeeds
+    /// only for the exact active `(work, environment, session, owner, epoch)`
+    /// snapshot, so it can never return a later claimant's work to the queue.
+    async fn release_claim(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(
         &self,

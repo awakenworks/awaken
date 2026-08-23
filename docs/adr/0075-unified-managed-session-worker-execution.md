@@ -65,16 +65,31 @@ item: only a newly admitted Session event may explicitly wake it. A terminal
 Session retires the item and clears its lease.
 
 At the Managed HTTP edge, the authenticated Environment credential is the
-stable lease authority. The official `WorkPoller` sends
+stable claim authority for `poll` and `ack`. The official `WorkPoller` sends
 `Anthropic-Worker-ID` on `poll` for poller identity and metrics, while its
-`ack`, `heartbeat`, and `stop` calls retain the Environment bearer but omit that
-header. The generated raw `work.poll()` method also makes Worker ID optional
-and may carry the same credential as `X-Api-Key`. The adapter stores only a
-domain-separated credential fingerprint as owner. When present, Worker ID is a
+`ack` call retains the Environment bearer but omits that header. The generated
+raw `work.poll()` method also makes Worker ID optional and may carry the same
+credential as `X-Api-Key`. The adapter stores only a domain-separated
+Environment-credential fingerprint as owner. When present, Worker ID is a
 separate ephemeral poller observation; when omitted, the opaque owner is the
 fallback observation coordinate. Header-only callers use Worker ID for both
-roles. All forms enter the same atomic `WorkQueue` claim and mutation fence; no
-credential map or second lease registry exists.
+roles.
+
+For Session Work, the same atomic claim additionally returns the exact
+`SessionWorkLease` snapshot installed by that transaction. The protocol encodes
+a short-lived IAM capability as `WorkSecret.sessions_token`; it never copies the
+Environment credential into the Session client. The capability is bound to the
+Session subject, a distinct audience, the exact Work epoch, and the single
+`managed.session.serve` scope. Every downstream request verifies its signature,
+issuer, audience, scope, live Work epoch, Session owner Workspace, route
+coordinates, and the Session's active Resource manifest. It permits only exact
+Session/event calls, exact pinned custom Skill versions, and attached
+MemoryStores (writes only for `ReadWrite`); heartbeat/stop reuse the verified
+lease owner. `ack` remains Environment-authenticated because the official
+poller performs it before constructing the Session client. A signing failure
+conditionally releases the exact owner+epoch claim before returning unavailable.
+The WorkQueue and IAM signer/JWKS remain the only authorities; no credential
+map, token table, or second lease registry exists.
 
 ### D3: a Run claim is an attempt fence, not another placement decision
 
@@ -163,7 +178,9 @@ create trigger
 
 Worker trigger
   -> Managed edge separates poller observation from credential-derived owner
-  -> claim Work under that one owner
+  -> claim Work and its exact Session lease under that one owner
+  -> mint epoch-fenced WorkSecret Session capability; exact-release on failure
+  -> downstream request verifies IAM + live lease + active Resource manifest
   -> registered adapter only: atomically acquire the exact same Work item
   -> optionally claim a subordinate Run attempt
   -> authenticate Worker incarnation and verify live Work + Run epochs
@@ -212,7 +229,9 @@ authoritative path, not a compensating parallel mechanism.
 | Crash or lost response after Session insert | caller retries while realization is absent | 8/4/4 · 128 | repository idempotency and injected later-CAS failure | replay the same root/key; reconciler projects the frozen truth; no partial creation state exists |
 | Work enqueue outage or lost response | self-hosted Session remains Preparing | 8/4/3 · 96 | dispatch failure classification and reconciliation report | return `session_work_dispatch_failed`; stable idempotent Work id is retried; never report false readiness |
 | Reconciler revives completed Work | idle Worker loops forever | 7/4/5 · 140 | stopped/enqueue/wake conformance rule | idempotent enqueue preserves `Stopped`; only a driving event calls explicit wake |
-| Missing identity, mismatched Environment credential, or Worker ID incorrectly required by the raw/helper SDK lifecycle | official clients cannot claim/finish Work, anonymous owners collide, or the current owner is disrupted | 10/3/4 · 120 | credential/Worker cause-effect table, raw client and WorkPoller E2E, cross-backend owner-fence tests, HTTP 400/412 | derive the lease owner from the authenticated credential fingerprint; treat Worker ID as an optional observation label; allow unlabeled SDK operations only under that same credential; atomically reject mismatched/missing authority without state change |
+| Missing identity, mismatched Environment credential, copied Environment key in `sessions_token`, or Worker ID incorrectly required by the raw/helper SDK lifecycle | official clients cannot claim/finish Work, a Session receives Environment-wide authority, anonymous owners collide, or the current owner is disrupted | 10/3/4 · 120 | credential/Worker and capability decision tables, raw client and WorkPoller E2E, cross-backend owner/epoch tests, HTTP 400/401/403/412 | derive the claim owner from the authenticated Environment credential; mint a distinct Session/epoch/resource-bounded capability; treat Worker ID as an optional observation label; atomically reject mismatched/missing authority without state change |
+| Session capability signing is unavailable after claim | active Work is stranded without a usable `sessions_token` | 9/3/3 · 81 | failing-signer HTTP test and exact-compensation backend conformance | conditionally release only the exact work/environment/session/owner/epoch claim; a later owner increments epoch and stale compensation cannot release it |
+| Session capability is replayed across Session, Work, Skill, MemoryStore, Workspace, replica, or after reclaim | delegated Worker escapes its frozen Session authority | 10/3/4 · 120 | crypto/live-lease middleware test, route/resource matrix, shared-JWKS Cloud composition test | verify the shared IAM signature plus exact issuer/audience/scope/subject/current epoch; derive Workspace and Resource access only from the durable Session; return 401 for invalid/stale and 403 for valid-but-disallowed routes |
 | Worker crashes or a response is replayed after reclaim | two Workers execute one Session | 10/4/5 · 200 | expiry/epoch conformance | expiry returns item to queued; next claim increments monotonic epoch; stale owner/epoch cannot mutate |
 | Official/custom and registered Workers race | parallel execution paths | 10/3/6 · 180 | exact acquire contention test | both contend in the same WorkQueue transaction; exactly one lease wins; loser fails before Session Control |
 | Run is claimed without its Session Work, or Work owner changes | subordinate attempt escapes placement authority | 10/3/6 · 180 | signed Worker rules T17–T19 | resume atomically acquires exact Work; claim checks/renewal extend it; every phase verifies exact incarnation owner |
@@ -266,8 +285,13 @@ The reduced decision table for the interacting ownership causes is:
   exclusion.
 - Managed poll separates the optional SDK Worker ID observation from the
   authenticated Environment credential fingerprint used by the same
-  owner-fenced Work mutations; stopped Work has explicit wake semantics and
-  terminal Work has coordinator-owned retirement.
+  owner-fenced claim/ack mutations; Session claims return their exact lease
+  snapshot for capability minting, while heartbeat/stop consume the verified
+  lease proof; stopped Work has explicit wake semantics and terminal Work has
+  coordinator-owned retirement.
+- Coordinator process composition shares one IAM signer/JWKS between capability
+  minting and verification, and derives the downstream route/Resource grant
+  from the durable Session rather than an injected permission list.
 - registered dispatch acquires/renews/verifies the exact Session Work owner
   before using its existing Run and realization fences, then releases it on
   exact settlement or graceful incarnation deregistration.
@@ -281,9 +305,12 @@ The reduced decision table for the interacting ownership causes is:
 `SessionWorkLeaseAuthority` is a narrow internal adapter over the existing
 `WorkQueue`; `WorkMutationResult` exposes its existing atomic mutation outcome.
 The existing claim input now carries the lease owner and poller observation
-separately. None adds storage, a registry, a poller, or another source of truth.
-New decision-table coverage and this canonical decision record verify the
-adapter.
+separately. `ClaimedWork`, its read-only current-lease query, exact conditional
+compensation, and `VerifiedSessionWorkLease` expose snapshots of that same
+authority. `SessionWorkCapabilityConfiguration` binds the existing IAM
+authority to the Managed protocol audience/TTL. None adds storage, a registry,
+a poller, a token directory, or another source of truth. New decision-table
+coverage and this canonical decision record verify the adapters.
 
 ### Removed
 

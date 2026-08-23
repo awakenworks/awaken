@@ -61,6 +61,20 @@ pub(super) async fn prepare_runtime_routers(
     let injected_brokered_catalog = process.brokered_catalog.clone();
     let cloud_login = process.cloud_login.clone();
     let org_id = process.org_id.unwrap_or_else(local_org_id);
+    let session_work_capability = match process.session_work_capability {
+        Some(capability) => Some(capability),
+        #[cfg(any(test, feature = "test-support"))]
+        None => Some(deployment_process::local_session_work_capability(
+            &[0xA6; 32],
+            &org_id,
+        )?),
+        #[cfg(not(any(test, feature = "test-support")))]
+        None => {
+            return Err(
+                "Coordinator requires an explicit Session Work capability authority".into(),
+            );
+        }
+    };
     let enrollment_signing_key = match (role, process.enrollment_signing_key) {
         (config::Role::AllInOne, Some(key)) => key,
         #[cfg(any(test, feature = "test-support"))]
@@ -719,6 +733,7 @@ pub(super) async fn prepare_runtime_routers(
             executable_projection_refresh,
             environments: environment_execution,
             sessions,
+            session_work_capability,
             default_workspace: platform_workspace.clone(),
             private_router,
             service_authenticator: coordinator_service_authenticator,
@@ -732,20 +747,24 @@ pub(super) async fn prepare_runtime_routers(
         deployment_iam.clone(),
         deployment_remote_iam.clone(),
     );
-    let coordinator_management = awaken_control::protect_management_router(
+    let mut coordinator_management = awaken_control::protect_management_router(
         coordinator.management_router,
         deployment_audit_plane.clone(),
         deployment_iam.clone(),
         deployment_remote_iam.clone(),
         Some(managed_rate_limiter.clone()),
     );
-    let coordinator_managed = awaken_control::protect_management_router(
+    let mut coordinator_managed = awaken_control::protect_management_router(
         coordinator.managed_router,
         deployment_audit_plane,
         deployment_iam,
         deployment_remote_iam,
         Some(managed_rate_limiter.clone()),
     );
+    if let Some(guard) = coordinator.session_work_capability_guard {
+        coordinator_managed = guard.clone().protect(coordinator_managed);
+        coordinator_management = guard.protect(coordinator_management);
+    }
     let data = coordinator_data
         .merge(coordinator_managed)
         .merge(coordinator_management);

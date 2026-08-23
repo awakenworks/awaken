@@ -133,6 +133,23 @@ impl LeaseBook {
         authority.owners.remove(work_id);
     }
 
+    /// Remove authority only when both owner and fencing epoch still identify
+    /// the observed claim. This is the in-memory compare-and-set counterpart of
+    /// the durable stores' conditional compensation update.
+    pub fn release_exact(&self, work_id: &str, owner: &str, epoch: u64) -> bool {
+        let mut authority = self.authority.lock().unwrap();
+        let matches = authority
+            .owners
+            .get(work_id)
+            .is_some_and(|current| current == owner)
+            && authority.epochs.get(work_id).copied() == Some(epoch);
+        if matches {
+            authority.leases.remove(work_id);
+            authority.owners.remove(work_id);
+        }
+        matches
+    }
+
     pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {
         self.polls
             .lock()

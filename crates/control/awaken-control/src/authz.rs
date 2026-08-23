@@ -1300,6 +1300,13 @@ pub async fn management_guard(
     req: Request,
     next: Next,
 ) -> Response {
+    if req
+        .extensions()
+        .get::<awaken_session_contract::work_queue::VerifiedSessionWorkLease>()
+        .is_some()
+    {
+        return next.run(req).await;
+    }
     if is_public_protocol_discovery(req.method(), req.uri().path()) {
         return next.run(req).await;
     }
@@ -1438,6 +1445,13 @@ pub async fn cloud_management_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
+    if req
+        .extensions()
+        .get::<awaken_session_contract::work_queue::VerifiedSessionWorkLease>()
+        .is_some()
+    {
+        return next.run(req).await;
+    }
     if is_public_protocol_discovery(req.method(), req.uri().path()) {
         return next.run(req).await;
     }

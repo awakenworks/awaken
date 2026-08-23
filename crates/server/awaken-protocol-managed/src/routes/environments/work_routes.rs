@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Extension, Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use base64::Engine as _;
 
@@ -15,9 +15,9 @@ use crate::types::environment::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
-use awaken_environment_execution_application::{
-    EnvironmentExecutionApplication, EnvironmentExecutionError,
-};
+use awaken_environment_execution_application::EnvironmentExecutionError;
+
+use super::EnvironmentWorkState;
 
 fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     match error {
@@ -35,7 +35,7 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
 
 /// `GET /v1/environments/:id/work` — the environment's work items.
 pub(super) async fn list_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path(id): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<PageCursor<Work>>, WireError> {
@@ -53,7 +53,7 @@ pub(super) async fn list_work(
 /// single worker. Open-tier cap: returns `null` when an item is already `active`
 /// in this environment (one lease at a time) or the queue is empty.
 pub(super) async fn poll_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
@@ -70,27 +70,51 @@ pub(super) async fn poll_work(
     let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
     let started = tokio::time::Instant::now();
     loop {
+        let claimed_at_ms = now_ms();
         let claimed = state
             .claim_work(
                 &id,
                 &lease_owner,
                 poller_id,
-                now_ms(),
+                claimed_at_ms,
                 poll.reclaim_older_than_ms,
             )
             .await
             .map_err(map_execution_error)?;
-        if let Some(work) = claimed {
-            let secret = match &work.data {
-                awaken_session_contract::work_queue::WorkPayload::Session { .. } => {
-                    environment_credential(&headers)
-                        .map(encode_work_secret)
-                        .transpose()?
+        if let Some(claimed) = claimed {
+            let secret = match &claimed.session_lease {
+                Some(lease) => {
+                    let minted = match &state.capability {
+                        Some(capability) => capability.mint(lease, claimed_at_ms).await,
+                        None => Err(crate::SessionWorkCapabilityConfigurationError::Signing(
+                            "Session Work capability authority is not configured".into(),
+                        )),
+                    };
+                    match minted {
+                        Ok(token) => Some(encode_work_secret(&token)?),
+                        Err(error) => {
+                            let compensated = state
+                                .release_claim(lease)
+                                .await
+                                .map_err(map_execution_error)?;
+                            let message = if compensated {
+                                format!("Session Work credential is unavailable: {error}")
+                            } else {
+                                "Session Work credential is unavailable and the exact claim was no longer current"
+                                    .to_string()
+                            };
+                            return Err((
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Json(ErrorResponse::new("api_error", message)),
+                            ));
+                        }
+                    }
                 }
-                awaken_session_contract::work_queue::WorkPayload::HealthCheck { .. } => None,
+                None => None,
             };
             return Ok(Json(Some(crate::work_queue::project_work_with_secret(
-                &work, secret,
+                &claimed.item,
+                secret,
             ))));
         }
         let Some(wait) = poll.block_ms else {
@@ -164,7 +188,7 @@ pub(super) struct HeartbeatParams {
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
 pub(super) async fn work_stats(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
     let s = state
@@ -181,7 +205,7 @@ pub(super) async fn work_stats(
 }
 
 pub(super) async fn retrieve_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
     let work = state
@@ -193,7 +217,7 @@ pub(super) async fn retrieve_work(
 }
 
 pub(super) async fn update_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
@@ -207,7 +231,7 @@ pub(super) async fn update_work(
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
 pub(super) async fn ack_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Work>, WireError> {
@@ -222,10 +246,11 @@ pub(super) async fn ack_work(
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
 pub(super) async fn heartbeat_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     Query(params): Query<HeartbeatParams>,
+    proof: Option<Extension<awaken_session_contract::work_queue::VerifiedSessionWorkLease>>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let command = LeaseHeartbeat {
         condition: crate::work_queue::HeartbeatCondition::from_wire(
@@ -233,7 +258,7 @@ pub(super) async fn heartbeat_work(
         ),
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
-    let owner = work_lease_owner(&headers)?;
+    let owner = mutation_owner(proof.as_ref(), &id, &wid, &headers)?;
     let hb = match state
         .heartbeat_work(&id, &wid, &owner, now_ms(), command)
         .await
@@ -322,9 +347,10 @@ fn now_ms() -> u64 {
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
 pub(super) async fn stop_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(state): State<Arc<EnvironmentWorkState>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
+    proof: Option<Extension<awaken_session_contract::work_queue::VerifiedSessionWorkLease>>,
     body: Bytes,
 ) -> Result<Json<Work>, WireError> {
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
@@ -336,7 +362,7 @@ pub(super) async fn stop_work(
         serde_json::from_slice::<WorkStopParams>(&body)
             .map_err(|error| bad_request(format!("invalid Work stop request: {error}")))?
     };
-    let owner = work_lease_owner(&headers)?;
+    let owner = mutation_owner(proof.as_ref(), &id, &wid, &headers)?;
     let result = state
         .stop_work(&id, &wid, &owner)
         .await
@@ -363,6 +389,21 @@ pub(super) async fn stop_work(
     }
     let work = worker_mutation(result)?;
     Ok(Json(crate::work_queue::project_work(&work)))
+}
+
+fn mutation_owner(
+    proof: Option<&Extension<awaken_session_contract::work_queue::VerifiedSessionWorkLease>>,
+    environment_id: &str,
+    work_id: &str,
+    headers: &HeaderMap,
+) -> Result<String, WireError> {
+    if let Some(Extension(proof)) = proof
+        && proof.0.environment_id == environment_id
+        && proof.0.work_id == work_id
+    {
+        return Ok(proof.0.owner.clone());
+    }
+    work_lease_owner(headers)
 }
 
 fn worker_mutation(
