@@ -29,14 +29,17 @@ pub use task::{
     SendMessageTool, TaskCanceller, task_tools,
 };
 pub use web::{
-    BRAVE_PROVIDER_ID, BraveSearchProvider, ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID,
-    DuckDuckGoProvider, WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs,
-    WebFetchExecutionConfiguration, WebFetchTool, WebSearchArgs, WebSearchConfig,
-    WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
-    WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
-    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchUserLocation,
-    web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
-    web_search_execution_configuration,
+    AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider, BRAVE_PROVIDER_ID, BraveSearchProvider,
+    ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider, OPENROUTER_PROVIDER_ID,
+    WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID, WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID,
+    WebDomainFilter, WebFetchArgs, WebFetchConfig, WebFetchExecutionConfiguration, WebFetchPlugin,
+    WebFetchProvider, WebFetchProviderDescriptor, WebFetchRequest, WebFetchTool, WebProviderTarget,
+    WebSearchArgs, WebSearchConfig, WebSearchCredentialRequirement, WebSearchCredentialResolver,
+    WebSearchExecutionConfiguration, WebSearchPlugin, WebSearchProvider,
+    WebSearchProviderDescriptor, WebSearchProviderRegistry, WebSearchRegistryError,
+    WebSearchRequest, WebSearchResult, WebSearchTool, WebSearchUserLocation,
+    WebServerToolProviderDescriptor, web_fetch_descriptor, web_fetch_execution_configuration,
+    web_hand_tools, web_search_descriptor, web_search_execution_configuration,
 };
 
 /// The one complete static Hand registry used by every SessionEnvironment.
@@ -168,7 +171,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         hand_tool::<DeleteTool>(),
         hand_tool::<GlobTool>(),
         hand_tool::<GrepTool>(),
-        hand_tool::<WebFetchTool>(),
+        BuiltinTool::hand(web_fetch_descriptor()),
         task_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
         task_tool::<CancelTaskTool>(),
         task_tool::<RecoverFailedMessagesTool>(),

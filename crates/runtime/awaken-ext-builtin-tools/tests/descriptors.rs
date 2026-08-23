@@ -8,19 +8,19 @@ use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
 
 /// The `hand` toolset's model-visible descriptors and the registered
-/// implementations (`executable_hand_tools` + `web_hand_tools`) must name exactly
-/// the same 9 tool ids — a descriptor with no implementation (or vice versa) would
-/// be a model-callable tool that never runs, or an unreachable implementation.
+/// Static Hand descriptors and implementations must match after excluding the
+/// two web capabilities whose sole owners are configured plugins.
 #[test]
 fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
-    // Registry cause/effect rules: C1 every visible hand descriptor -> E1 one
-    // executable implementation; C2 every implementation -> E2 one descriptor;
-    // C3 the two single-file lifecycle tools are installed -> E3 the canonical
-    // registry contains 8 local tools plus the one web fetch implementation.
+    // Registry cause/effect rules: C1 every static hand descriptor -> E1 one
+    // static implementation; C2 every static implementation -> E2 one
+    // descriptor; C3 WebFetch/WebSearch -> E3 no static implementation because
+    // their configured plugins are the single execution owners.
     let descriptor_ids: BTreeSet<String> = builtin_tools()
         .into_iter()
         .filter(|tool| tool.toolset() == Toolset::Hand)
         .map(|tool| tool.into_descriptor().id)
+        .filter(|id| id != "web_fetch")
         .collect();
 
     let implementation_ids: BTreeSet<String> = all_hand_tools()
@@ -30,16 +30,16 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
 
     assert_eq!(
         descriptor_ids.len(),
-        9,
-        "the hand toolset is exactly the 9 in-process descriptors"
+        8,
+        "the static hand toolset is exactly the 8 sandbox descriptors"
     );
     assert_eq!(
         descriptor_ids, implementation_ids,
         "every hand descriptor has a matching erased implementation and vice versa"
     );
-    // Search has one configurable plugin owner; the static split is 8 local + fetch.
+    // Both web tools have one configurable plugin owner.
     assert_eq!(executable_hand_tools().len(), 8);
-    assert_eq!(web_hand_tools().len(), 1);
+    assert!(web_hand_tools().is_empty());
 }
 
 #[test]

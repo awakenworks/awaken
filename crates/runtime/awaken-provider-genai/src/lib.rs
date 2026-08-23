@@ -863,6 +863,16 @@ fn to_genai_request_with_adapter(
         messages.push(genai_message);
     }
 
+    if let Some(tool) = request
+        .tools
+        .iter()
+        .find(|tool| tool.provider_server_tool.is_some())
+    {
+        return Err(Error::Binding(format!(
+            "provider-server tool `{}` requires an exact native adapter",
+            tool.id
+        )));
+    }
     let tools: Vec<GenaiTool> = request
         .tools
         .iter()
@@ -1480,7 +1490,7 @@ mod hermetic_tests {
 
     use super::{
         AdapterKind, CredentialProbe, GenaiExecutor, GenaiReasoningEffort, discover_model_ids,
-        normalize_provider_base_url, probe_credential, to_genai_options,
+        normalize_provider_base_url, probe_credential, to_genai_options, to_genai_request,
     };
 
     #[test]
@@ -1787,6 +1797,29 @@ mod hermetic_tests {
                 "required": ["city"]
             }),
         )
+    }
+
+    #[test]
+    fn compatible_chat_adapter_rejects_provider_server_tools() {
+        // Decision rule: provider-server projection + generic compatible Chat
+        // adapter -> fail before dispatch; only its exact native adapter may
+        // lower this descriptor instead of silently turning it into a function.
+        let request = ChatRequest {
+            model_binding: ModelBinding::new("route", "model", "native"),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: vec![weather_tool().with_provider_server_tool(
+                "openrouter",
+                "openrouter:web_search",
+                serde_json::json!({}),
+            )],
+        };
+        assert!(
+            to_genai_request(&request)
+                .unwrap_err()
+                .to_string()
+                .contains("requires an exact native adapter")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

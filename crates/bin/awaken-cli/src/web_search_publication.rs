@@ -32,6 +32,36 @@ impl PluginPublicationResolver for WebSearchPublicationResolver {
     }
 }
 
+pub(crate) struct WebFetchPublicationResolver {
+    providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+}
+
+impl WebFetchPublicationResolver {
+    pub(crate) fn new(providers: awaken_ext_builtin_tools::WebSearchProviderRegistry) -> Self {
+        Self { providers }
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginPublicationResolver for WebFetchPublicationResolver {
+    fn plugin_id(&self) -> &str {
+        awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
+    }
+
+    async fn resolve(
+        &self,
+        _workspace: &awaken_tenancy::ScopeId,
+        config: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        awaken_ext_builtin_tools::WebFetchPlugin::new(self.providers.clone(), None)
+            .validate_config(config)
+            .map_err(|error| error.to_string())?;
+        Ok(config
+            .cloned()
+            .unwrap_or_else(awaken_ext_builtin_tools::WebFetchPlugin::default_config))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -293,6 +293,29 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             documentation_url: Some("https://developers.openai.com/api/docs".into()),
         },
         ProviderDriverDescriptor {
+            provider_kind: "openrouter".into(),
+            display_name: "OpenRouter".into(),
+            supported_dialects: vec![ApiDialect::OpenAiResponses, ApiDialect::OpenAiChat],
+            auth_methods: vec![ProviderAuthMethod::ApiKey],
+            configuration_fields: vec![api_key(), custom_url()],
+            default_endpoints: vec![
+                DefaultProtocolEndpoint {
+                    dialect: ApiDialect::OpenAiResponses,
+                    base_url: "https://openrouter.ai/api/v1".into(),
+                    model_discovery_base_url: Some("https://openrouter.ai/api/v1".into()),
+                    supported_model_ids: Vec::new(),
+                },
+                DefaultProtocolEndpoint {
+                    dialect: ApiDialect::OpenAiChat,
+                    base_url: "https://openrouter.ai/api/v1".into(),
+                    model_discovery_base_url: Some("https://openrouter.ai/api/v1".into()),
+                    supported_model_ids: Vec::new(),
+                },
+            ],
+            supports_model_discovery: true,
+            documentation_url: Some("https://openrouter.ai/docs".into()),
+        },
+        ProviderDriverDescriptor {
             provider_kind: "deepseek".into(),
             display_name: "DeepSeek".into(),
             supported_dialects: vec![

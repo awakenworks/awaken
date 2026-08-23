@@ -578,6 +578,7 @@ fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
         &serde_json::json!("c"),
         ToolKind::Regular,
         &recovery,
+        None,
     );
     let b = content_hash(
         "p",
@@ -586,6 +587,7 @@ fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
         &serde_json::json!("bc"),
         ToolKind::Regular,
         &recovery,
+        None,
     );
     assert_ne!(a, b);
 }

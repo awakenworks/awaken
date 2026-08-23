@@ -259,6 +259,77 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
 }
 
 #[test]
+fn provider_server_tool_requires_explicit_always_allow() {
+    // Cause/effect decision table: R1 absent policy -> hidden; R2 AlwaysAsk ->
+    // hidden because inference-side execution cannot pause for approval; R3
+    // enabled AlwaysAllow -> visible exact server projection.
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+    let tool = awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+        "builtin",
+        "provider_server_probe",
+        "Search",
+        serde_json::json!({"type":"object"}),
+    )
+    .with_provider_server_tool("openrouter", "openrouter:web_search", serde_json::json!({}));
+    let mut configured = spec("");
+    configured.tool_descriptors = vec![tool];
+    assert!(
+        build_chat_request(
+            &configured,
+            &[],
+            &[user_message()],
+            &[],
+            &Default::default()
+        )
+        .tools
+        .is_empty(),
+        "R1"
+    );
+    configured.plugin_config.agent.toolsets = vec![ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: vec![ToolPolicyOverride {
+            name: "provider_server_probe".into(),
+            policy: ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+        }],
+    }];
+    assert!(
+        build_chat_request(
+            &configured,
+            &[],
+            &[user_message()],
+            &[],
+            &Default::default()
+        )
+        .tools
+        .is_empty(),
+        "R2"
+    );
+    configured.plugin_config.agent.toolsets[0].overrides[0]
+        .policy
+        .permission = ToolPermissionRequirement::AlwaysAllow;
+    assert_eq!(
+        build_chat_request(
+            &configured,
+            &[],
+            &[user_message()],
+            &[],
+            &Default::default()
+        )
+        .tools
+        .len(),
+        1,
+        "R3"
+    );
+}
+
+#[test]
 fn a_live_dynamic_tool_replaces_its_publication_selection_placeholder() {
     // Cause/effect graph: C1 a publication carries an enabled catalog descriptor;
     // C2 the selected plugin contributes the same canonical id and its live
