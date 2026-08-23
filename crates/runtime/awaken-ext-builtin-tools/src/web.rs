@@ -22,8 +22,12 @@ use crate::erasure::erase_for;
 
 pub const WEB_SEARCH_PLUGIN_ID: &str = "web_search";
 pub const WEB_SEARCH_TOOL_ID: &str = "web_search";
+pub const WEB_FETCH_PLUGIN_ID: &str = "web_fetch";
+pub const WEB_FETCH_TOOL_ID: &str = "web_fetch";
 pub const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
 pub const BRAVE_PROVIDER_ID: &str = "brave";
+pub const AWAKEN_DIRECT_PROVIDER_ID: &str = "awaken-direct";
+pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 
 /// Extension-owned execution settings decoded from the neutral policy's one
 /// opaque configuration value. The serde shape is the durable shape previously
@@ -143,7 +147,12 @@ where
 }
 
 /// HTTP GET a URL and return the response body as text (UTF-8 lossy, capped).
-pub struct WebFetchTool;
+pub struct WebFetchTool {
+    provider: Arc<dyn WebFetchProvider>,
+    descriptor: WebFetchProviderDescriptor,
+    config: WebProviderTarget,
+    credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+}
 
 fn url_matches_filter(url: &url::Url, filter: &WebDomainFilter) -> bool {
     let matches = |configured: &str| {
@@ -258,20 +267,74 @@ impl Tool for WebFetchTool {
     const DESCRIPTION: &'static str = "Fetch a URL";
 
     async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
-        blocking(move || {
-            let response = ureq::get(&args.url)
-                .call()
-                .map_err(|err| ToolError::Execution(format!("fetch {}: {err}", args.url)))?;
-            let mut bytes = Vec::new();
-            response
-                .into_reader()
-                .take(MAX_BODY)
-                .read_to_end(&mut bytes)
-                .map_err(|err| ToolError::Execution(format!("read body: {err}")))?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
-        })
-        .await
+        let credential = resolve_credential(
+            &self.descriptor.credential,
+            self.config.credential.as_ref(),
+            self.credentials.as_ref(),
+            &self.descriptor.id,
+            "web-fetch",
+        )
+        .await?;
+        self.provider
+            .fetch(
+                WebFetchRequest {
+                    url: args.url,
+                    options: self.config.options.clone(),
+                },
+                credential.as_ref(),
+            )
+            .await
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebFetchRequest {
+    pub url: String,
+    pub options: Value,
+}
+
+#[async_trait]
+pub trait WebFetchProvider: Send + Sync {
+    fn descriptor(&self) -> WebFetchProviderDescriptor;
+
+    fn validate_options(&self, options: &Value) -> Result<(), String> {
+        validate_object_options(options)
+    }
+
+    async fn fetch(
+        &self,
+        request: WebFetchRequest,
+        credential: Option<&CredentialMaterial>,
+    ) -> Result<String, ToolError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebFetchProviderDescriptor {
+    pub id: String,
+    pub label: String,
+    pub credential: WebSearchCredentialRequirement,
+    pub options_schema: Value,
+}
+
+/// One provider account/route target. Repeating a provider id with a different
+/// exact credential pin is how one provider exposes multiple accounts without
+/// duplicating provider capability metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebProviderTarget {
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialRef>,
+    #[serde(default)]
+    pub options: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebServerToolProviderDescriptor {
+    pub id: String,
+    pub label: String,
+    pub provider_kind: String,
+    pub tool_type: String,
+    pub options_schema: Value,
 }
 
 /// How one provider authenticates. The provider receives already-resolved
@@ -315,11 +378,7 @@ pub trait WebSearchProvider: Send + Sync {
     /// Validate provider-owned options without opening credentials or making a
     /// network request.
     fn validate_options(&self, options: &Value) -> Result<(), String> {
-        if options.is_object() || options.is_null() {
-            Ok(())
-        } else {
-            Err("provider options must be an object".into())
-        }
+        validate_object_options(options)
     }
 
     async fn search(
@@ -327,6 +386,14 @@ pub trait WebSearchProvider: Send + Sync {
         request: WebSearchRequest,
         credential: Option<&CredentialMaterial>,
     ) -> Result<Vec<WebSearchResult>, ToolError>;
+}
+
+fn validate_object_options(options: &Value) -> Result<(), String> {
+    if options.is_object() || options.is_null() {
+        Ok(())
+    } else {
+        Err("provider options must be an object".into())
+    }
 }
 
 /// Runtime-host adapter for exact credential material. Implementations must
@@ -369,12 +436,38 @@ impl std::error::Error for WebSearchRegistryError {}
 #[derive(Clone, Default)]
 pub struct WebSearchProviderRegistry {
     providers: BTreeMap<String, RegisteredWebSearchProvider>,
+    fetch_providers: BTreeMap<String, RegisteredWebFetchProvider>,
+    server_search_providers: BTreeMap<String, WebServerToolProviderDescriptor>,
+    server_fetch_providers: BTreeMap<String, WebServerToolProviderDescriptor>,
 }
 
 #[derive(Clone)]
 struct RegisteredWebSearchProvider {
     descriptor: WebSearchProviderDescriptor,
     provider: Arc<dyn WebSearchProvider>,
+}
+
+#[derive(Clone)]
+struct RegisteredWebFetchProvider {
+    descriptor: WebFetchProviderDescriptor,
+    provider: Arc<dyn WebFetchProvider>,
+}
+
+fn validate_provider_descriptor(
+    id: &str,
+    label: &str,
+    options_schema: &Value,
+) -> Result<(), WebSearchRegistryError> {
+    if id.trim().is_empty()
+        || label.trim().is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        || !options_schema.is_object()
+    {
+        return Err(WebSearchRegistryError::InvalidDescriptor);
+    }
+    Ok(())
 }
 
 impl WebSearchProviderRegistry {
@@ -389,11 +482,34 @@ impl WebSearchProviderRegistry {
     }
 
     pub fn builtins() -> Self {
-        Self::try_new([
+        let mut catalog = Self::try_new([
             Arc::new(DuckDuckGoProvider) as Arc<dyn WebSearchProvider>,
             Arc::new(BraveSearchProvider) as Arc<dyn WebSearchProvider>,
         ])
-        .expect("built-in web-search provider descriptors are unique and valid")
+        .expect("built-in web-search provider descriptors are unique and valid");
+        catalog
+            .register_fetch(Arc::new(AwakenDirectFetchProvider))
+            .expect("built-in web-fetch provider descriptor is valid");
+        catalog
+            .register_server_search(openrouter_server_search_descriptor())
+            .expect("OpenRouter search descriptor is valid");
+        catalog
+            .register_server_fetch(openrouter_server_fetch_descriptor())
+            .expect("OpenRouter fetch descriptor is valid");
+        catalog
+    }
+
+    /// Provider-server capabilities usable by hosted compositions without
+    /// installing the open direct/BYOK HTTP providers in that process.
+    pub fn server_builtins() -> Self {
+        let mut catalog = Self::default();
+        catalog
+            .register_server_search(openrouter_server_search_descriptor())
+            .expect("OpenRouter search descriptor is valid");
+        catalog
+            .register_server_fetch(openrouter_server_fetch_descriptor())
+            .expect("OpenRouter fetch descriptor is valid");
+        catalog
     }
 
     pub fn register(
@@ -401,17 +517,14 @@ impl WebSearchProviderRegistry {
         provider: Arc<dyn WebSearchProvider>,
     ) -> Result<(), WebSearchRegistryError> {
         let descriptor = provider.descriptor();
-        if descriptor.id.trim().is_empty()
-            || descriptor.label.trim().is_empty()
-            || !descriptor
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-            || !descriptor.options_schema.is_object()
+        validate_provider_descriptor(
+            &descriptor.id,
+            &descriptor.label,
+            &descriptor.options_schema,
+        )?;
+        if self.providers.contains_key(&descriptor.id)
+            || self.server_search_providers.contains_key(&descriptor.id)
         {
-            return Err(WebSearchRegistryError::InvalidDescriptor);
-        }
-        if self.providers.contains_key(&descriptor.id) {
             return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
         }
         self.providers.insert(
@@ -421,6 +534,69 @@ impl WebSearchProviderRegistry {
                 provider,
             },
         );
+        Ok(())
+    }
+
+    pub fn register_fetch(
+        &mut self,
+        provider: Arc<dyn WebFetchProvider>,
+    ) -> Result<(), WebSearchRegistryError> {
+        let descriptor = provider.descriptor();
+        validate_provider_descriptor(
+            &descriptor.id,
+            &descriptor.label,
+            &descriptor.options_schema,
+        )?;
+        if self.fetch_providers.contains_key(&descriptor.id)
+            || self.server_fetch_providers.contains_key(&descriptor.id)
+        {
+            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
+        }
+        self.fetch_providers.insert(
+            descriptor.id.clone(),
+            RegisteredWebFetchProvider {
+                descriptor,
+                provider,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn register_server_search(
+        &mut self,
+        descriptor: WebServerToolProviderDescriptor,
+    ) -> Result<(), WebSearchRegistryError> {
+        validate_provider_descriptor(
+            &descriptor.id,
+            &descriptor.label,
+            &descriptor.options_schema,
+        )?;
+        if self.providers.contains_key(&descriptor.id)
+            || self.server_search_providers.contains_key(&descriptor.id)
+        {
+            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
+        }
+        self.server_search_providers
+            .insert(descriptor.id.clone(), descriptor);
+        Ok(())
+    }
+
+    pub fn register_server_fetch(
+        &mut self,
+        descriptor: WebServerToolProviderDescriptor,
+    ) -> Result<(), WebSearchRegistryError> {
+        validate_provider_descriptor(
+            &descriptor.id,
+            &descriptor.label,
+            &descriptor.options_schema,
+        )?;
+        if self.fetch_providers.contains_key(&descriptor.id)
+            || self.server_fetch_providers.contains_key(&descriptor.id)
+        {
+            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
+        }
+        self.server_fetch_providers
+            .insert(descriptor.id.clone(), descriptor);
         Ok(())
     }
 
@@ -435,6 +611,10 @@ impl WebSearchProviderRegistry {
         self.providers.get(id).cloned()
     }
 
+    fn fetch_provider(&self, id: &str) -> Option<RegisteredWebFetchProvider> {
+        self.fetch_providers.get(id).cloned()
+    }
+
     /// JSON Schema is derived from the same descriptors dispatch uses. Each
     /// provider becomes one branch, so paid providers require an exact pin while
     /// free providers do not expose a meaningless credential field.
@@ -446,45 +626,131 @@ impl WebSearchProviderRegistry {
                 provider.id.clone(),
             )
         });
-        let variants = descriptors
+        let host_variants = descriptors
             .into_iter()
             .map(|provider| {
-                let mut properties = serde_json::Map::from_iter([
-                    (
-                        "provider_id".into(),
-                        json!({ "type": "string", "const": provider.id, "title": provider.label }),
-                    ),
-                    ("options".into(), provider.options_schema),
-                ]);
-                let mut required = vec!["provider_id"];
-                if let WebSearchCredentialRequirement::Exact(usage) = provider.credential {
-                    properties.insert(
-                        "credential".into(),
-                        json!({
-                            "type": "object",
-                            "title": "Vault credential",
-                            "x-awaken-credential-application": usage,
-                            "properties": {
-                                "id": { "type": "string", "title": "Credential source" },
-                                "revision": { "type": "integer", "minimum": 1 },
-                            },
-                            "required": ["id", "revision"],
-                            "additionalProperties": false,
-                        }),
-                    );
-                    required.push("credential");
-                }
-                json!({
-                    "type": "object",
-                    "title": provider.label,
-                    "properties": properties,
-                    "required": required,
-                    "additionalProperties": false,
-                })
+                host_target_schema(
+                    &provider.id,
+                    &provider.label,
+                    &provider.credential,
+                    provider.options_schema,
+                )
             })
             .collect::<Vec<_>>();
-        json!({ "title": "Web search", "oneOf": variants })
+        route_plan_schema(
+            "Web search",
+            host_variants,
+            self.server_search_providers.values().cloned().collect(),
+        )
     }
+
+    pub fn fetch_config_schema(&self) -> Value {
+        let mut descriptors = self
+            .fetch_providers
+            .values()
+            .map(|provider| provider.descriptor.clone())
+            .collect::<Vec<_>>();
+        descriptors.sort_by_key(|provider| provider.id.clone());
+        let host_variants = descriptors
+            .into_iter()
+            .map(|provider| {
+                host_target_schema(
+                    &provider.id,
+                    &provider.label,
+                    &provider.credential,
+                    provider.options_schema,
+                )
+            })
+            .collect();
+        route_plan_schema(
+            "Web fetch",
+            host_variants,
+            self.server_fetch_providers.values().cloned().collect(),
+        )
+    }
+}
+
+fn host_target_schema(
+    id: &str,
+    label: &str,
+    credential: &WebSearchCredentialRequirement,
+    options_schema: Value,
+) -> Value {
+    let mut properties = serde_json::Map::from_iter([
+        (
+            "provider_id".into(),
+            json!({ "type": "string", "const": id, "title": label }),
+        ),
+        ("options".into(), options_schema),
+    ]);
+    let mut required = vec!["provider_id"];
+    if let WebSearchCredentialRequirement::Exact(usage) = credential {
+        properties.insert(
+            "credential".into(),
+            json!({
+                "type": "object",
+                "title": "Vault credential",
+                "x-awaken-credential-application": usage,
+                "properties": {
+                    "id": { "type": "string", "title": "Credential source" },
+                    "revision": { "type": "integer", "minimum": 1 },
+                },
+                "required": ["id", "revision"],
+                "additionalProperties": false,
+            }),
+        );
+        required.push("credential");
+    }
+    json!({
+        "type": "object",
+        "title": label,
+        "x-awaken-realization": "host_executed",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+fn route_plan_schema(
+    title: &str,
+    host_variants: Vec<Value>,
+    server_descriptors: Vec<WebServerToolProviderDescriptor>,
+) -> Value {
+    let fallback_items = json!({ "oneOf": host_variants });
+    let mut variants = fallback_items["oneOf"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut branch| {
+            if let Some(properties) = branch.get_mut("properties").and_then(Value::as_object_mut) {
+                properties.insert(
+                    "fallbacks".into(),
+                    json!({
+                        "type": "array",
+                        "title": "Fallback accounts",
+                        "items": fallback_items,
+                        "default": [],
+                    }),
+                );
+            }
+            branch
+        })
+        .collect::<Vec<_>>();
+    variants.extend(server_descriptors.into_iter().map(|provider| {
+        json!({
+            "type": "object",
+            "title": provider.label,
+            "x-awaken-realization": "provider_server",
+            "properties": {
+                "provider_id": { "type": "string", "const": provider.id },
+                "options": provider.options_schema,
+            },
+            "required": ["provider_id"],
+            "additionalProperties": false,
+        })
+    }));
+    json!({ "title": title, "oneOf": variants })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -494,6 +760,22 @@ pub struct WebSearchConfig {
     pub credential: Option<CredentialRef>,
     #[serde(default)]
     pub options: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<WebProviderTarget>,
+}
+
+pub type WebFetchConfig = WebSearchConfig;
+
+impl WebSearchConfig {
+    fn targets(&self) -> Vec<WebProviderTarget> {
+        std::iter::once(WebProviderTarget {
+            provider_id: self.provider_id.clone(),
+            credential: self.credential.clone(),
+            options: self.options.clone(),
+        })
+        .chain(self.fallbacks.iter().cloned())
+        .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -509,28 +791,53 @@ pub struct WebSearchArgs {
 
 /// Configured model-callable tool. Native Runtime and ACP MCP export both use
 /// this exact instance type.
-struct WebSearchTool {
-    provider: Arc<dyn WebSearchProvider>,
-    descriptor: WebSearchProviderDescriptor,
-    config: WebSearchConfig,
+pub struct WebSearchTool {
+    targets: Vec<ConfiguredSearchTarget>,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
     execution_configuration: Option<WebSearchExecutionConfiguration>,
 }
 
+struct ConfiguredSearchTarget {
+    provider: Arc<dyn WebSearchProvider>,
+    descriptor: WebSearchProviderDescriptor,
+    config: WebProviderTarget,
+}
+
 impl WebSearchTool {
     fn configured(
-        provider: RegisteredWebSearchProvider,
-        config: WebSearchConfig,
+        targets: Vec<(RegisteredWebSearchProvider, WebProviderTarget)>,
         credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
         execution_configuration: Option<WebSearchExecutionConfiguration>,
     ) -> Self {
         Self {
-            descriptor: provider.descriptor,
-            provider: provider.provider,
-            config,
+            targets: targets
+                .into_iter()
+                .map(|(provider, config)| ConfiguredSearchTarget {
+                    descriptor: provider.descriptor,
+                    provider: provider.provider,
+                    config,
+                })
+                .collect(),
             credentials,
             execution_configuration,
         }
+    }
+    pub fn duckduckgo() -> Self {
+        let registry = WebSearchProviderRegistry::builtins();
+        Self::configured(
+            vec![(
+                registry
+                    .provider(DUCKDUCKGO_PROVIDER_ID)
+                    .expect("DuckDuckGo is built in"),
+                WebProviderTarget {
+                    provider_id: DUCKDUCKGO_PROVIDER_ID.into(),
+                    credential: None,
+                    options: json!({}),
+                },
+            )],
+            None,
+            None,
+        )
     }
 }
 
@@ -553,55 +860,81 @@ impl Tool for WebSearchTool {
     const DESCRIPTION: &'static str = "Search the web through the configured platform provider";
 
     async fn call(&self, args: WebSearchArgs) -> Result<String, ToolError> {
-        let credential = match &self.descriptor.credential {
-            WebSearchCredentialRequirement::None => None,
-            WebSearchCredentialRequirement::Exact(usage) => {
-                let reference = self.config.credential.as_ref().ok_or_else(|| {
-                    ToolError::Execution("web-search credential pin is missing".into())
-                })?;
-                Some(
-                    self.credentials
-                        .as_ref()
-                        .ok_or_else(|| {
-                            ToolError::Execution(
-                                "web-search credential resolver is unavailable".into(),
-                            )
-                        })?
-                        .resolve(reference, &self.descriptor.id, usage)
-                        .await
-                        .map_err(ToolError::Execution)?,
-                )
-            }
-        };
-        let results = self
-            .provider
-            .search(
-                WebSearchRequest {
-                    query: args.query,
-                    count: args.count.unwrap_or(8).clamp(1, 20),
-                    options: self.config.options.clone(),
-                    user_location: self
-                        .execution_configuration
-                        .as_ref()
-                        .and_then(|configuration| configuration.user_location.clone()),
-                },
-                credential.as_ref(),
+        let mut last_unavailable = None;
+        for target in &self.targets {
+            let credential = resolve_credential(
+                &target.descriptor.credential,
+                target.config.credential.as_ref(),
+                self.credentials.as_ref(),
+                &target.descriptor.id,
+                "web-search",
             )
             .await?;
-        let results = match self
-            .execution_configuration
-            .as_ref()
-            .and_then(|configuration| configuration.domains.as_ref())
-        {
-            Some(filter) => results
-                .into_iter()
-                .filter(|result| {
-                    url::Url::parse(&result.url).is_ok_and(|url| url_matches_filter(&url, filter))
-                })
-                .collect(),
-            None => results,
-        };
-        Ok(render_results(&results))
+            match target
+                .provider
+                .search(
+                    WebSearchRequest {
+                        query: args.query.clone(),
+                        count: args.count.unwrap_or(8).clamp(1, 20),
+                        options: target.config.options.clone(),
+                        user_location: self
+                            .execution_configuration
+                            .as_ref()
+                            .and_then(|configuration| configuration.user_location.clone()),
+                    },
+                    credential.as_ref(),
+                )
+                .await
+            {
+                Ok(results) => {
+                    let results = match self
+                        .execution_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.domains.as_ref())
+                    {
+                        Some(filter) => results
+                            .into_iter()
+                            .filter(|result| {
+                                url::Url::parse(&result.url)
+                                    .is_ok_and(|url| url_matches_filter(&url, filter))
+                            })
+                            .collect(),
+                        None => results,
+                    };
+                    return Ok(render_results(&results));
+                }
+                Err(error @ ToolError::UnavailableBeforeDispatch(_)) => {
+                    last_unavailable = Some(error)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_unavailable
+            .unwrap_or_else(|| ToolError::Execution("web-search route plan has no targets".into())))
+    }
+}
+
+async fn resolve_credential(
+    requirement: &WebSearchCredentialRequirement,
+    reference: Option<&CredentialRef>,
+    resolver: Option<&Arc<dyn WebSearchCredentialResolver>>,
+    provider_id: &str,
+    tool: &str,
+) -> Result<Option<CredentialMaterial>, ToolError> {
+    match requirement {
+        WebSearchCredentialRequirement::None => Ok(None),
+        WebSearchCredentialRequirement::Exact(usage) => {
+            let reference = reference
+                .ok_or_else(|| ToolError::Execution(format!("{tool} credential pin is missing")))?;
+            resolver
+                .ok_or_else(|| {
+                    ToolError::Execution(format!("{tool} credential resolver is unavailable"))
+                })?
+                .resolve(reference, provider_id, usage)
+                .await
+                .map(Some)
+                .map_err(ToolError::Execution)
+        }
     }
 }
 
@@ -610,6 +943,11 @@ pub struct WebSearchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
     execution_configuration: Option<WebSearchExecutionConfiguration>,
+}
+
+enum ConfiguredSearchRoute {
+    Host(Vec<(RegisteredWebSearchProvider, WebProviderTarget)>),
+    ProviderServer(WebServerToolProviderDescriptor, Value),
 }
 
 impl WebSearchPlugin {
@@ -636,39 +974,48 @@ impl WebSearchPlugin {
     fn configured_provider(
         &self,
         config: Option<&Value>,
-    ) -> Result<(WebSearchConfig, RegisteredWebSearchProvider), PluginConfigError> {
+    ) -> Result<ConfiguredSearchRoute, PluginConfigError> {
         let config: WebSearchConfig =
             serde_json::from_value(config.cloned().ok_or_else(|| {
                 PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, "config is required")
             })?)
             .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?;
-        let provider = self.registry.provider(&config.provider_id).ok_or_else(|| {
-            PluginConfigError::new(
-                WEB_SEARCH_PLUGIN_ID,
-                format!("unknown provider `{}`", config.provider_id),
-            )
-        })?;
-        provider
-            .provider
-            .validate_options(&config.options)
-            .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
-        match (&provider.descriptor.credential, &config.credential) {
-            (WebSearchCredentialRequirement::None, None)
-            | (WebSearchCredentialRequirement::Exact(_), Some(_)) => {}
-            (WebSearchCredentialRequirement::None, Some(_)) => {
+        if let Some(provider) = self
+            .registry
+            .server_search_providers
+            .get(&config.provider_id)
+        {
+            if !config.fallbacks.is_empty() || config.credential.is_some() {
                 return Err(PluginConfigError::new(
                     WEB_SEARCH_PLUGIN_ID,
-                    "the selected provider does not consume a credential",
+                    "provider-server realization cannot mix host fallbacks or credentials",
                 ));
             }
-            (WebSearchCredentialRequirement::Exact(_), None) => {
-                return Err(PluginConfigError::new(
-                    WEB_SEARCH_PLUGIN_ID,
-                    "the selected provider requires an exact credential pin",
-                ));
-            }
+            validate_object_options(&config.options)
+                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
+            return Ok(ConfiguredSearchRoute::ProviderServer(
+                provider.clone(),
+                config.options,
+            ));
         }
-        Ok((config, provider))
+        let mut targets = Vec::new();
+        for target in config.targets() {
+            let provider = self.registry.provider(&target.provider_id).ok_or_else(|| {
+                PluginConfigError::new(
+                    WEB_SEARCH_PLUGIN_ID,
+                    format!("unknown host search provider `{}`", target.provider_id),
+                )
+            })?;
+            validate_target(
+                WEB_SEARCH_PLUGIN_ID,
+                &provider.descriptor.credential,
+                target.credential.as_ref(),
+                &target.options,
+                |options| provider.provider.validate_options(options),
+            )?;
+            targets.push((provider, target));
+        }
+        Ok(ConfiguredSearchRoute::Host(targets))
     }
 
     /// Semantic validation used by both publication and runtime resolution.
@@ -682,32 +1029,81 @@ impl WebSearchPlugin {
         &self,
         config: Option<&Value>,
     ) -> Result<(ToolDescriptor, Arc<dyn RawTool>), PluginConfigError> {
-        let (config, provider) = self.configured_provider(config)?;
-        if matches!(
-            &provider.descriptor.credential,
-            WebSearchCredentialRequirement::Exact(_)
-        ) && self.credentials.is_none()
-        {
-            return Err(PluginConfigError::new(
-                WEB_SEARCH_PLUGIN_ID,
-                "the selected provider requires an installed credential materializer",
-            ));
-        }
-        let descriptor = web_search_descriptor();
-        let tool = erase_for(
-            WebSearchTool::configured(
-                provider,
-                config,
-                self.credentials.clone(),
-                self.execution_configuration.clone(),
+        let route = self.configured_provider(config)?;
+        let (descriptor, tool) = match route {
+            ConfiguredSearchRoute::Host(targets) => {
+                if targets.iter().any(|(provider, _)| {
+                    matches!(
+                        provider.descriptor.credential,
+                        WebSearchCredentialRequirement::Exact(_)
+                    )
+                }) && self.credentials.is_none()
+                {
+                    return Err(PluginConfigError::new(
+                        WEB_SEARCH_PLUGIN_ID,
+                        "the selected provider requires an installed credential materializer",
+                    ));
+                }
+                (
+                    web_search_descriptor(),
+                    erase_for(
+                        WebSearchTool::configured(
+                            targets,
+                            self.credentials.clone(),
+                            self.execution_configuration.clone(),
+                        ),
+                        ToolExecutionTarget::Brain,
+                    ),
+                )
+            }
+            ConfiguredSearchRoute::ProviderServer(provider, options) => (
+                web_search_descriptor().with_provider_server_tool(
+                    provider.provider_kind,
+                    provider.tool_type,
+                    options,
+                ),
+                erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
             ),
-            // Search is a configured Worker plugin: provider selection and exact
-            // credential materialization live at the Brain boundary. Sending it
-            // to the static Environment Hand loses that configuration and yields
-            // an `unknown tool` after permission was already granted.
-            ToolExecutionTarget::Brain,
-        );
+        };
         Ok((descriptor, tool))
+    }
+}
+
+fn validate_target(
+    plugin_id: &str,
+    requirement: &WebSearchCredentialRequirement,
+    credential: Option<&CredentialRef>,
+    options: &Value,
+    validate_options: impl FnOnce(&Value) -> Result<(), String>,
+) -> Result<(), PluginConfigError> {
+    validate_options(options).map_err(|error| PluginConfigError::new(plugin_id, error))?;
+    match (requirement, credential) {
+        (WebSearchCredentialRequirement::None, None)
+        | (WebSearchCredentialRequirement::Exact(_), Some(_)) => Ok(()),
+        (WebSearchCredentialRequirement::None, Some(_)) => Err(PluginConfigError::new(
+            plugin_id,
+            "the selected provider does not consume a credential",
+        )),
+        (WebSearchCredentialRequirement::Exact(_), None) => Err(PluginConfigError::new(
+            plugin_id,
+            "the selected provider requires an exact credential pin",
+        )),
+    }
+}
+
+struct ProviderServerWebSearchTool;
+
+#[async_trait]
+impl Tool for ProviderServerWebSearchTool {
+    type Args = WebSearchArgs;
+    type Output = String;
+    const ID: &'static str = WEB_SEARCH_TOOL_ID;
+    const DESCRIPTION: &'static str = "Search the web through the selected model provider";
+
+    async fn call(&self, _args: WebSearchArgs) -> Result<String, ToolError> {
+        Err(ToolError::Execution(
+            "provider-server WebSearch reached host execution".into(),
+        ))
     }
 }
 
@@ -746,10 +1142,311 @@ pub fn web_search_descriptor() -> ToolDescriptor {
     ToolDescriptor::for_tool::<WebSearchTool>("builtin")
 }
 
-/// The static network-tool bundle owns only `web_fetch`. Search is exposed
-/// exclusively by [`WebSearchPlugin`], avoiding a second unconfigured path.
+pub fn web_fetch_descriptor() -> ToolDescriptor {
+    ToolDescriptor::for_tool::<WebFetchTool>("builtin")
+}
+
+/// Compatibility view retained for callers migrating to configured web
+/// plugins. It is intentionally empty: WebFetch and WebSearch now each have one
+/// plugin execution owner and are never also registered as static Hand tools.
 pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    vec![erase_for(WebFetchTool, ToolExecutionTarget::Sandbox)]
+    Vec::new()
+}
+
+pub struct WebFetchPlugin {
+    registry: WebSearchProviderRegistry,
+    credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+}
+
+enum ConfiguredFetchRoute {
+    Host(Vec<(RegisteredWebFetchProvider, WebProviderTarget)>),
+    ProviderServer(WebServerToolProviderDescriptor, Value),
+}
+
+impl WebFetchPlugin {
+    pub fn new(
+        registry: WebSearchProviderRegistry,
+        credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+    ) -> Self {
+        Self {
+            registry,
+            credentials,
+        }
+    }
+
+    pub fn default_config() -> Value {
+        json!({ "provider_id": AWAKEN_DIRECT_PROVIDER_ID, "options": {} })
+    }
+
+    fn configured_route(
+        &self,
+        config: Option<&Value>,
+    ) -> Result<ConfiguredFetchRoute, PluginConfigError> {
+        let value = config.cloned().unwrap_or_else(Self::default_config);
+        let config: WebFetchConfig = serde_json::from_value(value)
+            .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?;
+        if let Some(provider) = self
+            .registry
+            .server_fetch_providers
+            .get(&config.provider_id)
+        {
+            if !config.fallbacks.is_empty() || config.credential.is_some() {
+                return Err(PluginConfigError::new(
+                    WEB_FETCH_PLUGIN_ID,
+                    "provider-server realization cannot mix host fallbacks or credentials",
+                ));
+            }
+            validate_object_options(&config.options)
+                .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error))?;
+            return Ok(ConfiguredFetchRoute::ProviderServer(
+                provider.clone(),
+                config.options,
+            ));
+        }
+        let mut targets = Vec::new();
+        for target in config.targets() {
+            let provider = self
+                .registry
+                .fetch_provider(&target.provider_id)
+                .ok_or_else(|| {
+                    PluginConfigError::new(
+                        WEB_FETCH_PLUGIN_ID,
+                        format!("unknown host fetch provider `{}`", target.provider_id),
+                    )
+                })?;
+            validate_target(
+                WEB_FETCH_PLUGIN_ID,
+                &provider.descriptor.credential,
+                target.credential.as_ref(),
+                &target.options,
+                |options| provider.provider.validate_options(options),
+            )?;
+            targets.push((provider, target));
+        }
+        Ok(ConfiguredFetchRoute::Host(targets))
+    }
+
+    pub fn validate_config(&self, config: Option<&Value>) -> Result<(), PluginConfigError> {
+        self.configured_route(config).map(|_| ())
+    }
+
+    pub fn configured_tool(
+        &self,
+        config: Option<&Value>,
+    ) -> Result<(ToolDescriptor, Arc<dyn RawTool>), PluginConfigError> {
+        match self.configured_route(config)? {
+            ConfiguredFetchRoute::Host(targets) => {
+                if targets.iter().any(|(provider, _)| {
+                    matches!(
+                        provider.descriptor.credential,
+                        WebSearchCredentialRequirement::Exact(_)
+                    )
+                }) && self.credentials.is_none()
+                {
+                    return Err(PluginConfigError::new(
+                        WEB_FETCH_PLUGIN_ID,
+                        "the selected provider requires an installed credential materializer",
+                    ));
+                }
+                let targets = targets
+                    .into_iter()
+                    .map(|(provider, config)| ConfiguredFetchTarget {
+                        descriptor: provider.descriptor,
+                        provider: provider.provider,
+                        config,
+                    })
+                    .collect();
+                Ok((
+                    web_fetch_descriptor(),
+                    erase_for(
+                        RoutedWebFetchTool {
+                            targets,
+                            credentials: self.credentials.clone(),
+                        },
+                        ToolExecutionTarget::Brain,
+                    ),
+                ))
+            }
+            ConfiguredFetchRoute::ProviderServer(provider, options) => Ok((
+                web_fetch_descriptor().with_provider_server_tool(
+                    provider.provider_kind,
+                    provider.tool_type,
+                    options,
+                ),
+                erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
+            )),
+        }
+    }
+}
+
+impl Plugin for WebFetchPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: WEB_FETCH_PLUGIN_ID.into(),
+            requires: Vec::new(),
+            config_sections: vec![WEB_FETCH_PLUGIN_ID.into()],
+            bound: CapabilityBound {
+                tools: IdBound::Exact(vec![WEB_FETCH_TOOL_ID.into()]),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn resolve(&self) -> Contributions {
+        Contributions::new(WEB_FETCH_PLUGIN_ID)
+    }
+
+    fn resolve_configured(
+        &self,
+        config: Option<&Value>,
+    ) -> Result<Contributions, PluginConfigError> {
+        let (descriptor, tool) = self.configured_tool(config)?;
+        let mut contributions = Contributions::new(WEB_FETCH_PLUGIN_ID);
+        contributions.register_dynamic_tool(
+            awaken_runtime_contract::plugin::DynamicTool::try_new(descriptor, tool)
+                .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?,
+        );
+        Ok(contributions)
+    }
+}
+
+struct ConfiguredFetchTarget {
+    provider: Arc<dyn WebFetchProvider>,
+    descriptor: WebFetchProviderDescriptor,
+    config: WebProviderTarget,
+}
+
+struct RoutedWebFetchTool {
+    targets: Vec<ConfiguredFetchTarget>,
+    credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+}
+
+#[async_trait]
+impl Tool for RoutedWebFetchTool {
+    type Args = WebFetchArgs;
+    type Output = String;
+    const ID: &'static str = WEB_FETCH_TOOL_ID;
+    const DESCRIPTION: &'static str = "Fetch a URL through the configured platform provider";
+
+    async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
+        let mut last_unavailable = None;
+        for target in &self.targets {
+            let credential = resolve_credential(
+                &target.descriptor.credential,
+                target.config.credential.as_ref(),
+                self.credentials.as_ref(),
+                &target.descriptor.id,
+                "web-fetch",
+            )
+            .await?;
+            match target
+                .provider
+                .fetch(
+                    WebFetchRequest {
+                        url: args.url.clone(),
+                        options: target.config.options.clone(),
+                    },
+                    credential.as_ref(),
+                )
+                .await
+            {
+                Ok(body) => return Ok(body),
+                Err(error @ ToolError::UnavailableBeforeDispatch(_)) => {
+                    last_unavailable = Some(error)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_unavailable
+            .unwrap_or_else(|| ToolError::Execution("web-fetch route plan has no targets".into())))
+    }
+}
+
+struct ProviderServerWebFetchTool;
+
+#[async_trait]
+impl Tool for ProviderServerWebFetchTool {
+    type Args = WebFetchArgs;
+    type Output = String;
+    const ID: &'static str = WEB_FETCH_TOOL_ID;
+    const DESCRIPTION: &'static str = "Fetch a URL through the selected model provider";
+
+    async fn call(&self, _args: WebFetchArgs) -> Result<String, ToolError> {
+        Err(ToolError::Execution(
+            "provider-server WebFetch reached host execution".into(),
+        ))
+    }
+}
+
+pub struct AwakenDirectFetchProvider;
+
+#[async_trait]
+impl WebFetchProvider for AwakenDirectFetchProvider {
+    fn descriptor(&self) -> WebFetchProviderDescriptor {
+        WebFetchProviderDescriptor {
+            id: AWAKEN_DIRECT_PROVIDER_ID.into(),
+            label: "Direct HTTP".into(),
+            credential: WebSearchCredentialRequirement::None,
+            options_schema: json!({ "type": "object", "additionalProperties": false }),
+        }
+    }
+
+    async fn fetch(
+        &self,
+        request: WebFetchRequest,
+        _credential: Option<&CredentialMaterial>,
+    ) -> Result<String, ToolError> {
+        blocking(move || {
+            let response = ureq::get(&request.url)
+                .call()
+                .map_err(|err| ToolError::Execution(format!("fetch {}: {err}", request.url)))?;
+            let mut bytes = Vec::new();
+            response
+                .into_reader()
+                .take(MAX_BODY)
+                .read_to_end(&mut bytes)
+                .map_err(|err| ToolError::Execution(format!("read body: {err}")))?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        })
+        .await
+    }
+}
+
+fn openrouter_server_search_descriptor() -> WebServerToolProviderDescriptor {
+    WebServerToolProviderDescriptor {
+        id: OPENROUTER_PROVIDER_ID.into(),
+        label: "OpenRouter server search".into(),
+        provider_kind: OPENROUTER_PROVIDER_ID.into(),
+        tool_type: "openrouter:web_search".into(),
+        options_schema: json!({
+            "type": "object",
+            "properties": {
+                "engine": { "type": "string", "enum": ["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] },
+                "max_results": { "type": "integer", "minimum": 1 },
+                "max_uses": { "type": "integer", "minimum": 1 },
+                "search_context_size": { "type": "string", "enum": ["low", "medium", "high"] }
+            },
+            "additionalProperties": true
+        }),
+    }
+}
+
+fn openrouter_server_fetch_descriptor() -> WebServerToolProviderDescriptor {
+    WebServerToolProviderDescriptor {
+        id: OPENROUTER_PROVIDER_ID.into(),
+        label: "OpenRouter server fetch".into(),
+        provider_kind: OPENROUTER_PROVIDER_ID.into(),
+        tool_type: "openrouter:web_fetch".into(),
+        options_schema: json!({
+            "type": "object",
+            "properties": {
+                "engine": { "type": "string", "enum": ["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] },
+                "max_uses": { "type": "integer", "minimum": 1 },
+                "max_content_tokens": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": true
+        }),
+    }
 }
 
 pub struct DuckDuckGoProvider;
@@ -985,6 +1682,30 @@ mod tests {
             _usage: &CredentialUsage,
         ) -> Result<CredentialMaterial, String> {
             Err("paid credential resolution reached".into())
+        }
+    }
+
+    struct UnavailableProvider;
+
+    #[async_trait]
+    impl WebSearchProvider for UnavailableProvider {
+        fn descriptor(&self) -> WebSearchProviderDescriptor {
+            WebSearchProviderDescriptor {
+                id: "unavailable".into(),
+                label: "Unavailable".into(),
+                credential: WebSearchCredentialRequirement::None,
+                options_schema: json!({ "type": "object" }),
+            }
+        }
+
+        async fn search(
+            &self,
+            _request: WebSearchRequest,
+            _credential: Option<&CredentialMaterial>,
+        ) -> Result<Vec<WebSearchResult>, ToolError> {
+            Err(ToolError::UnavailableBeforeDispatch(
+                "provider admission unavailable".into(),
+            ))
         }
     }
 
@@ -1278,6 +1999,37 @@ mod tests {
             Some(search_location),
             "W5"
         );
+    }
+
+    #[tokio::test]
+    async fn route_plan_falls_back_only_before_dispatch() {
+        // Cause/effect decision table: R1 primary unavailable before dispatch +
+        // fallback healthy -> fallback result; R2 primary execution error ->
+        // terminal error and no replay. R2 is enforced by the match branch in
+        // `WebSearchTool::call`; this test owns R1 and exact target ordering.
+        let fallback = fake_provider("fallback", false);
+        let registry = WebSearchProviderRegistry::try_new([
+            Arc::new(UnavailableProvider) as Arc<dyn WebSearchProvider>,
+            fallback as Arc<dyn WebSearchProvider>,
+        ])
+        .unwrap();
+        let plugin = WebSearchPlugin::new(registry, None);
+        let (_, tool) = plugin
+            .configured_tool(Some(&json!({
+                "provider_id": "unavailable",
+                "options": {},
+                "fallbacks": [{ "provider_id": "fallback", "options": {} }]
+            })))
+            .unwrap();
+        let output = tool
+            .invoke(ToolCall {
+                call_id: "fallback-call".into(),
+                tool_id: WEB_SEARCH_TOOL_ID.into(),
+                arguments: json!({ "query": "bounded contexts" }),
+            })
+            .await
+            .unwrap();
+        assert!(output.text().contains("https://result.test"), "R1");
     }
 
     #[test]

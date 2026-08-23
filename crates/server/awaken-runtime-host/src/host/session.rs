@@ -1322,6 +1322,7 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
+        let generated_config = installed.is_none();
         let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
@@ -1393,6 +1394,31 @@ impl SharedHost {
         } else {
             None
         };
+        let web_fetch = if config
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
+        {
+            let plugin = self.web_fetch_plugin(thread);
+            if is_acp {
+                Some(
+                    plugin
+                        .configured_tool(
+                            config
+                                .resolved_spec
+                                .plugin_config
+                                .get(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID),
+                        )
+                        .map_err(|error| HostError::bad_request(error.to_string()))?,
+                )
+            } else {
+                runtime = runtime.with_plugin(plugin);
+                None
+            }
+        } else {
+            None
+        };
         // D6: for an ACP run, merge publication-pinned secret-free stdio routes with
         // the Session's staged URL routes, then hand the exact set to the CLI's own MCP
         // client. The immutable publication's `backend_ref` is the routing authority.
@@ -1441,50 +1467,21 @@ impl SharedHost {
         } else {
             Vec::new()
         };
-        let web_search_mcp = if is_acp {
-            match web_search {
-                Some((descriptor, tool)) => {
-                    let export = self
-                        .acp_tool_exporter
-                        .as_ref()
-                        .ok_or_else(|| {
-                            HostError::internal(
-                                "ACP WebSearch requires an installed tool-export adapter",
-                            )
-                        })?
-                        .export("awaken_web_search", descriptor, tool)
-                        .await
-                        .map_err(HostError::internal)?;
-                    let export_server = match export.server.transport.clone() {
-                        awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
-                            command,
-                            args,
-                        } => awaken_run_executor_acp::SessionMcpServer {
-                            name: export.server.name.clone(),
-                            command: Some(command),
-                            args,
-                            url: None,
-                            auth: None,
-                        },
-                        awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
-                            awaken_run_executor_acp::SessionMcpServer {
-                                name: export.server.name.clone(),
-                                command: None,
-                                args: Vec::new(),
-                                url: Some(url),
-                                auth: None,
-                            }
-                        }
-                    };
-                    acp_mcp_servers =
-                        merge_process_local_mcp_servers(acp_mcp_servers, [export_server])?;
-                    Some(export)
+        let mut web_tool_exports = Vec::new();
+        if is_acp {
+            for (name, label, configured) in [
+                ("awaken_web_search", "WebSearch", web_search),
+                ("awaken_web_fetch", "WebFetch", web_fetch),
+            ] {
+                if let Some((export, server)) = self
+                    .export_web_tool_for_acp(name, label, configured)
+                    .await?
+                {
+                    acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, [server])?;
+                    web_tool_exports.push(export);
                 }
-                None => None,
             }
-        } else {
-            None
-        };
+        }
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and an awaiting run after a restart.
         let mut state = SessionState::default();
@@ -1688,7 +1685,7 @@ impl SharedHost {
             attempt_context: run_context,
             terminal_observers,
             stream_checkpoint,
-            _web_search_mcp: web_search_mcp,
+            _web_tool_exports: web_tool_exports,
             thread_id,
             env,
             skill_registry,

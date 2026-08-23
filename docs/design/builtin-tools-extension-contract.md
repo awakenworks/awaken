@@ -13,7 +13,7 @@ authority, credential secrets, or public protocol DTOs.
 
 | Toolset | Default role | Execution owner | Notes |
 |---|---|---|---|
-| `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`; search is owned by `WebSearchPlugin` |
+| `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`; the two Web tools use the shared configurable Web provider catalog |
 | `builtin-task-tools` | runtime task and recovery helpers | Runtime extension plus Dispatch / Server | `send_message`, `cancel_task`, `recover_failed_messages` |
 | `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
 
@@ -49,10 +49,34 @@ Rules:
    extension's environment;
 3. `bash` requires explicit shell capability and command policy;
 4. `write` and `edit` require write permission and conflict handling;
-5. `web_fetch` requires network policy and source/audit handling; `web_search`
-   is exposed only by the separately configured `WebSearchPlugin`;
+5. `web_fetch` and `web_search` are stable builtin identities over one shared
+   Web provider catalog. Each tool has its own typed request/result contract and
+   route plan, while provider accounts, exact credentials, ordered fallback,
+   funding and diagnostics remain configuration-plane facts;
 6. filesystem, shell, and network operations run in-process in the extension; the
    runtime owns execution and commits the result through the normal tool path.
+
+### Web provider realizations
+
+The Web provider catalog is one discovery and validation authority with separate
+`WebSearchProvider` and `WebFetchProvider` ports. A provider may implement either
+or both ports and a Workspace may bind several accounts for the same provider.
+Search and Fetch route plans select one primary target and explicit ordered
+fallbacks. They never infer a fallback across credential custody or funding.
+
+A resolved target has exactly one realization for one model attempt:
+
+- `HostExecuted` invokes a configured provider through the ordinary permission
+  gate and `RawTool` path;
+- `ProviderServer` projects the existing builtin identity into a model-gateway
+  server-tool representation. The provider adapter owns the wire spelling and
+  must normalize results and usage back to the builtin identity.
+
+The same builtin must never be sent as both a function tool and a provider server
+tool in one model request. `AlwaysAsk` requires `HostExecuted`; publication fails
+closed when only a provider-side realization exists. Provider-side execution
+also carries an explicit maximum-use budget because its internal calls do not
+cross the local per-call permission hook.
 
 ## Task Tools
 

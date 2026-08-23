@@ -20,10 +20,22 @@ pub struct OpenAiResponsesExecutor {
     client: reqwest::Client,
     url: Url,
     api_key: String,
+    provider_kind: String,
 }
 
 impl OpenAiResponsesExecutor {
     pub fn new(base_url: &str, api_key: impl Into<String>) -> Result<Self, Error> {
+        Self::new_for_provider("openai", base_url, api_key)
+    }
+
+    /// Construct an executor for one exact provider implementation of the
+    /// Responses dialect. Provider-native server tools are admitted only when
+    /// their descriptor names this same provider kind.
+    pub fn new_for_provider(
+        provider_kind: impl Into<String>,
+        base_url: &str,
+        api_key: impl Into<String>,
+    ) -> Result<Self, Error> {
         let mut url = Url::parse(base_url)
             .map_err(|error| Error::Binding(format!("invalid Responses base URL: {error}")))?;
         if !url.path().trim_end_matches('/').ends_with("responses") {
@@ -38,6 +50,7 @@ impl OpenAiResponsesExecutor {
             client,
             url,
             api_key: api_key.into(),
+            provider_kind: provider_kind.into(),
         })
     }
 
@@ -46,7 +59,7 @@ impl OpenAiResponsesExecutor {
             .client
             .post(self.url.clone())
             .bearer_auth(&self.api_key)
-            .json(&request_body(request)?)
+            .json(&request_body_for_provider(request, &self.provider_kind)?)
             .send()
             .await
             .map_err(|error| classify_error(&error.without_url().to_string()))?;
@@ -138,13 +151,21 @@ enum ResponseInputContent {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponseTool {
-    #[serde(rename = "type")]
-    kind: ResponseToolType,
-    name: String,
-    description: String,
-    parameters: Value,
-    strict: bool,
+#[serde(untagged)]
+enum ResponseTool {
+    Function {
+        #[serde(rename = "type")]
+        kind: ResponseToolType,
+        name: String,
+        description: String,
+        parameters: Value,
+        strict: bool,
+    },
+    ProviderServer {
+        #[serde(rename = "type")]
+        kind: String,
+        parameters: Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -153,7 +174,15 @@ enum ResponseToolType {
     Function,
 }
 
+#[cfg(test)]
 fn request_body(request: &ChatRequest) -> Result<ResponsesRequest, Error> {
+    request_body_for_provider(request, "openai")
+}
+
+fn request_body_for_provider(
+    request: &ChatRequest,
+    provider_kind: &str,
+) -> Result<ResponsesRequest, Error> {
     let mut items = Vec::new();
     for message in &request.messages {
         let mut text = String::new();
@@ -214,14 +243,28 @@ fn request_body(request: &ChatRequest) -> Result<ResponsesRequest, Error> {
     let tools = request
         .tools
         .iter()
-        .map(|tool| ResponseTool {
-            kind: ResponseToolType::Function,
-            name: tool.id.clone(),
-            description: tool.description.clone(),
-            parameters: tool.model_parameters(),
-            strict: false,
+        .map(|tool| {
+            if let Some(projection) = &tool.provider_server_tool {
+                if projection.provider_kind != provider_kind {
+                    return Err(Error::Binding(format!(
+                        "tool `{}` requires provider `{}` but exact route uses `{provider_kind}`",
+                        tool.id, projection.provider_kind
+                    )));
+                }
+                return Ok(ResponseTool::ProviderServer {
+                    kind: projection.tool_type.clone(),
+                    parameters: projection.parameters.clone(),
+                });
+            }
+            Ok(ResponseTool::Function {
+                kind: ResponseToolType::Function,
+                name: tool.id.clone(),
+                description: tool.description.clone(),
+                parameters: tool.model_parameters(),
+                strict: false,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, Error>>()?;
     Ok(ResponsesRequest {
         model: request.model_binding.model_ref.clone(),
         input: items,
@@ -566,6 +609,40 @@ mod tests {
         assert!(
             error.to_string().contains("not materialized"),
             "O2: {error}"
+        );
+    }
+
+    #[test]
+    fn provider_server_tools_require_the_exact_provider() {
+        // Cause/effect decision table: R1 exact OpenRouter projection + exact
+        // OpenRouter route -> provider server wire; R2 the same descriptor on
+        // any compatible non-OpenRouter route -> binding error before HTTP.
+        let mut request = request(Vec::new());
+        request.tools.push(
+            ToolDescriptor::pinned(
+                "builtin",
+                "web_search",
+                "Search the web",
+                json!({"type":"object"}),
+            )
+            .with_provider_server_tool(
+                "openrouter",
+                "openrouter:web_search",
+                json!({"engine":"auto","max_results":5}),
+            ),
+        );
+        let body = serde_json::to_value(
+            request_body_for_provider(&request, "openrouter").expect("R1 exact route"),
+        )
+        .unwrap();
+        assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
+        assert_eq!(body["tools"][0]["parameters"]["max_results"], 5);
+        assert!(
+            request_body_for_provider(&request, "openai")
+                .unwrap_err()
+                .to_string()
+                .contains("requires provider `openrouter`"),
+            "R2"
         );
     }
 

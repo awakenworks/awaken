@@ -1,5 +1,10 @@
 # Wiki Update Log
 
+## 2026-08-23
+
+- Recorded the shared multi-provider catalog and exclusive host/provider-server
+  realization contract for the existing `web_search` and `web_fetch` builtins.
+
 ## 2026-08-19
 
 - Separated Awaken's Viewer/Builder/Administrator product access levels from

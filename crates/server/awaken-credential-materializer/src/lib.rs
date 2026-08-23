@@ -17,6 +17,7 @@ mod secret_broker;
 
 pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
+    executor_from_materialized_endpoint_for_provider,
 };
 #[cfg(feature = "authority")]
 pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};

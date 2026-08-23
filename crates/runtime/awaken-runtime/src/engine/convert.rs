@@ -71,6 +71,22 @@ pub(crate) fn build_chat_request(
                 None => true,
             },
         )
+        // Provider-server tools execute inside inference, before the runtime can
+        // ask for approval. Expose them only when publication explicitly chose
+        // AlwaysAllow; omission and AlwaysAsk both fail closed by withholding
+        // the projection from the provider request.
+        .filter(|tool| {
+            tool.provider_server_tool.is_none()
+                || spec
+                    .plugin_config
+                    .agent
+                    .tool_policy(&tool.id)
+                    .is_some_and(|policy| {
+                        policy.enabled
+                            && policy.permission
+                                == awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow
+                    })
+        })
         .cloned()
         .collect();
     // `model_tools` applies the alias/description overrides, withholds deferred tools the

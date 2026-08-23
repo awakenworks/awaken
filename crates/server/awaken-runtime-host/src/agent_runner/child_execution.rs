@@ -527,6 +527,7 @@ pub(crate) struct ChildExecutionAdapters {
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_search: Option<Arc<awaken_ext_builtin_tools::WebSearchPlugin>>,
+    pub(crate) web_fetch: Option<Arc<awaken_ext_builtin_tools::WebFetchPlugin>>,
 }
 
 /// Materializes the already-selected ACP execution edge for a child snapshot.

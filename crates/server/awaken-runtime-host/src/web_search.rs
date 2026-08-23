@@ -37,6 +37,78 @@ impl crate::host::SharedHost {
             .with_execution_configuration(execution_configuration),
         )
     }
+
+    /// Build the configured WebFetch plugin from the same provider catalog and
+    /// credential boundary as WebSearch. There is no static fetch fallback.
+    pub(crate) fn web_fetch_plugin(
+        &self,
+        thread: &str,
+    ) -> Arc<awaken_ext_builtin_tools::WebFetchPlugin> {
+        let credentials = self.credential_materializer.clone().map(|materializer| {
+            Arc::new(HostWebSearchCredentialResolver::new(
+                materializer,
+                self.thread_workspace(thread),
+            )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
+        });
+        Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
+            self.web_search_providers.clone(),
+            credentials,
+        ))
+    }
+
+    /// Export one already-configured web tool for an ACP backend while keeping
+    /// the process-local export alive for the Session lifetime.
+    pub(crate) async fn export_web_tool_for_acp(
+        &self,
+        export_name: &str,
+        display_name: &str,
+        configured: Option<(
+            awaken_runtime_contract::resolved::ToolDescriptor,
+            Arc<dyn awaken_runtime_contract::tool::RawTool>,
+        )>,
+    ) -> Result<
+        Option<(
+            crate::AcpToolExport,
+            awaken_run_executor_acp::SessionMcpServer,
+        )>,
+        crate::HostError,
+    > {
+        let Some((descriptor, tool)) = configured else {
+            return Ok(None);
+        };
+        let export = self
+            .acp_tool_exporter
+            .as_ref()
+            .ok_or_else(|| {
+                crate::HostError::internal(format!(
+                    "ACP {display_name} requires an installed tool-export adapter"
+                ))
+            })?
+            .export(export_name, descriptor, tool)
+            .await
+            .map_err(crate::HostError::internal)?;
+        let server = match export.server.transport.clone() {
+            awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
+                awaken_run_executor_acp::SessionMcpServer {
+                    name: export.server.name.clone(),
+                    command: Some(command),
+                    args,
+                    url: None,
+                    auth: None,
+                }
+            }
+            awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
+                awaken_run_executor_acp::SessionMcpServer {
+                    name: export.server.name.clone(),
+                    command: None,
+                    args: Vec::new(),
+                    url: Some(url),
+                    auth: None,
+                }
+            }
+        };
+        Ok(Some((export, server)))
+    }
 }
 
 #[derive(Clone)]

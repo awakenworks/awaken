@@ -73,3 +73,11 @@ Owner: [tool-and-capability.md](../design/tool-and-capability.md).
 - Fact: runtime invokes tools in-process through neutral `Tool` / `RawTool` contracts; hand, MCP, and adapter tools implement those contracts and run when invoked by id.
 - Links: [runtime interface facts](runtime-interface-boundaries-facts.md); guardrails G9 and G14
 - Verification: tool executor adapter tests, dependency checks, idempotency/correlation tests for remote adapters, and no-direct-store-write tests.
+
+## FACT-TOOL-009: Web builtins have one identity and one resolved realization
+
+- Status: active
+- Owner: [Builtin Web provider realizations](../design/builtin-tools-extension-contract.md#web-provider-realizations)
+- Fact: `web_search` and `web_fetch` retain one builtin identity while publication resolves exactly one host or provider-server realization; provider accounts and explicit fallback stay outside runtime core.
+- Links: [ADR-0007 amendment](../adr/0007-runtime-owns-tool-execution.md#amendment-2026-08-23-provider-server-realization-is-still-one-runtime-tool-path); guardrails G8, G9, and G22
+- Verification: catalog uniqueness, realization exclusivity, permission compatibility, fallback and adapter projection tests.

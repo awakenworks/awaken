@@ -47,6 +47,26 @@ rather than carried as a vacuous Target. This does not touch the **model**
 provider/model/backend binding (G22, `ModelBinding`): selecting which model server
 answers a run is a separate concern and stays.
 
+## Amendment (2026-08-23): provider-server realization is still one runtime tool path
+
+A model gateway may execute a model-callable server tool inside the inference
+request. This does not restore the retired generic execution backend and does
+not create a second builtin identity. The official extension owns the stable
+builtin descriptor and resolves exactly one realization per model attempt:
+
+- a host realization enters the existing gate and `RawTool::invoke` path;
+- a provider-server realization is pre-authorized, projected by the selected
+  inference adapter, and normalized back into the same builtin result and usage
+  vocabulary.
+
+Provider-server realizations are immutable resolved data, not live handles. The
+runtime contract carries only a neutral projection envelope; concrete values
+such as OpenRouter Web Search and Web Fetch remain in the builtin extension and
+provider adapter. A single request cannot advertise both realizations for the
+same builtin. Because provider-internal calls cannot suspend at the local gate,
+`AlwaysAsk` rejects provider-server realization at publication and requires a
+host realization instead.
+
 ## Consequences
 
 - The docs describe the system that exists: the runtime runs tools in-process.

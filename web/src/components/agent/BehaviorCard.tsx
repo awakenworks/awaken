@@ -40,6 +40,12 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     desc: "Choose a free or paid search provider and bind paid API access to an exact Vault credential revision.",
     descZh: "选择免费或付费搜索供应商，并把付费 API 绑定到 Vault 中的精确凭证版本。",
   },
+  web_fetch: {
+    title: "Web fetch",
+    zh: "网页抓取",
+    desc: "Choose Awaken-hosted multi-provider routing or the exact model provider's server fetch tool.",
+    descZh: "选择由 Awaken 执行的多供应商路由，或精确模型供应商提供的 Server Fetch 工具。",
+  },
 };
 
 export default function BehaviorCard({
@@ -100,7 +106,7 @@ export default function BehaviorCard({
         </span>
         <Switch aria-label={title} checked={enabled} onChange={(e) => {
           const next = e.target.checked;
-          if (next && id === "web_search" && schema && !config.provider_id) {
+          if (next && (id === "web_search" || id === "web_fetch") && schema && !config.provider_id) {
             onConfig(defaultWebSearchConfig(schema));
           }
           onToggle(next);
@@ -112,9 +118,9 @@ export default function BehaviorCard({
             // The state machine gets a purpose-built diagram + table editor (not the
             // generic schema form) — its nested graph is far clearer visually.
             <StateMachineEditor value={config} onChange={onConfig} />
-          ) : id === "web_search" && schema ? (
+          ) : (id === "web_search" || id === "web_fetch") && schema ? (
             <>
-              <WebSearchBehaviorEditor schema={schema} value={config} credentials={credentials} onChange={onConfig} />
+              <WebSearchBehaviorEditor toolId={id} schema={schema} value={config} credentials={credentials} onChange={onConfig} />
               <details style={{ marginTop: 8 }}>
                 <summary className="mut" style={{ fontSize: 12, cursor: "pointer" }}>
                   {app.t("Advanced (raw JSON)", "高级(原始 JSON)")}

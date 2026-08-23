@@ -76,7 +76,14 @@ pub(super) async fn control_component_for_process(
         executable_agent_registrar,
         agent_archive_cascade,
         model_publication_resolver,
-        plugin_publication_resolvers: vec![web_search_publication_resolver],
+        plugin_publication_resolvers: vec![
+            web_search_publication_resolver,
+            Arc::new(
+                crate::web_search_publication::WebFetchPublicationResolver::new(
+                    web_search_providers.clone(),
+                ),
+            ),
+        ],
         credential_probe: Arc::new(credential_probe::GenaiProbe),
         model_discovery: Arc::new(awaken_control::model_discovery::GenaiModelDiscovery::new(
             control.secrets.clone(),

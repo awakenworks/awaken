@@ -11,8 +11,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_ext_builtin_tools::{
-    AGENT_RUN, ConfiguredWebToolExecutor, Toolset, WebSearchPlugin, WebSearchProviderRegistry,
-    all_hand_tools, builtin_tools, web_fetch_execution_configuration,
+    AGENT_RUN, ConfiguredWebToolExecutor, Toolset, WebFetchPlugin, WebSearchPlugin,
+    WebSearchProviderRegistry, all_hand_tools, builtin_tools, web_fetch_execution_configuration,
 };
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
@@ -329,9 +329,8 @@ pub fn advertised_tools(
 /// known; the config compiler selects or hides it from typed `MultiagentConfig`.
 pub fn authorable_tools() -> Vec<ToolDescriptor> {
     let mut tools = hand_tool_descriptors();
-    // WebSearch execution remains owned exclusively by its configured plugin.
-    // The descriptor belongs in the publication catalog so an authored
-    // `agent_toolset_20260401` can enable that one plugin-provided capability.
+    // Both web capabilities are owned exclusively by their configured plugins.
+    tools.push(awaken_ext_builtin_tools::web_fetch_descriptor());
     tools.push(awaken_ext_builtin_tools::web_search_descriptor());
     tools.push(delegation_descriptor());
     tools
@@ -390,6 +389,8 @@ pub fn platform_plugin_capabilities_with_web_search(
 ) -> Vec<PluginCapability> {
     let web_search = WebSearchPlugin::new(providers.clone(), None);
     let manifest = web_search.manifest();
+    let web_fetch = WebFetchPlugin::new(providers.clone(), None);
+    let fetch_manifest = web_fetch.manifest();
     vec![
         PluginCapability {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),
@@ -414,6 +415,12 @@ pub fn platform_plugin_capabilities_with_web_search(
             schema_keys: manifest.config_sections,
             config_schema: Some(providers.config_schema()),
             bound: manifest.bound,
+        },
+        PluginCapability {
+            id: fetch_manifest.id,
+            schema_keys: fetch_manifest.config_sections,
+            config_schema: Some(providers.fetch_config_schema()),
+            bound: fetch_manifest.bound,
         },
     ]
 }
@@ -592,13 +599,10 @@ mod tests {
     #[test]
     fn authorable_network_tools_match_their_single_runtime_owners() {
         // Cause/effect graph and decision table:
-        // C1 WebFetch has one static RawTool owner; C2 WebSearch has one
-        // configured plugin owner. E1 each exact id appears once in the
-        // publication catalog; E2 WebFetch remains in the static bundle; E3
-        // WebSearch is not duplicated into that bundle.
-        // R1=C1+C2 => E1+E2+E3. FMECA: omitting either descriptor silently
-        // compiles an authored enabled tool to disabled, while registering
-        // Search statically would create a second unconfigured execution path.
+        // C1 WebFetch/WebSearch each have one configured plugin owner. E1 each
+        // exact id appears once in the publication catalog; E2 neither is in
+        // the static bundle. R1=C1 => E1+E2. FMECA: registering either
+        // statically would create a second unconfigured execution path.
         let catalog = authorable_tools();
         let count = |id: &str| catalog.iter().filter(|tool| tool.id == id).count();
         assert_eq!(count("web_fetch"), 1, "R1/E1");
@@ -608,7 +612,7 @@ mod tests {
             .into_iter()
             .map(|tool| tool.id().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(static_ids, vec!["web_fetch"], "R1/E2+E3");
+        assert!(static_ids.is_empty(), "R1/E2");
     }
 
     #[test]
@@ -698,10 +702,20 @@ mod tests {
         let branches = web.config_schema.as_ref().unwrap()["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(branches.len(), 2);
+        assert_eq!(branches.len(), 3);
         assert_eq!(
             branches[0]["properties"]["provider_id"]["const"],
             "duckduckgo"
+        );
+        let fetch = caps
+            .iter()
+            .find(|capability| capability.id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
+            .expect("WebFetch capability");
+        assert_eq!(
+            fetch.bound.tools,
+            awaken_runtime_contract::plugin::IdBound::Exact(vec![
+                awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID.into()
+            ])
         );
         assert_eq!(
             branches[1]["properties"]["credential"]["x-awaken-credential-application"]["type"],

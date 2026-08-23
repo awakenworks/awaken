@@ -1,16 +1,16 @@
-//! The static network surface contains only `web_fetch`; configurable search is
-//! owned by `WebSearchPlugin` and covered by its provider-contract tests.
+//! WebFetch is resolved through the same configurable provider catalog as
+//! WebSearch; no static network execution path remains.
 
-use awaken_ext_builtin_tools::web_hand_tools;
+use awaken_ext_builtin_tools::{WebFetchPlugin, WebSearchProviderRegistry};
 use awaken_runtime_contract::tool::{RawTool, ToolCall};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
 fn tool(id: &str) -> Arc<dyn RawTool> {
-    web_hand_tools()
-        .into_iter()
-        .find(|t| t.id() == id)
-        .unwrap_or_else(|| panic!("no web tool {id}"))
+    let plugin = WebFetchPlugin::new(WebSearchProviderRegistry::builtins(), None);
+    let (_, tool) = plugin.configured_tool(None).expect("default fetch route");
+    assert_eq!(tool.id(), id);
+    tool
 }
 
 fn call(id: &str, args: serde_json::Value) -> ToolCall {
@@ -23,11 +23,9 @@ fn call(id: &str, args: serde_json::Value) -> ToolCall {
 
 #[tokio::test]
 async fn web_fetch_returns_the_response_body() {
-    // Cause/effect rule R1: given a reachable URL serving a body below the raw
-    // 1 MiB ceiling (C1), invoking the sole static `web_fetch` owner returns the
-    // complete text with `is_error=false` (E1). Constraint K1: this test owns
-    // raw HTTP transport only; Agent domain/context policy belongs to
-    // `ConfiguredWebToolExecutor` and is not repeated here.
+    // Cause/effect rule R1: direct provider plus a reachable body below the raw
+    // 1 MiB ceiling returns the complete text with `is_error=false`. This test
+    // owns transport only; Agent domain/context policy remains in the configured wrapper.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let server = std::thread::spawn(move || {
@@ -55,9 +53,9 @@ async fn web_fetch_returns_the_response_body() {
 
 #[tokio::test]
 async fn web_fetch_unreachable_host_is_a_typed_error() {
-    // Cause/effect rule R2: given an unreachable endpoint (C2), raw HTTP
-    // execution returns a typed fetch error rather than panicking (E2).
-    // Constraint K1: no Agent policy is configured on this transport owner.
+    // Cause/effect rule R2: direct provider + connection failure -> typed error;
+    // no undeclared fallback or alternate provider is guessed, and the call
+    // fails without panicking. No Agent policy is configured on this transport owner.
     let err = tool("web_fetch")
         .invoke(call(
             "web_fetch",

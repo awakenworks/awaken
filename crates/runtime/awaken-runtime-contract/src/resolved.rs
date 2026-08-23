@@ -1004,6 +1004,23 @@ pub struct ToolDescriptor {
     /// trusted capability before any recovery action.
     #[serde(default, skip_serializing_if = "is_default_tool_recovery")]
     pub recovery_policy: crate::tool::ToolRecoveryPolicy,
+    /// Optional provider-native realization of this same builtin capability.
+    /// The canonical tool id remains the Agent-facing identity; an exact
+    /// provider adapter may project it to this server-tool wire instead of a
+    /// function. Absence always means ordinary host execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_server_tool: Option<ProviderServerTool>,
+}
+
+/// Exact provider-native server-tool projection selected during publication.
+/// `provider_kind` is deliberately explicit: speaking an OpenAI-compatible
+/// dialect does not imply support for another provider's server tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderServerTool {
+    pub provider_kind: String,
+    pub tool_type: String,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -1019,6 +1036,8 @@ struct ToolDescriptorWire {
     kind: ToolKind,
     #[serde(default)]
     recovery_policy: crate::tool::ToolRecoveryPolicy,
+    #[serde(default)]
+    provider_server_tool: Option<ProviderServerTool>,
 }
 
 impl<'de> Deserialize<'de> for ToolDescriptor {
@@ -1042,6 +1061,7 @@ impl<'de> Deserialize<'de> for ToolDescriptor {
             parameters: wire.parameters,
             kind: wire.kind,
             recovery_policy: wire.recovery_policy,
+            provider_server_tool: wire.provider_server_tool,
         })
     }
 }
@@ -1139,6 +1159,7 @@ impl ToolDescriptor {
             parameters,
             kind: ToolKind::Regular,
             recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
+            provider_server_tool: None,
         })
     }
 
@@ -1160,6 +1181,7 @@ impl ToolDescriptor {
             &self.parameters,
             self.kind,
             &self.recovery_policy,
+            self.provider_server_tool.as_ref(),
         )
     }
 
@@ -1189,6 +1211,22 @@ impl ToolDescriptor {
     #[must_use]
     pub fn with_recovery(mut self, recovery: crate::tool::ToolRecoveryPolicy) -> Self {
         self.recovery_policy = recovery;
+        self
+    }
+
+    /// Bind this canonical builtin to one exact provider-server realization.
+    #[must_use]
+    pub fn with_provider_server_tool(
+        mut self,
+        provider_kind: impl Into<String>,
+        tool_type: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        self.provider_server_tool = Some(ProviderServerTool {
+            provider_kind: provider_kind.into(),
+            tool_type: tool_type.into(),
+            parameters,
+        });
         self
     }
 }
@@ -1525,6 +1563,7 @@ fn content_hash(
     parameters: &serde_json::Value,
     kind: ToolKind,
     recovery: &crate::tool::ToolRecoveryPolicy,
+    provider_server_tool: Option<&ProviderServerTool>,
 ) -> String {
     use sha2::{Digest, Sha256};
     let canonical = parameters.to_string();
@@ -1543,7 +1582,17 @@ fn content_hash(
         crate::tool::ToolRecoveryMode::Idempotent => "idempotent",
         crate::tool::ToolRecoveryMode::DurableRequest => "durable_request",
     };
-    for field in [id, description, canonical.as_str(), kind, recovery_mode] {
+    let server_projection = provider_server_tool
+        .map(|projection| serde_json::to_string(projection).expect("provider tool serializes"))
+        .unwrap_or_default();
+    for field in [
+        id,
+        description,
+        canonical.as_str(),
+        kind,
+        recovery_mode,
+        server_projection.as_str(),
+    ] {
         hasher.update((field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
     }

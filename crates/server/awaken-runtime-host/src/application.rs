@@ -471,13 +471,13 @@ mod acp_context_tests {
                     server_name: "flow".into(),
                 },
                 default: ToolExecutionPolicy::default(),
-                overrides: vec![ToolPolicyOverride {
-                    name: "workflow_get".into(),
-                    policy: ToolExecutionPolicy {
+                overrides: vec![ToolPolicyOverride::new(
+                    "workflow_get",
+                    ToolExecutionPolicy {
                         enabled,
                         permission: ToolPermissionRequirement::AlwaysAllow,
                     },
-                }],
+                )],
             }],
             client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
                 name: "resource_request".into(),

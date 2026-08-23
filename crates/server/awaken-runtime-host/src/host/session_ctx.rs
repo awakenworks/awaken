@@ -101,9 +101,9 @@ pub(crate) struct SessionCtx {
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
-    /// Session lifetime for the ACP-facing projection of the configured
-    /// WebSearch RawTool. Native sessions leave this empty.
-    pub(crate) _web_search_mcp: Option<crate::AcpToolExport>,
+    /// Session lifetime for ACP-facing projections of configured web tools.
+    /// Native sessions leave this empty.
+    pub(crate) _web_tool_exports: Vec<crate::AcpToolExport>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).

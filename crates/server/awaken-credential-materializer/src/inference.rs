@@ -41,6 +41,25 @@ pub fn executor_from_materialized_endpoint(
     base_url: Option<&str>,
     credential: Option<&awaken_agent_contract::RedactedString>,
 ) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
+    executor_from_materialized_endpoint_for_provider(
+        adapter_kind,
+        api_dialect,
+        adapter_kind,
+        base_url,
+        credential,
+    )
+}
+
+/// Provider-aware endpoint realization. The provider kind is independent of
+/// the wire adapter so compatible gateways cannot accidentally inherit native
+/// capabilities from the protocol they emulate.
+pub fn executor_from_materialized_endpoint_for_provider(
+    provider_kind: &str,
+    api_dialect: &str,
+    adapter_kind: &str,
+    base_url: Option<&str>,
+    credential: Option<&awaken_agent_contract::RedactedString>,
+) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
     let expected_adapter = match api_dialect {
         "" => None,
         "anthropic_messages" => Some("anthropic"),
@@ -60,7 +79,8 @@ pub fn executor_from_materialized_endpoint(
         base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
     let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
     if api_dialect == "open_ai_responses" {
-        return awaken_provider_genai::OpenAiResponsesExecutor::new(
+        return awaken_provider_genai::OpenAiResponsesExecutor::new_for_provider(
+            provider_kind,
             base_url,
             credential.expose_secret(),
         )
@@ -182,7 +202,8 @@ impl CredentialInferenceMaterializer {
         if endpoint.upstream_model.is_empty() {
             return Ok(None);
         }
-        let inner = executor_from_materialized_endpoint(
+        let inner = executor_from_materialized_endpoint_for_provider(
+            provider_ref,
             &endpoint.api_dialect,
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
