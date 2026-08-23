@@ -79,6 +79,16 @@ const anthropicContractFingerprintsByVersion = Object.freeze({
     'resources/beta/memory-stores/index.d.ts': { declarations: 3, sha256: '304127bbff4146ab97b235fd25f3c9acc8e2ede718cd7faa60d94999695d2e5e' },
     'resources/beta/memory-stores/memory-versions.d.ts': { declarations: 12, sha256: '500b5f17b0aa766bc09aa106eef08e46b28f1918964706b5d6b6251de584b75a' },
     'resources/beta/user-profiles.d.ts': { declarations: 10, sha256: 'a4152a4663bbfb630e065355476c8823f6027f7b73c521fa2fa66a35033e9724' },
+    'lib/environments/poller.d.ts': { declarations: 3, sha256: '254e5575c1b7b37719a683328c26380b55588b0ef6a5b53ae807a18dbced9193' },
+    'lib/environments/worker.d.ts': { declarations: 4, sha256: '5ccb4b37c6c46e1eebaf6fac7243c731a316105a282f509d6ac53396ff5101c8' },
+    'resources/files.d.ts': { declarations: 6, sha256: '77722d2af195ba1e3170bdc23357bd933edef32c409c90c34f54972aeb2cce2d' },
+    'resources/skills/index.d.ts': { declarations: 2, sha256: '68c2c958d94bdd9fe1f56c78298be733f55c9725848a92a07f1e8e6bb4a40196' },
+    'resources/skills/skills.d.ts': { declarations: 7, sha256: '62bdff7606ea44e65a60a622252f08cce0d72ccd4028a20d5d59541bdeef69b5' },
+    'resources/skills/versions.d.ts': { declarations: 8, sha256: 'cd671e81fc775b6bb7b979f01bd51303e0544f84993086eb41da1053806c420c' },
+    'tools/agent-toolset/memories.d.ts': { declarations: 5, sha256: '6248181ed29e86ab2c782e91b7e55cdfa44698d27d420c85ef460bbc5168173f' },
+    'tools/agent-toolset/node.d.ts': { declarations: 5, sha256: '7d24ebba865ef90f927b845d6b26a0902fbb4dff0d4a25d917f832b4ebde99e8' },
+    'tools/agent-toolset/skills.d.ts': { declarations: 5, sha256: '0fb055e7a64bc30cd9442de8558709938f6d66449884336eee1ae8ef9c95a5d1' },
+    'tools/agent-toolset/sync-interval.d.ts': { declarations: 3, sha256: 'a77927ebb194fa7a57e9263c4c1d895f067955ee36efef8468f725c420a67e65' },
   }),
 });
 
@@ -86,7 +96,7 @@ function publicContractFingerprint(file) {
   const sourceText = readFileSync(file, 'utf8');
   const source = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true);
   const printer = ts.createPrinter({ removeComments: true });
-  const declarations = source.statements
+  let declarations = source.statements
     .filter((statement) => {
       const exported = statement.modifiers?.some(
         (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
@@ -100,6 +110,17 @@ function publicContractFingerprint(file) {
     })
     .map((statement) => printer.printNode(ts.EmitHint.Unspecified, statement, source))
     .sort();
+  // Helper entrypoints may expose only functions/constants. Keep the historical
+  // resource fingerprints stable, but do not let a helper-only declaration file
+  // escape review merely because it has no class/interface/type declaration.
+  if (declarations.length === 0) {
+    declarations = source.statements
+      .filter((statement) => statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      ) && (ts.isFunctionDeclaration(statement) || ts.isVariableStatement(statement)))
+      .map((statement) => printer.printNode(ts.EmitHint.Unspecified, statement, source))
+      .sort();
+  }
   assert.ok(declarations.length > 0, `no exported public contracts found in ${file}`);
   return {
     declarations: declarations.length,
@@ -139,10 +160,17 @@ const surfaces = [
   },
   {
     package: '@anthropic-ai/sdk',
-    // The SDK's Beta resource root is the declaration oracle. Its import
-    // closure automatically brings every present and future resource family
-    // into this gate; a new family therefore fails until it has one owner.
-    roots: ['resources/beta/beta.d.ts'],
+    // The beta root remains the Managed API oracle; 0.119 GA Files/Skills and
+    // 0.120's self-hosted worker/memory helpers are separate public entrypoints,
+    // so they are explicit roots in the same inventory rather than an MCP or
+    // hand-maintained compatibility side channel.
+    roots: [
+      'resources/beta/beta.d.ts',
+      'resources/files.d.ts',
+      'resources/skills/index.d.ts',
+      'lib/environments/worker.d.ts',
+      'tools/agent-toolset/memories.d.ts',
+    ],
     rules: [
       [
         /^resources\/beta\/agents\/versions\.d\.ts$/,
@@ -171,9 +199,13 @@ const surfaces = [
       [/resources\/beta\/tunnels/, 'management_tunnels_contract_e2e.mjs'],
       [/resources\/beta\/webhooks/, 'managed_webhooks_official_sdk_e2e.mjs'],
       [/^resources\/beta\/beta\.d\.ts$/, 'managed_contract_guard_e2e.mjs'],
+      [/^resources\/files\.d\.ts$/, 'management_files_models_e2e.mjs'],
+      [/^resources\/skills\//, 'management_skills_e2e.mjs'],
+      [/^lib\/environments\//, 'management_environment_worker_full_e2e.mjs'],
+      [/^tools\/agent-toolset\//, 'management_environment_worker_full_e2e.mjs'],
     ],
     exclusions: [[
-      /^(client|internal\/|core\/|lib\/|tools\/|pagination|resource|error|uploads|version|index|resources\/messages|resources\/models|resources\/beta\/messages)/,
+      /^(client|internal\/|core\/|lib\/(?!environments\/)|tools\/(?!agent-toolset\/)|pagination|resource|error|uploads|version|index|resources\/messages|resources\/models|resources\/beta\/messages)/,
       'shared SDK client/runtime or non-Managed Messages/Models machinery; no Awaken Managed wire DTO',
     ]],
   },

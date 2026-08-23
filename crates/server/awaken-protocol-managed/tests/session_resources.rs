@@ -1529,7 +1529,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "test:agent-default".into(),
             name: "agent default".into(),
-            description: String::new(),
+            description: None,
             metadata: Default::default(),
             scope: None,
             config: awaken_environment_contract::EnvironmentConfig::Cloud {

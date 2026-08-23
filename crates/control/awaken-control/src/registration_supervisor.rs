@@ -363,7 +363,7 @@ mod tests {
             .create_once(awaken_environment_contract::CreateEnvironmentCommand {
                 command_id: "supervisor-state".into(),
                 name: "custom".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: awaken_environment_contract::EnvironmentConfig::SelfHosted,

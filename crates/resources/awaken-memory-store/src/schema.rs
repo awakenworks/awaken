@@ -21,6 +21,10 @@ const FILES: &[(&str, &str)] = &[
         "V0002__versions_and_counters.sql",
         include_str!("migrations/V0002__versions_and_counters.sql"),
     ),
+    (
+        "V0003__version_actors.sql",
+        include_str!("migrations/V0003__version_actors.sql"),
+    ),
 ];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
@@ -74,6 +78,6 @@ mod tests {
         let bundle = memory_store_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, vec![1, 2]);
+        assert_eq!(versions, vec![1, 2, 3]);
     }
 }

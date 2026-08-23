@@ -193,7 +193,7 @@ async fn create_env(
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id,
             name: params.name,
-            description: params.description.unwrap_or_default(),
+            description: params.description,
             metadata: params.metadata,
             scope: params.scope.map(|scope| scope.as_str().to_string()),
             config,
@@ -264,7 +264,10 @@ async fn update_env(
     });
     let patch = EnvUpdate {
         name: params.name,
-        description: params.description.map(Option::unwrap_or_default),
+        description: params.description.map(|description| match description {
+            Some(description) => EnvironmentFieldUpdate::Replace(description),
+            None => EnvironmentFieldUpdate::Clear,
+        }),
         config,
         scope: params
             .scope

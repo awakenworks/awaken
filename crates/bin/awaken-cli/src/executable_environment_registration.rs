@@ -284,7 +284,7 @@ mod startup_tests {
                 id: id.into(),
                 revision: EnvironmentRevision(1),
                 name: id.into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::Cloud {

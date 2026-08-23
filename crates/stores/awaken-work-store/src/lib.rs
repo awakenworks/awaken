@@ -445,7 +445,7 @@ impl WorkQueue for SqliteWorkQueue {
         Ok(HeartbeatResult::Accepted(LeaseReceipt {
             last_heartbeat,
             lease_extended: extended,
-            state: current.state.as_str(),
+            state: current.state,
             ttl_seconds,
         }))
     }
@@ -1116,7 +1116,7 @@ impl WorkQueue for PostgresWorkQueue {
         Ok(HeartbeatResult::Accepted(LeaseReceipt {
             last_heartbeat,
             lease_extended: extended,
-            state: current.state.as_str(),
+            state: current.state,
             ttl_seconds,
         }))
     }

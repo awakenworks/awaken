@@ -28,6 +28,7 @@ fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
         mime_type: row.get("mime_type"),
         size_bytes: row.get::<i64, _>("size_bytes") as u64,
         created_at: row.get("file_created_at"),
+        expires_at: row.get("expires_at"),
         downloadable: row.get::<i32, _>("downloadable") != 0,
         scope_id: row.get("scope_id"),
         logical_path: row.get("logical_path"),
@@ -37,7 +38,7 @@ fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
 }
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, size_bytes, \
-created_at AS file_created_at, downloadable, scope_id, logical_path, harvest_key, deleted";
+created_at AS file_created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, deleted";
 
 /// A Postgres-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct PgFileStore {
@@ -147,8 +148,8 @@ impl FileCatalog for PgFileStore {
         crate::validate_record(&record)?;
         let inserted = sqlx::query(&format!(
             "INSERT INTO file_store_file \
-             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,downloadable,scope_id,logical_path,harvest_key,deleted) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,deleted) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
              ON CONFLICT DO NOTHING RETURNING {FILE_COLUMNS}"
         ))
         .bind(&record.id)
@@ -158,6 +159,7 @@ impl FileCatalog for PgFileStore {
         .bind(&record.mime_type)
         .bind(record.size_bytes as i64)
         .bind(&record.created_at)
+        .bind(&record.expires_at)
         .bind(i32::from(record.downloadable))
         .bind(&record.scope_id)
         .bind(&record.logical_path)

@@ -183,7 +183,7 @@ impl PersistedEnvRow {
                 EnvironmentStoreError("invalid persisted Environment revision".into())
             })?),
             name: self.name,
-            description: self.description,
+            description: decode_description(self.description)?,
             metadata: serde_json::from_str(&self.metadata_json).map_err(environment_store)?,
             scope: self.scope,
             config: serde_json::from_str(&self.config_json).map_err(environment_store)?,
@@ -193,6 +193,25 @@ impl PersistedEnvRow {
                 .transpose()?,
             archived_at: self.archived_at,
         })
+    }
+}
+
+const DESCRIPTION_CODEC_PREFIX: &str = "awaken-option-json:";
+
+fn encode_description(description: &Option<String>) -> String {
+    format!(
+        "{DESCRIPTION_CODEC_PREFIX}{}",
+        serde_json::to_string(description)
+            .expect("Option<String> JSON serialization is infallible")
+    )
+}
+
+fn decode_description(stored: String) -> Result<Option<String>, EnvironmentStoreError> {
+    match stored.strip_prefix(DESCRIPTION_CODEC_PREFIX) {
+        Some(encoded) => serde_json::from_str(encoded).map_err(environment_store),
+        // Rows written before nullable SDK descriptions are literal strings;
+        // retain even an empty string as an authored value.
+        None => Ok(Some(stored)),
     }
 }
 
@@ -272,7 +291,7 @@ impl SqliteEnvRegistry {
                 item.id,
                 item.revision.0,
                 item.name,
-                item.description,
+                encode_description(&item.description),
                 metadata_str(&item.metadata)?,
                 config_str(&item.config)?,
                 item.archived_at,
@@ -349,7 +368,7 @@ impl EnvRegistry for SqliteEnvRegistry {
                 id,
                 next,
                 command.name,
-                command.description,
+                encode_description(&command.description),
                 metadata_str(&command.metadata)
                     .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
                 config_str(&command.config)
@@ -460,7 +479,7 @@ impl EnvRegistry for SqliteEnvRegistry {
              config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
             params![
                 item.name,
-                item.description,
+                encode_description(&item.description),
                 metadata_str(&item.metadata)?,
                 config_str(&item.config)?,
                 item.revision.0,
@@ -695,7 +714,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&id)
         .bind(next)
         .bind(&command.name)
-        .bind(&command.description)
+        .bind(encode_description(&command.description))
         .bind(
             metadata_str(&command.metadata)
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
@@ -733,7 +752,7 @@ impl EnvRegistry for PostgresEnvRegistry {
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
         )
         .bind(&item.name)
-        .bind(&item.description)
+        .bind(encode_description(&item.description))
         .bind(
             metadata_str(&item.metadata)
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
@@ -851,7 +870,7 @@ impl EnvRegistry for PostgresEnvRegistry {
              config_json = $4, revision = $5, scope = $6, sandbox_policy_json = $7 WHERE env_id = $8",
         )
         .bind(&item.name)
-        .bind(&item.description)
+        .bind(encode_description(&item.description))
         .bind(metadata_str(&item.metadata)?)
         .bind(config_str(&item.config)?)
         .bind(revision)
@@ -869,7 +888,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&item.id)
         .bind(revision)
         .bind(&item.name)
-        .bind(&item.description)
+        .bind(encode_description(&item.description))
         .bind(metadata_str(&item.metadata)?)
         .bind(config_str(&item.config)?)
         .bind(&item.archived_at)
@@ -936,7 +955,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&item.id)
         .bind(revision)
         .bind(&item.name)
-        .bind(&item.description)
+        .bind(encode_description(&item.description))
         .bind(metadata_str(&item.metadata)?)
         .bind(config_str(&item.config)?)
         .bind(&item.archived_at)
@@ -1058,6 +1077,33 @@ mod tests {
             .expect("deterministic Environment migrations");
     }
 
+    #[test]
+    fn nullable_description_codec_preserves_all_three_storage_generations() {
+        // Cause/effect graph: C1=new null, C2=new empty string, C3=new ordinary
+        // or prefix-looking string, C4=legacy literal. Effects: E1=None,
+        // E2=Some(""), E3=byte-exact Some(value), E4=legacy Some(value).
+        // Decision rules R1=C1->E1, R2=C2->E2, R3=C3->E3, R4=C4->E4.
+        // The NOT NULL database columns remain the one durable authority; this
+        // codec prevents a second nullable shadow column or destructive rewrite.
+        for value in [
+            None,
+            Some(String::new()),
+            Some("ordinary".into()),
+            Some("awaken-option-json:null".into()),
+        ] {
+            assert_eq!(
+                decode_description(encode_description(&value)).unwrap(),
+                value,
+                "R1-R3"
+            );
+        }
+        assert_eq!(
+            decode_description(String::new()).unwrap(),
+            Some(String::new()),
+            "R4"
+        );
+    }
+
     #[tokio::test]
     async fn migration_from_v8_seeds_exact_registration_history_once() {
         // FMECA: F1 upgrading an existing authority leaves old revisions without
@@ -1156,7 +1202,7 @@ mod tests {
             .create_once(CreateEnvironmentCommand {
                 command_id: "rollback-create".into(),
                 name: "rollback".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: config(),
@@ -1540,7 +1586,7 @@ mod tests {
             .create_once(CreateEnvironmentCommand {
                 command_id: "postgres-rollback".into(),
                 name: "rollback".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: config(),

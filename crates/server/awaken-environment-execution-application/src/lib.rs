@@ -659,7 +659,7 @@ mod tests {
                 id: id.into(),
                 revision: EnvironmentRevision(revision),
                 name: id.into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config,

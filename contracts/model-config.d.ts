@@ -14,28 +14,19 @@
 type CredentialPoolID = string;
 
 /**
- * An Agent's authored default inputs. The repository supplies Workspace as the
- * aggregate key, so this value contains only Agent-local configuration. The same
- * typed [`InputBinding`] language is used by Session attachments; no authorization
- * subject, policy, API key, secret, content pin, Project, or WorkUnit enters it.
+ * An Agent's authored default Environment and Resource inputs. Workspace is
+ * the repository aggregate key; this value contains only Agent-local intent.
  */
 export interface AgentInputConfig {
-    agent_id: string;
-    /**
-     * Exact Environment revision selected as this Agent's Session default.
-     * It is secret-free and shares the same CAS revision as Resource bindings,
-     * so callers cannot observe a mixed default bundle.
-     */
-    environment?: null | EnvironmentObject;
+    agent_id:     string;
+    environment?: EnvironmentClass | null;
     inputs:       InputElement[];
     revision:     number;
-    [property: string]: unknown;
 }
 
-export interface EnvironmentObject {
+export interface EnvironmentClass {
     environment_id: string;
     revision:       number;
-    [property: string]: unknown;
 }
 
 export interface InputElement {
@@ -115,12 +106,12 @@ export interface Error {
  * passes).
  */
 export interface AvailabilityState {
-    state:        State;
+    state:        AvailabilityStateState;
     retry_at_ms?: number;
     [property: string]: unknown;
 }
 
-export type State = "available" | "cooled_down" | "exhausted";
+export type AvailabilityStateState = "available" | "cooled_down" | "exhausted";
 
 /**
  * Durable outcome of reconciling one complete provider model listing.
@@ -135,6 +126,18 @@ export interface CatalogSyncResult {
     observed_at_unix_ms: number;
     [property: string]: unknown;
 }
+
+/**
+ * Secret-free state of the one product-coordinated Cloud login operation.
+ */
+export interface CloudLoginStatusView {
+    authorize_url?: null | string;
+    error_code?:    null | string;
+    state:          CloudLoginStatusViewState;
+    [property: string]: unknown;
+}
+
+export type CloudLoginStatusViewState = "sign_in_required" | "authorizing" | "authenticated" | "failed";
 
 /**
  * Stable frontend/SDK feature discovery; callers never infer deployment
@@ -339,7 +342,12 @@ export type CredentialStatus = "active" | "disabled" | "archived";
  */
 export interface CredentialValidation {
     adapter_kind: string;
-    status:       CredentialValidationStatus;
+    /**
+     * Current durable revision for an exact hosted reference validation.
+     * Model live-probe responses omit it.
+     */
+    credential_version?: number | null;
+    status:              CredentialValidationStatus;
     [property: string]: unknown;
 }
 
@@ -357,7 +365,12 @@ export type CredentialValidationStatus = "valid" | "invalid" | "unknown";
  */
 export interface EnterCredentialRequest {
     env_key?: null | string;
-    kind:     CredentialKind;
+    /**
+     * Stable hosted-governance operation identity. When present, `provider_id`
+     * is required and the exact tuple is the idempotent credential identity.
+     */
+    idempotency_key?: null | string;
+    kind:             CredentialKind;
     /**
      * Structured material sealed as one versioned Vault document. Mutually
      * exclusive with the legacy `secret` field.
@@ -473,6 +486,12 @@ export interface CredentialBindingObject {
  * a target containing both.
  */
 export interface PrimaryTarget {
+    /**
+     * Public API-dialect qualifier (for example `anthropic_messages` or
+     * `open_ai_responses`). It narrows a provider's protocol surfaces without
+     * exposing the catalog's internal endpoint identity.
+     */
+    api_dialect?:          null | string;
     endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
@@ -553,6 +572,12 @@ export type Mode = "auto" | "profile" | "target" | "backend_default" | "backend_
  * a target containing both.
  */
 export interface ModelSelectionTarget {
+    /**
+     * Public API-dialect qualifier (for example `anthropic_messages` or
+     * `open_ai_responses`). It narrows a provider's protocol surfaces without
+     * exposing the catalog's internal endpoint identity.
+     */
+    api_dialect?:          null | string;
     endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
@@ -569,6 +594,12 @@ export interface ModelSelectionTarget {
  * a target containing both.
  */
 export interface ModelTarget {
+    /**
+     * Public API-dialect qualifier (for example `anthropic_messages` or
+     * `open_ai_responses`). It narrows a provider's protocol surfaces without
+     * exposing the catalog's internal endpoint identity.
+     */
+    api_dialect?:          null | string;
     endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
@@ -1037,6 +1068,12 @@ export interface Binding {
  * a target containing both.
  */
 export interface ResolveRequestTarget {
+    /**
+     * Public API-dialect qualifier (for example `anthropic_messages` or
+     * `open_ai_responses`). It narrows a provider's protocol surfaces without
+     * exposing the catalog's internal endpoint identity.
+     */
+    api_dialect?:          null | string;
     endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
@@ -1091,11 +1128,27 @@ export interface ResolvedInferenceView {
 
 /**
  * Rotate the primary material of one exact active Vault credential revision.
- * The secret is write-only and the response remains a secret-free source view.
+ * Scalar or typed material is write-only and the response remains a
+ * secret-free source view.
  */
 export interface RotateCredentialRequest {
     expected_version: number;
-    secret:           string;
+    material?:        null | RotateCredentialRequestMaterial;
+    secret?:          null | string;
+    [property: string]: unknown;
+}
+
+export interface RotateCredentialRequestMaterial {
+    /**
+     * Opaque named secret fields. Core stores and transports them but never
+     * assign protocol meaning; the matching consumer owns validation.
+     */
+    fields: { [key: string]: string };
+    /**
+     * Namespaced, versioned type owned by the installed consumer extension,
+     * for example `acme.ssh-key/v1`.
+     */
+    type_id: string;
     [property: string]: unknown;
 }
 
@@ -1132,14 +1185,18 @@ export interface SaveProviderConnectionRequest {
     secret?:       null | string;
     timeout_secs?: number;
     workspace_id:  string;
-    [property: string]: unknown;
 }
 
 /**
  * Live-validate a credential against a model's resolved provider endpoint.
  */
 export interface ValidateCredentialRequest {
-    model_id:     string;
-    workspace_id: string;
+    model_id?: null | string;
+    /**
+     * Generic hosted-governance validation mode. The durable source id is the
+     * path identity, so this field is mutually exclusive with `model_id`.
+     */
+    provider_ref?: null | string;
+    workspace_id:  string;
     [property: string]: unknown;
 }

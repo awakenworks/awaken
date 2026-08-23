@@ -362,7 +362,7 @@ pub fn builtin_local_environment() -> EnvItem {
         id: BUILTIN_LOCAL_ENVIRONMENT_ID.into(),
         revision: EnvironmentRevision(1),
         name: "Local".into(),
-        description: "Built-in local execution Environment".into(),
+        description: Some("Built-in local execution Environment".into()),
         metadata: Default::default(),
         scope: None,
         config: EnvironmentConfig::SelfHosted,
@@ -401,7 +401,7 @@ mod tests {
         CreateEnvironmentCommand {
             command_id: command_id.into(),
             name: name.into(),
-            description: String::new(),
+            description: None,
             metadata: Default::default(),
             scope: None,
             config: EnvironmentConfig::SelfHosted,
@@ -510,7 +510,7 @@ mod tests {
             .create(CreateEnvironmentCommand {
                 command_id: "create-a".into(),
                 name: "A".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
@@ -572,7 +572,7 @@ mod tests {
             .create(CreateEnvironmentCommand {
                 command_id: "projection-outage".into(),
                 name: "Retained".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
@@ -826,7 +826,7 @@ mod tests {
             .create(CreateEnvironmentCommand {
                 command_id: "withdrawal-outage".into(),
                 name: "terminal".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
@@ -978,7 +978,7 @@ mod tests {
             .create(CreateEnvironmentCommand {
                 command_id: "terminal-mutations".into(),
                 name: "terminal".into(),
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,

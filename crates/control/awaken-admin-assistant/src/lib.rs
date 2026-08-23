@@ -682,7 +682,7 @@ impl RawTool for DraftEnvironment {
             .create_environment(CreateEnvironmentCommand {
                 command_id: format!("control:{}", audit_event.call_id),
                 name: args.name,
-                description: String::new(),
+                description: None,
                 metadata: Default::default(),
                 scope: None,
                 config,

@@ -411,7 +411,7 @@ mod tests {
                     id: id.into(),
                     revision: EnvironmentRevision(revision),
                     name: format!("name-{revision}"),
-                    description: description.into(),
+                    description: Some(description.into()),
                     metadata: [("revision".into(), revision.to_string())]
                         .into_iter()
                         .collect(),

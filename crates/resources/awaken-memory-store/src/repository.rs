@@ -33,8 +33,8 @@ use async_trait::async_trait;
 // contract crate. This module implements the port and re-exports them so
 // `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
-    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
-    MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
+    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryActor,
+    MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
 };
 
 pub use awaken_resource_contract::memory_sha256_hex as sha256_hex;
@@ -184,6 +184,7 @@ impl VolatileMemoryRepository {
         record: &Record,
         operation: MemoryVersionOperation,
         content: Option<String>,
+        actor: Option<&MemoryActor>,
     ) {
         let ordinal = self.version_next.fetch_add(1, Ordering::SeqCst) + 1;
         state
@@ -197,7 +198,9 @@ impl VolatileMemoryRepository {
                 path: record.path.clone(),
                 content,
                 created_unix_nanos: record.updated,
+                created_by: actor.cloned(),
                 redacted_unix_nanos: None,
+                redacted_by: None,
             });
     }
 }
@@ -243,6 +246,16 @@ impl MemoryRepository for VolatileMemoryRepository {
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as(store, path, content, None).await
+    }
+
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(path)?;
         validate_size(content)?;
         let id = self.mint_id();
@@ -272,6 +285,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             &record,
             MemoryVersionOperation::Created,
             Some(content.to_string()),
+            actor,
         );
         Ok(memory)
     }
@@ -283,6 +297,19 @@ impl MemoryRepository for VolatileMemoryRepository {
         content: &str,
         base_sha: &str,
         target_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        self.update_head_as(store, id, content, base_sha, target_path, None)
+            .await
+    }
+
+    async fn update_head_as(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
         validate_size(content)?;
         if let Some(path) = target_path {
@@ -337,6 +364,7 @@ impl MemoryRepository for VolatileMemoryRepository {
                 &displaced,
                 MemoryVersionOperation::Deleted,
                 None,
+                actor,
             );
         }
         self.append_version(
@@ -345,6 +373,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             &record,
             MemoryVersionOperation::Modified,
             Some(content.to_string()),
+            actor,
         );
         Ok(memory)
     }
@@ -380,6 +409,7 @@ impl MemoryRepository for VolatileMemoryRepository {
                 &displaced,
                 MemoryVersionOperation::Deleted,
                 None,
+                None,
             );
         }
         self.append_version(
@@ -388,11 +418,21 @@ impl MemoryRepository for VolatileMemoryRepository {
             &record,
             MemoryVersionOperation::Modified,
             Some(record.content.clone()),
+            None,
         );
         Ok(memory)
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as(store, path, None).await
+    }
+
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
         let mut guard = self.inner.lock().unwrap();
         let removed = guard
             .records
@@ -405,6 +445,7 @@ impl MemoryRepository for VolatileMemoryRepository {
                 &record,
                 MemoryVersionOperation::Deleted,
                 None,
+                actor,
             );
         }
         Ok(())
@@ -442,6 +483,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             &current,
             MemoryVersionOperation::Deleted,
             None,
+            None,
         );
         Ok(true)
     }
@@ -462,6 +504,15 @@ impl MemoryRepository for VolatileMemoryRepository {
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
+        self.redact_version_as(store, version_id, None).await
+    }
+
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
         let mut guard = self.inner.lock().unwrap();
         let Some(version) = guard
             .versions
@@ -472,6 +523,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         };
         if version.redacted_unix_nanos.is_none() {
             version.redacted_unix_nanos = Some(now_nanos());
+            version.redacted_by = actor.cloned();
             version.content = None;
         }
         Ok(Some(version.clone()))

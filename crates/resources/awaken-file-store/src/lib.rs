@@ -406,6 +406,7 @@ mod tests {
             mime_type: "text/plain".into(),
             size_bytes: 3,
             created_at: created_at.into(),
+            expires_at: None,
             downloadable: scope.is_some(),
             scope_id: scope.map(str::to_string),
             logical_path: scope.map(|_| format!("{id}.txt")),

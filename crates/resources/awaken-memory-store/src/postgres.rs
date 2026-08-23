@@ -43,7 +43,7 @@ async fn verify_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
 
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
     MemoryVersionOperation, sha256_hex,
 };
 
@@ -162,9 +162,17 @@ fn to_version(row: sqlx::postgres::PgRow) -> Result<MemoryVersion, MemErr> {
         path: row.get("path"),
         content,
         created_unix_nanos: row.get::<i64, _>("created") as u128,
+        created_by: row
+            .get::<Option<String>, _>("created_by_json")
+            .map(|json| serde_json::from_str(&json).map_err(mem_err))
+            .transpose()?,
         redacted_unix_nanos: row
             .get::<Option<i64>, _>("redacted")
             .map(|value| value as u128),
+        redacted_by: row
+            .get::<Option<String>, _>("redacted_by_json")
+            .map(|json| serde_json::from_str(&json).map_err(mem_err))
+            .transpose()?,
     })
 }
 
@@ -202,6 +210,7 @@ async fn append_version(
     path: &str,
     content: Option<&str>,
     created: i64,
+    actor: Option<&MemoryActor>,
 ) -> Result<(), MemErr> {
     let ordinal = next_counter(
         tx,
@@ -211,8 +220,8 @@ async fn append_version(
     .await?;
     sqlx::query(&format!(
         "INSERT INTO {NS}_versions \
-         (store_id, ordinal, id, memory_id, operation, path, content, created, redacted) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)"
+         (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NULL)"
     ))
     .bind(store)
     .bind(ordinal)
@@ -222,6 +231,7 @@ async fn append_version(
     .bind(path)
     .bind(content.map(str::as_bytes))
     .bind(created)
+    .bind(actor.map(serde_json::to_string).transpose().map_err(mem_err)?)
     .execute(&mut **tx)
     .await
     .map_err(mem_err)?;
@@ -313,6 +323,16 @@ impl MemoryRepository for PostgresMemoryRepository {
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as(store, path, content, None).await
+    }
+
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(path)?;
         validate_size(content)?;
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
@@ -390,6 +410,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             path,
             Some(content),
             now,
+            actor,
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -412,6 +433,19 @@ impl MemoryRepository for PostgresMemoryRepository {
         content: &str,
         base_sha: &str,
         target_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        self.update_head_as(store, id, content, base_sha, target_path, None)
+            .await
+    }
+
+    async fn update_head_as(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
         validate_size(content)?;
         if let Some(path) = target_path {
@@ -527,6 +561,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                 requested_path,
                 None,
                 now,
+                actor,
             )
             .await?;
         }
@@ -538,6 +573,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             requested_path,
             Some(content),
             now,
+            actor,
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -613,6 +649,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                 to,
                 None,
                 now,
+                None,
             )
             .await?;
         }
@@ -625,6 +662,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             to,
             Some(&content),
             now,
+            None,
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -641,6 +679,15 @@ impl MemoryRepository for PostgresMemoryRepository {
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as(store, path, None).await
+    }
+
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let memory_id = sqlx::query_scalar::<_, String>(&format!(
             "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
@@ -669,6 +716,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             path,
             None,
             now_nanos() as i64,
+            actor,
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -726,6 +774,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             path,
             None,
             now_nanos() as i64,
+            None,
         )
         .await?;
         tx.commit().await.map_err(mem_err)?;
@@ -734,7 +783,7 @@ impl MemoryRepository for PostgresMemoryRepository {
 
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         sqlx::query(&format!(
-            "SELECT id, memory_id, operation, path, content, created, redacted \
+            "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
              FROM {NS}_versions WHERE store_id = $1 ORDER BY ordinal"
         ))
         .bind(store)
@@ -751,9 +800,18 @@ impl MemoryRepository for PostgresMemoryRepository {
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
+        self.redact_version_as(store, version_id, None).await
+    }
+
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let row = sqlx::query(&format!(
-            "SELECT id, memory_id, operation, path, content, created, redacted \
+            "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
              FROM {NS}_versions WHERE store_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(store)
@@ -768,10 +826,16 @@ impl MemoryRepository for PostgresMemoryRepository {
         if version.redacted_unix_nanos.is_none() {
             let redacted = now_nanos() as i64;
             sqlx::query(&format!(
-                "UPDATE {NS}_versions SET content = NULL, redacted = $1 \
-                 WHERE store_id = $2 AND id = $3"
+                "UPDATE {NS}_versions SET content = NULL, redacted = $1, redacted_by_json = $2 \
+                 WHERE store_id = $3 AND id = $4"
             ))
             .bind(redacted)
+            .bind(
+                actor
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(mem_err)?,
+            )
             .bind(store)
             .bind(version_id)
             .execute(&mut *tx)
@@ -779,6 +843,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             .map_err(mem_err)?;
             version.content = None;
             version.redacted_unix_nanos = Some(redacted as u128);
+            version.redacted_by = actor.cloned();
         }
         tx.commit().await.map_err(mem_err)?;
         Ok(Some(version))

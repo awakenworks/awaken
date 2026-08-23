@@ -345,14 +345,16 @@ pub async fn enforce_managed_beta(
                 .into_response();
         }
     }
-    if is_family("/v1/skills") && !has_beta(&req, SKILLS_BETA) {
+    let query_requests_beta = req.uri().query().is_some_and(|query| {
+        form_urlencoded::parse(query.as_bytes())
+            .any(|(name, value)| name == "beta" && value == "true")
+    });
+    if is_family("/v1/skills") && query_requests_beta && !has_beta(&req, SKILLS_BETA) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
-                format!(
-                    "the {SKILLS_BETA} beta is required: send the `anthropic-beta: {SKILLS_BETA}` header"
-                ),
+                format!("`beta=true` requires the `anthropic-beta: {SKILLS_BETA}` header"),
             )),
         )
             .into_response();

@@ -9,6 +9,8 @@
 //! in-memory path-addressed repository — the same ports a durable deployment wires.
 
 use awaken_protocol_managed::memory_stores_router;
+use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
+use awaken_resource_contract::MemoryActor;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -42,6 +44,10 @@ async fn call(
     };
     req.extensions_mut()
         .insert(WorkspaceScope("test".to_string()));
+    req.extensions_mut()
+        .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
+            api_key_id: "api_test".into(),
+        }));
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -95,6 +101,11 @@ async fn call_scoped(
     request
         .extensions_mut()
         .insert(WorkspaceScope(workspace.to_string()));
+    request
+        .extensions_mut()
+        .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
+            api_key_id: "api_test".into(),
+        }));
     let response = router.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -459,6 +470,34 @@ async fn memory_crud_with_precondition_and_version_log() {
     .await;
     assert_eq!(full_versions["data"][0]["content"], "hello", "R7");
     assert_eq!(full_versions["data"][1]["content"], "world", "R7");
+    // Actor cause/effect decision table: A1 authenticated API create/update ->
+    // immutable versions carry api_actor; A2 read-only list -> no mutation;
+    // A3 actor filter match/mismatch -> included/empty; A4 authenticated redact
+    // -> redacted_by without changing created_by.
+    assert_eq!(
+        full_versions["data"][0]["created_by"]["type"], "api_actor",
+        "A1"
+    );
+    assert_eq!(
+        full_versions["data"][0]["created_by"]["api_key_id"], "api_test",
+        "A1"
+    );
+    let (_, actor_match) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=api_test"),
+        None,
+    )
+    .await;
+    assert_eq!(actor_match["data"].as_array().unwrap().len(), 2, "A3");
+    let (_, actor_miss) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=other"),
+        None,
+    )
+    .await;
+    assert!(actor_miss["data"].as_array().unwrap().is_empty(), "A3");
     let first_vid = versions["data"][0]["id"].as_str().unwrap().to_string();
     // Version-id cause/effect rules: V1 create atomically appends one real
     // version -> the Memory head projects that exact id; V2 CAS update appends
@@ -562,6 +601,8 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK);
     assert_ne!(redacted["redacted_at"], Value::Null);
     assert_eq!(redacted["content"], Value::Null, "redaction drops content");
+    assert_eq!(redacted["created_by"]["api_key_id"], "api_test", "A4");
+    assert_eq!(redacted["redacted_by"]["api_key_id"], "api_test", "A4");
 
     // Delete the memory → receipt + a `deleted` version row.
     let (status, receipt) = call(

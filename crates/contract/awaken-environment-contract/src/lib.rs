@@ -17,7 +17,7 @@ use async_trait::async_trait;
 pub struct CreateEnvironmentCommand {
     pub command_id: String,
     pub name: String,
-    pub description: String,
+    pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub scope: Option<String>,
     pub config: EnvironmentConfig,
@@ -229,7 +229,7 @@ pub struct EnvItem {
     pub id: String,
     pub revision: EnvironmentRevision,
     pub name: String,
-    pub description: String,
+    pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
     /// Anthropic visibility scope (`organization` or `account`).
     pub scope: Option<String>,
@@ -311,7 +311,10 @@ impl EnvItem {
             self.name = name;
         }
         if let Some(description) = patch.description {
-            self.description = description;
+            self.description = match description {
+                EnvironmentFieldUpdate::Clear => None,
+                EnvironmentFieldUpdate::Replace(description) => Some(description),
+            };
         }
         if let Some(config) = patch.config {
             self.config.apply(config);
@@ -358,9 +361,8 @@ impl EnvItem {
 #[derive(Debug, Default)]
 pub struct EnvUpdate {
     pub name: Option<String>,
-    /// Wire adapters normalize an explicit nullable clear to the canonical empty
-    /// string before constructing this domain patch; absence remains unchanged.
-    pub description: Option<String>,
+    /// Omission preserves, `Clear` stores absence, and `Replace` stores text.
+    pub description: Option<EnvironmentFieldUpdate<String>>,
     pub config: Option<EnvironmentConfigMutation>,
     pub scope: Option<EnvironmentFieldUpdate<String>>,
     pub metadata: Option<BTreeMap<String, Option<String>>>,
@@ -580,7 +582,7 @@ pub trait EnvRegistry: Send + Sync {
                 NEXT_COMMAND.fetch_add(1, Ordering::Relaxed)
             ),
             name,
-            description,
+            description: Some(description),
             metadata,
             scope,
             config,
