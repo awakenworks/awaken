@@ -447,7 +447,7 @@ mod tests {
             _r: awaken_runtime_contract::llm::ChatRequest,
         ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
         {
-            unreachable!("the builder test never runs a turn")
+            unreachable!("the builder test never runs a Run")
         }
     }
 

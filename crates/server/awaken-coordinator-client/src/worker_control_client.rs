@@ -196,6 +196,211 @@ impl WorkerControlClient {
             })
     }
 
+    /// Claim one cold terminal projection through the same identity-bound
+    /// Control channel used by ordinary realization. Commands remain on the
+    /// aggregate-owned polling method below.
+    pub async fn claim_next_terminal_cleanup(
+        &self,
+        identity: &WorkerIdentity,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/cleanup/claim-next",
+                json!({
+                    "identity": identity,
+                    "target": target,
+                }),
+            )
+            .await?;
+        body.get("assignment")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    "Session terminal cleanup assignment decode: {error}"
+                ))
+            })
+    }
+
+    /// Poll the Coordinator's existing durable Session cleanup operation for
+    /// this exact realization generation. `Some([])` is a terminal fence that
+    /// is not yet ready to execute and must retain the local projection.
+    pub async fn terminal_cleanup_commands(
+        &self,
+        identity: &WorkerIdentity,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/cleanup/poll",
+                json!({
+                    "identity": identity,
+                    "session_id": session_id,
+                    "lease": lease,
+                }),
+            )
+            .await?;
+        serde_json::from_value(body.get("commands").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    "Session terminal cleanup command decode: {error}"
+                ))
+            },
+        )
+    }
+
+    pub async fn record_terminal_cleanup_completion(
+        &self,
+        identity: &WorkerIdentity,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
+            "/v1/worker/session/cleanup/complete",
+            json!({
+                "identity": identity,
+                "lease": lease,
+                "completion": completion,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn list_session_agents(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::SessionAgentRosterEntry>, ClaimedSessionControlError>
+    {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/agents/list",
+                json!({
+                    "identity": identity,
+                    "claim": claim,
+                    "session_id": session_id,
+                }),
+            )
+            .await
+            .map_err(ClaimedSessionControlError::from)?;
+        serde_json::from_value(body.get("agents").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                ClaimedSessionControlError::new(format!("Session Agent roster decode: {error}"))
+            },
+        )
+    }
+
+    pub async fn admit_session_model_request(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<bool, ClaimedSessionControlError> {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/model-request/admit",
+                json!({
+                    "identity": identity,
+                    "claim": claim,
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                    "run_id": run_id,
+                }),
+            )
+            .await
+            .map_err(ClaimedSessionControlError::from)?;
+        body.get("admitted")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                ClaimedSessionControlError::new(
+                    "Session model-request admission response omitted its decision",
+                )
+            })
+    }
+
+    pub async fn admit_session_run_activity(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<awaken_session_contract::SessionRunActivityAdmission, ClaimedSessionControlError>
+    {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/run-activity/admit",
+                json!({
+                    "identity": identity,
+                    "claim": claim,
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "mode": mode,
+                }),
+            )
+            .await
+            .map_err(ClaimedSessionControlError::from)?;
+        serde_json::from_value(body.get("admission").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                ClaimedSessionControlError::new(format!(
+                    "Session Run activity admission response decode: {error}"
+                ))
+            },
+        )
+    }
+
+    pub async fn send_session_agent_message(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        command: awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<awaken_session_contract::SessionAgentMessageReceipt, ClaimedSessionControlError>
+    {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/agents/send",
+                json!({ "identity": identity, "claim": claim, "command": command }),
+            )
+            .await
+            .map_err(ClaimedSessionControlError::from)?;
+        serde_json::from_value(body.get("receipt").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                ClaimedSessionControlError::new(format!("Session Agent receipt decode: {error}"))
+            },
+        )
+    }
+
+    pub async fn settle_session_agent_boundary(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), ClaimedSessionControlError> {
+        self.realization_response(
+            "/v1/worker/session/agents/settle",
+            json!({ "identity": identity, "claim": claim, "command": command }),
+        )
+        .await
+        .map(|_| ())
+        .map_err(ClaimedSessionControlError::from)
+    }
+
     pub async fn activate_session_realization(
         &self,
         identity: &WorkerIdentity,

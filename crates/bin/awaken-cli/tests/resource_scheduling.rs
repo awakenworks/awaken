@@ -287,6 +287,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     let app = build_all_in_one_router_with_host_customizer(
         Arc::new(EchoModel),
         ModelBinding::new("host", "echo", "genai"),
+        None,
         move |host| host.with_session_container_provider(provider, Arc::new(UnusedHandFactory)),
     )
     .await;

@@ -92,7 +92,7 @@ async fn live_text_completion() {
 
 #[tokio::test]
 #[ignore = "requires network and a provider API key"]
-async fn live_streaming_emits_public_or_reasoning_delta_before_returning_the_committed_turn() {
+async fn live_streaming_emits_public_or_reasoning_delta_before_returning_the_committed_response() {
     // Cause/effect graph: C1 a live OpenAI-compatible provider supports SSE;
     // C2 the selected model emits public text and may emit private reasoning;
     // C3 no tools are offered. Effects: E1 infer_streaming invokes DeltaSink at
@@ -125,7 +125,7 @@ async fn live_streaming_emits_public_or_reasoning_delta_before_returning_the_com
 
     assert!(
         !streamed_text.is_empty() || !streamed_reasoning.is_empty(),
-        "R1/E1 provider returned a committed turn without any live delta"
+        "R1/E1 provider returned a committed response without any live delta"
     );
     assert_eq!(streamed_text, response.output.text_content(), "R1/E2");
     assert!(deltas.tool_arguments.lock().unwrap().is_empty(), "R1/E3");
@@ -159,8 +159,10 @@ async fn live_deepseek_openai_responses_completion() {
 async fn live_deepseek_anthropic_messages_streaming_binds_signed_thinking_in_order() {
     // Cause/effect decision rule S1: split Anthropic thinking/signature deltas
     // plus a following tool-use block -> live reasoning/tool deltas and one
-    // committed turn whose signed Thinking precedes ToolUse. The terminal turn,
+    // committed response whose signed Thinking precedes ToolUse. The terminal response,
     // not the transient deltas, is the continuation authority.
+    // Constraints/invariants: signature and provider block order survive the
+    // streaming boundary; live deltas cannot replace committed truth.
     let (executor, model) = live_deepseek_anthropic_executor();
     let deltas = RecordingDeltas::default();
     let response = executor
@@ -219,9 +221,11 @@ async fn live_deepseek_anthropic_messages_streaming_binds_signed_thinking_in_ord
 async fn live_deepseek_anthropic_messages_signed_thinking_tool_round_trip() {
     // Cause/effect decision rules: A1 reachable Anthropic Messages + Pro
     // reasoning + requested tool -> ordered signed Thinking and one ToolUse;
-    // A2 replay that exact assistant turn + correlated result -> accepted final
-    // answer containing the fixture marker. A missing signature, reordered turn,
+    // A2 replay that exact assistant message + correlated result -> accepted final
+    // answer containing the fixture marker. A missing signature, reordered message,
     // or string-only reasoning path must fail A1 or make A2 fail at the provider.
+    // Constraints/invariants: signed Thinking stays immediately bound to the
+    // assistant ToolUse and the correlated result replays that exact message.
     let (executor, model) = live_deepseek_anthropic_executor();
 
     assert_deepseek_reasoning_tool_round_trip(
@@ -254,7 +258,7 @@ async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
     // Cause/effect graph: C1 DeepSeek OpenAI Chat is reachable; C2 the Pro model
     // emits reasoning; C3 one model-visible tool is offered and explicitly
     // requested; C4 the correlated tool result is returned with the complete
-    // assistant turn. Effects: E1 receive Thinking+ToolUse; E2 preserve typed
+    // assistant message. Effects: E1 receive Thinking+ToolUse; E2 preserve typed
     // tool identity/arguments; E3 the follow-up is accepted and produces public
     // text. Constraint: tool_choice is omitted (`auto`) because DeepSeek V4
     // thinking rejects forced/required selection.

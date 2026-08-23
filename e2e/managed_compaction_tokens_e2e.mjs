@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38234);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -47,11 +47,26 @@ async function main() {
     let turns = 0;
     for (let i = 1; i <= 4 && !compacted; i += 1) {
       turns = i;
-      await client.beta.sessions.events.send(s.id, {
+      // C1=exact large-turn receipt; C2=reply+terminal; C3=token fold marker.
+      // E1=C2 after C1 makes each loop iteration distinct; E2=C3 ends the
+      // search. K: no prior idle can settle a later turn. Decision T1 C1&&!C2
+      // =>retry; T2 C1+C2&&!C3=>next turn; T3 C1+C2+C3=>folded.
+      const receipt = await client.beta.sessions.events.send(s.id, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: big(i) }] }],
       });
-      const types = (await allEvents(client, s.id)).map((e) => e.type);
+      const receiptId = receipt.data[0]?.id;
+      assert.equal(typeof receiptId, 'string', `T1 exact compaction turn ${i} receipt`);
+      const { events } = await waitForSessionEventReceipt(
+        client,
+        s.id,
+        receiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        `T1 token-compaction Run ${i} to commit`,
+      );
+      const types = events.map((event) => event.type);
       assert.ok(types.includes('agent.message'), `turn ${i} replied: ${types.join(',')}`);
       compacted = types.includes('agent.thread_context_compacted');
     }

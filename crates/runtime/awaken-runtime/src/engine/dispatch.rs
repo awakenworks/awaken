@@ -5,6 +5,7 @@
 //! stays within the file-length limit. Items are shared through `use super::*`
 //! (same-crate privates included), exactly like `inference`.
 
+use super::delegation::is_resolved_advisor_call;
 use super::*;
 
 /// Run each requested tool call for one step, feeding each result back into the
@@ -29,10 +30,7 @@ pub(super) async fn run_tool_calls(
     opened: &mut std::collections::BTreeSet<String>,
 ) -> Result<Option<RunDisposition>> {
     let policies = calls.iter().cloned().map(|call| {
-        let policy = if runtime
-            .run_delegation()
-            .is_some_and(|executor| executor.tool_id() == call.tool_id)
-        {
+        let policy = if is_resolved_delegation_call(runtime, resolved, delegation_origin, &call) {
             // A delegated child is addressed by its stable RunId. Recovery
             // reconnects/re-dispatches that durable request; treating it as a
             // generic non-replayable side effect would strand an Open child
@@ -62,8 +60,8 @@ pub(super) async fn run_tool_calls(
     let parallel_delegations = calls.len() > 1
         && runtime.run_delegation().is_some_and(|executor| {
             calls.iter().all(|call| {
-                call.tool_id == executor.tool_id()
-                    && executor.supports_parallel_completion(&call.arguments)
+                is_resolved_delegation_call(runtime, resolved, delegation_origin, call)
+                    && executor.supports_parallel_completion_for(&call.tool_id, &call.arguments)
             })
         });
     let mut precomputed_gates = std::collections::VecDeque::new();
@@ -160,7 +158,14 @@ pub(super) async fn run_tool_calls(
                         store,
                         &mut ledger.staged_state,
                     )?;
-                    let capability = recovery_capability(runtime, context, env, &call);
+                    let capability = recovery_capability(
+                        runtime,
+                        context,
+                        delegation_origin,
+                        resolved,
+                        env,
+                        &call,
+                    );
                     let policy = batch
                         .calls()
                         .iter()
@@ -178,6 +183,7 @@ pub(super) async fn run_tool_calls(
                         entered_executor = true;
                         match run_delegation(
                             runtime,
+                            resolved,
                             DelegationParent {
                                 context,
                                 origin: delegation_origin,
@@ -236,55 +242,13 @@ pub(super) async fn run_tool_calls(
                                 stage_batch(&batch, ledger, store);
                                 return Ok(Some(RunDisposition::awaiting(ticket)));
                             }
-                            Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
+                            Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
                             None => {
-                                let advisor_call =
-                                    resolved.spec.tool_descriptors.iter().any(|descriptor| {
-                                        descriptor.id == call.tool_id
-                                            && descriptor.kind == ToolKind::Advisor
-                                    });
-                                if advisor_call {
-                                    let (output, usage) = if delegation_origin.is_some() {
-                                        (
-                                            ToolOutput::error(
-                                                &call.call_id,
-                                                "Advisor consultation unavailable.",
-                                            ),
-                                            None,
-                                        )
-                                    } else {
-                                        consult_advisor(
-                                            runtime,
-                                            resolved,
-                                            &ledger.transcript,
-                                            &call,
-                                            context,
-                                            run_id,
-                                        )
-                                        .await
-                                    };
-                                    if let Some((model, usage)) = usage {
-                                        fold_thread_usage(
-                                            store,
-                                            &mut ledger.staged_state,
-                                            "advisor usage state drifted; skipping record",
-                                            |tally| tally.record(&model, usage),
-                                        );
-                                    }
-                                    output
-                                } else {
-                                    let operation_id =
-                                        format!("{}:{}", batch.id().as_str(), call.call_id);
-                                    execute_tool(
-                                        runtime,
-                                        Some(env),
-                                        &call,
-                                        context,
-                                        run_id,
-                                        operation_id,
-                                    )
-                                    .await
-                                }
+                                execute_regular_or_unavailable_advisor(
+                                    runtime, resolved, env, &call, context, run_id, thread_id,
+                                    &batch,
+                                )
+                                .await?
                             }
                         }
                     }
@@ -433,7 +397,8 @@ async fn run_parallel_delegation_calls(
         ));
     }
     for call in &calls {
-        let capability = recovery_capability(runtime, context, env, call);
+        let capability =
+            recovery_capability(runtime, context, delegation_origin, resolved, env, call);
         let policy = batch
             .calls()
             .iter()
@@ -463,7 +428,7 @@ async fn run_parallel_delegation_calls(
     let invocations = futures_util::future::join_all(
         calls
             .iter()
-            .map(|call| invoke_delegation(runtime, parent, call, &committed_view)),
+            .map(|call| invoke_delegation(runtime, resolved, parent, call, &committed_view)),
     )
     .await;
 
@@ -511,7 +476,7 @@ async fn run_parallel_delegation_calls(
                     EndCause::Indeterminate,
                 )));
             }
-            Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
+            Some(Err(error)) => delegation_error_output(resolved, call, error)?,
             None => {
                 return Err(Error::Execution(
                     "parallel delegation call was not handled by its executor".to_string(),
@@ -638,7 +603,13 @@ pub(super) async fn recover_tool_batch(
                     .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
-                    runtime, run_id, &call, &batch, ledger, store,
+                    runtime,
+                    resolved,
+                    delegation_origin,
+                    &call,
+                    &batch,
+                    ledger,
+                    store,
                 ) {
                     return Ok(Some(disposition));
                 }
@@ -659,7 +630,13 @@ pub(super) async fn recover_tool_batch(
                     .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
-                    runtime, run_id, &call, &batch, ledger, store,
+                    runtime,
+                    resolved,
+                    delegation_origin,
+                    &call,
+                    &batch,
+                    ledger,
+                    store,
                 ) {
                     return Ok(Some(disposition));
                 }
@@ -669,7 +646,8 @@ pub(super) async fn recover_tool_batch(
             ToolCallPhase::Requested | ToolCallPhase::Executing { .. } => {}
         }
 
-        let capability = recovery_capability(runtime, context, env, &call);
+        let capability =
+            recovery_capability(runtime, context, delegation_origin, resolved, env, &call);
         if let Err(error) = durable.recovery_policy.validate(capability) {
             batch
                 .mark_indeterminate(&call.call_id, error.to_string())
@@ -678,9 +656,15 @@ pub(super) async fn recover_tool_batch(
             batch
                 .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
                 .map_err(|error| Error::Execution(error.to_string()))?;
-            if let Some(disposition) =
-                abandon_delegation_on_indeterminate(runtime, run_id, &call, &batch, ledger, store)
-            {
+            if let Some(disposition) = abandon_delegation_on_indeterminate(
+                runtime,
+                resolved,
+                delegation_origin,
+                &call,
+                &batch,
+                ledger,
+                store,
+            ) {
                 return Ok(Some(disposition));
             }
             persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
@@ -796,7 +780,13 @@ pub(super) async fn recover_tool_batch(
                     .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
-                    runtime, run_id, &call, &batch, ledger, store,
+                    runtime,
+                    resolved,
+                    delegation_origin,
+                    &call,
+                    &batch,
+                    ledger,
+                    store,
                 ) {
                     return Ok(Some(disposition));
                 }
@@ -812,6 +802,7 @@ pub(super) async fn recover_tool_batch(
         } else {
             match run_delegation(
                 runtime,
+                resolved,
                 DelegationParent {
                     context,
                     origin: delegation_origin,
@@ -856,10 +847,12 @@ pub(super) async fn recover_tool_batch(
                     stage_batch(&batch, ledger, store);
                     return Ok(Some(RunDisposition::awaiting(ticket)));
                 }
-                Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
+                Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
                 None => {
-                    let operation_id = format!("{}:{}", batch.id().as_str(), call.call_id);
-                    execute_tool(runtime, Some(env), &call, context, run_id, operation_id).await
+                    execute_regular_or_unavailable_advisor(
+                        runtime, resolved, env, &call, context, run_id, thread_id, &batch,
+                    )
+                    .await?
                 }
             }
         };
@@ -883,6 +876,39 @@ pub(super) async fn recover_tool_batch(
     }
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
     Ok(None)
+}
+
+/// Execute a regular tool or return the one fail-closed Advisor result when no
+/// durable Host delegation service accepted the call. Advisor has no Runtime
+/// provider fallback: fresh dispatch and recovery share this exact boundary.
+#[allow(clippy::too_many_arguments)]
+async fn execute_regular_or_unavailable_advisor(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    call: &ToolCall,
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    batch: &ToolBatch,
+) -> Result<ToolOutput> {
+    if is_resolved_advisor_call(resolved, call) {
+        return Ok(ToolOutput::error(
+            &call.call_id,
+            awaken_runtime_contract::resolved::ADVISOR_UNAVAILABLE_NOTICE,
+        ));
+    }
+    let operation_id = batch.operation_id(&call.call_id);
+    execute_tool(
+        runtime,
+        Some(env),
+        call,
+        context,
+        run_id,
+        thread_id,
+        operation_id,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -931,17 +957,24 @@ async fn record_recovered_output(
 fn recovery_capability(
     runtime: &Runtime,
     context: &RuntimeRunContext,
+    delegation_origin: Option<&DelegationOrigin>,
+    resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     call: &ToolCall,
 ) -> ToolRecoveryCapability {
-    if runtime
-        .run_delegation()
-        .is_some_and(|executor| executor.tool_id() == call.tool_id)
-    {
+    if is_resolved_delegation_call(runtime, resolved, delegation_origin, call) {
         return ToolRecoveryCapability::DurableRequest;
     }
     if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
         return ToolRecoveryCapability::ReplaySafe;
+    }
+    if is_resolved_advisor_call(resolved, call) {
+        // The missing/primary-only path never enters an external executor and
+        // deterministically publishes the same redacted result. Keep the
+        // descriptor's durable-request contract valid so a temporarily absent
+        // Host capability cannot transform a safe model-visible failure into an
+        // indeterminate parent Run.
+        return ToolRecoveryCapability::DurableRequest;
     }
     let tool = env
         .dynamic_tool(&call.tool_id)
@@ -987,19 +1020,17 @@ fn stage_batch(batch: &ToolBatch, ledger: &mut StepLedger, store: &mut Store) {
 /// parallel slot.
 fn abandon_delegation_on_indeterminate(
     runtime: &Runtime,
-    run_id: &RunId,
+    resolved: &ResolvedRun,
+    delegation_origin: Option<&DelegationOrigin>,
     call: &ToolCall,
     batch: &ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Option<RunDisposition> {
-    runtime
-        .run_delegation()
-        .is_some_and(|executor| executor.tool_id() == call.tool_id)
-        .then(|| {
-            stage_batch(batch, ledger, store);
-            RunDisposition::ended(run_id.clone(), EndCause::Indeterminate)
-        })
+    is_resolved_delegation_call(runtime, resolved, delegation_origin, call).then(|| {
+        stage_batch(batch, ledger, store);
+        RunDisposition::ended(batch.run_id().clone(), EndCause::Indeterminate)
+    })
 }
 
 async fn persist_batch(

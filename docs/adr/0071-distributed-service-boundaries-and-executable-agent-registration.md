@@ -198,16 +198,25 @@ ports; neither role opens the other's database.
 The executable-Agent and executable-Environment command logs each append a
 monotonic `command_sequence` through a deterministic versioned migration.
 Coordinator replicas compare the durable maximum with their last applied cursor
-before Runtime-admitting Session and Deployment writes. Equal cursors require no
-command load; an advanced authority loads only the ordered tail.
+at the application operation that first consumes an executable projection.
+Equal cursors require no command load; an advanced authority loads only the
+ordered tail. The contract-owned, stateless `ExecutableProjectionRefresh` port
+has no cache or cursor of its own. The CLI constructs one ordered Agent then
+Environment composite and shares that same handle with Session, Deployment, and
+Coordinator-owned inventory/warmup adapters.
 
 The shared cursor accepts non-contiguous database identity values but requires
 the batch to reach the observed high-water. A missing or out-of-order tail, or an
 authority high-water behind the local cursor, triggers complete replay through
-the owning catalog state machine into a replacement projection. Replay failure
-rejects admission before any Session mutation. Database notification may later
-be added only as a hint; durable high-water comparison and full replay remain the
-correctness path.
+the owning catalog state machine into a replacement projection. Managed create
+and cold rehydration, Session profile creation/recovery/realization, Deployment
+commands and scheduling, and Models/Dream/warmup source reads refresh before
+their first catalog read, mutation, or external effect. Warm cached reads and
+already-frozen hot execution do not refresh. Replay failure is unavailable and
+fails before the owning effect. There is no URL predicate or HTTP middleware;
+AllInOne supplies no refresh handle because registration and consumption share
+the same catalog instances. Database notification may later be added only as a
+hint; durable high-water comparison and full replay remain the correctness path.
 
 ## Implementation Status
 

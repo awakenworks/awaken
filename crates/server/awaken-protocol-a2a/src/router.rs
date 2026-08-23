@@ -319,8 +319,6 @@ async fn stream_send(
                     code: "a2a_run_failed".into(),
                     message: error.to_string(),
                 }),
-                false,
-                false,
             ),
             Err(error) => StepOutcome::ended(
                 Vec::new(),
@@ -328,8 +326,6 @@ async fn stream_send(
                     code: "a2a_run_cancelled".into(),
                     message: error.to_string(),
                 }),
-                false,
-                false,
             ),
         };
         let (history, outcome) = match rt.runtime.history(&thread).await {
@@ -342,8 +338,6 @@ async fn stream_send(
                         code: error.code,
                         message: error.message,
                     }),
-                    false,
-                    false,
                 ),
             ),
         };
@@ -857,8 +851,6 @@ async fn run_send(
                             code: "a2a_run_failed".into(),
                             message: error.to_string(),
                         }),
-                        false,
-                        false,
                     )
                 });
             let (history, step) = match rt.runtime.history(&thread).await {
@@ -871,8 +863,6 @@ async fn run_send(
                             code: error.code,
                             message: error.message,
                         }),
-                        false,
-                        false,
                     ),
                 ),
             };

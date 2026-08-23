@@ -31,6 +31,17 @@ pub fn image_runtime_contract_json() -> Result<String, serde_json::Error> {
                 "executables": executables,
                 "probe_argv": cli.container_probe_argv.unwrap_or(cli.container_argv),
                 "auth_method_id": cli.capability_probe_auth_method_id,
+                "discovery": {
+                    "version": {
+                        "executable": cli.discovery.version.executable,
+                        "args": cli.discovery.version.args,
+                    },
+                    "minimum_version": {
+                        "major": cli.discovery.minimum_version.major,
+                        "minor": cli.discovery.minimum_version.minor,
+                        "patch": cli.discovery.minimum_version.patch,
+                    },
+                },
             })
         })
         .collect::<Vec<_>>();
@@ -47,11 +58,14 @@ mod tests {
     #[test]
     fn production_image_contract_is_derived_from_every_catalog_row() {
         // Image-contract FMECA/cause-effect table: C1 a catalog row has exact
-        // requirements; C2 launch/probe/auth facts exist on that same row; C3 a
+        // requirements; C2 launch/probe/auth facts exist on that same row; C3
+        // discovery owns the version executable, arguments, and minimum; C4 a
         // wrapper acquisition package is required. Effects: E1 one generated
-        // image row; E2 exact probe/auth/executables; E3 wrapper package included.
-        // Rules I1 C1+C2=>E1+E2; I2 C3=>E3. There is no deserialized mirror to
-        // synchronize: this test exercises the actual build generator.
+        // image row; E2 exact probe/auth/executables; E3 exact discovery version
+        // contract; E4 wrapper package included. Constraints/invariants: row
+        // order and values come only from `known_acp_clis`; no deserialized or
+        // language-specific mirror may supply defaults. Rules I1 C1+C2+C3=>
+        // E1+E2+E3 for every row; I2 C4=>E4.
         let contract: serde_json::Value =
             serde_json::from_str(&image_runtime_contract_json().expect("generate contract"))
                 .expect("generated JSON parses");
@@ -72,6 +86,28 @@ mod tests {
                 image["auth_method_id"],
                 serde_json::json!(cli.capability_probe_auth_method_id),
                 "I1/E2 {}",
+                cli.id
+            );
+            assert_eq!(
+                image["discovery"]["version"]["executable"],
+                serde_json::json!(cli.discovery.version.executable),
+                "I1/E3 {}",
+                cli.id
+            );
+            assert_eq!(
+                image["discovery"]["version"]["args"],
+                serde_json::json!(cli.discovery.version.args),
+                "I1/E3 {}",
+                cli.id
+            );
+            assert_eq!(
+                image["discovery"]["minimum_version"],
+                serde_json::json!({
+                    "major": cli.discovery.minimum_version.major,
+                    "minor": cli.discovery.minimum_version.minor,
+                    "patch": cli.discovery.minimum_version.patch,
+                }),
+                "I1/E3 {}",
                 cli.id
             );
             assert!(!image["executables"].as_array().unwrap().is_empty(), "I1");

@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import { pass, withScenarioServer } from '../harness.mjs';
+import { pass, waitForSessionEventReceipt, withScenarioServer } from '../harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CLIENTS = [
@@ -22,24 +22,6 @@ async function drain(items) {
   const values = [];
   for await (const item of items) values.push(item);
   return values;
-}
-
-async function waitForReply(client, sessionID, predicate) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const events = await drain(client.beta.sessions.events.list(sessionID, {
-      limit: 1,
-      betas: BETAS,
-    }));
-    const texts = events
-      .filter((event) => event.type === 'agent.message')
-      .flatMap((event) => event.content ?? [])
-      .map((content) => content.text ?? '');
-    if (texts.some(predicate) && events.some((event) => event.type === 'session.status_idle')) {
-      return events;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Session ${sessionID} did not produce the selected runtime reply`);
 }
 
 async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
@@ -56,20 +38,39 @@ async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
   try {
     const retrieved = await operator.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.equal(retrieved.id, session.id, `${runtime}: cross-version retrieve`);
-    await operator.beta.sessions.events.send(session.id, {
+    const receipt = await operator.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: `${runtime}-${creatorVersion}-to-${operatorVersion}` }],
       }],
       betas: BETAS,
     });
-    const events = await waitForReply(
+    // H1: C1=operator-version exact receipt; C2=creator-version observes the
+    // selected runtime reply and idle. E1=cross-version committed handoff.
+    // Constraint: auto-pagination remains a separate read oracle after C2.
+    // C1&&!C2=>observe; C1+C2=>E1.
+    await waitForSessionEventReceipt(
       creator,
       session.id,
-      runtime === 'acp'
-        ? (text) => text.includes('acp-runtime reply')
-        : (text) => text.startsWith('Echo:'),
+      receipt.data[0]?.id,
+      BETAS,
+      ({ delta }) => {
+        const texts = delta
+          .filter((event) => event.type === 'agent.message')
+          .flatMap((event) => event.content ?? [])
+          .map((content) => content.text ?? '');
+        return texts.some(runtime === 'acp'
+          ? (text) => text.includes('acp-runtime reply')
+          : (text) => text.startsWith('Echo:'))
+          && delta.some((event) => event.type === 'session.status_idle');
+      },
+      `${runtime}: cross-version exact receipt reaches selected runtime reply`,
+      { pollMs: 10 },
     );
+    const events = await drain(creator.beta.sessions.events.list(session.id, {
+      limit: 1,
+      betas: BETAS,
+    }));
     assert.equal(
       new Set(events.map((event) => event.id)).size,
       events.length,

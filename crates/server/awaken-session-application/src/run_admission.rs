@@ -179,6 +179,13 @@ impl SessionApplication {
         if recovered.session.is_terminal() {
             return Ok(Some(recovered));
         }
+        self.refresh_executable_projections()
+            .await
+            .map_err(|error| {
+                SessionProjectionRecoveryError::Unavailable(format!(
+                    "executable projection refresh failed: {error}"
+                ))
+            })?;
         let owner = recovered.owner_scope;
         // Resource convergence is the largest Session state machine. Keep its
         // future behind one heap indirection at this application boundary so
@@ -206,9 +213,11 @@ impl SessionApplication {
                 })?;
             session
         } else {
-            self.realize_session(thread_id).await.map_err(|error| {
-                SessionProjectionRecoveryError::Rejected(realization_error(error))
-            })?
+            self.realize_session_after_refresh(thread_id)
+                .await
+                .map_err(|error| {
+                    SessionProjectionRecoveryError::Rejected(realization_error(error))
+                })?
         };
         Ok(Some(RecoveredSessionProjection {
             owner_scope: owner,
@@ -273,6 +282,14 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<awaken_session_contract::PersistedSession, RunError> {
+        self.refresh_executable_projections()
+            .await
+            .map_err(|error| {
+                RunError::unavailable_classified(
+                    "executable_projection_refresh_failed",
+                    format!("Executable projections could not be refreshed: {error}"),
+                )
+            })?;
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
@@ -522,6 +539,7 @@ impl SessionApplication {
             metadata,
             tools,
             budget: awaken_session_contract::SessionBudgetState::Absent,
+            initial_events: None,
         })
         .await
         .map_err(creation_error)
@@ -568,7 +586,7 @@ impl SessionApplication {
                     .await
                 {
                     Ok(()) => Ok(()),
-                    // Concurrent first turns race only at the durable create fence;
+                    // Concurrent first Runs race only at the durable create fence;
                     // every loser adopts the exact winner through the same recovery.
                     Err(error)
                         if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
@@ -747,8 +765,6 @@ mod tests {
             Ok(StepOutcome::ended(
                 Vec::new(),
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-                false,
-                false,
             ))
         }
 
@@ -762,8 +778,6 @@ mod tests {
             Ok(StepOutcome::ended(
                 Vec::new(),
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-                false,
-                false,
             ))
         }
 

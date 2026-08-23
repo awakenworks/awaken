@@ -379,9 +379,6 @@ pub struct DeploymentConfig {
     pub postgres_max_connections: NonZeroU32,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
-    /// When set, this process is a database-less **worker** of the cell server at
-    /// this url (`AWAKEN_UPSTREAM_URL`): commits and dispatch go to the server.
-    pub upstream: Option<String>,
     /// The sandbox tier this worker realizes ACP agents on.
     pub sandbox_tier: SandboxTier,
     /// The ACP sandbox and per-Session configuration root.
@@ -554,7 +551,6 @@ impl DeploymentConfig {
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
             dispatch_owner: "embedded-worker".to_string(),
-            upstream: None,
             sandbox_tier: SandboxTier::Namespace,
             sandbox_dir: None,
             sandbox: SandboxSettings::default(),

@@ -76,8 +76,10 @@ def check_neutral_code_boundaries() -> list[str]:
     }
     for crate_name in NEUTRAL_CRATES:
         for path in text_files(crate_name):
-            content = path.read_text(encoding="utf-8")
             rel = path.relative_to(REPO_ROOT)
+            if _session_state_ownership_fitness._is_test_module(str(rel)):
+                continue
+            content = path.read_text(encoding="utf-8")
             for term, pattern in terms.items():
                 if pattern.search(content):
                     errors.append(f"{rel}: neutral crate uses product term {term!r}")

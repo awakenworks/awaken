@@ -83,15 +83,6 @@ mod tests {
             unreachable!()
         }
 
-        async fn add_system(
-            &self,
-            _agent: &str,
-            _thread: &str,
-            _text: &str,
-        ) -> Result<(), RunError> {
-            unreachable!()
-        }
-
         async fn define_outcome(
             &self,
             _thread: &str,
@@ -196,7 +187,9 @@ mod tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
+            event_batches: Vec::new(),
             activity_epoch: 0,
+            active_activity_epochs: Default::default(),
             running_interval: None,
             runtime_active_millis: 0,
             budget: Default::default(),

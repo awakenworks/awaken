@@ -66,4 +66,5 @@ pub fn awaken_observability::init_otlp_tracer(&awaken_observability::OtelConfig)
 pub fn awaken_observability::record_hand_lifecycle(&'static str, &'static str, core::time::Duration)
 pub fn awaken_observability::render_prometheus() -> alloc::string::String
 pub fn awaken_observability::shutdown()
+pub fn awaken_observability::span_with_remote_parent(tracing::span::Span, core::option::Option<&str>) -> tracing::span::Span
 pub async fn awaken_observability::trace_http(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

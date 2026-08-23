@@ -40,6 +40,16 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn a2a_message_send_over_a_live_kimi_model() {
+    // Causes: the fixtures below establish `a2a message send over a live kimi model` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `a2a message send over a live kimi model` is one independent branch
+    // selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     let key = std::env::var("KIMI_API_KEY")
         .expect("set KIMI_API_KEY (the Kimi/Anthropic-compatible key) to run this test");
     let base = std::env::var("KIMI_BASE_URL")
@@ -49,7 +59,7 @@ async fn a2a_message_send_over_a_live_kimi_model() {
     let executor = GenaiExecutor::anthropic_compatible(base, key);
     let app = build_router(Arc::new(executor), model);
 
-    // One A2A turn against the live model. The prompt steers a short, tool-free
+    // One A2A Run against the live model. The prompt steers a short, tool-free
     // reply so the assertion is stable across models.
     let (status, body) = call(
         &app,
@@ -68,7 +78,7 @@ async fn a2a_message_send_over_a_live_kimi_model() {
     let task = serde_json::from_str::<Value>(&body).expect("task json")["task"].clone();
     assert_eq!(
         task["status"]["state"], "completed",
-        "the live turn should complete: {body}"
+        "the live Run should complete: {body}"
     );
 
     let reply = task["status"]["message"]["parts"][0]["text"]

@@ -28,7 +28,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  deploymentEnv,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38215);
@@ -69,11 +78,21 @@ async function main() {
     assert.equal(created.agent.id, 'coder', 'agent id accepted at create');
 
     // Commit a turn so a durable transcript exists (the rehydration precondition).
-    await c.beta.sessions.events.send(created.id, {
+    const firstReceipt = await c.beta.sessions.events.send(created.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
       betas: BETAS,
     });
-    const idle = (await listEvents(c, created.id)).find((e) => e.type === 'session.status_idle');
+    const firstReceiptId = firstReceipt.data[0]?.id;
+    assert.equal(typeof firstReceiptId, 'string', 'R1 exact pre-restart User Event receipt');
+    const firstRun = await waitForSessionEventReceipt(
+      c,
+      created.id,
+      firstReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+      'R1 pre-restart Run to commit',
+    );
+    const idle = firstRun.delta.find((e) => e.type === 'session.status_idle');
     assert.ok(idle, 'the turn committed and the session went idle');
     pass('session created with title/metadata and a turn committed');
 
@@ -86,10 +105,24 @@ async function main() {
 
     // Drive one event to trigger lazy rehydration on the fresh process: the
     // adapter rebuilds the session from committed truth + the durable session repo.
-    await c.beta.sessions.events.send(created.id, {
+    // C1=durable config+transcript; C2=fresh process; C3=exact follow-up receipt;
+    // E1=post-C3 terminal proves rehydration before projection assertions.
+    // K: retrieve observes the repository and does not trigger lifecycle work.
+    // Decision R1 C1+C2+C3&&!E1=>retry; R2 all=>assert durable config.
+    const secondReceipt = await c.beta.sessions.events.send(created.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'again' }] }],
       betas: BETAS,
     });
+    const secondReceiptId = secondReceipt.data[0]?.id;
+    assert.equal(typeof secondReceiptId, 'string', 'R2 exact post-restart User Event receipt');
+    await waitForSessionEventReceipt(
+      c,
+      created.id,
+      secondReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+      'R2 post-restart Run to commit after rehydration',
+    );
 
     const restored = await c.beta.sessions.retrieve(created.id, { betas: BETAS });
     assert.equal(

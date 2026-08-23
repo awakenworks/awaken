@@ -174,6 +174,7 @@ fn resume_command(result: ResumeResult) -> ResumeCommand {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FINGERPRINT.to_string()),
         result,
+        context_messages: Vec::new(),
         now_ms: 0,
     }
 }
@@ -385,14 +386,17 @@ async fn permission_wait_rejects_a_client_result_bypass() {
 
 #[tokio::test]
 async fn declared_client_tool_awaits_external_result_without_entering_host_executor() {
-    // Causal graph:
-    // ClientExecuted descriptor -> model calls exact id -> durable ExternalEvent wait
-    // -> exact ToolResult resume -> model continues; host executor is never entered.
+    // Causal graph: a ClientExecuted descriptor creates a durable ExternalEvent
+    // wait; the exact ToolResult may carry one stable System Message. Effects:
+    // the Host executor is never entered, and Runtime commits System immediately
+    // before Tool in the same resumed progress delta before inference continues.
     //
-    // Decision table:
-    // | descriptor owner | gate | first terminal | host runs | accepted resume |
-    // | regular          | allow | tool executes | once      | n/a             |
-    // | client-executed  | allow | awaiting      | never     | exact result    |
+    // | Rule | descriptor | resume context | Effect |
+    // |---|---|---|---|
+    // | C1 | regular | n/a | Host executes tool |
+    // | C2 | client-executed | exact System + result | await, then System→Tool; Host never runs |
+    // Constraints/invariants: the client-executed descriptor is the sole owner;
+    // System context and its correlated Tool result commit adjacently and once.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -416,6 +420,11 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("external result ticket is durable");
     assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
     assert_eq!(ticket.call_id(), Some("call-1"));
+    let system = Message::text(
+        MessageId("session-system-tool-reply".into()),
+        Role::System,
+        "reply context",
+    );
 
     let outcome = runtime
         .resume(
@@ -426,6 +435,7 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
                 snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
                 catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
                 result: ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
+                context_messages: vec![system.clone()],
                 now_ms: 0,
             },
             commit.as_ref(),
@@ -437,9 +447,15 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("exact client result resumes the run");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
-    assert!(commit.committed().messages.iter().any(|message| {
-        message.role == Role::Tool && message.text_content() == "preview: client-computed"
-    }));
+    let committed = commit.committed();
+    assert!(
+        committed.messages.windows(2).any(|messages| {
+            messages[0] == system
+                && messages[1].role == Role::Tool
+                && messages[1].text_content() == "preview: client-computed"
+        }),
+        "C2: stable System is adjacent to and precedes the correlated Tool result"
+    );
 }
 
 #[tokio::test]

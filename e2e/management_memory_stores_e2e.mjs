@@ -16,6 +16,14 @@
 // | memory | matching hash | update/delete | new version or absence |
 // | memory | stale hash | update | reject without mutation |
 // | version | existing | redact | content becomes unavailable, history remains |
+// | version list | exact lineage/operation/time | filter before paging |
+// | version list | actor id absent from stored attribution | empty, never accept-and-drop |
+// | version list | invalid operation/time | 400 before reading a page |
+// Effects: valid rows expose exact CRUD/version/filter projections; stale or
+// invalid rows reject without mutation. Constraints/invariant: the MemoryStore,
+// Memory lineage, and immutable MemoryVersion history are the only authorities.
+// Decision rules are the table rows above; every invalid partition is observed
+// before pagination or mutation.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -174,6 +182,42 @@ async function main() {
       assert.ok(ops.includes('created') && ops.includes('modified'), `ops: ${ops}`);
       assert.ok(versions.every((v) => v.content === null), 'version list defaults to basic');
       pass(`beta.memoryStores.memoryVersions.list -> ${versions.length} versions`);
+
+      // Filter cause/effect decision table: each supplied condition narrows the
+      // canonical immutable rows before cursor paging. Current scenario writes
+      // have no actor attribution, so every actor-id filter truthfully returns
+      // an empty page instead of accepting and dropping the query parameter.
+      const createdLineage = await drain(client.beta.memoryStores.memoryVersions.list(store.id, {
+        memory_id: mem.id,
+        operation: 'created',
+        betas: BETAS,
+      }));
+      assert.equal(createdLineage.length, 1);
+      assert.equal(createdLineage[0].memory_id, mem.id);
+      assert.equal(createdLineage[0].operation, 'created');
+      const boundedLineage = await drain(client.beta.memoryStores.memoryVersions.list(store.id, {
+        memory_id: mem.id,
+        'created_at[gte]': createdLineage[0].created_at,
+        'created_at[lte]': createdLineage[0].created_at,
+        betas: BETAS,
+      }));
+      assert.ok(boundedLineage.length >= 1);
+      const serviceAccountVersions = await drain(
+        client.beta.memoryStores.memoryVersions.list(store.id, {
+          service_account_id: 'svac_absent',
+          betas: BETAS,
+        }),
+      );
+      assert.deepEqual(serviceAccountVersions, []);
+      for (const query of ['operation=unknown', 'created_at%5Bgte%5D=not-a-time']) {
+        const rejectedFilter = await json(
+          baseUrl,
+          'GET',
+          `/v1/memory_stores/${store.id}/memory_versions?${query}`,
+        );
+        assert.equal(rejectedFilter.status, 400, query);
+      }
+      pass('beta.memoryStores.memoryVersions.list filter decision table');
 
       const firstVer = versions[0];
       const gotVer = await client.beta.memoryStores.memoryVersions.retrieve(firstVer.id, {

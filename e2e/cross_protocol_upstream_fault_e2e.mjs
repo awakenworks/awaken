@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -171,19 +171,32 @@ async function main() {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     let sendError = null;
+    let receiptId;
     try {
-      await client.beta.sessions.events.send(session.id, {
+      const receipt = await client.beta.sessions.events.send(session.id, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: TEXT }] }],
       });
+      receiptId = receipt.data[0]?.id;
+      assert.equal(typeof receiptId, 'string', 'M1 exact Managed fault receipt');
     } catch (err) {
       sendError = err;
     }
-    const events = [];
-    try {
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
-    } catch {
-      /* list may also reject on a hard failure */
+    // C1=synchronous rejection; C2=accepted exact receipt; C3=committed
+    // session.error. E1=C1 or C2+C3 is the Managed terminal oracle. K: never
+    // fabricate a receipt after rejection. Decision M1 C1=>HTTP proof;
+    // M2 C2&&!C3=>retry; M3 C2+C3=>committed proof.
+    let events = [];
+    if (receiptId !== undefined) {
+      ({ events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'session.error'),
+        'M2 Managed persistent fault to commit session.error',
+        { timeoutMs: 30_000 },
+      ));
     }
     const surfaced = sendError !== null || events.some((e) => e.type === 'session.error' || (e.type ?? '').includes('error'));
     assert.ok(surfaced, `Managed surfaces the terminal fault (session.error / send error): ${JSON.stringify(events.map((e) => e.type))}`);

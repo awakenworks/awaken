@@ -10,7 +10,7 @@ subsystem.
 |---|---|---|---|
 | Decision-surface descriptor | Dispatch / Server | agent instructions, model id, tool/skill descriptor, allowed tool ids, content hash | Serialized in `ResolvedSpec` and fingerprinted |
 | Execution behavior | Orchestration layer above or runtime catalog | tool impls, skill scripts, MCP servers, remote endpoints | Invoked by id through existing tool/backend ports |
-| Operator overlay | Config / Admin / Product | permission allow/deny/ask, skill visibility, HITL policy, **plugin allow/deny by `CapabilityBound`** | Mutable; not part of replayable descriptor truth |
+| Operator overlay | Config / Admin / Product | permission rules/mode, skill visibility, HITL policy, **plugin allow/deny by `CapabilityBound`** | Mutable; not part of replayable descriptor truth |
 | Secrets / credentials | Product data plane | API keys, OAuth grants, vault refs | Opaque references only across runtime boundaries |
 | Session data | Runtime Core | messages, decisions, state facts, verdicts | Replayed from committed runtime facts |
 
@@ -173,10 +173,9 @@ separate even when one implementation computes several of them together.
 | `Tool` | typed tool trait | preferred typed implementation API over declared input/output and runtime context | extension packages, runtime executor adapter | concrete core tool ids, permission bypass, direct durable write | tool behavior leaks into core or typed validation is skipped | G8, G9, G14; typed tool adapter tests |
 | `RawTool` | schema-erased tool trait | dynamic call boundary for MCP/server/client tools with explicit schema and serde validation | descriptor, raw call envelope, adapter-owned implementation | recommended typed API, authorization, direct store writes | raw adapter accepts invalid input or bypasses typed policy | G8, G9; raw validation tests |
 | `ToolVisibilityPolicy` | visibility policy | descriptor include/exclude and step-time visibility semantics | catalog fields, active plugin scope, step filters | invocation authorization, backend selection | hidden authorization encoded as visibility | G8, G9; visibility policy tests |
-| `ToolGateHook` | invocation gate hook | allow, block, suspend, or set result for one tool call | visible descriptor, call arguments, permission policy | descriptor visibility, tool implementation, durable commit | tool invocation bypasses explicit permission path | G9; no-bypass permission tests |
-| `ToolPolicyHook` | policy extension hook | compute unconditional or contextual tool policy effects | selected config, runtime context, active plugin scope | model-visible descriptor list, execution transport | preview and runtime apply different permission rules | G8, G9; policy parity tests |
+| `ToolGateHook` | invocation gate hook | one exact `GateOutcome::{Allow, Block, SetResult, RequireConfirmation, Schedule}` for a call | normalized `ToolCall`, read-only Run `Store` | descriptor visibility, tool implementation, durable commit | tool invocation bypasses the explicit gate chain | G9; no-bypass permission tests |
 | `ToolExecutor` | runtime execution port | invoke the selected tool in-process through a neutral call/result contract | tool call, resolved descriptor, runtime context | authorization, direct store writes | tool invocation bypasses the gate or writes the store directly | G9, G14; tool executor adapter tests |
-| `PermissionPolicy` | authorization policy | explicit allow/deny/ask decision for protected operation | operator overlay, credential refs, runtime context | selection, capability compatibility, visibility | membership or health check becomes authorization | G9; permission type/API tests |
+| `ToolPermissionPolicy` | authorization policy | one exact `ToolPermissionVerdict::{Allow, Deny, RequireConfirmation}` for a protected operation | normalized `ToolCall`, configured rules and mode | selection, capability compatibility, visibility, Run state, execution | membership or health check becomes authorization | G9; verdict-to-gate and no-hidden-grant tests |
 | `CapabilityRequirement` | requirement value | feature demand derived from the resolved run | `ResolvedSpec`, tool descriptors, model capability | provider search, product policy mutation | runtime silently degrades required capability | G8, G22; fail-closed requirement tests |
 
 When a tool reaches the catalog through a plugin's resolved `Contributions`, its
@@ -221,7 +220,8 @@ For a new capability type, implement in this order:
 1. Descriptor in `ResolvedSpec` and fingerprint calculation.
 2. Runtime validation against the catalog fingerprint.
 3. Existing in-process invocation path by id.
-4. Permission policy hook.
+4. `ToolPermissionPolicy` verdict projected through the existing
+   `ToolGateHook` chain.
 5. A service-backed tool reaches its endpoint inside its own in-process `invoke`;
    out-of-process agent execution waits for a future ADR.
 

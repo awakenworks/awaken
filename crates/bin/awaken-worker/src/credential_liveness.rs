@@ -303,6 +303,11 @@ mod tests {
 
     #[tokio::test]
     async fn worker_stamps_the_trusted_observation_window() {
+        // Test design — Cause: the adapter returns one exact Available revision
+        // and the Worker completes the probe at T=100 with TTL=30. Effect: the
+        // published fact is `[100,130)` for that revision. Constraints: the
+        // Worker, not the adapter or heartbeat, owns trusted observation/deadline
+        // time. Decision rule H1=successful probe=>one exact leased observation.
         let observations = credential_observations(Some(&AvailableResolver))
             .await
             .expect("worker-local probe");
@@ -321,6 +326,11 @@ mod tests {
 
     #[tokio::test]
     async fn probe_failure_preserves_the_original_deadline() {
+        // Test design — Causes: C1 an Available fact is published with deadline
+        // 130; C2 the next probe hard-fails at 120. Effects: refresh returns an
+        // error and the cached fact/deadline remain byte exact until natural
+        // expiry. Constraints: failure and heartbeat cannot renew stale evidence.
+        // Decision rule H3=C1+C2=>preserve, never extend or replace partially.
         let cache = WorkerObservationCache::default();
         cache
             .refresh(
@@ -365,6 +375,9 @@ mod tests {
     // credential and capability deadlines remain unchanged.
     // Login unavailable and protocol ProbeFailed are successful observations,
     // not hard errors, and therefore belong to R1.
+    // Effects: R1 publishes both facts with one deadline; R2 returns error and
+    // preserves both prior snapshots. Constraints/invariants: a Worker heartbeat
+    // exposes one atomic observation batch and never mixes generations.
     #[tokio::test]
     async fn capability_failure_cannot_partially_renew_credential_evidence() {
         let cache = WorkerObservationCache::default();
@@ -407,6 +420,11 @@ mod tests {
 
     #[tokio::test]
     async fn capability_probe_latency_does_not_consume_the_observation_lease() {
+        // Test design — Cause: a capability probe blocks before completing one
+        // otherwise successful credential/capability batch. Effects: observation
+        // time is stamped after release and both facts receive the full TTL with
+        // one deadline. Constraints: probe latency cannot shorten the lease or
+        // split batch time. Decision rule H1-slow=success after delay=>full window.
         let cache = Arc::new(WorkerObservationCache::default());
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -459,6 +477,8 @@ mod tests {
          * waiting one full periodic interval. Rules: BP1 C1+C2=>E1+E2;
          * BP2 C1+C3=>E3. Worker readiness relies on BP1 while placement remains
          * fail-closed through E2.
+         * Constraint/invariant: startup and heartbeat progress never treat an
+         * in-flight probe as evidence or wait on it synchronously.
          */
         let cache = Arc::new(WorkerObservationCache::default());
         let entered = Arc::new(Notify::new());
@@ -494,6 +514,8 @@ mod tests {
     // E1 one host probe runs, E2 both callers observe success, E3 the committed
     // batch has one generation. Sequential triggers are unconstrained and may
     // refresh again. Rule R1 = C1 -> E1+E2+E3.
+    // Constraint/invariant: overlapping triggers share the single refresh owner;
+    // neither can publish a parallel observation generation.
     #[tokio::test]
     async fn overlapping_refresh_triggers_coalesce_into_one_probe_batch() {
         let cache = Arc::new(WorkerObservationCache::default());

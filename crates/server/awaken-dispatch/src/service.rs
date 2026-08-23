@@ -3,8 +3,9 @@
 //! [`DispatchService`] turns the [`DispatchWorker`] into a long-running service:
 //! one background task drains the queue, woken by a nudge when new work arrives
 //! and by a periodic timer otherwise (so a crashed lease is recovered without new
-//! work). It is the only part of the crate that reads a real [`Clock`], keeping
-//! the worker deterministic. It waits on a [`WakeSignal`] — a `LocalWakeSignal`
+//! work). It owns the edge [`Clock`] and passes that same source into every
+//! Worker drive, keeping claim, renewal, and ownership checks on one timeline.
+//! It waits on a [`WakeSignal`] — a `LocalWakeSignal`
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
 
 use std::sync::Arc;
@@ -153,7 +154,7 @@ async fn run_loop<S: Dispatch + 'static>(
         let now = clock.now_ms();
         let exhausted = loop {
             match worker
-                .resolve_one_retry_exhausted(config.max_attempts, now)
+                .resolve_one_retry_exhausted(config.max_attempts, clock.clone())
                 .await
             {
                 Ok(true) => continue,
@@ -172,7 +173,10 @@ async fn run_loop<S: Dispatch + 'static>(
         if let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation
         {
-            if let Err(error) = worker.reconcile_committed_terminals(now, 256).await {
+            if let Err(error) = worker
+                .reconcile_committed_terminals(clock.clone(), 256)
+                .await
+            {
                 tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
             }
             next_terminal_reconciliation = tokio::time::Instant::now() + interval;
@@ -182,7 +186,7 @@ async fn run_loop<S: Dispatch + 'static>(
         // after expiry; running an ordinary drain here could reopen another
         // exhausted row before terminal resolution converges.
         if exhausted.is_ok() {
-            let _ = worker.run_until_idle(now).await;
+            let _ = worker.run_until_idle(clock.clone()).await;
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

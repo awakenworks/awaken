@@ -61,21 +61,21 @@ sandbox as a host policy; that choice is not a different Runtime lifecycle.
 
 ### Why the compactor is *invisible* today
 
-Not because it "isn't an agent" — it is — but because of (a) above: its
-thread/events commit to a throwaway coordinator, so they can never be enumerated
-as a session thread. Independently, the managed adapter's `list_threads` returns
-**only** the primary thread (`awaken-protocol-managed/src/state.rs:1050`), so no
-child thread would be visible even if it were durable.
+Not because it "isn't an agent" — it is — but because its events commit to an
+ephemeral auxiliary context rather than the Session's durable Thread/Run
+partition. Ordinary durable child Threads are now enumerated by the Managed
+Thread API; the compactor remains invisible because it deliberately has no
+durable Session Thread identity to enumerate.
 
 ### The precedent to mirror
 
 `span.outcome_evaluation_*` is the existing "lifecycle span" event. It is **not**
-transcoded from committed messages (`project.rs:126` `ManagedEncoder` handles
-only message-derived events). It is a side-band projection: the goal plugin
-commits opaque neutral detail, the host reconstructs a neutral `OutcomeReport`
-from durable truth, and the adapter projects it in `append_outcome`
-(`state.rs:1229`, the `SpanOutcomeEvaluation*` pushes at `state.rs:1250`).
-Compaction is the same shape.
+transcoded from committed messages (`ManagedEncoder` handles only
+message-derived events). The Session root retains the accepted Outcome command
+provenance, the Outcome aggregate commits the neutral report, and the Managed
+adapter joins those two durable facts in
+`append_durable_outcome_projections`. Compaction is the same shape: retain one
+protocol-neutral durable fact, then project it at the protocol boundary.
 
 ## Decision
 

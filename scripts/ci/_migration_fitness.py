@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from check_changed_e2e_line_coverage import TEST_MODULE
+
 
 VERSIONED_SQL = re.compile(r"^V[0-9]{4}__[a-z0-9_]+\.sql$")
 DIALECT_SQL = re.compile(
@@ -56,11 +58,27 @@ def _conditional_errors(path: Path, source: str, root: Path) -> list[str]:
 
 
 def _production_rust(source: str) -> str:
-    source = re.split(
-        r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]",
-        source,
-        maxsplit=1,
-    )[0]
+    lines = source.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        marker = TEST_MODULE.match(line)
+        if marker is None:
+            continue
+        candidates = [line[marker.end() :], *lines[index + 1 : index + 6]]
+        item = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.strip()
+                and not candidate.lstrip().startswith(("#", "//"))
+            ),
+            "",
+        )
+        if re.match(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{",
+            item,
+        ):
+            source = "".join(lines[:index])
+            break
     return "\n".join(
         line for line in source.splitlines() if not line.lstrip().startswith("//")
     )
@@ -194,13 +212,18 @@ def selftest() -> None:
 
     Causes: C1 versioned filename, C2 exactly one registration, C3 registered
     identity equals the included file, C4 unconditional body, C5 ordinary
-    Migration constructor, C6 production DDL is migration-owned. Effects: E1
-    accept one executable history; E2 reject before a database connection.
+    Migration constructor, C6 production DDL is migration-owned, C7 a cfg
+    attribute contains the `test` selector, C8 that attribute owns an inline
+    module. Effects: E1 accept one executable history; E2 reject before a
+    database connection; E3 exclude test-only DDL; E4 retain attributed
+    production items. Constraint K1: paths never classify production/test code;
+    K2: a cfg(test) import cannot hide later production DDL.
 
     Decision table: M1 all true -> E1; M2 !C1 -> E2; M3 !C2 -> E2; M4 !C3 ->
-    E2; M5 !C4 -> E2; M6 !C5 -> E2; M7 !C6 -> E2. M8 test-only DDL and M9
-    runtime DML are outside the migration source; M10 paired dialect files share
-    one version identity; M11 Session cannot retain a legacy registry.
+    E2; M5 !C4 -> E2; M6 !C5 -> E2; M7 !C6 -> E2; M8 C7+C8 -> E3 for both
+    exact and compound cfg; M9 C7+!C8 -> E4. M10 runtime DML is outside the
+    migration source; M11 paired dialect files share one version identity; M12
+    Session cannot retain a legacy registry.
     """
     assert VERSIONED_SQL.fullmatch("V0001__catalog.sql")  # M1
     assert not VERSIONED_SQL.fullmatch("catalog.sql")  # M2
@@ -208,11 +231,17 @@ def selftest() -> None:
     assert "Migration::new" in _production_rust(
         'Migration::new(1, "x", "CREATE TABLE {prefix}_x(id TEXT)")'
     )  # M4
-    assert not DDL.search(
-        _production_rust(
-            '#[cfg(test)]\nmod tests { const SQL: &str = "CREATE TABLE fixture(id TEXT)"; }'
-        )
-    )  # M5
+    for test_module in (
+        '#[cfg(test)]\nmod tests { const SQL: &str = "CREATE TABLE fixture(id TEXT)"; }',
+        '#[cfg(all(test, not(feature = "loom")))]\n'
+        'mod tests { const SQL: &str = "DROP TABLE fixture"; }',
+    ):
+        assert not DDL.search(_production_rust(test_module))  # M8/E3
+    attributed_import = (
+        '#[cfg(test)]\nuse fixture::Store;\n'
+        'const SQL: &str = "CREATE TABLE production(id TEXT)";'
+    )
+    assert DDL.search(_production_rust(attributed_import))  # M9/E4/K2
     mixed = """pub fn bundle() {\nMigration::new(1, \"x\", \"CREATE TABLE x(id INT)\");\n}\n\
 pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert "INSERT OR IGNORE" not in _migration_declarations(mixed)  # M6
@@ -228,12 +257,12 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert any(constructor in legacy for constructor in LEGACY_CONSTRUCTORS)  # M6
     assert _migration_declarations(legacy) == _migration_declarations(
         "#[cfg(feature = \"test-support\")]\nuse fixture::Store;\n" + legacy
-    )  # M8
+    )  # M10
     postgres = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.postgres.sql")
     sqlite = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.sqlite.sql")
     assert postgres and sqlite
-    assert postgres.group("identity") == sqlite.group("identity")  # M9
+    assert postgres.group("identity") == sqlite.group("identity")  # M11
     assert not DIALECT_SQL.fullmatch("V0025__nonnegative_authority.mysql.sql")
     registry = "fn published() { Migration::published_legacy(); }\nMigration::new(22);"
-    assert _session_registry_violations(registry)  # M11 duplicate history path
+    assert _session_registry_violations(registry)  # M12 duplicate history path
     assert _session_registry_violations("Migration::new(1);") == []  # M1

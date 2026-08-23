@@ -1,6 +1,8 @@
 //! Durable terminal Session transitions.
 
-use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionDisposition};
+use awaken_session_contract::{
+    ManagedLifecycleFact, PersistedSession, RunError, SessionDisposition, SessionExecutionState,
+};
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError,
@@ -14,6 +16,12 @@ pub struct SessionDispositionMutation {
     pub owner_scope: String,
     pub session: PersistedSession,
     pub transitioned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveAdmission {
+    IdleOnly,
+    ForceTerminal,
 }
 
 /// Protocol-neutral request to commit the durable Session Delete fence.
@@ -74,19 +82,53 @@ impl SessionApplication {
             })
     }
 
-    /// Commit one terminal Session transition and release every remaining
-    /// Resource exactly once. Public protocols may add wire projections after
-    /// this application boundary, but no caller reproduces cleanup ordering.
+    /// Archive one publicly idle Session and release every remaining Resource
+    /// exactly once. The idle check and archive transition share the root CAS;
+    /// protocol adapters must not race a separate status read against this
+    /// command. Internal terminal jobs use [`Self::force_terminate_session`].
     pub async fn terminate_session(
         &self,
         session_id: &str,
         archived_at: &str,
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        self.terminate_session_with_admission(
+            session_id,
+            archived_at,
+            fact,
+            ArchiveAdmission::IdleOnly,
+        )
+        .await
+    }
+
+    /// Force a terminal Session fence for an internal lifecycle owner such as
+    /// Dream cleanup. This deliberately bypasses public idle admission while
+    /// retaining the same archive CAS and terminal cleanup implementation.
+    pub async fn force_terminate_session(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        self.terminate_session_with_admission(
+            session_id,
+            archived_at,
+            fact,
+            ArchiveAdmission::ForceTerminal,
+        )
+        .await
+    }
+
+    async fn terminate_session_with_admission(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+        admission: ArchiveAdmission,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let transition = self
-            .begin_archive(session_id, archived_at, fact)
-            .await
-            .map_err(mutation_failure)?;
+            .commit_archive(session_id, archived_at, fact, admission)
+            .await?;
         self.release_terminal_resources(&transition.owner_scope, session_id)
             .await?;
         if transition.transitioned {
@@ -124,22 +166,25 @@ impl SessionApplication {
         Ok(transition)
     }
 
-    /// Commit the archive fact once. [`Self::terminate_session`] follows this
-    /// durable fence with idempotent cleanup; recovery may call the cleanup phase
-    /// again without writing another terminal fact.
-    pub async fn begin_archive(
+    /// The sole archive mutation kernel. Admission is re-evaluated after every
+    /// conflicting CAS, so an activity that wins the root revision cannot have
+    /// its Running truth or completion epoch erased by a stale public archive.
+    /// An exact Archived replay is absorbing and precedes admission validation.
+    async fn commit_archive(
         &self,
         session_id: &str,
         archived_at: &str,
         fact: ManagedLifecycleFact,
-    ) -> Result<SessionDispositionMutation, SessionMutationError> {
+        admission: ArchiveAdmission,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await?;
+            let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
                 .session_repository()
                 .get(session_id)
                 .await
-                .map_err(repository_failure)?;
+                .map_err(repository_failure)
+                .map_err(mutation_failure)?;
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
                 return Ok(SessionDispositionMutation {
                     owner_scope,
@@ -148,11 +193,18 @@ impl SessionApplication {
                 });
             }
             if session.is_hidden() {
-                return Err(SessionMutationError::NotFound);
+                return Err(SessionPreparationError::NotFound);
+            }
+            if admission == ArchiveAdmission::IdleOnly
+                && session.execution != SessionExecutionState::Idle
+            {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "only an idle Session may be archived",
+                )));
             }
             session
                 .archive(archived_at)
-                .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
                 .close_runtime_interval(now_unix_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
@@ -173,10 +225,10 @@ impl SessionApplication {
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(mutation_failure(error)),
             }
         }
-        Err(SessionMutationError::Conflict)
+        Err(SessionPreparationError::Conflict)
     }
 
     /// Commit the hidden delete intent and Resource release intent atomically.

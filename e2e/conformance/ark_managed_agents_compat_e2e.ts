@@ -27,9 +27,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Stream } from '@anthropic-ai/sdk/core/streaming';
 import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
 import type {
+  BetaManagedAgentsEventParams,
   BetaManagedAgentsSessionEvent,
   BetaManagedAgentsStreamSessionEvents,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
+// @ts-ignore -- the shared JavaScript harness intentionally has no declarations.
+import { waitForSessionEventReceipt, waitForValue } from '../harness.mjs';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -90,6 +93,43 @@ const E2E_DIR = path.resolve(SCRIPT_DIR, '..');
 const DEFAULT_RECORDING = path.join(E2E_DIR, 'artifacts', 'ark-managed-agents-compat.json');
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const OFFICIAL_TOOLSET = 'agent_toolset_20260401';
+
+// Cause/effect decision table SDK-R1..R4: each tool-reply input is routed by
+// its matching public Event ID (R1), while the output-only Thread selector is
+// rejected for confirmation, custom-result, and tool-result inputs (R2..R4).
+// Effects: valid Event-ID inputs compile; every output-only selector fails the
+// official SDK type check. Constraints/invariant: the official TypeScript DTO,
+// not Ark or this probe, owns input routing. The negative compile canaries
+// prevent JavaScript-only E2E coverage from accidentally widening that surface.
+const SDK_TOOL_REPLY_INPUT_CANARIES: BetaManagedAgentsEventParams[] = [
+  { type: 'user.tool_confirmation', tool_use_id: 'evt_confirmation', result: 'allow' },
+  { type: 'user.custom_tool_result', custom_tool_use_id: 'evt_custom_result' },
+  { type: 'user.tool_result', tool_use_id: 'evt_tool_result' },
+];
+const SDK_TOOL_REPLY_SELECTOR_CANARIES = [
+  {
+    type: 'user.tool_confirmation',
+    tool_use_id: 'evt_confirmation',
+    result: 'allow',
+    // @ts-expect-error session_thread_id is output-only; input routing uses tool_use_id.
+    session_thread_id: 'sthr_not_an_input_selector',
+  } satisfies BetaManagedAgentsEventParams,
+  {
+    type: 'user.custom_tool_result',
+    custom_tool_use_id: 'evt_custom_result',
+    // @ts-expect-error session_thread_id is output-only; input routing uses custom_tool_use_id.
+    session_thread_id: 'sthr_not_an_input_selector',
+  } satisfies BetaManagedAgentsEventParams,
+  {
+    type: 'user.tool_result',
+    tool_use_id: 'evt_tool_result',
+    // @ts-expect-error session_thread_id is output-only; input routing uses tool_use_id.
+    session_thread_id: 'sthr_not_an_input_selector',
+  } satisfies BetaManagedAgentsEventParams,
+];
+void SDK_TOOL_REPLY_INPUT_CANARIES;
+void SDK_TOOL_REPLY_SELECTOR_CANARIES;
+
 function requiredEnvironment(name: 'ARK_API_TOKEN' | 'ARK_SESSION_ID'): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
@@ -376,6 +416,15 @@ function asObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function exactReceiptId(receipt: unknown, description: string): string {
+  const data = asObject(receipt).data;
+  const id = Array.isArray(data) ? asObject(data[0]).id : undefined;
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error(`${description} returned no exact Event receipt id`);
+  }
+  return id;
+}
+
 function missingKeys(value: unknown, keys: string[]): string[] {
   const object = asObject(value);
   return keys.filter((key) => !Object.prototype.hasOwnProperty.call(object, key));
@@ -494,14 +543,12 @@ async function waitForSessionIdle(
   sessionId: string,
   timeoutMs = pollTimeoutMs,
 ): Promise<BetaManagedAgentsSession> {
-  const deadline = Date.now() + timeoutMs;
-  let last: BetaManagedAgentsSession | undefined;
-  while (Date.now() < deadline) {
-    last = await client.beta.sessions.retrieve(sessionId, { betas: [MANAGED_BETA] });
-    if (last.status === 'idle' || last.status === 'terminated') return last;
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-  }
-  throw new Error(`timed out waiting for ${sessionId} to become idle; last status=${last?.status}`);
+  return waitForValue(
+    () => client.beta.sessions.retrieve(sessionId, { betas: [MANAGED_BETA] }),
+    (session: BetaManagedAgentsSession) => session.status === 'idle' || session.status === 'terminated',
+    `timed out waiting for ${sessionId} to become idle`,
+    { timeoutMs, pollMs: 1_000 },
+  );
 }
 
 async function listEvents(
@@ -704,6 +751,15 @@ async function main(): Promise<void> {
         }],
         betas: [MANAGED_BETA],
       });
+      await waitForSessionEventReceipt(
+        client,
+        disposableId,
+        exactReceiptId(receipt, 'system.message'),
+        [MANAGED_BETA],
+        () => true,
+        'system.message exact receipt commits',
+        { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+      );
       addCheck('events.system_message', 'events', 'pass', 'system.message was accepted', receipt);
     } catch (error) {
       addCheck('events.system_message', 'events', 'fail', 'system.message failed', errorEvidence(error));
@@ -732,6 +788,21 @@ async function main(): Promise<void> {
         betas: [MANAGED_BETA],
       });
       const collected = await collecting;
+      // AR1 receipt rule: C1=exact streamed User receipt; C2=stream observes
+      // running/message/idle; C3=the same terminal Run commits. E1=stream and
+      // history agree. Constraint: preview frames cannot satisfy C3.
+      // C1+C2&&!C3=>observe; C1+C2+C3=>E1.
+      await waitForSessionEventReceipt(
+        client,
+        disposableId,
+        exactReceiptId(receipt, 'streamed user.message'),
+        [MANAGED_BETA],
+        ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+          (event) => event.type === 'agent.message',
+        ) && delta.some((event) => event.type === 'session.status_idle'),
+        'streamed User receipt reaches committed message and idle',
+        { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+      );
       streamed = collected.events;
       const issues = streamed.flatMap((event, index) =>
         validateEvent(event, !['event_start', 'event_delta'].includes(event.type))
@@ -835,7 +906,7 @@ async function main(): Promise<void> {
 
     if (customToolConfigured) {
       try {
-        await client.beta.sessions.events.send(disposableId, {
+        const taskReceipt = await client.beta.sessions.events.send(disposableId, {
           events: [{
             type: 'user.message',
             content: [{
@@ -845,12 +916,22 @@ async function main(): Promise<void> {
           }],
           betas: [MANAGED_BETA],
         });
-        await waitForSessionIdle(client, disposableId);
-        let history = await listEvents(client, disposableId);
+        let observed = await waitForSessionEventReceipt(
+          client,
+          disposableId,
+          exactReceiptId(taskReceipt, 'custom-tool task'),
+          [MANAGED_BETA],
+          ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+            (event) => event.type === 'agent.custom_tool_use',
+          ) && delta.some((event) => event.type === 'session.status_idle'),
+          'custom-tool task reaches its exact awaiting boundary',
+          { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+        );
+        let history = { page: null, events: observed.events as BetaManagedAgentsSessionEvent[] };
         const customUse = [...history.events].reverse().find((event) => event.type === 'agent.custom_tool_use');
         const customUseId = String(asObject(customUse).id ?? '');
         if (!customUseId) throw new Error('agent.custom_tool_use was not emitted');
-        await client.beta.sessions.events.send(disposableId, {
+        const resultReceipt = await client.beta.sessions.events.send(disposableId, {
           events: [{
             type: 'user.custom_tool_result',
             custom_tool_use_id: customUseId,
@@ -858,15 +939,25 @@ async function main(): Promise<void> {
           }],
           betas: [MANAGED_BETA],
         });
-        await waitForSessionIdle(client, disposableId);
-        history = await listEvents(client, disposableId);
-        const resultReceipt = history.events.some((event) =>
+        observed = await waitForSessionEventReceipt(
+          client,
+          disposableId,
+          exactReceiptId(resultReceipt, 'custom-tool result'),
+          [MANAGED_BETA],
+          ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+            (event) => event.type === 'agent.message',
+          ) && delta.some((event) => event.type === 'session.status_idle'),
+          'custom-tool result reaches its terminal message',
+          { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+        );
+        history = { page: null, events: observed.events as BetaManagedAgentsSessionEvent[] };
+        const resultPersisted = history.events.some((event) =>
           event.type === 'user.custom_tool_result' &&
           String(asObject(event).custom_tool_use_id ?? '') === customUseId
         );
         const finalMessage = history.events.some((event) => event.type === 'agent.message');
         const issues = [];
-        if (!resultReceipt) issues.push('history missing user.custom_tool_result');
+        if (!resultPersisted) issues.push('history missing user.custom_tool_result');
         if (!finalMessage) issues.push('history missing agent.message after custom result');
         addCheck(
           'events.custom_tool_result',
@@ -926,7 +1017,7 @@ async function main(): Promise<void> {
 
     if (confirmationConfigured) {
       try {
-        await client.beta.sessions.events.send(disposableId, {
+        const taskReceipt = await client.beta.sessions.events.send(disposableId, {
           events: [{
             type: 'user.message',
             content: [{
@@ -936,8 +1027,19 @@ async function main(): Promise<void> {
           }],
           betas: [MANAGED_BETA],
         });
-        await waitForSessionIdle(client, disposableId);
-        let history = await listEvents(client, disposableId);
+        let observed = await waitForSessionEventReceipt(
+          client,
+          disposableId,
+          exactReceiptId(taskReceipt, 'always-ask task'),
+          [MANAGED_BETA],
+          ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+            (event) => event.type === 'agent.tool_use',
+          ) && delta.some((event) => event.type === 'session.status_idle'
+            && asObject(asObject(event).stop_reason).type === 'requires_action'),
+          'always-ask task reaches its exact requires_action boundary',
+          { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+        );
+        let history = { page: null, events: observed.events as BetaManagedAgentsSessionEvent[] };
         const toolUse = [...history.events].reverse().find((event) => event.type === 'agent.tool_use');
         const toolUseId = String(asObject(toolUse).id ?? '');
         const pending = [...history.events].reverse().find((event) => {
@@ -948,12 +1050,23 @@ async function main(): Promise<void> {
             stopReason.event_ids.includes(toolUseId);
         });
         if (!toolUseId || !pending) throw new Error('always_ask did not emit a requires_action tool use');
-        await client.beta.sessions.events.send(disposableId, {
+        const confirmationReceipt = await client.beta.sessions.events.send(disposableId, {
           events: [{ type: 'user.tool_confirmation', tool_use_id: toolUseId, result: 'allow' }],
           betas: [MANAGED_BETA],
         });
-        await waitForSessionIdle(client, disposableId);
-        history = await listEvents(client, disposableId);
+        observed = await waitForSessionEventReceipt(
+          client,
+          disposableId,
+          exactReceiptId(confirmationReceipt, 'tool confirmation'),
+          [MANAGED_BETA],
+          ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+            (event) => event.type === 'agent.tool_result'
+              && String(asObject(event).tool_use_id ?? '') === toolUseId,
+          ) && delta.some((event) => event.type === 'session.status_idle'),
+          'exact tool confirmation reaches matching result and idle',
+          { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+        );
+        history = { page: null, events: observed.events as BetaManagedAgentsSessionEvent[] };
         const result = history.events.find((event) =>
           event.type === 'agent.tool_result' && String(asObject(event).tool_use_id ?? '') === toolUseId
         );
@@ -979,7 +1092,7 @@ async function main(): Promise<void> {
 
     try {
       await waitForSessionIdle(client, disposableId);
-      await client.beta.sessions.events.send(disposableId, {
+      const outcomeReceipt = await client.beta.sessions.events.send(disposableId, {
         events: [{
           type: 'user.define_outcome',
           description: 'Reply with exactly OUTCOME_OK.',
@@ -988,8 +1101,21 @@ async function main(): Promise<void> {
         }],
         betas: [MANAGED_BETA],
       });
-      await waitForSessionIdle(client, disposableId);
-      const history = await listEvents(client, disposableId);
+      const outcomeObservation = await waitForSessionEventReceipt(
+        client,
+        disposableId,
+        exactReceiptId(outcomeReceipt, 'outcome definition'),
+        [MANAGED_BETA],
+        ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+          (event) => event.type === 'span.outcome_evaluation_end',
+        ) && delta.some((event) => event.type === 'session.status_idle'),
+        'outcome definition reaches evaluation end and idle',
+        { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+      );
+      const history = {
+        page: null,
+        events: outcomeObservation.events as BetaManagedAgentsSessionEvent[],
+      };
       const types = history.events.map((event) => event.type);
       const issues = [];
       for (const required of [
@@ -1094,7 +1220,7 @@ async function main(): Promise<void> {
               seen.some((candidate) => candidate.type === 'session.status_running'),
             60_000,
           );
-          await client.beta.sessions.events.send(disposableId, {
+          const receipt = await client.beta.sessions.events.send(disposableId, {
             events: [{
               type: 'user.message',
               content: [{ type: 'text', text: '只回复 THREAD_STREAM_OK，不要使用工具。' }],
@@ -1102,13 +1228,24 @@ async function main(): Promise<void> {
             betas: [MANAGED_BETA],
           });
           const observed = await collecting;
+          await waitForSessionEventReceipt(
+            client,
+            disposableId,
+            exactReceiptId(receipt, 'Thread-stream user.message'),
+            [MANAGED_BETA],
+            ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
+              (event) => event.type === 'agent.message',
+            ) && delta.some((event) => event.type === 'session.status_idle'),
+            'Thread-stream User receipt reaches committed message and idle',
+            { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+          );
           addCheck(
             'threads.events.stream',
             'threads',
             observed.events.some((event) => event.type === 'agent.message') ? 'pass' : 'fail',
             observed.events.some((event) => event.type === 'agent.message')
-              ? 'thread SSE delivered the live turn through the official SDK'
-              : 'thread SSE produced no SDK-parsed agent.message during a live turn',
+              ? 'Thread SSE delivered the live Run through the official SDK'
+              : 'Thread SSE produced no SDK-parsed agent.message during a live Run',
             { types: observed.events.map((event) => event.type), timed_out: observed.timed_out },
           );
         } catch (error) {
@@ -1151,6 +1288,15 @@ async function main(): Promise<void> {
         events: [{ type: 'user.interrupt' }],
         betas: [MANAGED_BETA],
       });
+      await waitForSessionEventReceipt(
+        client,
+        disposableId,
+        exactReceiptId(interrupted, 'standalone interrupt'),
+        [MANAGED_BETA],
+        () => true,
+        'standalone interrupt exact receipt commits',
+        { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+      );
       addCheck('events.interrupt', 'events', 'pass', 'user.interrupt was accepted', interrupted);
     } catch (error) {
       addCheck('events.interrupt', 'events', 'fail', 'user.interrupt failed', errorEvidence(error));
@@ -1186,13 +1332,27 @@ async function main(): Promise<void> {
     }
 
     try {
-      const current = await client.beta.sessions.retrieve(disposableId, { betas: [MANAGED_BETA] });
+      const cleanupSessionId = disposableId;
+      const current = await client.beta.sessions.retrieve(cleanupSessionId, { betas: [MANAGED_BETA] });
       if (current.status === 'running' || current.status === 'rescheduling') {
-        await client.beta.sessions.events.send(disposableId, {
+        const receipt = await client.beta.sessions.events.send(cleanupSessionId, {
           events: [{ type: 'user.interrupt' }],
           betas: [MANAGED_BETA],
         });
-        await waitForSessionIdle(client, disposableId);
+        await waitForSessionEventReceipt(
+          client,
+          cleanupSessionId,
+          exactReceiptId(receipt, 'cleanup interrupt'),
+          [MANAGED_BETA],
+          async () => {
+            const session = await client.beta.sessions.retrieve(cleanupSessionId, {
+              betas: [MANAGED_BETA],
+            });
+            return session.status === 'idle' || session.status === 'terminated';
+          },
+          'cleanup interrupt exact receipt reaches idle or terminated',
+          { timeoutMs: pollTimeoutMs, pollMs: 1_000 },
+        );
       }
       const archived = await client.beta.sessions.archive(disposableId, { betas: [MANAGED_BETA] });
       addCheck('sessions.archive', 'lifecycle', 'pass', 'disposable session archived', {

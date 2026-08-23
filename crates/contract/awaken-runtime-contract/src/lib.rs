@@ -5,6 +5,7 @@ pub mod agent_bindings;
 pub mod boundary;
 pub mod capability;
 pub mod capture;
+pub mod compaction;
 pub mod control;
 pub mod credential;
 pub mod data_subject;
@@ -97,12 +98,16 @@ pub use awaken_agent_contract::thread::commit::coordinator::{
     OperationCoordinator as CommitOperationCoordinator,
 };
 pub use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
+    CommitHashError, CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
+    commit_payload_hash,
 };
 pub use awaken_agent_contract::thread::commit::staged::{
     CommitRecord, RunDisposition, ThreadCommit,
 };
 pub use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+pub use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 pub use awaken_agent_contract::thread::read::transcript::{
     TranscriptRange, TranscriptSliceSpec, TranscriptSnapshotRef, TranscriptView,
 };

@@ -20,6 +20,39 @@ data:
   platform-workspace-id: workspace-adr71
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata: { name: adr71-worker-tls-route }
+data:
+  nginx.conf: |
+    worker_processes auto;
+    pid /tmp/nginx.pid;
+    error_log /dev/stderr notice;
+    events { worker_connections 1024; }
+    http {
+      access_log /dev/stdout;
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
+      server {
+        listen 3443 ssl;
+        ssl_certificate /etc/awaken-worker-tls/tls.crt;
+        ssl_certificate_key /etc/awaken-worker-tls/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        client_max_body_size 16m;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        location / {
+          proxy_pass http://127.0.0.1:3001;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header Connection "";
+        }
+      }
+    }
+---
+apiVersion: v1
 kind: Secret
 metadata: { name: adr71-control-auth }
 type: Opaque
@@ -110,6 +143,7 @@ stringData:
     role = "worker"
     worker_id = "__WORKER_ID__"
     worker_request_credential_file = "/etc/awaken-worker-auth/__WORKER_ID__.json"
+    worker_server_ca_certificate_file = "/etc/awaken-worker-tls/ca.crt"
     worker_credential_material_root = "/var/run/awaken/credentials"
     worker_credential_trust_domain = "awaken.worker"
     worker_admin_listen = "0.0.0.0:9090"
@@ -228,6 +262,7 @@ spec:
   ports:
     - { name: public, port: 3000, targetPort: 3000 }
     - { name: internal, port: 3001, targetPort: 3001 }
+    - { name: worker-tls, port: 3443, targetPort: 3443 }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -259,6 +294,36 @@ spec:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
             - { name: workspace, mountPath: /var/lib/awaken/coordinator/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
+        - name: worker-tls
+          image: nginx:1.27-alpine
+          imagePullPolicy: Never
+          command: ["nginx", "-c", "/etc/nginx-worker/nginx.conf", "-g", "daemon off;"]
+          ports:
+            - { name: worker-tls, containerPort: 3443 }
+          startupProbe:
+            tcpSocket: { port: 3443 }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket: { port: 3443 }
+            periodSeconds: 2
+          livenessProbe:
+            tcpSocket: { port: 3443 }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: worker-tls-route, mountPath: /etc/nginx-worker, readOnly: true }
+            - { name: worker-tls-identity, mountPath: /etc/awaken-worker-tls, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
@@ -266,6 +331,14 @@ spec:
           secret: { secretName: adr71-coordinator-auth }
         - name: workspace
           configMap: { name: adr71-installation }
+        - name: worker-tls-route
+          configMap: { name: adr71-worker-tls-route }
+        - name: worker-tls-identity
+          secret:
+            secretName: adr71-worker-upstream-tls
+            items:
+              - { key: tls.crt, path: tls.crt }
+              - { key: tls.key, path: tls.key }
 ---
 apiVersion: v1
 kind: Service
@@ -336,7 +409,7 @@ spec:
           args:
             - |
               sed "s/__WORKER_ID__/${HOSTNAME}/g" /etc/awaken-template/worker.toml > /tmp/worker.toml
-              exec /usr/local/bin/awaken-worker --server http://coordinator:3001 --config /tmp/worker.toml
+              exec /usr/local/bin/awaken-worker --server https://coordinator:3443 --config /tmp/worker.toml
           ports: [{ containerPort: 9090 }]
           lifecycle:
             # Normal scale-in closes local claim admission before SIGTERM and
@@ -351,6 +424,7 @@ spec:
           volumeMounts:
             - { name: template, mountPath: /etc/awaken-template, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-worker-auth, readOnly: true }
+            - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
             - { name: material, mountPath: /var/run/awaken/credentials, readOnly: true }
             - { name: data, mountPath: /var/lib/awaken }
       volumes:
@@ -360,6 +434,10 @@ spec:
             items: [{ key: worker.toml, path: worker.toml }]
         - name: auth
           secret: { secretName: adr71-worker-auth }
+        - name: upstream-tls
+          configMap:
+            name: adr71-worker-upstream-ca
+            items: [{ key: ca.crt, path: ca.crt }]
         - name: material
           secret:
             secretName: adr71-worker-material

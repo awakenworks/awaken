@@ -8,27 +8,20 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38275;
 const STORE = `/tmp/awaken-durable-hitl-${process.pid}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function listEvents(client, id) {
-  const e = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) e.push(ev);
-  return e;
-}
-async function until(fn) {
-  for (let i = 0; i < 150; i++) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(50);
-  }
-  return null;
-}
-
 async function dispatches(thread) {
   const response = await fetch(`http://127.0.0.1:${PORT}/v1/durable/threads/${thread}/dispatches`);
   assert.equal(response.status, 200, 'durable dispatch query succeeds');
@@ -43,7 +36,7 @@ async function main() {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
   try {
     const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(s.id, {
+    const initialReceipt = await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'write then read probe.txt' }] }],
       betas: BETAS,
     });
@@ -59,26 +52,43 @@ async function main() {
     // | R3 | open | exact approval | Awaiting(new ticket) | one Awaiting row |
     // This scenario covers R1/R2. The run-ingress settle suite owns R3.
     // The durable run awaits on a tool_use awaiting approval.
-    const toolUse = await until(async () => (await listEvents(client, s.id)).find((e) => e.type === 'agent.tool_use'));
+    const initialReceiptId = initialReceipt.data[0]?.id;
+    assert.equal(typeof initialReceiptId, 'string', 'R1 exact durable User Event receipt');
+    const awaiting = await waitForSessionEventReceipt(
+      client,
+      s.id,
+      initialReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.tool_use')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+      'R1 durable Run to commit its awaiting ticket',
+    );
+    const toolUse = awaiting.delta.find((event) => event.type === 'agent.tool_use');
     assert.ok(toolUse, 'the durable run awaiting on a tool_use awaiting approval');
-    const waitingRows = await until(async () => {
-      const rows = await dispatches(s.id);
-      return rows.some((row) => row.status === 'Awaiting') ? rows : null;
-    });
+    const waitingRows = await waitForValue(
+      () => dispatches(s.id),
+      (rows) => rows.some((row) => row.status === 'Awaiting'),
+      'R1 durable dispatch to project Awaiting',
+    );
     assert.equal(waitingRows.filter((row) => row.status === 'Awaiting').length, 1, 'R1/E1: one awaiting dispatch');
     pass('durable run awaiting on a tool_use (requires_action)');
 
     // Approve — the DISPATCH WORKER resumes the awaiting durable run out of band.
-    await client.beta.sessions.events.send(s.id, {
+    const confirmationReceipt = await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
       betas: BETAS,
     });
-    const result = await until(async () => {
-      const evs = await listEvents(client, s.id);
-      const idle = [...evs].reverse().find((e) => e.type === 'session.status_idle');
-      return evs.some((e) => e.type === 'agent.tool_result') && idle?.stop_reason.type === 'end_turn' ? evs : null;
-    });
-    assert.ok(result, 'the dispatch worker resumed the awaiting run and ran the approved tool');
+    const confirmationReceiptId = confirmationReceipt.data[0]?.id;
+    assert.equal(typeof confirmationReceiptId, 'string', 'R2 exact approval receipt');
+    await waitForSessionEventReceipt(
+      client,
+      s.id,
+      confirmationReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.tool_result')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'R2 durable Worker to resume and commit after approval',
+    );
     assert.equal((await dispatches(s.id)).length, 0, 'R2/E3: terminal resume removes the durable dispatch');
     pass('durable ingress: an awaiting run resumed by the worker after approval (resume path)');
 

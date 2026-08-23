@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38407);
@@ -30,11 +30,24 @@ async function main() {
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
       // A normal turn first, so the log has running<->idle history to terminate after.
-      await client.beta.sessions.events.send(session.id, {
+      // C1=exact pre-archive User receipt; C2=reply+idle. E1=C2 creates stable
+      // history before termination. K: archive alone owns terminated. Decision
+      // T1 C1&&!C2=>retry; T2 C1+C2=>archive and compare ids.
+      const receipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
         betas: BETAS,
       });
-      const beforeIds = new Set((await listAll(client, session.id)).map((e) => e.id));
+      const receiptId = receipt.data[0]?.id;
+      assert.equal(typeof receiptId, 'string', 'T1 exact pre-archive User Event receipt');
+      const settled = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+        'T1 pre-archive Run to commit idle',
+      );
+      const beforeIds = new Set(settled.events.map((event) => event.id));
 
       // Archive == terminate.
       const archived = await client.beta.sessions.archive(session.id, { betas: BETAS });

@@ -61,10 +61,13 @@ discarded by a later superseding submission on the thread.
 
 ### D4: Live control is an accelerator, not authority
 
-`LiveRunControlService` records durable intent first. It then signals an active run,
-or immediately claims a queued/awaiting intent. A live-only inline run without a
-dispatch row can still be signalled, but durable ingress never reports cancellation
-success after only an in-memory notification.
+`LiveRunControlService` records durable intent first. It then signals an active run;
+a standalone ingress may immediately claim a queued/awaiting intent, while a served
+deployment only wakes its already-running process pool and returns once the intent is
+durable. The pool remains the sole claim driver, so an HTTP/control caller never
+becomes a competing synchronous Worker. A live-only inline run without a dispatch
+row can still be signalled, but durable ingress never reports cancellation success
+after only an in-memory notification.
 
 ## Consequences
 

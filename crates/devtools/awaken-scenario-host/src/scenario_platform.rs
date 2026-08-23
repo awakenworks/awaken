@@ -16,47 +16,6 @@ use axum::Router;
 use super::{EchoModel, SharedHost, resource_host};
 use crate::deployment::ScenarioPlatform;
 
-pub(super) fn test_environment_components() -> (
-    Arc<awaken_protocol_managed::EnvironmentAuthoringState>,
-    Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
-) {
-    use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
-
-    let work: Arc<dyn awaken_session_contract::work_queue::WorkQueue> =
-        Arc::new(awaken_work_store::InMemoryWorkQueue::new());
-    let executable =
-        Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
-    executable
-        .install_seed(awaken_environment_application::default_environment_registration())
-        .expect("install built-in Environment");
-    let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-        awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
-            Arc::new(
-                awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
-                    executable.clone(),
-                ),
-            ),
-            work.clone(),
-        ),
-    );
-    let policies =
-        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
-    let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
-        Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
-        registrar,
-        Some(policies.clone()),
-    ));
-    let authoring = awaken_protocol_managed::EnvironmentAuthoringState::new(application, policies);
-    (
-        Arc::new(authoring),
-        Arc::new(
-            awaken_environment_execution_application::EnvironmentExecutionApplication::new(
-                work, executable,
-            ),
-        ),
-    )
-}
-
 /// Scenario equivalent of the production service wiring: one secret-free
 /// Resource Registry is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
@@ -148,7 +107,8 @@ pub(super) fn mount_with_environments_and_agent_source(
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
     let catalog = resources.authorities().resource_registry();
-    let (environment_authoring, environment_execution) = test_environment_components();
+    let (environment_authoring, environment_execution) =
+        awaken_protocol_managed::test_support::environment_components();
     let managed = match agent_source {
         Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
             host.clone(),
@@ -339,6 +299,20 @@ pub(super) fn fixed_host_backend_publication(
     Arc::new(FixedAgentPublication::host_backend(id, backend_ref, skills))
 }
 
+/// One shared immutable publication for scenarios with multiple exact Agent
+/// revisions. The same object feeds Host execution and Managed Session
+/// profiles; this prevents the deterministic roster from acquiring a second,
+/// hand-maintained representation.
+pub(super) fn fixed_agent_publication(
+    snapshots: impl IntoIterator<Item = ExecutableAgentSnapshot>,
+) -> Arc<FixedAgentPublication> {
+    Arc::new(FixedAgentPublication {
+        snapshots: StaticPublishedAgentSnapshots::try_new(snapshots)
+            .expect("valid fixed scenario Agent publications"),
+        resources: Vec::new(),
+    })
+}
+
 pub(super) fn fixed_host_model_publication(
     id: &str,
     primary: ResolvedModelCandidate,
@@ -383,6 +357,16 @@ impl PublishedAgentSnapshotSource for FixedAgentPublication {
         fingerprint: &awaken_runtime_contract::resolved::CatalogFingerprint,
     ) -> Option<ExecutableAgentSnapshot> {
         self.snapshots.exact(workspace, fingerprint)
+    }
+
+    fn at_revision(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.snapshots
+            .at_revision(workspace, agent_id, source_revision)
     }
 }
 
@@ -429,7 +413,21 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 client_tools: Vec::new(),
                 mcp_servers,
                 skills: bindings.skills.clone(),
-                delegates: Vec::new(),
+                delegates: bindings
+                    .delegates
+                    .iter()
+                    .map(
+                        |delegate| awaken_executable_agent_contract::ExecutableAgentDelegate {
+                            agent_id: delegate.agent_id.0.clone(),
+                            source_revision: delegate.source_revision.or_else(|| {
+                                (delegate.recursive_self
+                                    && delegate.agent_id == snapshot.root_agent_id
+                                    && snapshot.metadata.source.revision > 0)
+                                    .then_some(snapshot.metadata.source.revision)
+                            }),
+                        },
+                    )
+                    .collect(),
                 advisor_model: bindings
                     .advisor
                     .as_ref()
@@ -437,6 +435,19 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 resources: self.resources.clone(),
                 environment: None,
             },
+        )
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.at_revision(
+            workspace_id,
+            &AgentId(agent_id.to_string()),
+            source_revision,
         )
     }
 }
@@ -543,6 +554,67 @@ mod tests {
         assert_eq!(
             view.toolsets[0].default.permission,
             awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
+        );
+    }
+
+    #[test]
+    fn fixed_multiagent_publication_shares_exact_roster_and_snapshot_truth() {
+        // Causes: C1 coordinator/child carry non-zero immutable revisions and C2
+        // the edge pins that child revision. Effects: E1 the Session profile
+        // exposes the same exact edge and E2 execution resolves the same child
+        // snapshot. Decision table: R1(C1+C2)->E1+E2; R2(missing revision)->no
+        // exact lookup (the production admission failure is covered end to end).
+        // Constraints/invariants: the immutable snapshot publication is the sole
+        // roster and revision authority; its Session profile is a projection and
+        // cannot retain a second independently mutable edge catalog.
+        let published = |id: &str, delegates| {
+            ExecutableAgentSnapshot::builder(id)
+                .model(ModelBinding::new("scenario", "model", "native"))
+                .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
+                    source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
+                        agent_id: AgentId(id.into()),
+                        revision: 1,
+                    },
+                    ..Default::default()
+                })
+                .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
+                    delegates,
+                    ..Default::default()
+                })
+                .build()
+        };
+        let publication = fixed_agent_publication([
+            published(
+                "coordinator",
+                vec![
+                    awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                        agent_id: AgentId("worker".into()),
+                        source_revision: Some(1),
+                        recursive_self: false,
+                    },
+                ],
+            ),
+            published("worker", Vec::new()),
+        ]);
+        let profile =
+            awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(
+                publication.as_ref(),
+                "workspace",
+                "coordinator",
+            )
+            .expect("coordinator profile");
+        assert_eq!(profile.source_revision, 1);
+        assert_eq!(profile.delegates.len(), 1);
+        assert_eq!(profile.delegates[0].agent_id, "worker");
+        assert_eq!(profile.delegates[0].source_revision, Some(1));
+        assert!(
+            awaken_executable_agent_contract::ExecutableAgentProfileSource::executable_snapshot_at_revision_in(
+                publication.as_ref(),
+                "workspace",
+                "worker",
+                1,
+            )
+            .is_some()
         );
     }
 }

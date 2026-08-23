@@ -315,13 +315,38 @@ mod tests {
 
     #[test]
     fn merge_orders_dependencies_first() {
-        let mut b = manifest("b", CapabilityBound::default());
+        // Causes: C1 input lists dependent plugin `b` before required plugin `a`;
+        // C2 each contributes one distinct dynamic tool. Effect E1 the observable
+        // descriptor sequence is `a`, then `b`. Constraint K1 dependency order is
+        // materialized only in contributed collections; no parallel plugin-id
+        // order is stored solely for tests. Decision D1: C1+C2 => E1.
+        let mut b = manifest(
+            "b",
+            CapabilityBound {
+                tools: IdBound::Exact(vec!["b-tool".into()]),
+                ..Default::default()
+            },
+        );
         b.requires.push("a".into());
-        let a = manifest("a", CapabilityBound::default());
-        // Input order is [b, a]; a must come first because b requires it.
-        let plugins = vec![(b, Contributions::new("b")), (a, Contributions::new("a"))];
+        let a = manifest(
+            "a",
+            CapabilityBound {
+                tools: IdBound::Exact(vec!["a-tool".into()]),
+                ..Default::default()
+            },
+        );
+        let mut b_contributions = Contributions::new("b");
+        b_contributions.dynamic_tools.push(dynamic_tool("b-tool"));
+        let mut a_contributions = Contributions::new("a");
+        a_contributions.dynamic_tools.push(dynamic_tool("a-tool"));
+        let plugins = vec![(b, b_contributions), (a, a_contributions)];
         let env = ResolvedExecutionEnv::merge(plugins).expect("merges");
-        assert_eq!(env.plugin_order(), ["a", "b"]);
+        let ids = env
+            .dynamic_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["a-tool", "b-tool"], "D1/E1");
     }
 
     #[test]

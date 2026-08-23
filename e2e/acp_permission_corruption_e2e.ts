@@ -7,6 +7,12 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import type {
+  BetaManagedAgentsSessionEvent,
+  BetaManagedAgentsUserToolConfirmationEventParams,
+} from '@anthropic-ai/sdk/resources/beta/sessions/events';
+// @ts-ignore -- shared JavaScript ACP fixture intentionally serves TS scenarios.
+import { startAcpPermissionAwait } from './fixtures/acp_permission_await.mjs';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
@@ -16,29 +22,22 @@ const PORT = Number(process.env.E2E_PORT ?? 39773);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
 
-async function events(client: Anthropic, sessionId: string): Promise<any[]> {
-  const observed: any[] = [];
+async function events(
+  client: Anthropic,
+  sessionId: string,
+): Promise<BetaManagedAgentsSessionEvent[]> {
+  const observed: BetaManagedAgentsSessionEvent[] = [];
   for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     observed.push(event);
   }
   return observed;
 }
 
-async function startAwaiting(client: Anthropic): Promise<string> {
-  const session = await client.beta.sessions.create({
-    agent: 'acp-agent',
-    environment_id: 'env_local',
-    betas: BETAS,
-  });
-  await client.beta.sessions.events.send(session.id, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text: 'request permission' }] }],
-    betas: BETAS,
-  });
-  assert.ok((await events(client, session.id)).some((event) => event.id === 'permission-call'));
-  return session.id;
-}
-
-function rewriteTicket(storage: string, sessionId: string, rewrite: (ticket: any) => void): void {
+function rewriteTicket(
+  storage: string,
+  sessionId: string,
+  rewrite: (ticket: any) => void,
+): { database: string; runId: string } {
   const database = sqliteDatabaseForThread(storage, sessionId, 'runtime_waiting');
   const row = sqliteRows(
     database,
@@ -49,34 +48,59 @@ function rewriteTicket(storage: string, sessionId: string, rewrite: (ticket: any
   assert.ok(separator > 0, `ACP permission ticket exists for ${sessionId}: ${encoded}`);
   const runId = encoded.slice(0, separator);
   const ticket = JSON.parse(encoded.slice(separator + 1));
+  const before = JSON.stringify(ticket);
   rewrite(ticket);
-  const serialized = JSON.stringify(ticket).replaceAll("'", "''");
+  const after = JSON.stringify(ticket);
+  assert.notEqual(after, before, 'fault injection must change the durable ticket bytes');
+  const serialized = after.replaceAll("'", "''");
   const changed = sqliteRun(
     database,
     `UPDATE runtime_waiting SET ticket = '${serialized}' WHERE run_id = '${runId.replaceAll("'", "''")}'`,
   );
   assert.equal(Number(changed.changes), 1);
+  return { database, runId };
 }
 
-async function expectDecisionFailure(client: Anthropic, sessionId: string, status: number): Promise<void> {
+async function expectCorruptTicketFailure(
+  client: Anthropic,
+  sessionId: string,
+  toolId: string,
+  database: string,
+  runId: string,
+): Promise<void> {
+  const confirmation: BetaManagedAgentsUserToolConfirmationEventParams = {
+    type: 'user.tool_confirmation',
+    tool_use_id: toolId,
+    result: 'allow',
+  };
   await assert.rejects(
     client.beta.sessions.events.send(sessionId, {
-      events: [
-        {
-          type: 'user.tool_confirmation',
-          tool_use_id: 'permission-call',
-          result: 'allow',
-        },
-      ],
+      events: [confirmation],
       betas: BETAS,
     }),
-    (error: any) => error?.status === status,
+    (error: any) => error?.status === 500,
   );
-  if (status === 500) {
-    await assert.rejects(events(client, sessionId), (error: any) => error?.status === 500);
-  } else {
-    assert.ok(!JSON.stringify(await events(client, sessionId)).includes('ACP-PERMISSION-ALLOWED'));
-  }
+  await assert.rejects(events(client, sessionId), (error: any) => error?.status === 500);
+  assert.equal(
+    Number(
+      sqliteRows(
+        database,
+        'SELECT COUNT(*) AS count FROM runtime_waiting WHERE run_id = ?',
+        runId,
+      )[0]?.count,
+    ),
+    1,
+    'the rejected recovery leaves the sole corrupt waiting ticket unconsumed',
+  );
+  const messages = sqliteRows(
+    database,
+    'SELECT data FROM runtime_message WHERE thread_id = ? ORDER BY id',
+    sessionId,
+  );
+  assert.ok(
+    !JSON.stringify(messages).includes('ACP-PERMISSION-ALLOWED'),
+    'the rejected recovery never executes the pending permission tool',
+  );
 }
 
 async function main(): Promise<void> {
@@ -86,26 +110,38 @@ async function main(): Promise<void> {
   try {
     await waitForPort(PORT, 180_000, server);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
-    const missingCall = await startAwaiting(client);
-    const missingTool = await startAwaiting(client);
+    const malformed = await startAcpPermissionAwait(client, BETAS);
 
-    // Cause/effect graph: C1 a committed ACP permission wait survives restart;
-    // C2 removes call_id or C3 removes pending_tool from its durable ticket.
-    // Effects: E1 C2 is rejected as invalid client input (400), E2 C3 fails
-    // both resume and read projection closed (500), and E3 neither corruption
-    // executes the permission. Decision rules: T1=C1+C2 -> E1+E3;
-    // T2=C1+C3 -> E2+E3. Database location is resolved by the ticket's
-    // authoritative thread relation, never a filename.
+    // Cause/effect graph: C1 a closed ToolCall permission target is committed;
+    // C2 its required nested tool is removed while the process is stopped; C3
+    // the exact qualified public tool id is confirmed after restart. Effects:
+    // E1 the mutation changes retained bytes; E2 send/list both fail 500 before
+    // a confirmation receipt can commit; E3 the waiting row remains and the
+    // pending command never executes. Decision rule T1=C1+C2+C3=>E1+E2+E3.
+    // Constraints/invariants: AwaitTarget serde/recovery is the only structural
+    // authority; other missing nested fields belong to the same serde failure
+    // class, so this system boundary keeps one representative instead of a
+    // duplicate corruption path.
     await stopServer(server);
-    rewriteTicket(storage, missingCall, (ticket) => delete ticket.call_id);
-    rewriteTicket(storage, missingTool, (ticket) => delete ticket.pending_tool);
+    const corruption = rewriteTicket(storage, malformed.session.id, (ticket) => {
+      const target = ticket?.target?.ToolCall;
+      assert.equal(target?.reason, 'Permission', 'fixture mutates the closed permission target');
+      assert.ok(target?.call_id, 'closed permission target carries its call identity');
+      assert.ok(target?.tool, 'closed permission target carries its pending tool');
+      delete target.tool;
+    });
 
     server = spawnServer('acp-permission', PORT, environment).server;
     await waitForPort(PORT, 180_000, server);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
-    await expectDecisionFailure(client, missingCall, 400);
-    await expectDecisionFailure(client, missingTool, 500);
-    pass('restart rejects permission tickets missing call identity or pending tool');
+    await expectCorruptTicketFailure(
+      client,
+      malformed.session.id,
+      malformed.tool.id,
+      corruption.database,
+      corruption.runId,
+    );
+    pass('restart rejects a malformed closed permission target without consuming or executing it');
 
     console.log('ACP PERMISSION CORRUPTION TS API E2E PASS.');
   } finally {

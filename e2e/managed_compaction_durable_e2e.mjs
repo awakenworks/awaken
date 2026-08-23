@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38235);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -30,27 +30,26 @@ const ENV = {
   AWAKEN_COMPACT_KEEP_LAST: '1',
 };
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function allEvents(client, id) {
-  const evs = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) evs.push(ev);
-  return evs;
-}
-
-// Send a turn and poll until it reaches a terminal idle (durable ingress drives
-// it out of band through the dispatch worker).
 async function turnAndDrain(client, id, text) {
-  await client.beta.sessions.events.send(id, {
+  // C1=exact durable receipt; C2=worker commits reply+terminal. E1=full history
+  // after C2. K: observation never drives the dispatch Worker. Decision D1
+  // C1&&!C2=>retry; D2 C1+C2=>return committed history.
+  const receipt = await client.beta.sessions.events.send(id, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
-  for (let i = 0; i < 60; i += 1) {
-    const evs = await allEvents(client, id);
-    if (evs.some((e) => e.type === 'session.status_idle')) return evs;
-    await sleep(200);
-  }
-  throw new Error('durable turn never reached idle');
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'D1 exact durable-compaction User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `D1 durable-compaction Run for ${JSON.stringify(text)} to commit`,
+  );
+  return events;
 }
 
 async function main() {

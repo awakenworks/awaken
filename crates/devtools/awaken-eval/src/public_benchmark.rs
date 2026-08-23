@@ -451,11 +451,11 @@ pub fn import_qmsum_documents(
             .and_then(serde_json::Value::as_array)
             .ok_or("QMSum document lacks meeting_transcripts")?
             .iter()
-            .map(|turn| {
+            .map(|message| {
                 format!(
                     "{}: {}",
-                    string(turn, "speaker").unwrap_or_default(),
-                    string(turn, "content").unwrap_or_default()
+                    string(message, "speaker").unwrap_or_default(),
+                    string(message, "content").unwrap_or_default()
                 )
             })
             .collect::<Vec<_>>()
@@ -576,7 +576,7 @@ pub fn score_reference_compact(
 }
 
 /// Convert LoCoMo QA annotations into production Memory-selector cases. Gold
-/// evidence turns are mixed with lexical hard negatives, so this evaluates the
+/// evidence messages are mixed with lexical hard negatives, so this evaluates the
 /// selector/reranker without pretending to evaluate vector retrieval.
 pub fn import_locomo_selection(
     value: &serde_json::Value,
@@ -591,19 +591,19 @@ pub fn import_locomo_selection(
             .get("conversation")
             .and_then(serde_json::Value::as_object)
             .ok_or("LoCoMo conversation missing")?;
-        let mut turns = Vec::new();
+        let mut messages = Vec::new();
         for value in sessions.values() {
             let Some(session) = value.as_array() else {
                 continue;
             };
-            for turn in session {
-                let id = string(turn, "dia_id")?;
-                let speaker = string(turn, "speaker")?;
-                let text = string(turn, "text")?;
-                turns.push((id, format!("{speaker}: {text}")));
+            for message in session {
+                let id = string(message, "dia_id")?;
+                let speaker = string(message, "speaker")?;
+                let text = string(message, "text")?;
+                messages.push((id, format!("{speaker}: {text}")));
             }
         }
-        let by_id = turns
+        let by_id = messages
             .iter()
             .map(|(id, text)| (id.as_str(), text.as_str()))
             .collect::<BTreeMap<_, _>>();
@@ -634,7 +634,7 @@ pub fn import_locomo_selection(
             }
             let expected_ids = evidence.iter().copied().collect::<BTreeSet<_>>();
             let query_terms = tokens(&question).into_iter().collect::<BTreeSet<_>>();
-            let mut negatives = turns
+            let mut negatives = messages
                 .iter()
                 .filter(|(id, _)| !expected_ids.contains(id.as_str()))
                 .map(|(id, text)| {

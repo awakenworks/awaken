@@ -8,39 +8,68 @@
 //
 // Run: (from e2e/)  npm install && node managed_outcome_e2e.mjs
 //
-// Causal graph: define_outcome -> grade/revise rounds -> transient span events
-// -> outcome_id-keyed durable current state on Session.
-// Decision table:
-// | rubric reached | event rounds | durable entries | terminal result |
-// | yes after revise | >=2 | exactly 1 | satisfied |
-// | no at budget | budget | exactly 1 | max_iterations_reached |
+// Cause/effect graph: C1=the draft User Run has committed; C2=one retained
+// define_outcome command owns a stable outcome_id; C3=the rubric is satisfied
+// after revision; C4=the iteration cap is reached first. Effects: E1=the HTTP
+// receipt may precede execution but its same id becomes processed; E2=terminal
+// Outcome state projects one durable, idempotent span sequence; E3=Session owns
+// exactly one terminal evaluation for the outcome_id. Decision table:
+// | Rule | Draft committed | rubric reached | Effect |
+// | O1 | yes | after revise | E1-E3, satisfied |
+// | O2 | yes | no at cap | E1-E3, max_iterations_reached |
+// Constraints/invariant: one retained definition owns one outcome_id and one
+// ordered terminal evaluation; HTTP acceptance alone never proves completion.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer } from './harness.mjs';
+import { waitForSessionEventReceipt, withRealServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38103);
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-outcome-e2e-${process.pid}`;
 
-async function outcomeEnds(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events.filter((e) => e.type === 'span.outcome_evaluation_end');
-}
-
 async function draftThenOutcome(client, rubric, maxIterations) {
   const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-  await client.beta.sessions.events.send(session.id, {
+  const draftReceipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'write something' }] }],
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(session.id, {
+  const draftReceiptId = draftReceipt.data[0]?.id;
+  assert.equal(typeof draftReceiptId, 'string', 'draft Run returns its exact User Event receipt');
+  await waitForSessionEventReceipt(
+    client,
+    session.id,
+    draftReceiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+    'the draft User Run to commit before defining its Outcome',
+  );
+  const outcomeReceipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.define_outcome', description: 'finish it', rubric: { type: 'text', content: rubric }, max_iterations: maxIterations }],
     betas: BETAS,
   });
-  return { sessionId: session.id, ends: await outcomeEnds(client, session.id) };
+  const accepted = outcomeReceipt.data[0];
+  assert.equal(accepted?.type, 'user.define_outcome');
+  assert.match(accepted.outcome_id, /^outc_/u, 'the retained command owns one public Outcome id');
+  const { events: terminalEvents } = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    accepted.id,
+    BETAS,
+    ({ delta }) => delta.some((event) =>
+        event.type === 'span.outcome_evaluation_end'
+          && event.outcome_id === accepted.outcome_id
+          && event.result !== 'needs_revision'),
+    'the durable Outcome report to reach a terminal projection',
+  );
+  return {
+    sessionId: session.id,
+    outcomeId: accepted.outcome_id,
+    ends: terminalEvents.filter((event) =>
+      event.type === 'span.outcome_evaluation_end' && event.outcome_id === accepted.outcome_id),
+  };
 }
 
 async function main() {
@@ -62,7 +91,7 @@ async function main() {
         description: 'finish it',
         explanation: satisfied.at(-1).explanation,
         iteration: satisfied.at(-1).iteration,
-        outcome_id: satisfied.at(-1).outcome_id,
+        outcome_id: satisfiedRun.outcomeId,
         result: 'satisfied',
         type: 'outcome_evaluation',
       });
@@ -74,6 +103,7 @@ async function main() {
       assert.equal(exhausted.at(-1).result, 'max_iterations_reached', `results: ${exhausted.map((e) => e.result)}`);
       const exhaustedSession = await client.beta.sessions.retrieve(exhaustedRun.sessionId, { betas: BETAS });
       assert.equal(exhaustedSession.outcome_evaluations.length, 1);
+      assert.equal(exhaustedSession.outcome_evaluations[0].outcome_id, exhaustedRun.outcomeId);
       assert.equal(exhaustedSession.outcome_evaluations[0].result, 'max_iterations_reached');
       assert.ok(exhaustedSession.outcome_evaluations[0].completed_at);
       console.log('  ok: unsatisfiable rubric -> max_iterations_reached');

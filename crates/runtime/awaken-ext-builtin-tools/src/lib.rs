@@ -6,11 +6,17 @@
 //! the runtime's `RawTool` registry.
 
 mod agent;
+mod coordination;
 mod erasure;
 mod hand;
 mod task;
 mod web;
 
+pub use coordination::{
+    AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
+    AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, ListAgentsArgs, ListAgentsTool,
+    SEND_TO_AGENT, SendToAgentArgs, SendToAgentTool, coordination_tools,
+};
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashTool, DeleteArgs, DeleteTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
@@ -19,16 +25,18 @@ pub use hand::{
 };
 pub use task::{
     CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSendRequest, MessageSender,
-    RecoverFailedMessagesArgs, RecoverFailedMessagesTool, SendMessageArgs, SendMessageTool,
-    TaskCanceller, task_tools,
+    RecoverFailedMessagesArgs, RecoverFailedMessagesTool, SEND_MESSAGE_TOOL_ID, SendMessageArgs,
+    SendMessageTool, TaskCanceller, task_tools,
 };
 pub use web::{
-    BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
-    WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebFetchArgs, WebFetchTool, WebSearchArgs,
-    WebSearchConfig, WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchPlugin,
-    WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
-    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchTool, web_hand_tools,
-    web_search_descriptor,
+    BRAVE_PROVIDER_ID, BraveSearchProvider, ConfiguredWebToolExecutor, DUCKDUCKGO_PROVIDER_ID,
+    DuckDuckGoProvider, WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs,
+    WebFetchExecutionConfiguration, WebFetchTool, WebSearchArgs, WebSearchConfig,
+    WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
+    WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
+    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchUserLocation,
+    web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
+    web_search_execution_configuration,
 };
 
 /// The one complete static Hand registry used by every SessionEnvironment.
@@ -63,6 +71,7 @@ pub enum Toolset {
     Hand,
     Task,
     Delegation,
+    Coordination,
 }
 
 /// One catalog-owned built-in descriptor and its execution family.
@@ -104,6 +113,13 @@ impl BuiltinTool {
     fn delegation(descriptor: ToolDescriptor) -> Self {
         Self {
             toolset: Toolset::Delegation,
+            descriptor,
+        }
+    }
+
+    fn coordination(descriptor: ToolDescriptor) -> Self {
+        Self {
+            toolset: Toolset::Coordination,
             descriptor,
         }
     }
@@ -165,6 +181,8 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             .with_kind(ToolKind::AgentDelegation)
             .with_recovery(ToolRecoveryPolicy::durable_request()),
         ),
+        coordination_tool::<ListAgentsTool>(),
+        coordination_tool_with_recovery::<SendToAgentTool>(ToolRecoveryPolicy::durable_request()),
     ]
 }
 
@@ -178,6 +196,16 @@ fn task_tool<T: Tool>() -> BuiltinTool {
 
 fn task_tool_with_recovery<T: Tool>(recovery: ToolRecoveryPolicy) -> BuiltinTool {
     BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task").with_recovery(recovery))
+}
+
+fn coordination_tool<T: Tool>() -> BuiltinTool {
+    BuiltinTool::coordination(ToolDescriptor::for_tool::<T>("builtin:coordination"))
+}
+
+fn coordination_tool_with_recovery<T: Tool>(recovery: ToolRecoveryPolicy) -> BuiltinTool {
+    BuiltinTool::coordination(
+        ToolDescriptor::for_tool::<T>("builtin:coordination").with_recovery(recovery),
+    )
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

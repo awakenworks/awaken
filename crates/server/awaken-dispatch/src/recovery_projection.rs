@@ -12,10 +12,12 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
 
 #[derive(Debug, thiserror::Error)]
@@ -169,8 +171,24 @@ fn apply_to_snapshot(
     let run_id = commit.run_id().clone();
     let run_state = commit.run_state();
     let resume_ticket = commit.resume_ticket().cloned();
+    let committed_events = commit
+        .events
+        .iter()
+        .enumerate()
+        .map(|(offset, draft)| {
+            let sequence = encode_run_lifecycle_cursor(commit_sequence, offset)
+                .map_err(|error| CommitError::Rejected(error.to_string()))?;
+            Ok(EventRecord {
+                sequence: sequence.0,
+                run_id: run_id.clone(),
+                kind: draft.kind.clone(),
+                payload: draft.payload.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, CommitError>>()?;
     snapshot.messages.extend(commit.messages);
     snapshot.state.extend(commit.state);
+    snapshot.events.extend(committed_events);
     let record_value = RunRecord {
         id: run_id.clone(),
         thread_id: commit.thread_id,

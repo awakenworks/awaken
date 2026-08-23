@@ -2,7 +2,8 @@
 //
 // A database-less worker drives runs and commits facts over HTTP — never opening
 // the store. This exercises the two worker-facing seams the server now mounts:
-//   - commit ingest  (POST /v1/worker/commit): the worker pushes a ThreadCommit,
+//   - commit ingest  (POST /v1/worker/commit-claimed): the Worker pushes a
+//     claim-fenced ThreadCommit,
 //     the server (single writer) applies it; the fact reads back from the store,
 //     and a redelivery is idempotent (at-least-once -> exactly-once effect).
 //   - dispatch transport (POST /v1/worker/dispatch/claim): a worker claims runs
@@ -12,7 +13,6 @@
 // Run: node e2e/worker_transport_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -23,6 +23,11 @@ import {
   stopServer,
   waitForPort,
 } from './harness.mjs';
+import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  claimedCommitRequestFixture,
+  terminalThreadCommitFixture,
+} from './fixtures/thread_commit_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -37,44 +42,19 @@ const ENV = {
 const WORKER = 'ts-worker-1';
 let workerIdentity;
 
-// The exact ThreadCommit wire shape (dumped from the neutral Rust types).
-function threadCommit(runId = 'run-A', threadId = THREAD, text = 'hi from a db-less worker') {
-  return {
-    thread_id: threadId,
-    run_fact: { run_id: runId, phase: { Ended: 'NaturalEnd' } },
-    messages: [
-      { id: `a-${runId}`, role: 'Assistant', content: [{ type: 'text', text }] },
-    ],
-    state: [],
-    events: [],
-    resume_ticket: null,
-  };
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function commitOperation(commit, runId) {
-  const version = Buffer.from('awaken.thread-commit.v1');
-  const payload = Buffer.from(canonicalJson(commit));
-  const versionLength = Buffer.alloc(8);
-  versionLength.writeBigUInt64LE(BigInt(version.length));
-  const payloadLength = Buffer.alloc(8);
-  payloadLength.writeBigUInt64LE(BigInt(payload.length));
-  const hash = createHash('sha256')
-    .update(versionLength).update(version).update(payloadLength).update(payload).digest('hex');
-  return {
-    operation_id: { run_id: runId, ordinal: 0 },
-    expected_thread_version: 0,
-    payload_hash: `sha256:${hash}`,
-    commit,
-  };
+function claimedCommitRequest(claimed, text) {
+  const runId = claimed.lease.run_id;
+  return claimedCommitRequestFixture({
+    claimed,
+    commit: terminalThreadCommitFixture({
+      runId,
+      threadId: claimed.request.activation.thread_id,
+      messageId: `a-${runId}`,
+      text,
+    }),
+    ordinal: 0,
+    expectedThreadVersion: 0,
+  });
 }
 
 async function postJson(pathname, body, worker = WORKER) {
@@ -301,6 +281,9 @@ async function main() {
     // C1 + (!C2 || !C3) -> E2 skip/reject before credential materialization.
     // C4 claim owner/epoch current + C5 canonical operation/hash -> E3 commit once.
     // !C4 -> E4 unauthorized/stale; repeated C5 -> E5 duplicate receipt, no second fact.
+    // C6 the exact Run is durably Ended -> E6 terminal observation precedes Done settlement.
+    // !C6 -> E7 reject Done and retain the claim; the negative partition is owned by
+    // the settlement adapter's Rust decision table rather than duplicated here.
     //
     // | Rule | Identity | Capability/holder | Claim | Operation | Result          |
     // | T1   | current  | admitted          | -     | -         | exact claim     |
@@ -308,6 +291,7 @@ async function main() {
     // | T3   | wrong    | admitted          | exact | valid     | unauthorized    |
     // | T4   | current  | admitted          | exact | valid     | commit once     |
     // | T5   | current  | admitted          | exact | replay    | duplicate receipt|
+    // | T6   | current  | admitted          | exact | Ended     | settle Done       |
     // Re-enqueue the exact durable wire record with one complete, immutable model
     // candidate. Dispatch persists/transports it without interpreting the route or
     // carrying provider key material.
@@ -316,31 +300,64 @@ async function main() {
     granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
     granted.session_thread_id = granted.activation.thread_id;
     granted.execution_scope = 'scope-ts-17';
-    const pinnedCandidate = {
-      ...structuredClone(granted.activation.snapshot.resolved_spec.model_binding),
-      provisioning: {
-        type: 'provider',
-        provider_ref: 'fixture-provider@1',
-        route_ref: 'fixture-route@1',
-        scope_id: 'scope-ts-17',
-        credential: {
-          credential: { id: 'grant-ts-17', revision: 3 },
-          material_source: 'control_plane_reference',
-          usage: { type: 'provider_adapter' },
-          policy: {
-            allowed_plaintext_holders: [
-              { boundary: 'worker', trust_domain: 'awaken.worker' },
-            ],
-            model_exposure: 'forbidden',
-          },
-        },
-        endpoint: {
-          adapter_kind: 'fixture',
-          base_url: 'https://fixture.invalid/v1',
-          upstream_model: granted.activation.snapshot.resolved_spec.model_binding.model_ref,
+    const pinnedCandidate = nativeProviderCandidateFixture({
+      binding: granted.activation.snapshot.resolved_spec.model_binding,
+      providerRef: 'fixture-provider@1',
+      routeRef: 'fixture-route@1',
+      scopeId: 'scope-ts-17',
+      credential: {
+        credential: { id: 'grant-ts-17', revision: 3 },
+        material_source: 'control_plane_reference',
+        usage: { type: 'provider_adapter' },
+        policy: {
+          allowed_plaintext_holders: [
+            { boundary: 'worker', trust_domain: 'awaken.worker' },
+          ],
+          model_exposure: 'forbidden',
         },
       },
-    };
+      adapterKind: 'fixture',
+      apiDialect: 'fixture',
+      baseUrl: 'https://fixture.invalid/v1',
+      upstreamModel: granted.activation.snapshot.resolved_spec.model_binding.model_ref,
+    });
+
+    // Typed Provider-ingress test design. Causes: C0 every required Provider
+    // coordinate is explicit; C6 one required endpoint coordinate is empty.
+    // Effects: E0 C0 reaches the queue unchanged; E6 C6 is rejected with 422
+    // and creates no dispatch row. Constraint/invariant: the fixture supplies
+    // no defaults or validation; ResolvedModelCandidate deserialization is the
+    // only validity authority. Decision rules: W1=C0=>E0; W2=C6=>E6.
+    const malformedRoute = structuredClone(granted);
+    malformedRoute.activation.run_id = `${granted.activation.run_id}-malformed-route`;
+    malformedRoute.activation.thread_id = `${granted.activation.thread_id}-malformed-route`;
+    malformedRoute.session_thread_id = malformedRoute.activation.thread_id;
+    malformedRoute.activation.snapshot.resolved_spec.model_binding =
+      structuredClone(pinnedCandidate);
+    malformedRoute.activation.snapshot.resolved_spec.model_binding
+      .provisioning.endpoint.upstream_model = '';
+    malformedRoute.activation.snapshot.resolved_spec.model_candidates = [];
+    const rejectedRoute = await postJson('/v1/worker/dispatch/enqueue', {
+      request: malformedRoute,
+    });
+    assert.equal(rejectedRoute.status, 422, `W2 typed rejection: ${rejectedRoute.text}`);
+    assert.match(
+      rejectedRoute.text,
+      /provider provisioning requires complete canonical route coordinates/u,
+      'W2 reports the closed Provider-coordinate invariant',
+    );
+    const malformedQueue = await fetch(
+      `${BASE}/v1/durable/threads/${malformedRoute.activation.thread_id}/dispatches`,
+    );
+    const malformedQueueText = await malformedQueue.text();
+    assert.equal(malformedQueue.status, 200, `W2 queue observation: ${malformedQueueText}`);
+    assert.deepEqual(
+      JSON.parse(malformedQueueText).dispatches ?? [],
+      [],
+      'W2 malformed Provider bytes never mutate the durable queue',
+    );
+    pass('typed dispatch ingress rejects an incomplete Provider route before queue mutation');
+
     granted.activation.snapshot.resolved_spec.model_binding = pinnedCandidate;
     granted.activation.snapshot.resolved_spec.model_candidates = [];
     granted.inference_plaintext_holder = {
@@ -350,7 +367,20 @@ async function main() {
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 
-    // Complete the first ownership before claiming the next run.
+    // Complete the first ownership before claiming the next run. Done is not a
+    // Worker assertion: the guarded Coordinator first reads the exact committed
+    // terminal truth, performs terminal observation, and only then settles.
+    const initialCommit = claimedCommitRequest(claimed, 'first claimed terminal commit');
+    const initialCommitted = await postJson('/v1/worker/commit-claimed', initialCommit);
+    assert.equal(
+      initialCommitted.status,
+      200,
+      `first claimed Run commits before settlement: ${initialCommitted.text}`,
+    );
+    assert.ok(
+      typeof initialCommitted.json?.commit_sequence === 'number',
+      'first terminal commit returns the durable receipt',
+    );
     const settle = await postJson('/v1/worker/dispatch/settle', {
       run_id: claimed.lease.run_id,
       epoch: claimed.lease.epoch,
@@ -410,19 +440,10 @@ async function main() {
 
     // A different authenticated worker cannot commit the claim. The owner-bound
     // request is rejected before thread facts are applied.
-    const commit = threadCommit(
-      grant.lease.run_id,
-      grant.request.activation.thread_id,
+    const claimedCommit = claimedCommitRequest(
+      grant,
       'claimed commit from authenticated worker',
     );
-    const claimedCommit = {
-      claim: {
-        run_id: grant.lease.run_id,
-        owner: grant.lease.owner,
-        epoch: grant.lease.epoch,
-      },
-      operation: commitOperation(commit, grant.lease.run_id),
-    };
     const wrongOwner = await postJson(
       '/v1/worker/commit-claimed',
       { ...claimedCommit, identity: workerIdentity },

@@ -7,11 +7,14 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  claimedCommitRequestFixture,
+  terminalThreadCommitFixture,
+} from './fixtures/thread_commit_fixture.mjs';
 
 const DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 const POSTGRES_CONTAINER = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
@@ -109,50 +112,6 @@ async function registerReadyWorker(worker: string): Promise<void> {
   assert.equal(heartbeat.json?.mutation, 'applied');
 }
 
-function terminalCommit(runId: string) {
-  return {
-    thread_id: THREAD,
-    run_fact: { run_id: runId, phase: { Ended: 'NaturalEnd' } },
-    messages: [
-      {
-        id: `pg-guard-${runId}`,
-        role: 'Assistant',
-        content: [{ type: 'text', text: 'atomic claimed commit' }],
-      },
-    ],
-    state: [],
-    events: [],
-    resume_ticket: null,
-  };
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function commitOperation(commit: ReturnType<typeof terminalCommit>, runId: string) {
-  const version = Buffer.from('awaken.thread-commit.v1');
-  const payload = Buffer.from(canonicalJson(commit));
-  const versionLength = Buffer.alloc(8);
-  versionLength.writeBigUInt64LE(BigInt(version.length));
-  const payloadLength = Buffer.alloc(8);
-  payloadLength.writeBigUInt64LE(BigInt(payload.length));
-  const hash = createHash('sha256')
-    .update(versionLength).update(version).update(payloadLength).update(payload).digest('hex');
-  return {
-    operation_id: { run_id: runId, ordinal: 0 },
-    expected_thread_version: 0,
-    payload_hash: `sha256:${hash}`,
-    commit,
-  };
-}
-
 async function waitUntilCommitIsBlocked(timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
@@ -237,13 +196,19 @@ async function main(): Promise<void> {
     // | P1   | held         | during       | new        | null or wait; never re-own |
     // | P2   | released     | after        | new        | higher epoch claim  |
     // | P3   | released     | after        | old        | stale settle fenced |
-    const commit = terminalCommit(runId);
     const committing = post(
       '/v1/worker/commit-claimed',
-      {
-        claim: { run_id: runId, owner: first.lease.owner, epoch: first.lease.epoch },
-        operation: commitOperation(commit, runId),
-      },
+      claimedCommitRequestFixture({
+        claimed: first,
+        commit: terminalThreadCommitFixture({
+          runId,
+          threadId: THREAD,
+          messageId: `pg-guard-${runId}`,
+          text: 'atomic claimed commit',
+        }),
+        ordinal: 0,
+        expectedThreadVersion: 0,
+      }),
       OWNER_A,
     );
     await waitUntilCommitIsBlocked();

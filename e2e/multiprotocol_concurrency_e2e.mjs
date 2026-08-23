@@ -21,7 +21,7 @@ import { randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { HttpAgent } from '@ag-ui/client';
 import { A2AClient } from '@a2a-js/sdk/client';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38433);
 const PER_PROTOCOL = Number(process.env.PER_PROTOCOL ?? 10);
@@ -37,14 +37,21 @@ async function reqManaged(ctx, marker) {
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await ctx.anthropic.beta.sessions.events.send(session.id, {
+  // M1: C1=one unique marker receipt amid concurrent protocols; C2=its matching
+  // Agent reply commits. E1=return that reply. Constraint: sibling/older events
+  // cannot satisfy C2. C1&&!C2=>observe; C1+C2=>E1.
+  const receipt = await ctx.anthropic.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: marker }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const ev of ctx.anthropic.beta.sessions.events.list(session.id, { betas: BETAS })) {
-    events.push(ev);
-  }
+  const { delta: events } = await waitForSessionEventReceipt(
+    ctx.anthropic,
+    session.id,
+    receipt.data[0]?.id,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+    `managed concurrent marker ${marker} reaches its reply`,
+  );
   const message = events.find((e) => e.type === 'agent.message');
   assert.ok(message, `managed produced an agent.message (${events.map((e) => e.type)})`);
   return message.content?.[0]?.text ?? '';

@@ -21,7 +21,12 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import {
+  spawnProduction,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38441);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -101,12 +106,25 @@ function client(base) {
 
 // Send one user turn and return the agent's reply texts.
 async function converse(sdk, sessionId, text) {
-  await sdk.beta.sessions.events.send(sessionId, {
+  // C1=exact production User receipt; C2=wire reply+terminal. E1=return full
+  // durable history after C2. K: restart uses the same Session authority.
+  // Decision D1 C1&&!C2=>retry; D2 C1+C2=>return committed replies.
+  const receipt = await sdk.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const ev of sdk.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'D1 exact production User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    sdk,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `D1 production Run for ${JSON.stringify(text)} to commit`,
+    { timeoutMs: 30_000 },
+  );
   return events.filter((e) => e.type === 'agent.message').map((e) => (e.content ?? []).map((c) => c.text ?? '').join(''));
 }
 
@@ -134,10 +152,22 @@ async function main() {
 
     // SSE stream carries the turn's events (events.stream), preserving standalone's
     // streaming coverage on the aggregated binary.
-    await sdk.beta.sessions.events.send(sessionId, {
+    const streamReceipt = await sdk.beta.sessions.events.send(sessionId, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'stream me' }] }],
       betas: BETAS,
     });
+    const streamReceiptId = streamReceipt.data[0]?.id;
+    assert.equal(typeof streamReceiptId, 'string', 'D2 exact streamed User Event receipt');
+    await waitForSessionEventReceipt(
+      sdk,
+      sessionId,
+      streamReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'D2 streamed production Run to commit before replay',
+      { timeoutMs: 30_000 },
+    );
     const streamAbort = new AbortController();
     const streamTimeout = setTimeout(
       () => streamAbort.abort(new Error('events.stream did not close after a terminal replay')),

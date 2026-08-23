@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38295);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -27,13 +27,25 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact Admin User receipt; C2=all six tool effects and final marker.
+    // E1=C2 after C1. K: the ordinary Agent transcript is the only execution
+    // proof. Decision A1 C1&&!C2=>retry; A2 C1+C2=>assert all tools.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'help me author an agent' }] }],
       betas: BETAS,
     });
 
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'A1 exact Admin User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => JSON.stringify(delta).includes('ADMIN-RUN-DONE')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'A1 Admin Assistant Run to commit all tool effects',
+    );
     const blob = JSON.stringify(events);
 
     // Every admin tool ran (their ids appear as tool calls / results in the transcript).

@@ -36,7 +36,14 @@ import http from 'node:http';
 import { closeHttpServer } from './http_server.mjs';
 import os from 'node:os';
 import path from 'node:path';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  deploymentEnv,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+} from './harness.mjs';
 
 const PORT = 38257;
 const ISSUER = 'https://accounts.e2e.awakenworks.test';
@@ -643,38 +650,53 @@ async function main() {
 
     const client = new Anthropic({ apiKey: cachedToken, baseURL: base });
     const betas = ['managed-agents-2026-04-01'];
-    const runBrokeredTurn = async (content) => {
+    const runBrokeredTurn = async (content, observationOptions) => {
       const isolated = await client.beta.sessions.create({
         agent: brokeredAgent,
         environment_id: 'env_local',
         betas,
       });
-      await client.beta.sessions.events.send(isolated.id, {
+      const receipt = await client.beta.sessions.events.send(isolated.id, {
         events: [{ type: 'user.message', content }],
         betas,
       });
-      const isolatedEvents = [];
-      for await (const event of client.beta.sessions.events.list(isolated.id, { betas })) {
-        isolatedEvents.push(event);
-      }
-      return isolatedEvents;
+      // T3/T6-T8 receipt rule: C1=exact brokered input; C2=committed idle or
+      // session.error. E1=full scenario history. Constraint: grant/Gateway
+      // assertions remain caller-owned. C1&&!C2=>observe; C1+C2=>E1.
+      return (await waitForSessionEventReceipt(
+        client,
+        isolated.id,
+        receipt.data[0]?.id,
+        betas,
+        ({ delta }) => delta.some((event) => event.type === 'session.error')
+          || delta.some((event) => event.type === 'session.status_idle'),
+        'brokered Cloud turn reaches its terminal public effect',
+        observationOptions,
+      )).events;
     };
     const session = await client.beta.sessions.create({
       agent: brokeredAgent,
       environment_id: 'env_local',
       betas,
     });
-    await client.beta.sessions.events.send(session.id, {
+    const taskReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello cloud' }] }],
       betas,
     });
-    let events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas })) {
-      events.push(event);
-    }
+    let observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      taskReceipt.data[0]?.id,
+      betas,
+      ({ delta }) => delta.some((event) => event.type === 'agent.custom_tool_use')
+        && delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'requires_action'),
+      'T3 brokered tool call reaches requires_action after its exact receipt',
+    );
+    let events = observation.delta;
     const customUse = events.find((event) => event.type === 'agent.custom_tool_use');
     assert.equal(customUse?.name, 'cloud_echo', JSON.stringify(events));
-    await client.beta.sessions.events.send(session.id, {
+    const resultReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.custom_tool_result',
         custom_tool_use_id: customUse.id,
@@ -682,10 +704,16 @@ async function main() {
       }],
       betas,
     });
-    events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas })) {
-      events.push(event);
-    }
+    observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      resultReceipt.data[0]?.id,
+      betas,
+      ({ delta }) => JSON.stringify(delta).includes('BROKERED-RESPONSES-E2E')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'T3 brokered custom result reaches final response after its exact receipt',
+    );
+    events = observation.events;
     assert.match(
       JSON.stringify(events),
       /BROKERED-RESPONSES-E2E/u,
@@ -735,7 +763,8 @@ async function main() {
 
     // Grant/Gateway cause graph: C1 grant succeeds; C2 error body is a known
     // Cloud code; C3 an unknown code has a discriminating HTTP status; C4 the
-    // Gateway returns HTTP success; C5 its native payload is structurally valid.
+    // Gateway returns HTTP success; C5 its native payload is structurally valid;
+    // C6 an unknown HTTP 429 carries Retry-After=11s through two bounded retries.
     //
     // | Rule | C1 | C2 | C3 | C4 | C5 | Expected effect                         |
     // | E1   | N  | auth/account | - | - | - | login-required Session error       |
@@ -746,6 +775,14 @@ async function main() {
     // | E6   | Y  | - | - | N | - | Session error; issued grant still closes    |
     // | E7   | Y  | - | - | Y | N | Session error; issued grant still closes    |
     // | E8   | Y  | - | - | Y | Y | terminal response                           |
+    // E5/C6 rule: the unknown 429 makes exactly three grant attempts, then
+    // commits model_rate_limited_error/exhausted with zero Gateway or close.
+    // Constraint K: the runtime owns both 11s waits. The receipt observer only
+    // reads committed history; its 30s budget is 2*11s plus 8s bounded overhead
+    // and applies solely to C6 (no sleep and no lifecycle-driving fallback).
+    const UNKNOWN_429_RETRY_AFTER_SECONDS = 11;
+    const UNKNOWN_429_TERMINAL_TIMEOUT_MS =
+      (2 * UNKNOWN_429_RETRY_AFTER_SECONDS * 1_000) + 8_000;
     const grantErrorRows = [
       [401, 'authentication_required'],
       [409, 'account_selection_required'],
@@ -758,10 +795,11 @@ async function main() {
       [500, 'temporarily_unavailable'],
       [401, 'unknown_authentication_code'],
       [403, 'unknown_entitlement_code'],
-      [429, 'unknown_quota_code', '11'],
+      [429, 'unknown_quota_code', String(UNKNOWN_429_RETRY_AFTER_SECONDS)],
     ];
     for (const [status, code, retryAfter] of grantErrorRows) {
       const gatewayCount = iam.gatewayCalls.length;
+      const createCount = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
       const closeCount = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
       const retryable = code === 'quota_exceeded'
         || code === 'temporarily_unavailable'
@@ -771,7 +809,9 @@ async function main() {
       try {
         failedEvents = await runBrokeredTurn([
           { type: 'text', text: `exercise grant rejection ${code}` },
-        ]);
+        ], code === 'unknown_quota_code'
+          ? { timeoutMs: UNKNOWN_429_TERMINAL_TIMEOUT_MS }
+          : undefined);
       } finally {
         iam.clearGrantFailures();
       }
@@ -785,6 +825,16 @@ async function main() {
         closeCount,
         `${code} did not issue a closable grant`,
       );
+      if (code === 'unknown_quota_code') {
+        assert.equal(
+          iam.grantCalls.filter((entry) => entry.kind === 'create').length - createCount,
+          3,
+          'unknown 429 exhausts the initial grant attempt plus exactly two retries',
+        );
+        const terminal = failedEvents.find((event) => event.type === 'session.error');
+        assert.equal(terminal?.error?.type, 'model_rate_limited_error');
+        assert.equal(terminal?.error?.retry_status?.type, 'exhausted');
+      }
     }
     pass('Cloud grant rejection matrix preserves the public error taxonomy before Gateway I/O');
 

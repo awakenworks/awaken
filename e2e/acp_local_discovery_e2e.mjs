@@ -16,14 +16,14 @@
 // | L6 | present, times out | any | any | version probe failed |
 // | L7 | present, below minimum | any | any | unsupported before login/route |
 //
-// Publication decision table:
+// Model-selection decision table:
 // | Rule | policy | backend/model | effect |
-// | P1 | backend default | native backend | reject: ACP backend required |
-// | P2 | backend default | bare ACP backend | reject: exact acp:<cli> required |
-// | P3 | backend default | unknown ACP client | reject: absent executable profile |
-// | P4 | exact | blank id | reject: exact model id required |
-// | P5 | exact | unsupported client | reject: exact selection unsupported |
-// | P6 | exact | unknown WorkerLocal identity | reject: no matching binding |
+// | P1 | backend default | native backend | authoring rejects; no draft |
+// | P2 | backend default | bare ACP backend | authoring rejects; no draft |
+// | P3 | backend default | unknown exact ACP client | publication rejects: absent executable profile |
+// | P4 | exact | blank id | authoring rejects; no draft |
+// | P5 | exact | unsupported exact client | publication rejects: exact selection unsupported |
+// | P6 | exact | unknown WorkerLocal identity | publication rejects: no matching binding |
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { stopServer, waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39418);
@@ -176,7 +177,6 @@ function writeConfig(target, dataDir, cliIds = ['codex', 'gemini']) {
     'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
     'sandbox_tier = "local"',
     `acp_clis = ${JSON.stringify(cliIds)}`,
-    'acp_default_cli = "codex"',
   ].join('\n'));
 }
 
@@ -211,15 +211,6 @@ async function ready(child) {
     await sleep(100);
   }
   throw new Error('awaken did not become ready');
-}
-
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  // The embedded Worker deliberately drains on SIGINT; this fixture may have a
-  // failed/stuck turn, so a bounded E2E teardown terminates the owned process.
-  child.kill('SIGKILL');
-  await Promise.race([exited, sleep(5_000)]);
 }
 
 async function request(method, route, body) {
@@ -272,6 +263,8 @@ async function assertAuthoringRejected(id, model, reason) {
   });
   assert.equal(authored.response.status, 400, JSON.stringify(authored.value));
   assert.match(JSON.stringify(authored.value), reason);
+  const projected = await request('GET', `/v1/config/agents/${id}`);
+  assert.equal(projected.response.status, 404, JSON.stringify(projected.value));
 }
 
 async function runLocalTurn(
@@ -287,12 +280,26 @@ async function runLocalTurn(
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(session.id, {
+  // C1=exact local-ACP User receipt; C2=CLI-owned login reply+terminal. E1=C2
+  // after C1 proves this discovered wrapper. K: discovery/acquisition evidence
+  // stays outside Session history. Decision L1 C1&&!C2=>retry; L2 C1+C2=>proof.
+  const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'prove local login' }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'L1 exact local ACP User Event receipt');
+  const { delta } = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    receiptId,
+    BETAS,
+    ({ delta: later }) => later.some((event) => event.type === 'agent.message')
+      && later.some((event) => event.type === 'session.status_idle'),
+    'L1 trusted local ACP Run to commit its login proof',
+  );
   const texts = [];
-  for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+  for (const event of delta) {
     if (event.type === 'agent.message') {
       texts.push(...(event.content ?? []).map((content) => content.text ?? ''));
     }
@@ -444,15 +451,15 @@ esac
     });
     assert.equal(ambiguous.response.status, 400, JSON.stringify(ambiguous.value));
 
-    await assertPublicationRejected(
+    await assertAuthoringRejected(
       'local-native-default',
       { mode: 'backend_default', backend_ref: 'genai' },
-      /requires an ACP backend/,
+      /invalid backend reference.*genai/,
     );
-    await assertPublicationRejected(
+    await assertAuthoringRejected(
       'local-bare-acp-default',
       { mode: 'backend_default', backend_ref: 'acp' },
-      /requires an exact acp:<cli> backend/,
+      /invalid backend reference.*acp/,
     );
     await assertPublicationRejected(
       'local-unknown-acp-default',
@@ -513,11 +520,16 @@ esac
       await runLocalTurn(agent, expected);
     }
   } finally {
-    await stop(server);
+    await stopServer(server);
   }
 
-  // L2: remove npm completely. Restart must reuse the installed absolute wrapper
-  // and the persisted publication/binding, then execute the same real ACP turn.
+  // L2 causes: C1 the first healthy all-in-one Worker drains and deregisters;
+  // C2 npm is absent; C3 the wrapper, publication, and binding are durable.
+  // Effect: the replacement Worker registers without a stale-lease delay and
+  // executes the same real ACP turn from the installed absolute wrapper.
+  // Constraint: crash/lease-expiry recovery is a separate Worker lifecycle
+  // rule, so this ordinary restart must use the canonical graceful stop path.
+  // Decision L2: C1+C2+C3 => one offline restart turn and no second install.
   fs.renameSync(path.join(BIN_DIR, 'npm'), path.join(BIN_DIR, 'npm.hidden'));
   server = start(binary, CONFIG);
   try {
@@ -531,7 +543,7 @@ esac
     await runLocalTurn();
     assert.equal(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n').length, 1, 'L2');
   } finally {
-    await stop(server);
+    await stopServer(server);
   }
 
   // L3: a fresh data directory has no wrapper and no installer. Product startup
@@ -548,7 +560,7 @@ esac
     assert.equal(codex.local.login_state, 'probe_failed', 'L3');
     assert.equal(codex.local.reason_code, 'acp_wrapper_install_failed', 'L3');
   } finally {
-    await stop(server);
+    await stopServer(server);
   }
 
   console.log('LOCAL ACP DISCOVERY E2E PASS: exact install, CLI-owned login, offline restart, and fail-closed diagnostics.');

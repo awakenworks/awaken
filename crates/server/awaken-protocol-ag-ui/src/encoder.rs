@@ -480,6 +480,14 @@ mod tests {
 
     #[test]
     fn terminal_failure_surfaces_run_error() {
+        // Causes: the fixtures below establish `terminal failure` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `surfaces run error` and every asserted state transition
+        // or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
         // Cause/effect rule F1: a committed inference failure maps to RUN_ERROR
         // and never also maps to RUN_FINISHED.
         let outcome = StepOutcome::ended(
@@ -488,8 +496,6 @@ mod tests {
                 code: "inference_failed".into(),
                 message: "upstream is down".into(),
             }),
-            false,
-            false,
         );
         let step = encode_step(&outcome, "t1", "r1");
         assert!(
@@ -546,11 +552,20 @@ mod tests {
     /// `RUN_ERROR`. Pins that exhaustion is not surfaced as a fault.
     #[test]
     fn an_exhausted_run_finishes_cleanly_not_as_error() {
+        // Causes: the fixtures below establish `an exhausted run finishes cleanly not as error`
+        // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `an exhausted run finishes cleanly not as error` is one independent
+        // branch selecting `all output, state, side-effect, error, and terminal assertions below
+        // hold together`; a multi-row decision table is not applicable, and sibling tests own
+        // alternate causes.
         let outcome = StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::MaxSteps,
-            false,
-            false,
         );
         let step = encode_step(&outcome, "t1", "r1");
         assert!(
@@ -566,11 +581,20 @@ mod tests {
 
     #[test]
     fn plain_turn_brackets_with_run_events() {
+        // Causes: the fixtures below establish `plain turn brackets with run events` with the
+        // concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `plain turn brackets with run events` is one independent branch
+        // selecting `all output, state, side-effect, error, and terminal assertions below hold
+        // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+        // causes.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let events = encode_step(&outcome, "t1", "r1");
         assert_eq!(
@@ -596,6 +620,15 @@ mod tests {
 
     #[test]
     fn close_emits_end_and_finish_without_start_or_args() {
+        // Causes: the fixtures below establish `close` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits end and finish without start or args` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `close` is one independent branch selecting `emits end and finish
+        // without start or args`; a multi-row decision table is not applicable, and sibling tests
+        // own alternate causes.
         let outcome = StepOutcome::awaiting(
             vec![
                 Message::text(Id("a1".into()), Role::Assistant, "reading"),
@@ -615,8 +648,6 @@ mod tests {
                 input: json!({"path": "x"}),
                 client_executed: true,
             }),
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
@@ -652,6 +683,15 @@ mod tests {
 
     #[test]
     fn tool_call_emits_start_args_end() {
+        // Causes: the fixtures below establish `tool call` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits start args end` and every asserted state transition
+        // or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `tool call` is one independent branch selecting `emits start args
+        // end`; a multi-row decision table is not applicable, and sibling tests own alternate
+        // causes.
         let outcome = StepOutcome::awaiting(
             vec![Message {
                 id: Id("a1".into()),
@@ -668,8 +708,6 @@ mod tests {
                 input: json!({"q": 1}),
                 client_executed: true,
             }),
-            false,
-            false,
         );
         let events = encode_step(&outcome, "t1", "r1");
         assert!(events.iter().any(|e| matches!(e, AgUiEvent::ToolCallStart { tool_call_id, tool_call_name } if tool_call_id == "c1" && tool_call_name == "submit")));
@@ -981,6 +1019,15 @@ mod tests {
     // TEXT_MESSAGE_* frames.
     #[test]
     fn an_empty_text_only_assistant_turn_emits_no_text_message() {
+        // Causes: the fixtures below establish `an empty text only assistant turn` with the
+        // concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits no text message` and every asserted state
+        // transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `an empty text only assistant turn` is one independent branch
+        // selecting `emits no text message`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         let outcome = StepOutcome::ended(
             vec![Message::new(
                 Id("a1".into()),
@@ -988,8 +1035,6 @@ mod tests {
                 vec![ContentBlock::text("")],
             )],
             EndCause::NaturalEnd,
-            false,
-            false,
         );
         let events = encode_step(&outcome, "t1", "r1");
         assert!(
@@ -1012,6 +1057,15 @@ mod tests {
     // RUN_FINISHED — the inline-seq path distinct from the streaming transcoder.
     #[test]
     fn close_emits_tool_end_then_result_for_a_server_executed_tool() {
+        // Causes: the fixtures below establish `close` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `emits tool end then result for a server executed tool`
+        // and every asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `close` is one independent branch selecting `emits tool end then
+        // result for a server executed tool`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         let outcome = StepOutcome::ended(
             vec![
                 Message {
@@ -1034,8 +1088,6 @@ mod tests {
                 },
             ],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
@@ -1072,6 +1124,18 @@ mod tests {
 
     #[test]
     fn completion_reconciles_text_only_prefix_with_committed_tools() {
+        // Causes: the fixtures below establish `completion reconciles text only prefix with
+        // committed tools` with the concrete inputs, state, dependencies, and failure triggers used
+        // by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `completion reconciles text only prefix with committed tools` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         // CE-AG7: visible text, L=empty, F={c1}. Completion must close text and
         // emit the committed tool's full START/ARGS/END bracket exactly once.
         let outcome = StepOutcome::ended(
@@ -1085,8 +1149,6 @@ mod tests {
                 }],
             }],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
@@ -1117,6 +1179,18 @@ mod tests {
 
     #[test]
     fn completion_reconciles_partial_and_live_only_tool_sets() {
+        // Causes: the fixtures below establish `completion reconciles partial and live only tool
+        // sets` with the concrete inputs, state, dependencies, and failure triggers used by this
+        // case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `completion reconciles partial and live only tool sets` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         // CE-AG8/AG9/AG10: L={c1,live-only}, F={c1,c2}. c1 receives only its
         // missing args suffix+END, c2 receives a full bracket, and live-only is
         // closed so no START remains unmatched.
@@ -1130,8 +1204,6 @@ mod tests {
                 ],
             }],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
@@ -1164,14 +1236,24 @@ mod tests {
 
     #[test]
     fn reasoning_only_prefix_does_not_hide_committed_text_or_duplicate_run_start() {
+        // Causes: the fixtures below establish `reasoning only prefix does not hide committed text
+        // or duplicate run start` with the concrete inputs, state, dependencies, and failure
+        // triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `reasoning only prefix does not hide committed text or duplicate run
+        // start` is one independent branch selecting `all output, state, side-effect, error, and
+        // terminal assertions below hold together`; a multi-row decision table is not applicable,
+        // and sibling tests own alternate causes.
         // CE-AG3/AG4: RUN_STARTED plus a non-projected reasoning delta is not a
         // visible assistant prefix. Completion emits committed text and neither
         // repeats RUN_STARTED nor drops the answer.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 1);
@@ -1195,6 +1277,18 @@ mod tests {
 
     #[test]
     fn mismatched_live_tool_prefix_fails_closed_and_balances_events() {
+        // Causes: the fixtures below establish `mismatched live tool prefix fails closed and
+        // balances events` with the concrete inputs, state, dependencies, and failure triggers used
+        // by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `mismatched live tool prefix fails closed and balances events` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         // Extended CE-AG11: live args that are not a prefix of committed args
         // cannot be repaired. Close the tool and terminate with one RUN_ERROR.
         let outcome = StepOutcome::ended(
@@ -1208,8 +1302,6 @@ mod tests {
                 )],
             }],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.delta(&Delta::ToolCallDelta {

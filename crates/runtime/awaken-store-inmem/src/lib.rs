@@ -20,6 +20,7 @@ use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
 use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 use awaken_agent_contract::thread::commit::RunFact;
 use awaken_agent_contract::thread::commit::coordinator::{
@@ -31,6 +32,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
@@ -163,7 +165,7 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
         validate_transition_locked(&state, &commit)?;
-        Ok(apply_commit_locked(&mut state, commit))
+        apply_commit_locked(&mut state, commit)
     }
 }
 
@@ -188,7 +190,7 @@ impl OperationCoordinator for MemoryCommitCoordinator {
             .checked_add(1)
             .ok_or_else(|| Error::Rejected("Thread version overflow".to_string()))?;
         let commit = operation.commit;
-        let record = apply_commit_locked(&mut state, commit);
+        let record = apply_commit_locked(&mut state, commit)?;
         let receipt = CommitReceipt {
             operation_id: operation_id.clone(),
             commit_sequence: record.sequence,
@@ -268,8 +270,23 @@ fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Res
     Ok(())
 }
 
-fn apply_commit_locked(state: &mut CommitState, commit: ThreadCommit) -> CommitRecord {
-    let next = state.sequence + 1;
+fn apply_commit_locked(
+    state: &mut CommitState,
+    commit: ThreadCommit,
+) -> Result<CommitRecord, Error> {
+    let next = state
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::Rejected("commit sequence overflow".to_string()))?;
+    // Validate every cursor before mutating the in-memory authority. This keeps
+    // an oversized event batch or arithmetic overflow atomic and fail-closed.
+    let event_sequences = (0..commit.events.len())
+        .map(|offset| {
+            encode_run_lifecycle_cursor(next, offset)
+                .map(|cursor| cursor.0)
+                .map_err(|error| Error::Rejected(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let run_id = commit.run_id().clone();
     let run_state = commit.run_state();
     let run_fact = commit.run_fact();
@@ -292,9 +309,9 @@ fn apply_commit_locked(state: &mut CommitState, commit: ThreadCommit) -> CommitR
     thread.thread_id = Some(thread_id.clone());
     thread.messages.extend(commit.messages);
     thread.state.extend(commit.state);
-    for (offset, draft) in commit.events.into_iter().enumerate() {
+    for (draft, sequence) in commit.events.into_iter().zip(event_sequences) {
         thread.events.push(EventRecord {
-            sequence: next * 1_000 + offset as u64,
+            sequence,
             run_id: run_id.clone(),
             kind: draft.kind,
             payload: draft.payload,
@@ -308,7 +325,7 @@ fn apply_commit_locked(state: &mut CommitState, commit: ThreadCommit) -> CommitR
     });
 
     state.sequence = next;
-    CommitRecord { sequence: next }
+    Ok(CommitRecord { sequence: next })
 }
 
 /// Committed thread truth is readable for resume through the contract read port:
@@ -444,6 +461,9 @@ impl RunRecoverySource for MemoryCommitCoordinator {
         let committed_state = thread
             .map(|thread| thread.state.clone())
             .unwrap_or_default();
+        let events = thread
+            .map(|thread| thread.events.clone())
+            .unwrap_or_default();
         let thread_version = thread
             .map(|thread| thread.run_facts.len() as u64)
             .unwrap_or(0);
@@ -474,6 +494,7 @@ impl RunRecoverySource for MemoryCommitCoordinator {
                 .and_then(|thread| thread.latest_run.as_ref().map(|run| run.id.clone())),
             messages,
             state: committed_state,
+            events,
             resume_tickets,
             thread_version,
             store_cursor: state.sequence,
@@ -486,7 +507,7 @@ impl RunRecoverySource for MemoryCommitCoordinator {
 /// assert live ordering independently of committed truth.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryStreamSink {
-    events: Arc<Mutex<Vec<StreamEvent>>>,
+    observations: Arc<Mutex<Vec<StreamObservation>>>,
 }
 
 impl MemoryStreamSink {
@@ -495,17 +516,37 @@ impl MemoryStreamSink {
     }
 
     pub fn events(&self) -> Vec<StreamEvent> {
-        self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        self.observations
+            .lock()
+            .map(|observations| {
+                observations
+                    .iter()
+                    .map(|observation| observation.event.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Recorded live deliveries, including optional Runtime coordinates.
+    pub fn observations(&self) -> Vec<StreamObservation> {
+        self.observations
+            .lock()
+            .map(|observations| observations.clone())
+            .unwrap_or_default()
     }
 }
 
 #[async_trait]
 impl StreamSink for MemoryStreamSink {
     async fn send(&self, event: StreamEvent) -> Result<(), SinkError> {
-        self.events
+        self.send_observation(event.into()).await
+    }
+
+    async fn send_observation(&self, observation: StreamObservation) -> Result<(), SinkError> {
+        self.observations
             .lock()
             .map_err(|_| SinkError::Closed)?
-            .push(event);
+            .push(observation);
         Ok(())
     }
 }

@@ -86,8 +86,12 @@ fn invalid_tool_schema_fails_before_provider_projection() {
 
 #[test]
 fn tool_result_maps_to_a_genai_tool_message() {
+    // Test design — Causes: a neutral Role::Tool row carries a correlated result.
+    // Effects: provider projection emits one Tool-role message. Constraints/
+    // invariants: tool results never masquerade as User input. Decision rule
+    // T1: Role::Tool+ToolResult=>one GenaiRole::Tool message.
     // A tool result must become a genai *tool* message (not a user message), or a
-    // strict provider rejects the multi-turn tool conversation with
+    // strict provider rejects the multi-Step tool conversation with
     // "tool_call_ids did not have response messages". Regression for that bug.
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
@@ -107,8 +111,15 @@ fn tool_result_maps_to_a_genai_tool_message() {
     assert!(matches!(genai.messages[0].role, GenaiRole::Tool));
 }
 
+/// Cause/effect design: C1 one assistant message requests two tools; C2 the two
+/// matching neutral Tool messages are adjacent. Effects: E1 projection preserves
+/// the assistant message first; E2 both results coalesce into one provider Tool
+/// message with two `ToolResponse` parts, avoiding invalid same-role adjacency.
+/// Decision rule A1=C1+C2=>E1+E2.
+/// Constraints/invariants: coalescing preserves correlation/order and does not
+/// merge across a nonadjacent or non-Tool boundary.
 #[test]
-fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
+fn adjacent_tool_results_coalesce_for_anthropic_message_ordering() {
     let request = ChatRequest {
         model_binding: binding("deepseek-v4-pro"),
         inference: Default::default(),
@@ -155,9 +166,11 @@ fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
 #[test]
 fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
     // Cause/effect rule R1: a standalone Thinking-only synthetic history row
-    // has no public answer or tool call -> omit the incomplete assistant turn
+    // has no public answer or tool call -> omit the incomplete assistant message
     // rather than send a provider-invalid empty message. Reasoning attached to
-    // a real assistant tool turn is covered separately by R2 below.
+    // a real assistant tool message is covered separately by R2 below.
+    // Effects: the two complete User rows remain and no empty provider row is
+    // emitted. Constraints/invariants: private reasoning alone is not replayable.
     let request = ChatRequest {
         model_binding: binding("deepseek-v4-pro"),
         inference: Default::default(),
@@ -191,11 +204,13 @@ fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
 #[test]
 fn assistant_reasoning_is_replayed_with_its_tool_call() {
     // Cause/effect graph and decision table: C1 assistant reasoning exists; C2
-    // a typed tool call exists in the same committed turn. E1 preserve reasoning
+    // a typed tool call exists in the same committed Step message. E1 preserve reasoning
     // as genai ReasoningContent; E2 preserve the correlated ToolCall. R2=C1&C2
     // => E1+E2. This is the DeepSeek OpenAI-compatible continuation contract:
     // dropping E1 makes the tool-result follow-up fail or lose its reasoning
     // context, while dropping E2 detaches the subsequent tool response.
+    // Constraints/invariants: reasoning and ToolUse remain in the same ordered
+    // assistant row and retain their correlation through provider projection.
     let request = ChatRequest {
         model_binding: binding("deepseek-v4-pro"),
         inference: Default::default(),
@@ -231,10 +246,10 @@ fn assistant_reasoning_is_replayed_with_its_tool_call() {
 
 #[test]
 fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
-    // Cause/effect graph: C1 an Anthropic assistant turn contains signed thinking;
+    // Cause/effect graph: C1 an Anthropic assistant message contains signed thinking;
     // C2 text, another signed thinking block, and a typed tool call follow it;
     // C3 genai also supplies its legacy aggregate reasoning scalar. Effects: E1
-    // map exactly one ordered neutral turn with no scalar duplicate; E2 replay
+    // map exactly one ordered neutral message with no scalar duplicate; E2 replay
     // the same ordered Thinking/Text/Thinking/ToolCall parts on the Anthropic
     // dialect; E3 keep each signature bound to its own thinking text. Constraint:
     // OpenAI reasoning uses the existing scalar ReasoningContent path and is
@@ -632,6 +647,12 @@ fn retryable_provider_errors_classify_and_are_retryable() {
 
 #[test]
 fn permanent_provider_errors_classify_and_are_not_retryable() {
+    // Test design — Causes: provider text identifies authentication, context
+    // overflow, missing model, invalid request, or content policy. Effects:
+    // each partition maps to its stable neutral code and retryable=false.
+    // Constraints/invariants: permanent caller/policy failures never enter the
+    // transparent retry loop. Decision rationale: one representative phrase
+    // for every permanent class plus numeric/phrase aliases at its boundaries.
     for (msg, code) in [
         ("invalid api key", "unauthorized"),
         ("401 Unauthorized", "unauthorized"),
@@ -656,8 +677,13 @@ fn permanent_provider_errors_classify_and_are_not_retryable() {
 
 #[test]
 fn assistant_tool_use_block_maps_to_a_genai_tool_call() {
-    // An assistant turn replaying a prior tool request (a ToolUse block) must map
-    // to a genai ToolCall part, or a multi-turn tool conversation loses the model's
+    // Test design — Causes: an Assistant row replays one typed ToolUse block.
+    // Effects: projection emits one provider ToolCall with exact id/name/JSON.
+    // Constraints/invariants: the prior call remains Assistant-owned and cannot
+    // be dropped or recast as result input. Decision rule T2: typed ToolUse=>
+    // one exact provider ToolCall.
+    // An assistant message replaying a prior tool request (a ToolUse block) must map
+    // to a genai ToolCall part, or a multi-Step tool conversation loses the model's
     // own call and a strict provider rejects the follow-up tool result.
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
@@ -791,8 +817,13 @@ fn assistant_output_preserves_order_and_drops_non_content_parts() {
 
 #[test]
 fn classify_error_numeric_status_and_precedence_boundaries() {
-    // Numeric-status rows and cross-class precedence that the phrase-based cases
-    // do not cover.
+    // Test design — Causes: numeric 413/422/529/408/504 responses, a 400 with
+    // stronger content-policy evidence, or empty provider text. Effects: each
+    // maps to overflow/invalid/overloaded/timeout/content-filtered/default
+    // provider error respectively. Constraints/invariants: semantic policy
+    // evidence takes precedence over generic 400, while unmatched text remains
+    // retryable provider_error. Decision rationale: these rows cover numeric
+    // boundaries and precedence gaps left by the phrase-equivalence tests.
     for (msg, code) in [
         // 413 (payload too large) is deliberately an overflow, not a rate limit.
         ("413 Request Entity Too Large", "context_overflow"),
@@ -812,6 +843,11 @@ fn classify_error_numeric_status_and_precedence_boundaries() {
 
 #[test]
 fn genai_stop_reasons_map_onto_neutral_stop_reasons() {
+    // Test design — Causes: every known SDK stop-reason class plus Other is
+    // projected. Effects: known classes map exactly and Other remains None.
+    // Constraints/invariants: unknown provider reasons cannot be guessed into a
+    // terminal class. Decision rule S1-S6: enumerate closed known partition and
+    // one unknown fallback=>the table below.
     use awaken_provider_genai::map_stop_reason;
     use awaken_runtime_contract::llm::StopReason;
     use genai::chat::StopReason as GenaiStopReason;
@@ -819,7 +855,7 @@ fn genai_stop_reasons_map_onto_neutral_stop_reasons() {
     let cases = [
         (
             GenaiStopReason::Completed("end_turn".to_string()),
-            Some(StopReason::EndTurn),
+            Some(StopReason::NaturalEnd),
         ),
         (
             GenaiStopReason::MaxTokens("max_tokens".to_string()),

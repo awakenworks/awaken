@@ -401,11 +401,25 @@ impl DreamModelReadiness for NoReadyDreamModels {
     }
 }
 
+struct UnavailableDreamModels;
+
+#[async_trait::async_trait]
+impl DreamModelReadiness for UnavailableDreamModels {
+    async fn is_ready(&self, _workspace_id: &str, _model_id: &str) -> Result<bool, String> {
+        Err("projection refresh failed".into())
+    }
+}
+
 #[tokio::test]
 async fn create_rejects_a_supported_but_not_executable_workspace_model() {
-    let (state, _, _) = state(Outcome::Complete);
-    state.bind_model_readiness(Arc::new(NoReadyDreamModels));
-    let app = dreams_router(state);
+    // Causes: C1 readiness says unavailable model; C2 readiness dependency
+    // fails. Effects: E1 C1 returns 400; E2 C2 returns 503 before Dream
+    // persistence. Constraint K1 the readiness seam remains the sole model
+    // consumer; it owns no executable cache. Decision table: D1 C1=>E1;
+    // D2 C2=>E2.
+    let (application, _, _) = state(Outcome::Complete);
+    application.bind_model_readiness(Arc::new(NoReadyDreamModels));
+    let app = dreams_router(application);
     let (status, body) = request(
         &app,
         "POST",
@@ -420,6 +434,20 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
             .unwrap()
             .contains("not connected or executable")
     );
+
+    let (unavailable, _, _) = state(Outcome::Complete);
+    unavailable.bind_model_readiness(Arc::new(UnavailableDreamModels));
+    let app = dreams_router(unavailable);
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/v1/dreams",
+        Some(create_body("memory", &["session"])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "D2/E2");
+    let (_, listed) = request(&app, "GET", "/v1/dreams", None).await;
+    assert!(listed["data"].as_array().unwrap().is_empty(), "D2/E2");
 }
 
 async fn request(

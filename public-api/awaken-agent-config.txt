@@ -6,10 +6,9 @@ pub use awaken_agent_config::ExecutableAgentSnapshotBuilder
 pub use awaken_agent_config::ModelTarget
 pub use awaken_agent_config::ScopeId
 #[non_exhaustive] pub enum awaken_agent_config::AgentKind
-pub awaken_agent_config::AgentKind::A2a
-pub awaken_agent_config::AgentKind::A2a::endpoint: alloc::string::String
-pub awaken_agent_config::AgentKind::Acp
-pub awaken_agent_config::AgentKind::Acp::cli: alloc::string::String
+pub awaken_agent_config::AgentKind::A2a(awaken_runtime_contract::resolved::A2aBackend)
+pub awaken_agent_config::AgentKind::Acp(awaken_runtime_contract::resolved::AcpBackend)
+pub awaken_agent_config::AgentKind::Invalid(awaken_runtime_contract::resolved::InvalidBackendRef)
 pub awaken_agent_config::AgentKind::Native
 impl awaken_agent_config::AgentKind
 pub fn awaken_agent_config::AgentKind::backend_ref(&self) -> alloc::string::String
@@ -52,15 +51,22 @@ pub awaken_agent_config::ConfigWrite::Applied
 pub awaken_agent_config::ConfigWrite::Applied::revision: u64
 pub awaken_agent_config::ConfigWrite::Conflict
 pub awaken_agent_config::ConfigWrite::Conflict::current_revision: core::option::Option<u64>
+pub enum awaken_agent_config::ManagementEffect
+pub awaken_agent_config::ManagementEffect::UpsertAgentInputs
+pub awaken_agent_config::ManagementEffect::UpsertAgentInputs::config: awaken_agent_config::AgentInputConfig
+impl awaken_agent_config::ManagementEffect
+pub const awaken_agent_config::ManagementEffect::AGENT_INPUTS_KIND: &'static str
+pub fn awaken_agent_config::ManagementEffect::key(&self) -> &str
+pub fn awaken_agent_config::ManagementEffect::kind(&self) -> &'static str
 pub enum awaken_agent_config::ModelSelection
 pub awaken_agent_config::ModelSelection::Auto
 pub awaken_agent_config::ModelSelection::BackendDefault
-pub awaken_agent_config::ModelSelection::BackendDefault::backend_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::BackendDefault::backend_ref: awaken_runtime_contract::resolved::AcpBackend
 pub awaken_agent_config::ModelSelection::BackendDefault::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
 pub awaken_agent_config::ModelSelection::BackendExact
-pub awaken_agent_config::ModelSelection::BackendExact::backend_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::BackendExact::backend_ref: awaken_runtime_contract::resolved::AcpBackend
 pub awaken_agent_config::ModelSelection::BackendExact::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
-pub awaken_agent_config::ModelSelection::BackendExact::model_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::BackendExact::model_ref: awaken_runtime_contract::resolved::ExactModelRef
 pub awaken_agent_config::ModelSelection::Pinned(awaken_runtime_contract::resolved::ModelBinding)
 pub awaken_agent_config::ModelSelection::Profile
 pub awaken_agent_config::ModelSelection::Profile::profile_id: alloc::string::String
@@ -80,6 +86,8 @@ pub fn awaken_agent_config::ModelSelection::requires_reconciliation(&self) -> bo
 pub fn awaken_agent_config::ModelSelection::resolved(&self) -> core::option::Option<&awaken_runtime_contract::resolved::ModelBinding>
 pub fn awaken_agent_config::ModelSelection::set_acp_configuration(&mut self, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<(), &'static str>
 pub fn awaken_agent_config::ModelSelection::target(&self) -> core::option::Option<(&awaken_agent_contract::model_target::ModelTarget, &str)>
+pub fn awaken_agent_config::ModelSelection::try_backend_default(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_agent_config::ModelSelection::try_backend_exact(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, alloc::string::String>
 impl core::convert::From<awaken_runtime_contract::resolved::ModelBinding> for awaken_agent_config::ModelSelection
 pub fn awaken_agent_config::ModelSelection::from(awaken_runtime_contract::resolved::ModelBinding) -> Self
 impl serde_core::ser::Serialize for awaken_agent_config::ModelSelection
@@ -146,6 +154,14 @@ pub awaken_agent_config::AgentConfigRevision::config: awaken_agent_config::Agent
 pub awaken_agent_config::AgentConfigRevision::created_at_unix_ms: core::option::Option<u64>
 pub awaken_agent_config::AgentConfigRevision::revision: u64
 pub awaken_agent_config::AgentConfigRevision::updated_at_unix_ms: core::option::Option<u64>
+pub struct awaken_agent_config::AgentEnvironmentBinding
+pub awaken_agent_config::AgentEnvironmentBinding::environment_id: alloc::string::String
+pub awaken_agent_config::AgentEnvironmentBinding::revision: u64
+pub struct awaken_agent_config::AgentInputConfig
+pub awaken_agent_config::AgentInputConfig::agent_id: alloc::string::String
+pub awaken_agent_config::AgentInputConfig::environment: core::option::Option<awaken_agent_config::AgentEnvironmentBinding>
+pub awaken_agent_config::AgentInputConfig::inputs: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
+pub awaken_agent_config::AgentInputConfig::revision: i64
 pub struct awaken_agent_config::CompactionStrategy
 pub awaken_agent_config::CompactionStrategy::keep_recent: core::option::Option<u32>
 pub awaken_agent_config::CompactionStrategy::window: core::option::Option<u32>
@@ -159,10 +175,6 @@ pub struct awaken_agent_config::ManagementAuditRecord
 pub awaken_agent_config::ManagementAuditRecord::call_id: alloc::string::String
 pub awaken_agent_config::ManagementAuditRecord::summary: alloc::string::String
 pub awaken_agent_config::ManagementAuditRecord::tool: alloc::string::String
-pub struct awaken_agent_config::ManagementEffect
-pub awaken_agent_config::ManagementEffect::key: alloc::string::String
-pub awaken_agent_config::ManagementEffect::kind: alloc::string::String
-pub awaken_agent_config::ManagementEffect::payload: serde_json::value::Value
 pub struct awaken_agent_config::MultiagentConfig
 pub awaken_agent_config::MultiagentConfig::agents: alloc::vec::Vec<awaken_agent_config::MultiagentTarget>
 impl awaken_agent_config::MultiagentConfig
@@ -187,20 +199,18 @@ pub fn awaken_agent_config::ScopedConfig<S>::put_publication<'life0, 'life1, 'as
 pub fn awaken_agent_config::ScopedConfig<S>::put_publication_if_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_agent_config::StoredPublication
 pub awaken_agent_config::StoredPublication::agent_id: alloc::string::String
-pub awaken_agent_config::StoredPublication::agent_inputs: core::option::Option<serde_json::value::Value>
-pub awaken_agent_config::StoredPublication::execution_workspace: core::option::Option<alloc::string::String>
+pub awaken_agent_config::StoredPublication::agent_inputs: core::option::Option<awaken_agent_config::AgentInputConfig>
+pub awaken_agent_config::StoredPublication::execution_workspace: awaken_tenancy::ScopeId
 pub awaken_agent_config::StoredPublication::fingerprint: alloc::string::String
 pub awaken_agent_config::StoredPublication::publication_id: alloc::string::String
 pub awaken_agent_config::StoredPublication::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_agent_config::StoredPublication::source_revision: u64
 pub awaken_agent_config::StoredPublication::state: awaken_agent_config::PublicationState
 impl awaken_agent_config::StoredPublication
-pub fn awaken_agent_config::StoredPublication::execution_workspace_or<'a>(&'a self, &'a str) -> &'a str
-pub fn awaken_agent_config::StoredPublication::published(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_agent_config::StoredPublication::published_at_revision(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, u64) -> Self
-pub fn awaken_agent_config::StoredPublication::targets_execution_workspace(&self, &str, &str) -> bool
-pub fn awaken_agent_config::StoredPublication::with_agent_inputs(self, core::option::Option<serde_json::value::Value>) -> Self
-pub fn awaken_agent_config::StoredPublication::with_execution_workspace(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_config::StoredPublication::published(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
+pub fn awaken_agent_config::StoredPublication::published_at_revision(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
+pub fn awaken_agent_config::StoredPublication::targets_execution_workspace(&self, &str) -> bool
+pub fn awaken_agent_config::StoredPublication::with_agent_inputs(self, core::option::Option<awaken_agent_config::AgentInputConfig>) -> Self
 pub struct awaken_agent_config::ToolOverride
 pub awaken_agent_config::ToolOverride::alias: core::option::Option<alloc::string::String>
 pub awaken_agent_config::ToolOverride::defer: bool
@@ -247,4 +257,4 @@ pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_scoped<'life0,
 pub fn awaken_agent_config::ScopedConfigRegistry::record_management_audit_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_config::compile_published(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata, awaken_runtime_contract::resolved::ResolvedModelCandidate, alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>, core::option::Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
 pub fn awaken_agent_config::compile_resolved(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
-pub fn awaken_agent_config::publication_revision_decision<'a, T, I>(&'a T, core::option::Option<&'a T>, u64, &'a T, I) -> awaken_agent_config::PublicationRevisionDecision where T: core::cmp::PartialEq + ?core::marker::Sized + 'a, I: core::iter::traits::collect::IntoIterator<Item = (core::option::Option<&'a T>, u64, &'a T)>
+pub fn awaken_agent_config::publication_revision_decision<'a, T, I>(&'a T, u64, &'a T, I) -> awaken_agent_config::PublicationRevisionDecision where T: core::cmp::PartialEq + ?core::marker::Sized + 'a, I: core::iter::traits::collect::IntoIterator<Item = (&'a T, u64, &'a T)>

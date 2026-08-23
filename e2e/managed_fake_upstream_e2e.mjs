@@ -6,22 +6,38 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
 
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
 function agentMessages(events) {
   return events
     .filter((e) => e.type === 'agent.message')
     .map((e) => e.content.map((b) => b.text ?? '').join(''));
+}
+
+async function sendAndCommit(client, sessionId, text) {
+  // C1=exact User receipt; C2=fake-wire reply and terminal. E1=return the
+  // transcript only after C2 follows C1. K: each sequential Run owns its own
+  // receipt. Decision F1 C1&&!C2=>retry; F2 C1+C2=>return committed history.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
+    betas: BETAS,
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+  });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'F1 exact fake-wire User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `F1 fake-wire Run for ${JSON.stringify(text)} to commit`,
+  );
+  return events;
 }
 
 async function req(base, method, uri, body) {
@@ -44,15 +60,8 @@ async function main() {
     await withServer('real', 38194, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(session.id, {
-        betas: BETAS,
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'first turn' }] }],
-      });
-      await client.beta.sessions.events.send(session.id, {
-        betas: BETAS,
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'second turn' }] }],
-      });
-      const events = await listEvents(client, session.id);
+      await sendAndCommit(client, session.id, 'first turn');
+      const events = await sendAndCommit(client, session.id, 'second turn');
       const replies = agentMessages(events);
       assert.ok(
         replies.some((m) => m.includes('FAKE:first turn')),
@@ -66,11 +75,7 @@ async function main() {
 
       // --- a tool round-trip through the wire: tool_use -> glob -> final text
       const toolSession = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(toolSession.id, {
-        betas: BETAS,
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'use-tool:glob' }] }],
-      });
-      const toolEvents = await listEvents(client, toolSession.id);
+      const toolEvents = await sendAndCommit(client, toolSession.id, 'use-tool:glob');
       assert.ok(
         toolEvents.some((e) => e.type === 'agent.tool_use' && e.name === 'glob'),
         `the wire-driven tool call ran: ${JSON.stringify(toolEvents.map((e) => e.type))}`,

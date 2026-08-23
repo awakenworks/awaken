@@ -231,7 +231,7 @@ impl McpRealizationReceipt {
     ///
     /// The existing wire remains unchanged: delivery is derived from the exact
     /// holder already present on both request and receipt plus the Runtime's
-    /// actual realization kind. Credentialless attachments must use [`verify`]
+    /// actual realization kind. Credentialless attachments must use [`Self::verify`]
     /// instead and cannot manufacture a delivery receipt.
     pub fn verify_for_delivery(
         &self,

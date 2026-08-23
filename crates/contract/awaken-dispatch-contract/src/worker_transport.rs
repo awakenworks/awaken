@@ -11,8 +11,9 @@ use awaken_runtime_contract::CredentialRealizationReceipt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClaimedCommitCommand, DispatchOutcome, PendingInput, RunClaim, RunDispatch, SubmitOptions,
-    WorkerHeartbeat, WorkerIdentity, WorkerRegistration,
+    ClaimedCommitCommand, DispatchOutcome, PendingInput, RunClaim, RunDispatch,
+    SessionRunReservationResolution, SubmitOptions, WorkerHeartbeat, WorkerIdentity,
+    WorkerRegistration,
 };
 
 /// Complete Worker-to-Coordinator envelope for one claim-fenced committed-truth
@@ -135,6 +136,14 @@ pub struct RelinquishRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRunReservationResolutionRequest {
+    pub claim: RunClaim,
+    #[serde(default)]
+    pub identity: Option<WorkerIdentity>,
+    pub resolution: SessionRunReservationResolution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettleRequest {
     pub run_id: String,
     #[serde(default)]
@@ -155,12 +164,26 @@ pub struct StreamEventRequest {
     pub event: StreamEvent,
 }
 
+/// Context-bearing form of the existing stream request on the same HTTP
+/// endpoint. Flattening preserves the historical JSON shape when the optional
+/// coordinate is absent, while [`StreamEventRequest`] stays source-compatible
+/// for external Worker adapters that construct its three-field literal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamObservationRequest {
+    #[serde(flatten)]
+    pub request: StreamEventRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_response:
+        Option<awaken_agent_contract::stream::event::AssistantResponseCoordinate>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::event::{AgentEvent, Delta};
     use awaken_agent_contract::thread::commit::operation::{CommitOperationId, CommitPayloadHash};
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 
@@ -182,6 +205,58 @@ mod tests {
         }))
         .unwrap();
         assert!(request.deadline_ms.is_none());
+    }
+
+    /// Stream-request compatibility cause/effect table: C1 an older Worker
+    /// serializes the historical three-field `StreamEventRequest`; C2 a current
+    /// Worker supplies an exact assistant-response coordinate. E1 C1 decodes on
+    /// the context-aware endpoint with no coordinate; E2 C2 preserves the same
+    /// base request and adds exactly one optional context field. Both use the
+    /// existing stream endpoint and claim fence. Constraint/Invariant: the
+    /// wrapper cannot fork the historical request or weaken its claim fence.
+    /// Decision rule: R1 and R2 cover absent and exact-coordinate wire shapes.
+    ///
+    /// | Rule | writer | coordinate | Effect |
+    /// |---|---|---|---|
+    /// | R1 | legacy request | absent | E1 |
+    /// | R2 | observation wrapper | exact | E2 |
+    #[test]
+    fn stream_observation_request_wraps_the_source_compatible_request() {
+        let request = StreamEventRequest {
+            claim: RunClaim {
+                run_id: RunId("run-live".into()),
+                owner: "worker-1:1:inc-1".into(),
+                epoch: 7,
+            },
+            identity: WorkerIdentity::new("worker-1", "inc-1", 1),
+            event: StreamEvent {
+                run_id: RunId("run-live".into()),
+                kind: AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
+            },
+        };
+        let legacy_json = serde_json::to_value(&request).expect("legacy request serializes");
+        let decoded: StreamObservationRequest =
+            serde_json::from_value(legacy_json).expect("R1 legacy request decodes");
+        assert!(decoded.assistant_response.is_none(), "R1/E1");
+        assert_eq!(decoded.request.event, request.event, "R1/E1 base event");
+
+        let exact = StreamObservationRequest {
+            request,
+            assistant_response: Some(
+                awaken_agent_contract::stream::event::AssistantResponseCoordinate {
+                    thread_id: ThreadId("thread-live".into()),
+                    step: 2,
+                    response: 3,
+                },
+            ),
+        };
+        let exact_json = serde_json::to_value(&exact).expect("R2 exact request serializes");
+        assert_eq!(
+            exact_json["assistant_response"]["thread_id"],
+            serde_json::json!("thread-live"),
+            "R2/E2"
+        );
+        assert_eq!(exact_json["event"]["run_id"], "run-live", "R2/E2");
     }
 
     /// Cause/effect decision table for the sole claimed-commit wire owner:

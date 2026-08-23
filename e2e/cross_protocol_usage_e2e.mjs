@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38602);
@@ -77,10 +77,23 @@ async function main() {
     // --- Managed wire: the SAME per-turn accounting ------------------------
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact Managed User receipt; C2=usage commit. E1=C2 makes retrieve
+    // comparable with AI-SDK finish. K: neither projection drives accounting.
+    // Decision U1 C1&&!C2=>retry; U2 C1+C2=>compare exact totals.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       betas: BETAS,
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'first' }] }],
     });
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'U1 exact Managed usage receipt');
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.usage'),
+      'U1 Managed usage Run to commit accounting',
+    );
     const m = (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).usage ?? {};
     assert.equal(m.input_tokens, PER_TURN_INPUT, `managed session.usage input: ${JSON.stringify(m)}`);
     assert.equal(m.output_tokens, PER_TURN_OUTPUT, `managed session.usage output: ${JSON.stringify(m)}`);

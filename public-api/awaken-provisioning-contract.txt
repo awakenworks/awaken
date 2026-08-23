@@ -17,6 +17,9 @@ pub awaken_provisioning_contract::CacheVolumeLocation::HostPath
 pub awaken_provisioning_contract::CacheVolumeLocation::HostPath::path: alloc::string::String
 pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim
 pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim::claim_name: alloc::string::String
+pub enum awaken_provisioning_contract::ContainerContinuationHandle
+pub awaken_provisioning_contract::ContainerContinuationHandle::KubernetesContinuation
+pub awaken_provisioning_contract::ContainerContinuationHandle::KubernetesContinuation::claim_uid: alloc::string::String
 pub enum awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
@@ -93,17 +96,17 @@ pub awaken_provisioning_contract::MountSource::MemoryStore
 pub awaken_provisioning_contract::MountSource::MemoryStore::materialization_reference: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::MemoryStore::store_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::MemoryStore::write_consistency: awaken_provisioning_contract::MemoryWriteConsistency
-pub awaken_provisioning_contract::MountSource::Other(serde_json::value::Value)
 pub awaken_provisioning_contract::MountSource::Resource
 pub awaken_provisioning_contract::MountSource::Resource::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::Resource::resource_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::Secret
 pub awaken_provisioning_contract::MountSource::Secret::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::Secret::reference: alloc::string::String
-impl serde_core::ser::Serialize for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum awaken_provisioning_contract::NamespaceProviderKind
+pub awaken_provisioning_contract::NamespaceProviderKind::Bubblewrap
+pub awaken_provisioning_contract::NamespaceProviderKind::Seatbelt
+impl awaken_provisioning_contract::NamespaceProviderKind
+pub const fn awaken_provisioning_contract::NamespaceProviderKind::as_str(self) -> &'static str
 pub enum awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist::hosts: alloc::vec::Vec<alloc::string::String>
@@ -139,12 +142,20 @@ pub enum awaken_provisioning_contract::SandboxAction
 pub awaken_provisioning_contract::SandboxAction::Artifact
 pub awaken_provisioning_contract::SandboxAction::Egress
 pub awaken_provisioning_contract::SandboxAction::Spawn
+pub enum awaken_provisioning_contract::SandboxCheckpointExpiryBehavior
+pub awaken_provisioning_contract::SandboxCheckpointExpiryBehavior::FreshFromFrozenEnvironment
 pub enum awaken_provisioning_contract::SandboxExecutionPolicyError
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(alloc::string::String)
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::NotFound
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::StoreFailed(alloc::string::String)
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::VersionConflict
+pub enum awaken_provisioning_contract::SandboxIdleRetentionMode
+pub awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease
+pub awaken_provisioning_contract::SandboxIdleRetentionMode::Resident
+pub enum awaken_provisioning_contract::SandboxProvisioning
+pub awaken_provisioning_contract::SandboxProvisioning::Eager
+pub awaken_provisioning_contract::SandboxProvisioning::OnToolUse
 pub enum awaken_provisioning_contract::SandboxStatus
 pub awaken_provisioning_contract::SandboxStatus::Provisioning
 pub awaken_provisioning_contract::SandboxStatus::Ready
@@ -182,6 +193,12 @@ pub awaken_provisioning_contract::Command::env: alloc::vec::Vec<awaken_provision
 pub awaken_provisioning_contract::Command::stdio: awaken_provisioning_contract::Stdio
 impl awaken_provisioning_contract::Command
 pub fn awaken_provisioning_contract::Command::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub struct awaken_provisioning_contract::ContainerSandboxHandleV1
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::container_id: alloc::string::String
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::live_input_projection: bool
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::outputs_path: alloc::string::String
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::runtime_handle: core::option::Option<awaken_provisioning_contract::ContainerContinuationHandle>
 pub struct awaken_provisioning_contract::EnvVar
 pub awaken_provisioning_contract::EnvVar::name: alloc::string::String
 pub awaken_provisioning_contract::EnvVar::value: awaken_provisioning_contract::EnvValue
@@ -226,6 +243,10 @@ pub struct awaken_provisioning_contract::LivenessSignals
 pub awaken_provisioning_contract::LivenessSignals::now_ms: u64
 pub awaken_provisioning_contract::LivenessSignals::revoked: bool
 pub awaken_provisioning_contract::LivenessSignals::transport_lost: bool
+pub struct awaken_provisioning_contract::LocalSandboxHandleV1
+pub awaken_provisioning_contract::LocalSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
+pub awaken_provisioning_contract::LocalSandboxHandleV1::continuation_excluded_paths: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::LocalSandboxHandleV1::outputs_path: alloc::string::String
 pub struct awaken_provisioning_contract::MaterializedCommand
 pub awaken_provisioning_contract::MaterializedCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::MaterializedCommand::cwd: alloc::string::String
@@ -245,6 +266,10 @@ pub awaken_provisioning_contract::MountRequirement::required: bool
 pub awaken_provisioning_contract::MountRequirement::source: awaken_provisioning_contract::MountSource
 impl awaken_provisioning_contract::MountRequirement
 pub fn awaken_provisioning_contract::MountRequirement::is_secret_writeback(&self) -> bool
+pub struct awaken_provisioning_contract::NamespaceSandboxHandleV1
+pub awaken_provisioning_contract::NamespaceSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
+pub awaken_provisioning_contract::NamespaceSandboxHandleV1::network: awaken_provisioning_contract::NetworkPolicy
+pub awaken_provisioning_contract::NamespaceSandboxHandleV1::outputs_path: alloc::string::String
 pub struct awaken_provisioning_contract::PackageRequirements
 pub awaken_provisioning_contract::PackageRequirements::managers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
 pub awaken_provisioning_contract::PackageRequirements::resolution_id: core::option::Option<alloc::string::String>
@@ -320,6 +345,30 @@ impl core::convert::From<alloc::string::String> for awaken_provisioning_contract
 pub fn awaken_provisioning_contract::SandboxCapacityShapeId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_provisioning_contract::SandboxCapacityShapeId
 pub fn awaken_provisioning_contract::SandboxCapacityShapeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_provisioning_contract::SandboxCheckpointRef
+pub awaken_provisioning_contract::SandboxCheckpointRef::base_image_fingerprint: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRef::created_at_unix_ms: u64
+pub awaken_provisioning_contract::SandboxCheckpointRef::digest: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRef::environment_fingerprint: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRef::excluded_mounts: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::SandboxCheckpointRef::expires_at_unix_ms: u64
+pub awaken_provisioning_contract::SandboxCheckpointRef::format: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRef::id: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRef::size_bytes: u64
+pub awaken_provisioning_contract::SandboxCheckpointRef::suspend_effect_id: alloc::string::String
+impl awaken_provisioning_contract::SandboxCheckpointRef
+pub const fn awaken_provisioning_contract::SandboxCheckpointRef::expired_at(&self, u64) -> bool
+pub struct awaken_provisioning_contract::SandboxCheckpointRequest
+pub awaken_provisioning_contract::SandboxCheckpointRequest::base_image_fingerprint: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::created_at_unix_ms: u64
+pub awaken_provisioning_contract::SandboxCheckpointRequest::effect_id: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::environment_fingerprint: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::expires_at_unix_ms: u64
+pub awaken_provisioning_contract::SandboxCheckpointRequest::format: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::generation_id: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::max_bytes: u64
+pub awaken_provisioning_contract::SandboxCheckpointRequest::session_id: alloc::string::String
+pub awaken_provisioning_contract::SandboxCheckpointRequest::workspace_id: alloc::string::String
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
 impl awaken_provisioning_contract::SandboxError
 pub fn awaken_provisioning_contract::SandboxError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -327,8 +376,8 @@ pub struct awaken_provisioning_contract::SandboxExecutionPolicy
 pub awaken_provisioning_contract::SandboxExecutionPolicy::config: awaken_provisioning_contract::SandboxOverride
 pub awaken_provisioning_contract::SandboxExecutionPolicy::disabled: bool
 pub awaken_provisioning_contract::SandboxExecutionPolicy::id: awaken_provisioning_contract::SandboxExecutionPolicyId
-pub awaken_provisioning_contract::SandboxExecutionPolicy::idle_retention: awaken_session_contract::baseline::EnvironmentIdleRetentionPolicy
-pub awaken_provisioning_contract::SandboxExecutionPolicy::provisioning: awaken_session_contract::baseline::SandboxProvisioning
+pub awaken_provisioning_contract::SandboxExecutionPolicy::idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy
+pub awaken_provisioning_contract::SandboxExecutionPolicy::provisioning: awaken_provisioning_contract::SandboxProvisioning
 pub awaken_provisioning_contract::SandboxExecutionPolicy::version: awaken_provisioning_contract::SandboxExecutionPolicyVersion
 pub struct awaken_provisioning_contract::SandboxExecutionPolicyId(pub alloc::string::String)
 pub struct awaken_provisioning_contract::SandboxExecutionPolicyRef
@@ -339,11 +388,28 @@ impl awaken_provisioning_contract::SandboxExecutionPolicyVersion
 pub const awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL: Self
 pub fn awaken_provisioning_contract::SandboxExecutionPolicyVersion::checked_next(self) -> core::result::Result<Self, awaken_provisioning_contract::SandboxExecutionPolicyError>
 pub struct awaken_provisioning_contract::SandboxHandle
-pub awaken_provisioning_contract::SandboxHandle::extra: core::option::Option<serde_json::value::Value>
-pub awaken_provisioning_contract::SandboxHandle::provider_kind: alloc::string::String
 pub awaken_provisioning_contract::SandboxHandle::sandbox_id: alloc::string::String
 impl awaken_provisioning_contract::SandboxHandle
+pub fn awaken_provisioning_contract::SandboxHandle::container(impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::ContainerSandboxHandleV1) -> Self
+pub fn awaken_provisioning_contract::SandboxHandle::container_payload(&self) -> core::result::Result<&awaken_provisioning_contract::ContainerSandboxHandleV1, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::SandboxHandle::local(impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::LocalSandboxHandleV1) -> Self
+pub fn awaken_provisioning_contract::SandboxHandle::local_payload(&self) -> core::result::Result<&awaken_provisioning_contract::LocalSandboxHandleV1, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::SandboxHandle::namespace(awaken_provisioning_contract::NamespaceProviderKind, impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::NamespaceSandboxHandleV1) -> Self
+pub fn awaken_provisioning_contract::SandboxHandle::namespace_payload(&self, awaken_provisioning_contract::NamespaceProviderKind) -> core::result::Result<&awaken_provisioning_contract::NamespaceSandboxHandleV1, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxHandle::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxHandle::provider_kind(&self) -> &str
+pub struct awaken_provisioning_contract::SandboxIdleRetentionPolicy
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::checkpoint_after_secs: u64
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::checkpoint_format: alloc::string::String
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::expiry_behavior: awaken_provisioning_contract::SandboxCheckpointExpiryBehavior
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::max_checkpoint_bytes: u64
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::max_checkpoint_duration_secs: u64
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::mode: awaken_provisioning_contract::SandboxIdleRetentionMode
+pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::retention_secs: u64
+impl awaken_provisioning_contract::SandboxIdleRetentionPolicy
+pub fn awaken_provisioning_contract::SandboxIdleRetentionPolicy::validate(&self) -> core::result::Result<(), &'static str>
+impl core::default::Default for awaken_provisioning_contract::SandboxIdleRetentionPolicy
+pub fn awaken_provisioning_contract::SandboxIdleRetentionPolicy::default() -> Self
 pub struct awaken_provisioning_contract::SandboxOverride
 pub awaken_provisioning_contract::SandboxOverride::environment: core::option::Option<awaken_provisioning_contract::EnvironmentKind>
 pub awaken_provisioning_contract::SandboxOverride::isolation: core::option::Option<awaken_provisioning_contract::IsolationClass>
@@ -352,7 +418,6 @@ pub awaken_provisioning_contract::SandboxOverride::network: core::option::Option
 pub awaken_provisioning_contract::SandboxOverride::requests: awaken_provisioning_contract::ResourceRequests
 impl awaken_provisioning_contract::SandboxOverride
 pub fn awaken_provisioning_contract::SandboxOverride::apply(&self, awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxOverride::from_config_value(&serde_json::value::Value) -> core::option::Option<Self>
 pub fn awaken_provisioning_contract::SandboxOverride::is_empty(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxRequirements
 pub awaken_provisioning_contract::SandboxRequirements::custom_rootfs: bool
@@ -367,8 +432,10 @@ pub awaken_provisioning_contract::SandboxRequirements::tool_transparent: bool
 impl awaken_provisioning_contract::SandboxRequirements
 pub fn awaken_provisioning_contract::SandboxRequirements::from_spec(&awaken_provisioning_contract::SandboxSpec, bool) -> Self
 pub struct awaken_provisioning_contract::SandboxSpec
+pub awaken_provisioning_contract::SandboxSpec::command: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::SandboxSpec::deny_tool_egress: bool
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
-pub awaken_provisioning_contract::SandboxSpec::extra: core::option::Option<serde_json::value::Value>
+pub awaken_provisioning_contract::SandboxSpec::environment: core::option::Option<awaken_provisioning_contract::EnvironmentKind>
 pub awaken_provisioning_contract::SandboxSpec::filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity
 pub awaken_provisioning_contract::SandboxSpec::isolation: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::SandboxSpec::lease_ttl_secs: core::option::Option<u64>
@@ -403,7 +470,7 @@ pub fn awaken_provisioning_contract::RepositoryRealizer::realize_repository<'lif
 pub trait awaken_provisioning_contract::Sandbox: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::Sandbox::artifacts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::Artifact>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::attach<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::MountRequirement) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::RealizedMount, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_provisioning_contract::Sandbox::checkpoint<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxCheckpointRequest, &'life2 dyn awaken_provisioning_contract::SandboxCheckpointStore) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::environment::CheckpointReceipt, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_provisioning_contract::Sandbox::checkpoint<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxCheckpointRequest, &'life2 dyn awaken_provisioning_contract::SandboxCheckpointStore) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::SandboxCheckpointRef, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::dispose<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::handle(&self) -> awaken_provisioning_contract::SandboxHandle
 pub fn awaken_provisioning_contract::Sandbox::id(&self) -> &str
@@ -427,7 +494,7 @@ pub fn awaken_provisioning_contract::SandboxProvider::capabilities(&self) -> awa
 pub fn awaken_provisioning_contract::SandboxProvider::checkpoint_formats(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_provisioning_contract::SandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::probe_ready<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_provisioning_contract::SandboxProvider::restore<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_session_contract::environment::SandboxCheckpointRef, &'life3 dyn awaken_provisioning_contract::SandboxCheckpointStore) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_provisioning_contract::SandboxProvider::restore<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_provisioning_contract::SandboxCheckpointRef, &'life3 dyn awaken_provisioning_contract::SandboxCheckpointStore) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_provisioning_contract::SecretBroker: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::SecretBroker::materialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SecretBroker::materialize_process<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -446,5 +513,3 @@ pub async fn awaken_provisioning_contract::reconcile_and_apply(&dyn awaken_provi
 pub async fn awaken_provisioning_contract::select_provider<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec) -> core::result::Result<&'a dyn awaken_provisioning_contract::SandboxProvider, awaken_provisioning_contract::SelectionError>
 pub async fn awaken_provisioning_contract::select_provider_with_policy<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::IsolationPolicy) -> core::result::Result<awaken_provisioning_contract::PolicySelection<'a>, awaken_provisioning_contract::SelectionError>
 pub fn awaken_provisioning_contract::validate_mount_requirements(&[awaken_provisioning_contract::MountRequirement], &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<(), awaken_provisioning_contract::PrepareError>
-pub type awaken_provisioning_contract::SandboxCheckpointRef = awaken_session_contract::environment::SandboxCheckpointRef
-pub type awaken_provisioning_contract::SandboxCheckpointRequest = awaken_session_contract::environment::SandboxCheckpointRequest

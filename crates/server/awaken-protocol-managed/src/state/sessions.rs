@@ -251,7 +251,7 @@ impl ManagedState {
     /// envelope). A `vault_ids` entry that names no
     /// existing vault fails the create closed too:
     /// a 404 naming the vault id, BEFORE anything is provisioned — never a
-    /// silent no-binding whose 401 only surfaces at the first turn. (Without a
+    /// silent no-binding whose 401 only surfaces at the first Run. (Without a
     /// wired vault surface there is nothing to validate against and every
     /// binding resolves to no credential, as before.)
     /// Fail-closed bind-time legality check, shared by session creation and any
@@ -286,54 +286,58 @@ impl ManagedState {
             .await
     }
 
-    /// The canonical public create command: create the Session and enqueue its
-    /// admitted initial Events through the ordinary Event command. Protocol
-    /// handlers and Deployment launchers share this method so neither can create
-    /// an inert Session or invent a follow-up Event path.
-    pub async fn create_session_with_initial_events(
-        self: &Arc<Self>,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-    ) -> Result<Session, StateError> {
-        self.create_session_with_initial_events_and_identity(req, workspace_id, None)
-            .await
-    }
-
-    pub(super) async fn create_session_with_initial_events_and_identity(
-        self: &Arc<Self>,
+    pub(super) async fn create_session_with_identity(
+        &self,
         req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
-        let initial_events = req.initial_events.clone();
-        let mut session = self
-            .create_session_with_identity(req, workspace_id, explicit_id)
-            .await?;
-        if !initial_events.is_empty() {
-            self.start_initial_events(&session.id, initial_events)
-                .await?;
-            session.status = SessionStatus::Running;
-        }
-        Ok(session)
+        self.create_session_with_identity_from(req, workspace_id, explicit_id, None)
+            .await
     }
 
-    pub(super) async fn create_session_with_identity(
+    /// One create owner for Session and Deployment wire unions. `Some` carries
+    /// the already-lowered Deployment union; ordinary Session create uses the
+    /// request's narrower `initial_events` field.
+    pub(super) async fn create_session_with_identity_from(
         &self,
         mut req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
+        deployment_initial_events: Option<Vec<InboundEvent>>,
     ) -> Result<Session, StateError> {
         req.validate_common()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         // Initial-event admission is atomic with Session creation: validate the
         // complete batch before bind checks, identity allocation, persistence, or
         // Runtime preparation. The shared validator is also used by Deployments.
-        req.validate_initial_events()
-            .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+        let initial_events = if let Some(events) = deployment_initial_events {
+            if !req.initial_events.is_empty() {
+                return Err(StateError::Run(RunError::internal(
+                    "Deployment initial Events must have one lowering owner",
+                )));
+            }
+            crate::types::initial_event::validate_deployment_inbound_initial_events(&events)
+                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+            events
+        } else {
+            req.validate_initial_events()
+                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+            req.initial_events.clone()
+        };
         let owner_scope = workspace_id
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         self.check_bind(&owner_scope, &req).await?;
+        self.application
+            .refresh_executable_projections()
+            .await
+            .map_err(|error| {
+                StateError::Run(RunError::unavailable_classified(
+                    "executable_projection_refresh_failed",
+                    format!("Executable projections could not be refreshed: {error}"),
+                ))
+            })?;
         // Mint from the process-incarnation namespace so active-active peers and
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the
@@ -367,6 +371,9 @@ impl ManagedState {
             },
         };
         let agent_id = req.agent.id().to_string();
+        let initial_events =
+            crate::types::initial_event::compile_session_initial_event_plan(&id, &initial_events)
+                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         let requested_agent_version = req.agent.version();
         let config_view = requested_agent_version
             .and_then(|version| {
@@ -500,6 +507,50 @@ impl ManagedState {
                 ))));
             }
         }
+        // Freeze the root execution route before any Resource or Session write.
+        // For budgeted Sessions, the application's single roster compiler also
+        // validates that the root, exact ordinary roster revisions, and the
+        // Advisor route all execute inside the Native per-request gate.
+        let resolved_model = selected_model
+            .clone()
+            .unwrap_or_else(|| ModelConfig::new(self.application.model()));
+        let execution_model_ref = model_override
+            .as_ref()
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding().model_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .and_then(|view| view.execution_model_ref.clone())
+            })
+            .unwrap_or_else(|| resolved_model.id.clone());
+        let published_backend_ref = model_override
+            .as_ref()
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding().backend_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .map(|view| view.backend_ref.clone())
+                    .filter(|backend_ref| !backend_ref.trim().is_empty())
+            });
+        let budget_model_refs = req
+            .budget
+            .as_ref()
+            .map(|_| {
+                self.application.managed_session_model_refs(
+                    &owner_scope,
+                    &agent_id,
+                    config_view.as_ref(),
+                    &execution_model_ref,
+                    published_backend_ref.as_deref(),
+                    model_override
+                        .as_ref()
+                        .and_then(|model_override| model_override.publication.as_deref()),
+                )
+            })
+            .transpose()
+            .map_err(StateError::Run)?;
         // Anthropic requires MCP declarations and toolsets to be a bijective
         // reference: every declared server has a toolset and every toolset names
         // a declared server. Validate create-time overrides before provisioning.
@@ -592,20 +643,6 @@ impl ManagedState {
         let agent_environment = config_view
             .as_ref()
             .and_then(|view| view.environment.as_ref());
-        // The frozen Agent publication, or a complete resolved Session model
-        // replacement, is the only backend authority. The baseline persists the
-        // selected publication so recovery and Worker placement never reopen the
-        // registry or stitch together coordinates from different routes.
-        let published_backend_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().backend_ref.clone())
-            .or_else(|| {
-                config_view
-                    .as_ref()
-                    .map(|view| view.backend_ref.clone())
-                    .filter(|backend_ref| !backend_ref.trim().is_empty())
-            });
         let mcp_targets = mcp_drafts
             .iter()
             .map(|draft| draft.target.clone())
@@ -687,19 +724,6 @@ impl ManagedState {
             .tools_override()
             .map(project::session_tool_configuration)
             .unwrap_or(inherited_tools);
-        let resolved_model = selected_model
-            .clone()
-            .unwrap_or_else(|| ModelConfig::new(self.application.model()));
-        let execution_model_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().model_ref.clone())
-            .or_else(|| {
-                config_view
-                    .as_ref()
-                    .and_then(|view| view.execution_model_ref.clone())
-            })
-            .unwrap_or_else(|| resolved_model.id.clone());
         let budget_state = match &req.budget {
             Some(budget) => {
                 let max_list_cost_minor = budget
@@ -709,10 +733,8 @@ impl ManagedState {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let model_refs = self
-                    .application
-                    .managed_session_model_refs(&owner_scope, &agent_id, &execution_model_ref)
-                    .map_err(StateError::Run)?;
+                let model_refs =
+                    budget_model_refs.expect("budgeted Session compiled its exact model roster");
                 let snapshot = self
                     .application
                     .resolve_managed_list_price_snapshot(
@@ -772,6 +794,7 @@ impl ManagedState {
                 metadata: req.metadata.clone(),
                 tools: effective_tools.clone(),
                 budget: budget_state,
+                initial_events,
             })
             .await
             .map_err(Self::map_creation_error)?;
@@ -848,13 +871,7 @@ impl ManagedState {
             session.agent.tools = project::resolved_tools(tools);
         }
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        let record = SessionRecord::new(
-            agent_id,
-            session,
-            persisted.resources,
-            Vec::new(),
-            Default::default(),
-        );
+        let record = SessionRecord::new(agent_id, session, persisted.resources, Vec::new());
         let session = record.session_projection();
         self.sessions.lock().unwrap().insert(id.clone(), record);
         Ok(session)
@@ -1067,13 +1084,7 @@ impl ManagedState {
             .owner(id)
             .await
             .map_err(Self::map_application_mutation_error)?;
-        let delegated_runs = self
-            .application
-            .delegated_runs(id)
-            .await
-            .map_err(StateError::Run)?;
-        let delegation_transcripts = self.delegation_transcripts(&delegated_runs).await?;
-        let mut record = SessionRecord::new(
+        let record = SessionRecord::new(
             persisted.agent_id().unwrap_or("assistant").to_string(),
             self.rehydrated_session_for(
                 id,
@@ -1083,13 +1094,6 @@ impl ManagedState {
             )?,
             persisted.resources,
             Vec::new(),
-            Default::default(),
-        );
-        self.append_delegation_projections(
-            &mut record,
-            &delegated_runs,
-            &Default::default(),
-            &delegation_transcripts,
         );
         self.sessions
             .lock()
@@ -1194,11 +1198,10 @@ impl ManagedState {
         Ok(())
     }
 
-    /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp
-    /// `archived_at`, move `status` to `terminated`, and commit a
-    /// `session.status_terminated` event so a streaming/listing client observes the
-    /// terminal transition (not just the mutated status field). Idempotent: a
-    /// re-archive returns the same terminal record without a second event.
+    /// `POST /v1/sessions/{id}/archive` — terminate the durable Session, then let
+    /// the sole warm/cold projector derive the aggregate and child terminal wire
+    /// events. Idempotent: a re-archive observes the same fact and emits no
+    /// duplicate event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
         self.ensure_session_for_terminal_cleanup(id).await?;
         let owner = self.resolve_owner(id).await?;
@@ -1208,31 +1211,15 @@ impl ManagedState {
             owner.clone(),
             lifecycle_event::SESSION_TERMINATED,
         );
-        let transition = self
-            .application
-            .terminate_session(id, PROCESSED_AT, terminated_fact.clone())
+        self.application
+            .terminate_session(id, PROCESSED_AT, terminated_fact)
             .await
             .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&transition.session)?;
-        let newly_terminated = transition.transitioned;
-        let session = {
-            let terminated_id = self.next_event_id();
-            let mut sessions = self.sessions.lock().unwrap();
-            let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-            if newly_terminated {
-                record.events.push(Event {
-                    id: terminated_id,
-                    kind: OutboundKind::SessionStatusTerminated {},
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-            record.session_projection()
-        };
-        // Project the terminal transition as a lifecycle fact, mirroring create's
-        // `session.status_idled`. The owning workspace is resolved from the session's
-        // persisted owner (the archive edge carries only the id) so a subscription in
-        // that workspace is matched even after a restart lost the in-memory index.
-        Ok(session)
+        // No direct cache mutation or bespoke terminal append belongs here. The
+        // canonical refresh rereads PersistedSession and projects root + every
+        // derived child terminal with identical warm/restart behavior.
+        self.refresh_committed_projection(id).await?;
+        self.get_session(id)
     }
 }
 

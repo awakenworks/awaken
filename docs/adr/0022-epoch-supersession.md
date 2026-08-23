@@ -6,7 +6,7 @@
 
 ## Context
 
-A thread is a conversation; sometimes a newer turn should *supersede* an older
+A Thread is a conversation; sometimes a newer Run should *supersede* an older
 one still queued or awaiting — the latest submission wins, and the stale one must
 not run or resume. Durable cancel (ADR-0016) stops one named run; supersession is
 the "newest-on-the-thread wins" generalization, named deferred there. The

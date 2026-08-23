@@ -133,16 +133,12 @@ impl SessionApplication {
         session: &PersistedSession,
         materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
-        let resources = session
-            .resources
-            .pending
-            .clone()
-            .unwrap_or_else(|| session.resources.active.clone());
+        let (resource_revision, resources) = session.resources.desired_generation();
         self.frozen_session_projection_for_resources(
             owner_scope,
             session,
-            session.resources.revision,
-            resources,
+            resource_revision,
+            resources.clone(),
             materialize_request_context,
         )
         .await
@@ -157,11 +153,12 @@ impl SessionApplication {
         session: &PersistedSession,
         materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
+        let (resource_revision, resources) = session.resources.active_generation();
         self.frozen_session_projection_for_resources(
             owner_scope,
             session,
-            session.resources.active_revision(),
-            session.resources.active.clone(),
+            resource_revision,
+            resources.clone(),
             materialize_request_context,
         )
         .await

@@ -1,5 +1,7 @@
 //! Cross-module E2E for the official Managed Deployment lifecycle.
 
+mod support;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -28,6 +30,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+use support::wait_for_session_events;
 
 async fn publish_assistant(
     catalog: Arc<ExecutableAgentCatalog>,
@@ -67,15 +71,16 @@ async fn publish_assistant(
 }
 
 #[tokio::test]
-async fn failed_initial_events_are_compensated_before_deployment_acknowledgement() {
-    // FMECA/cause-effect graph: C1 a valid frozen Agent creates a Session; C2
-    // its Runtime publication source is unavailable at the first system Event;
-    // C3 the same DeploymentRun is retried after response loss. Required
-    // effects: E1 the first launch is failed, E2 no partially initialized
-    // Session remains visible, E3 retry can never reinterpret that Session as a
-    // successful replay. Rules:
-    // D1 C1+C2 -> E1+E2; D2 C1+C2+C3 -> E3. This mutation-kills both the former
-    // detached executor and a synchronous implementation without compensation.
+async fn initial_event_failure_preserves_the_committed_deployment_session() {
+    // FMECA/cause-effect graph: C1 a valid frozen Agent and user-then-system
+    // initial Event plan commit one Session root; C2 the Runtime publication
+    // source is unavailable when the lifecycle owner later executes that plan; C3 the same
+    // DeploymentRun is retried after response loss. Effects: E1 launch returns
+    // the committed Session, E2 C2 leaves that Session visible and retryable,
+    // E3 C3 returns the same Session. K1 DeploymentRun records Session creation,
+    // while the Session root is the sole Event/lifecycle authority; no follow-up
+    // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
+    // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
@@ -89,11 +94,18 @@ async fn failed_initial_events_are_compensated_before_deployment_acknowledgement
         agent: DeploymentAgent::new("assistant", 1),
         environment_id: "env_local".into(),
         metadata: Default::default(),
-        initial_events: vec![DeploymentSeedEvent::SystemMessage {
-            content: vec![ContentBlock::Text {
-                text: "must initialize the frozen publication".into(),
-            }],
-        }],
+        initial_events: vec![
+            DeploymentSeedEvent::UserMessage {
+                content: vec![ContentBlock::Text {
+                    text: "initialize the frozen publication".into(),
+                }],
+            },
+            DeploymentSeedEvent::SystemMessage {
+                content: vec![ContentBlock::Text {
+                    text: "must use the frozen publication".into(),
+                }],
+            },
+        ],
         resources: Vec::new(),
         vault_ids: Vec::new(),
         budget_max_list_cost_minor: None,
@@ -108,22 +120,39 @@ async fn failed_initial_events_are_compensated_before_deployment_acknowledgement
 
     let first = launcher.launch(request.clone()).await;
     assert!(
-        matches!(first, DeploymentLaunchOutcome::Failed { .. }),
+        matches!(
+            first,
+            DeploymentLaunchOutcome::Created {
+                session_id: ref created
+            } if created == &session_id
+        ),
         "D1/E1: {first:?}"
+    );
+
+    let error = Box::pin(
+        managed
+            .session_application()
+            .drive_session_event_batches(&session_id, None),
+    )
+    .await
+    .expect_err("D2 lifecycle execution must observe the unavailable publication");
+    assert!(
+        error.to_string().contains("publication"),
+        "D2 expected publication failure: {error}"
+    );
+    assert_eq!(
+        managed.get_session(&session_id).unwrap().id,
+        session_id,
+        "D2/E2"
     );
     assert!(
         matches!(
-            managed.get_session(&session_id),
-            Err(awaken_protocol_managed::StateError::NotFound)
-        ),
-        "D1/E2"
-    );
-    assert!(
-        !matches!(
             launcher.launch(request).await,
-            DeploymentLaunchOutcome::Created { .. }
+            DeploymentLaunchOutcome::Created {
+                session_id: replayed
+            } if replayed == session_id
         ),
-        "D2/E3"
+        "D3/E3"
     );
 }
 
@@ -150,36 +179,6 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, value)
 }
 
-async fn wait_for_session_events(
-    app: &Router,
-    session_id: &str,
-    predicate: impl Fn(&Value) -> bool,
-) -> Option<(StatusCode, Value)> {
-    // Cause/effect decision table: W1 the detached ordinary Event command commits
-    // before the monotonic deadline -> return its public projection; W2 the
-    // projection is not ready yet -> retry without driving product state; W3 the
-    // deadline expires -> return no evidence and let the calling rule fail with
-    // its domain context. A fixed iteration/millisecond loop duplicated in both
-    // tests was not a valid deployment realization deadline.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let response = call(
-            app,
-            "GET",
-            &format!("/v1/sessions/{session_id}/events"),
-            None,
-        )
-        .await;
-        if response.0 == StatusCode::OK && predicate(&response.1) {
-            return Some(response);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-}
-
 #[tokio::test]
 async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse() {
     // Cause/effect decision table:
@@ -187,6 +186,8 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // R2 same run + byte-equivalent launch -> return that Session, enqueue no second
     // initial Event batch; R3 same run + changed payload -> fail closed and preserve
     // the R1 Session. This covers the response-loss retry before an HTTP adapter exists.
+    // Constraints/invariants: DeploymentRun identity and launch fingerprint are
+    // the sole replay fence; the receipt-aware observer never drives execution.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let (_, host) = build_router_and_host_with_agent_publications(
         Arc::new(EchoModel),
@@ -228,16 +229,14 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         outcomes => panic!("R1/R2 unexpected outcomes: {outcomes:?}"),
     };
     assert_eq!(first_id, second_id, "R1/R2");
-    let events = wait_for_session_events(&app, &first_id, |events| {
-        events["data"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|event| event["type"] == "user.message")
-    })
-    .await
-    .expect("R2 initial Event batch commits before the deployment deadline")
-    .1;
+    let events = wait_for_session_events(
+        &app,
+        &first_id,
+        None,
+        "the deployment's one initial user.message",
+        |events| events.iter().any(|event| event["type"] == "user.message"),
+    )
+    .await;
     let user_messages = events["data"]
         .as_array()
         .into_iter()
@@ -262,15 +261,18 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
 async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_events() {
     // Official-docs cause/effect graph and FMECA: C1 valid Agent/environment;
     // C2 Deployment carries its wider official initial-event union, including a
-    // system.message followed by user.message; C3 manual trigger; C4 due cron;
+    // user.message immediately followed by the final system.message; C3 manual
+    // trigger; C4 due cron;
     // C5 pause. Effects: E1 active Deployment; E2 exactly one ordinary Session;
-    // E3 both Events commit through the canonical Session event command; E4 a
-    // schedule-triggered Session; E5 no launch while paused. If the Deployment
-    // batch is revalidated as public Session-create or mid-conversation input,
-    // system.message is accepted at authoring but rejected at execution
-    // (terminal run, severity high). The mitigation is to admit the empty
-    // Session once and deliver the already Deployment-validated batch through
-    // the sole source-aware event command.
+    // E3 both Events commit in the Session root and execute through its sole
+    // lifecycle state machine; E4 a schedule-triggered Session; E5 no launch
+    // while paused. If the Deployment batch bypasses the shared validator, or is
+    // revalidated as the narrower public Session-create input, authoring and
+    // execution can diverge (terminal run, severity high). The mitigation is one
+    // Deployment validator followed by one atomic Session creation command.
+    // Constraints/invariants: at most one system.message is admitted, it is final
+    // and immediately follows its user.message, and Session/Run committed facts
+    // remain the only execution authority.
     // Decision table:
     // D1 C1+C2 -> E1;
     // D2 manual run -> DeploymentRun XOR terminal branch with a Session id;
@@ -306,12 +308,12 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
             "name":"Dream maintenance",
             "initial_events":[
                 {
-                    "type":"system.message",
-                    "content":[{"type":"text","text":"deployment system directive"}]
-                },
-                {
                     "type":"user.message",
                     "content":[{"type":"text","text":"deployment seed event"}]
+                },
+                {
+                    "type":"system.message",
+                    "content":[{"type":"text","text":"deployment system directive"}]
                 }
             ],
             "schedule":{"type":"cron","expression":"*/15 * * * *","timezone":"UTC"}
@@ -331,21 +333,18 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     assert_eq!(status, StatusCode::OK, "D2: {manual}");
     assert!(manual["error"].is_null(), "D2 XOR: {manual}");
     let session_id = manual["session_id"].as_str().unwrap();
-    let observed = wait_for_session_events(&app, session_id, |events| {
-        let rendered = events.to_string();
-        rendered.contains("deployment system directive")
-            && rendered.contains("deployment seed event")
-    })
+    let events = wait_for_session_events(
+        &app,
+        session_id,
+        None,
+        "the deployment system directive and seed Event",
+        |events| {
+            let rendered = serde_json::to_string(events).expect("render Event projection");
+            rendered.contains("deployment system directive")
+                && rendered.contains("deployment seed event")
+        },
+    )
     .await;
-    let (status, events) = match observed {
-        Some(observed) => observed,
-        None => panic!(
-            "D3 initial Event did not commit; direct session={:?}, owner={:?}",
-            managed.get_session(session_id),
-            managed.resolve_owner(session_id).await
-        ),
-    };
-    assert_eq!(status, StatusCode::OK, "D3: {events}");
     let initial_types = events["data"]
         .as_array()
         .into_iter()
@@ -353,7 +352,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         .filter_map(|event| event["type"].as_str())
         .filter(|kind| matches!(*kind, "system.message" | "user.message"))
         .collect::<Vec<_>>();
-    assert_eq!(initial_types, vec!["system.message", "user.message"], "D3");
+    assert_eq!(initial_types, vec!["user.message", "system.message"], "D3");
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

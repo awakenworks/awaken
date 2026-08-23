@@ -5,17 +5,23 @@
 //! or policy. The same ports support the in-process local composition and a
 //! replaceable durable adapter.
 
+#[cfg(feature = "sqlite")]
 use parking_lot::Mutex;
 
 use std::collections::BTreeSet;
 #[cfg(feature = "sqlite")]
 use std::time::Duration;
 
+#[cfg(feature = "sqlite")]
 use async_trait::async_trait;
+#[cfg(feature = "sqlite")]
 use awaken_resource_contract::{
-    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError,
-    ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
-    ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourcePurgeRepository,
+    ResourceReclamationFence, ResourceReference, ResourceReferenceIndex,
+};
+use awaken_resource_contract::{
+    ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReferenceKind,
+    ResourceReferenceRecord, ResourceTarget,
 };
 #[cfg(feature = "sqlite")]
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};

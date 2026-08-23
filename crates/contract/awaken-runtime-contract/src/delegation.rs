@@ -266,11 +266,30 @@ pub trait RunDelegationService: Send + Sync {
     /// Model-visible delegation tool handled by this executor.
     fn tool_id(&self) -> &str;
 
+    /// Whether this service owns a resolved delegation-like capability.
+    ///
+    /// The default preserves single-tool adapters. A host that materializes the
+    /// reserved advisor as an ordinary durable child Run may additionally accept
+    /// that exact ToolKind without installing a second child executor.
+    fn handles_tool(&self, tool_id: &str) -> bool {
+        self.tool_id() == tool_id
+    }
+
     /// Extract the target Agent identity from this tool's model-visible payload.
     /// The runtime needs the identity only for durable lineage/budget checks; the
     /// tool implementation continues to own its schema and placement decision.
     fn target_agent_id(&self, arguments: &Value) -> Result<AgentId, DelegationExecutionError> {
         Ok(DelegationToolInput::try_from(arguments)?.agent_id)
+    }
+
+    /// Tool-aware target resolution for a multi-capability child service.
+    /// Existing Agent-delegation implementations keep the legacy decoder.
+    fn target_agent_id_for(
+        &self,
+        _tool_id: &str,
+        arguments: &Value,
+    ) -> Result<AgentId, DelegationExecutionError> {
+        self.target_agent_id(arguments)
     }
 
     /// True only when this exact published roster admitted its owner through the
@@ -285,6 +304,11 @@ pub trait RunDelegationService: Send + Sync {
     /// execute concurrently while retaining an ordered publication barrier.
     fn supports_parallel_completion(&self, _arguments: &Value) -> bool {
         false
+    }
+
+    /// Tool-aware terminal proof paired with [`Self::handles_tool`].
+    fn supports_parallel_completion_for(&self, _tool_id: &str, arguments: &Value) -> bool {
+        self.supports_parallel_completion(arguments)
     }
 
     /// Start or reconnect to the durable request identified by

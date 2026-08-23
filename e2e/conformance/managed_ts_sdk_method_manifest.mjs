@@ -1,17 +1,15 @@
-// Machine-owned method-level evidence for the official TypeScript Managed SDK.
-// Every public leaf has a real behavior owner plus stable negative/auth case ids.
+// Machine-owned method-level ownership for the official TypeScript Managed SDK.
+// Behavioral rule ids live beside the executable tests that implement them; this
+// index deliberately does not synthesize labels that are not executable proof.
 
-const group = (prefix, route, owner, methods, overrides = {}) =>
+const group = (prefix, route, owner, methods, overrides = {}, sdkHelpers = {}) =>
   methods.map((method) => {
     const sdkMethod = `${prefix}.${method}`;
     return {
       sdkMethod,
       route,
       owner: overrides[method] ?? owner,
-      happy: `${sdkMethod}:happy`,
-      missing: `${sdkMethod}:missing`,
-      invalidState: `${sdkMethod}:invalid-state`,
-      authWorkspace: `${sdkMethod}:auth-workspace`,
+      ...(sdkHelpers[method] ? { sdkHelper: sdkHelpers[method] } : {}),
     };
   });
 
@@ -33,7 +31,8 @@ export const MANAGED_TS_METHOD_MANIFEST = [
     ['create', 'retrieve', 'update', 'list', 'delete', 'archive']),
   ...group('sessions.events', '/v1/sessions/{session_id}/events', 'managed_e2e.mjs',
     ['list', 'send', 'stream', 'toolRunner'],
-    { toolRunner: 'managed_session_tool_runner_matrix_e2e.mjs' }),
+    { toolRunner: 'managed_session_tool_runner_matrix_e2e.mjs' },
+    { list: 'harness.mjs#waitForSessionEventReceipt' }),
   ...group('sessions.resources', '/v1/sessions/{session_id}/resources',
     'managed_resource_lifecycle_e2e.mjs', ['retrieve', 'update', 'list', 'delete', 'add'],
     { update: 'managed_session_resource_rotation_e2e.mjs' }),

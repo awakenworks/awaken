@@ -2,6 +2,8 @@ use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTic
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
+use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::operation::{
@@ -52,6 +54,7 @@ fn snapshot() -> RunRecoverySnapshot {
             "before",
         )],
         state: Vec::new(),
+        events: Vec::new(),
         resume_tickets: vec![RunResumeTicket {
             run_id,
             ticket: resume,
@@ -190,6 +193,14 @@ fn wrong_claim_cannot_install_or_advance_projection() {
 
 #[test]
 fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
+    // Causes: C1 the Coordinator committed one model observation but its reply
+    // was lost; C2 the Worker applies the duplicate receipt twice. Effects: E1
+    // the first receipt advances the cold snapshot; E2 the replay appends
+    // neither messages nor audit again; E3 the audit cursor remains fenced by
+    // the acknowledged store cursor. Rule R1=C1+C2=>E1+E2+E3.
+    // Constraint/Invariant: the committed operation receipt, not transport reply
+    // delivery, owns idempotency. Decision rule: apply the same receipt twice and
+    // require one projection advance followed by a no-op.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
     projection
@@ -208,7 +219,18 @@ fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
                 "after loss",
             )],
             state: Vec::new(),
-            events: Vec::new(),
+            events: vec![
+                RunEvent::ModelRequestCompleted(ModelRequestObservation {
+                    is_error: false,
+                    usage: TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 2,
+                        ..Default::default()
+                    },
+                    retry_count: 1,
+                })
+                .into(),
+            ],
         },
     };
     let receipt = CommitReceipt {
@@ -229,6 +251,21 @@ fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
     assert_eq!(current.thread_version, 2);
     assert_eq!(current.next_commit_ordinal, 2);
     assert_eq!(current.messages.len(), 2, "facts projected exactly once");
+    assert_eq!(current.events.len(), 1, "R1/E1-E2");
+    assert_eq!(current.events[0].sequence, 8_000, "R1/E3");
+    assert_eq!(
+        ModelRequestObservation::from_record(&current.events[0]).unwrap(),
+        Some(ModelRequestObservation {
+            is_error: false,
+            usage: TokenUsage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                ..Default::default()
+            },
+            retry_count: 1,
+        }),
+        "R1/E1"
+    );
 }
 
 struct ReceiptService {

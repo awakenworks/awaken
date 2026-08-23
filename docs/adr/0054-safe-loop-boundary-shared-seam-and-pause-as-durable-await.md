@@ -11,7 +11,7 @@
 - Builds on: [ADR-0040](0040-server-durable-ingress-integration.md) (durable
   dispatch / lease-recovery: await = persisted, resumable); the live-inbox
   "drain-at-boundary → commit" discipline (`awaken-runtime-contract::live_inbox`);
-  the ACP `RunExecutor` / `Supervisor` turn model (`awaken-run-executor-acp`,
+  the ACP `RunExecutor` / `Supervisor` Run model (`awaken-run-executor-acp`,
   `awaken-protocol-acp`).
 
 ## Context
@@ -20,8 +20,8 @@ Two operator-facing capabilities are asymmetric across execution paths, and the
 asymmetry has one root cause.
 
 **The safe loop boundary is a native-engine-only concept.** The native engine
-folds queued live input into the next turn at a *safe boundary* — the point in
-its loop where the current turn produced no tool calls and the run may either
+folds queued live input into the next Step at a *safe boundary* — the point in
+its loop where the current Step produced no tool calls and the Run may either
 continue, await, or end without violating the commit-at-boundary invariant. There,
 and only there, it drains the run's `LiveInbox`, re-identifies each message with
 the `{run_id}-inbox-{n}` id discipline, commits it into the transcript, and loops
@@ -46,7 +46,7 @@ to `None`. LiveInbox steer therefore works **only** on the direct-ingress native
 path (`host.context()` wires the slot); it silently has no effect on any run the
 worker drives. The ACP / external-CLI executor is doubly blind: `AcpRunExecutor::execute`
 also performs a **single** `Supervisor::supervise` and touches the inbox not at
-all (and creates, but never sends on, an `Injection` channel — mid-turn control
+all (and creates, but never sends on, an `Injection` channel — mid-Run control
 that cannot deliver a *prompt* into an opaque CLI).
 
 **There is no operator pause.** `LiveCommand` has only `Cancel{run_id}` and
@@ -72,7 +72,7 @@ on. It owns one decision function:
 
 ```rust
 pub enum BoundaryOutcome {
-    Continue { fold: Vec<Message> },              // fold these into the next turn
+    Continue { fold: Vec<Message> },              // fold these into the next Step
     Await { fold: Vec<Message>, reason: AwaitReason }, // commit these, then await
     Idle,                                         // no input, no pause → run-end guard
 }
@@ -107,16 +107,16 @@ no protocol type crosses into the worker.
   handles the three arms. `Continue` is behaviour-identical to today's
   drain→commit→continue; `Await(ManualPause)` is new; `Idle` falls through to the
   existing run-end guard. No behaviour change on the existing inbox path.
-- **ACP executor**: `execute` gains a **turn-boundary loop**. After a turn
+- **ACP executor**: `execute` gains a **Run-boundary loop**. After a Run
   commits, it calls `evaluate_boundary`; on `Continue` it commits the fold, makes
-  it the next turn's prompt, and **relaunches the CLI** (ACP already relaunches
-  per turn); on `Await` it commits and awaits; on `Idle` it ends. This is the
+  it the next Run's prompt, and **relaunches the CLI** (ACP already relaunches
+  per Run); on `Await` it commits and awaits; on `Idle` it ends. This is the
   native `continue` loop, expressed for an opaque backend. Steer now works for
   external CLIs **by construction**, not by remembering to wire it twice.
 
 The `Supervisor::Injection` channel is **not** used for steer: `Injection` is
-mid-turn control (cancel); steer is "the next turn's input", which belongs at the
-executor boundary, not inside a turn against an opaque CLI.
+mid-Run control (cancel); steer is "the next Run's input", which belongs at the
+executor boundary, not inside a Run against an opaque CLI.
 
 The inbox remains a **process-local attempt handle**. Wiring it into a durable
 worker context means that a locally hosted durable attempt reaches the same
@@ -140,15 +140,15 @@ exits the loop. Fail-closed: delivered to a run that is not active → `NoSubscr
 
 **Reuse, don't invent.** `AwaitReason::ManualPause` **already exists** (a
 reserved, currently-unused variant in `agent/awaiting.rs`) — pause was pre-modelled
-in the await vocabulary; we wire it, we do not add a variant. The `ResumeTicket`
-data model already fits a pause: `pending_tool` and `call_id` are both `Option`,
-so a ticket with `reason: ManualPause, pending_tool: None` is valid.
+in the await vocabulary; we wire it, we do not add a variant. The closed
+`ResumeTicket` data model already fits a pause explicitly through
+`AwaitTarget::Pause(PauseReason::Manual)`; no call or tool payload can be attached.
 
 **ACP must gain awaiting (new capability, not a conflict).** `AcpRunExecutor::execute`
 today only ever returns `RunState::Ended`; it has no resume-ticket machinery (that
 lives in the native engine). For an ACP run to honour `Await`, the executor needs a
-no-tool `ResumeTicket` constructor and a `RunState::Awaiting` return — the data model
-supports it, but the code path is new.
+closed pause-target `ResumeTicket` constructor and a `RunState::Awaiting` return —
+the data model supports it, but the code path is new.
 
 There is **no suspended-but-alive state.** The in-flight loop, at a boundary, only
 ever *commit-awaits* or *commit-continues*. Because the runtime commits at every
@@ -190,7 +190,7 @@ a person.
 
 Resume validates the ordinary `ResumeCommand` against that committed ticket. A
 replacement executor loads the durable ACP session id and sends one explicit
-continuation turn; a one-shot resolver applies the decision only to the exact held
+continuation invocation; a one-shot resolver applies the decision only to the exact held
 tool-call id. Any different or later request returns to current policy. This is the
 same at-least-once recovery posture as manual pause: opaque in-process ephemera is
 not durable, while correlation, authority, transcript, and session identity are.
@@ -225,8 +225,8 @@ not durable, while correlation, authority, transcript, and session identity are.
 - **Wire the inbox drain into the ACP executor directly, duplicating the native
   logic.** Rejected: re-creates the "remember to do it in both places" gap that
   caused this ADR; the invariant would live twice.
-- **Steer via the `Supervisor::Injection` channel (mid-turn).** Rejected: an opaque
-  CLI cannot take a new prompt mid-turn; steer is next-turn input, an executor-
+- **Steer via the `Supervisor::Injection` channel (mid-Run).** Rejected: an opaque
+  CLI cannot take a new prompt mid-Run; steer is next-Run input, an executor-
   boundary concern.
 - **Pause as an in-flight freeze (suspended-but-alive).** Rejected: introduces a
   fourth live state, holds the lease indefinitely, and fights the fencing model;
@@ -247,10 +247,10 @@ not durable, while correlation, authority, transcript, and session identity are.
    External message at the boundary.
 3. **Native convergence** — the engine boundary calls `evaluate_boundary` (pure
    refactor). Guarded by the existing live-inbox tests.
-4. **U1 — ACP boundary loop** — `execute` loops over turns through the seam. New
+4. **U1 — ACP boundary loop** — `execute` loops over Runs through the seam. New
    e2e: an External message offered to an ACP-fake run is delivered on the next
-   turn; `acp_*` suites do not regress. (This is the operator-blocking slice.)
+   Run; `acp_*` suites do not regress. (This is the operator-blocking slice.)
 5. **U2 — Pause / Resume** — `LiveCommand::Pause` arm + `await(ManualPause)` + lease
-   release; the ACP no-tool `ResumeTicket` constructor + `RunState::Awaiting`; durable
-   `resume` re-enqueue; fail-closed `NoSubscriber`; k3d: pause then resume on
-   another node.
+   release; the ACP closed pause-target `ResumeTicket` constructor +
+   `RunState::Awaiting`; durable `resume` re-enqueue; fail-closed `NoSubscriber`;
+   k3d: pause then resume on another node.

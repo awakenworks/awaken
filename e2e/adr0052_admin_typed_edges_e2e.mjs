@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer } from './harness.mjs';
+import { withScenarioServer, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39415);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -28,7 +28,10 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact Admin User receipt; C2=typed-edge final marker+terminal. E1=C2
+    // after C1. K: malformed tool inputs remain scenario-owned transcript
+    // effects. Decision T1 C1&&!C2=>retry; T2 C1+C2=>assert all edge rows.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: 'exercise typed authoring boundaries' }],
@@ -36,10 +39,17 @@ async function main() {
       betas: BETAS,
     });
 
-    const events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(event);
-    }
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'T1 exact typed-edge User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => JSON.stringify(delta).includes('ADMIN-TYPED-EDGES-DONE')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'T1 typed-edge Admin Run to commit its decision rows',
+    );
     const transcript = JSON.stringify(events);
     assert.ok(transcript.includes('ADMIN-TYPED-EDGES-DONE'));
     assert.ok(transcript.includes('expected struct AgentMcpServerBinding'));

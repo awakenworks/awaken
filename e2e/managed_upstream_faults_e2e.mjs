@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -26,15 +26,34 @@ async function runOneTurn(baseUrl, text) {
   // The send itself may reject when the turn fails terminally; the retry/error
   // paths run either way (that is what we are covering).
   let sendError = null;
+  let receiptId;
   try {
-    await client.beta.sessions.events.send(session.id, {
+    const receipt = await client.beta.sessions.events.send(session.id, {
       betas: BETAS,
       events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     });
+    receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'F1 exact upstream-fault User Event receipt');
   } catch (err) {
     sendError = err;
   }
-  const events = await listEvents(client, session.id).catch(() => []);
+  // C1=synchronous admission rejection; C2=accepted exact receipt; C3=retry
+  // succeeds; C4=permanent fault commits session.error. Effects: E1=C1 is the
+  // terminal HTTP oracle; E2=C2+C3/C4 yields a receipt-scoped committed effect.
+  // K: an accepted receipt cannot be converted back into HTTP failure. Decision
+  // F1 C1=>return rejection history; F2 C2+C3=>reply; F3 C2+C4=>session.error.
+  const events = receiptId === undefined
+    ? await listEvents(client, session.id).catch(() => [])
+    : (await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) =>
+        event.type === 'agent.message' || event.type === 'session.error'),
+      `F2/F3 upstream-fault Run for ${JSON.stringify(text)} to commit`,
+      { timeoutMs: 30_000 },
+    )).events;
   return { events, sendError };
 }
 

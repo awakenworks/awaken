@@ -287,6 +287,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         metadata: Default::default(),
         tools: Default::default(),
         budget: Default::default(),
+        initial_events: None,
     }
 }
 
@@ -403,6 +404,78 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     assert_eq!(pending.len(), 1, "R1/E4");
     assert_eq!(pending[0].object_id, "active", "R1/E4");
     assert_eq!(pending[0].event_type, "session.status_idled", "R1/E4");
+}
+
+#[tokio::test]
+async fn create_response_contains_a_fully_durable_initial_batch() {
+    // Constraint/Invariant: the authoritative Session inputs and repository CAS
+    // documented here remain the only decision source; no parallel ledger is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 create carries a nonempty, fully compiled batch;
+    // C2 root insertion succeeds; C3 no reconciliation step has run yet.
+    // Effects: E1 the original durable row contains every Event in order with
+    // stable ids and cursor zero; E2 the same row owns the batch activity epoch;
+    // E3 create returns Running; E4 no follow-up authoring write is required.
+    //
+    // | Rule | Batch | Insert | Reconciled | Effect |
+    // | I1 | nonempty | succeeds | no | E1+E2+E3+E4 |
+    // | I2 | exact replay | existing equal root | no | same durable payload |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("test repository"),
+    );
+    let app = application(
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let mut command = creation_command("initial-root");
+    command.initial_events = Some(
+        awaken_session_contract::SessionInitialEventPlan::compile(
+            "initial-root",
+            "initial:initial-root",
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "hello",
+                )],
+            }],
+        )
+        .expect("I1 valid plan"),
+    );
+
+    let created = app.create_session(command).await.expect("I1 create");
+    assert_eq!(
+        created.execution,
+        awaken_session_contract::SessionExecutionState::Running,
+        "I1/E3"
+    );
+    let durable = repository.get("initial-root").await.expect("I1/E1");
+    assert_eq!(durable, created, "I1/E1+E4 response follows durable root");
+    let batch = durable.event_batches.first().expect("I1/E1 batch");
+    assert!(
+        batch.events.iter().all(|entry| !entry.processed),
+        "I1/C3/E1"
+    );
+    assert_eq!(batch.events.len(), 1, "I1/E1");
+    assert!(
+        durable
+            .active_activity_epochs
+            .contains(&batch.wake_activity_epoch.expect("I1 create wake")),
+        "I1/E2"
+    );
+    let awaken_session_contract::SessionEventCommand::UserMessage {
+        operation_id,
+        run_id,
+        ..
+    } = &batch.events[0].event
+    else {
+        panic!("I1/E1 User Event")
+    };
+    assert_eq!(
+        run_id,
+        &awaken_session_contract::session_event_user_run_id("initial-root", operation_id),
+        "I1/E1 stable Run id"
+    );
 }
 
 #[tokio::test]

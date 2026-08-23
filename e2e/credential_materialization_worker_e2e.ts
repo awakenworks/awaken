@@ -8,12 +8,15 @@
 // P1 exact recipient + live expiry + payload marker + target + claim -> one
 // provider call, one committed reply; P2 any changed envelope/target dimension
 // -> no provider call; P3 no authority DB/seal configuration -> Worker starts
-// and leaves no authority files; P4 stale/malformed publication pin -> fail
-// closed while the same Worker remains available for P1; a non-null Session
+// and leaves no authority files; P4 structurally complete but stale or
+// unauthorized publication pin -> fail closed while the same Worker remains
+// available for P1; P5 the current seed owner commits its exact Run as Ended
+// and receives a durable receipt before terminal observation and Done removal;
+// a non-null Session
 // pointer is constrained to a real Managed Session and fails closed otherwise.
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
@@ -22,6 +25,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  claimedCommitRequestFixture,
+  terminalThreadCommitFixture,
+} from './fixtures/thread_commit_fixture.mjs';
+import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
@@ -57,46 +66,6 @@ function workerBinary(): string {
     targetName: 'awaken-worker',
     prebuiltEnvironmentName: WORKER_BIN_ENV,
   });
-}
-
-function runOpenSsl(args: string[], purpose: string): void {
-  const result = spawnSync('openssl', args, { encoding: 'utf8' });
-  assert.equal(
-    result.status,
-    0,
-    `${purpose}: ${result.stderr || result.stdout || `openssl exited ${result.status}`}`,
-  );
-}
-
-// Generate an ephemeral private CA and a server leaf with an IP SAN. The
-// Worker trusts only the projected CA file; no global TLS bypass is used.
-function createTlsIdentity(storage: string) {
-  const caKey = path.join(storage, 'worker-test-ca.key');
-  const caCertificate = path.join(storage, 'worker-test-ca.pem');
-  const serverKey = path.join(storage, 'worker-test-server.key');
-  const serverCsr = path.join(storage, 'worker-test-server.csr');
-  const serverCertificate = path.join(storage, 'worker-test-server.pem');
-  const extensions = path.join(storage, 'worker-test-server.ext');
-  fs.writeFileSync(extensions, [
-    'basicConstraints=critical,CA:FALSE',
-    'keyUsage=critical,digitalSignature,keyEncipherment',
-    'extendedKeyUsage=serverAuth',
-    'subjectAltName=IP:127.0.0.1',
-  ].join('\n'));
-  runOpenSsl([
-    'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',
-    '-subj', '/CN=Awaken E2E Worker CA', '-keyout', caKey, '-out', caCertificate,
-  ], 'create Worker E2E CA');
-  runOpenSsl([
-    'req', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-subj', '/CN=127.0.0.1',
-    '-keyout', serverKey, '-out', serverCsr,
-  ], 'create Worker E2E server CSR');
-  runOpenSsl([
-    'x509', '-req', '-sha256', '-days', '1', '-in', serverCsr,
-    '-CA', caCertificate, '-CAkey', caKey, '-CAcreateserial',
-    '-extfile', extensions, '-out', serverCertificate,
-  ], 'sign Worker E2E server certificate');
-  return { caCertificate, serverCertificate, serverKey };
 }
 
 async function startTlsProxy(
@@ -215,7 +184,15 @@ async function waitForReply(timeoutMs = 30_000) {
 
 async function main() {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-materialization-worker-'));
-  const tlsIdentity = createTlsIdentity(storage);
+  // TLS fixture rule T1: explicit IP SAN + the projected private CA lets the
+  // production Worker reach only this HTTPS edge. T2: product admission and
+  // certificate validation remain owned by WorkerUpstream/reqwest; this shared
+  // fixture creates bytes but supplies no trust default or bypass.
+  const tlsIdentity = createTlsIdentityFixture(storage, {
+    caCommonName: 'Awaken E2E Worker CA',
+    serverCommonName: '127.0.0.1',
+    subjectAltNames: ['IP:127.0.0.1'],
+  });
   const upstream = await startFakeAnthropic(PROVIDER_KEY);
   const management = spawnServer(
     'management',
@@ -272,44 +249,48 @@ async function main() {
     // Its activation thread remains the commit/history boundary; inventing a
     // Session pointer would correctly require a corresponding Control record.
     dispatch.session_thread_id = null;
-    const publishedCandidate = {
-      ...structuredClone(dispatch.activation.snapshot.resolved_spec.model_binding),
-      provider_identity_ref: 'anthropic',
-      model_ref: 'fake-worker-model',
-      backend_ref: 'genai',
-      provisioning: {
-        type: 'provider',
-        provider_ref: 'anthropic@1',
-        route_ref: 'fake-endpoint@1',
-        scope_id: credential.json.workspace_id,
-          credential: {
-            credential: { id: credential.json.id, revision: credential.json.version },
-            material_source: 'control_plane_reference',
-            envelope: {
-              type: 'sealed_for_worker',
-              envelope_ref: {
-                id: 'materialization-envelope',
-                payload_fingerprint: 'sha256:materialization-payload',
-              },
-              recipient: 'awaken.worker',
-              expires_at_unix_ms: Date.now() + 120_000,
-            },
-          usage: { type: 'provider_adapter' },
-          policy: {
-            allowed_plaintext_holders: [
-              { boundary: 'worker', trust_domain: 'awaken.worker' },
-              { boundary: 'workload', trust_domain: 'awaken.workload.acp' },
-            ],
-            model_exposure: 'forbidden',
+    // Raw Provider prerequisite: C-1 every required route coordinate is explicit
+    // and the Anthropic dialect agrees with its adapter -> E-1 typed ingress can
+    // enqueue the candidate for the materialization decision table below.
+    // Constraint/K: the fixture has no defaults or validator; Rust candidate
+    // deserialization owns structural validity. Rule P-1=C-1=>E-1; incomplete
+    // route bytes are owned by worker_transport, not duplicated at Worker use.
+    const publishedCandidate = nativeProviderCandidateFixture({
+      binding: {
+        ...structuredClone(dispatch.activation.snapshot.resolved_spec.model_binding),
+        provider_identity_ref: 'anthropic',
+        model_ref: 'fake-worker-model',
+        backend_ref: 'genai',
+      },
+      providerRef: 'anthropic@1',
+      routeRef: 'fake-endpoint@1',
+      scopeId: credential.json.workspace_id,
+      credential: {
+        credential: { id: credential.json.id, revision: credential.json.version },
+        material_source: 'control_plane_reference',
+        envelope: {
+          type: 'sealed_for_worker',
+          envelope_ref: {
+            id: 'materialization-envelope',
+            payload_fingerprint: 'sha256:materialization-payload',
           },
+          recipient: 'awaken.worker',
+          expires_at_unix_ms: Date.now() + 120_000,
         },
-        endpoint: {
-          adapter_kind: 'anthropic',
-          base_url: `${upstream.url}/v1/`,
-          upstream_model: 'fake-worker-model',
+        usage: { type: 'provider_adapter' },
+        policy: {
+          allowed_plaintext_holders: [
+            { boundary: 'worker', trust_domain: 'awaken.worker' },
+            { boundary: 'workload', trust_domain: 'awaken.workload.acp' },
+          ],
+          model_exposure: 'forbidden',
         },
       },
-    };
+      adapterKind: 'anthropic',
+      apiDialect: 'anthropic_messages',
+      baseUrl: `${upstream.url}/v1/`,
+      upstreamModel: 'fake-worker-model',
+    });
     dispatch.activation.snapshot.resolved_spec.model_binding = publishedCandidate;
     dispatch.activation.snapshot.resolved_spec.model_candidates = [];
     dispatch.inference_plaintext_holder = {
@@ -317,9 +298,12 @@ async function main() {
     };
     dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
 
-    // The same production Worker must fail closed for malformed or stale pins
-    // and continue draining. Dispatch retry policy retains failed attempts; none
-    // may reach a provider or fall back to catalog resolution.
+    // The same production Worker must fail closed for structurally complete but
+    // stale or unauthorized pins and continue draining. Structurally incomplete
+    // candidates stop at typed HTTP ingress in worker_transport; retaining that
+    // row here would invent a second, unreachable Worker-level oracle. Dispatch
+    // retry policy retains these admitted failures; none may reach a provider or
+    // fall back to catalog resolution.
     const invalidCandidates = [
       {
         ...structuredClone(publishedCandidate),
@@ -393,16 +377,6 @@ async function main() {
         ...structuredClone(publishedCandidate),
         provisioning: {
           ...structuredClone(publishedCandidate.provisioning),
-          endpoint: {
-            ...structuredClone(publishedCandidate.provisioning.endpoint),
-            upstream_model: '',
-          },
-        },
-      },
-      {
-        ...structuredClone(publishedCandidate),
-        provisioning: {
-          ...structuredClone(publishedCandidate.provisioning),
           credential: {
             credential: structuredClone(
               publishedCandidate.provisioning.credential.credential,
@@ -415,9 +389,7 @@ async function main() {
       },
     ];
     for (const [index, candidate] of invalidCandidates.entries()) {
-      if (candidate.provisioning.endpoint.upstream_model !== '') {
-        candidate.provisioning.endpoint.upstream_model = `invalid-${index}`;
-      }
+      candidate.provisioning.endpoint.upstream_model = `invalid-${index}`;
       const invalid = structuredClone(dispatch);
       const thread = `${THREAD}-invalid-${index}`;
       invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
@@ -430,6 +402,32 @@ async function main() {
       assert.equal(invalidEnqueue.status, 200, invalidEnqueue.text);
     }
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);
+
+    // P5: enqueueing the cloned materialization Run does not commit the seed
+    // Run. Preserve the canonical commit -> durable receipt -> Done ordering;
+    // negative recovery partitions remain owned by the Rust settlement table.
+    const seedCommit = claimedCommitRequestFixture({
+      claimed,
+      commit: terminalThreadCommitFixture({
+        runId: claimed.lease.run_id,
+        threadId: claimed.request.activation.thread_id,
+        messageId: `seed-terminal-${claimed.lease.run_id}`,
+        text: 'seed ownership completed before credential materialization',
+      }),
+      ordinal: 0,
+      expectedThreadVersion: 0,
+    });
+    const seedCommitted = await request(
+      'POST',
+      '/v1/worker/commit-claimed',
+      { ...seedCommit, identity: seed.identity },
+      seed.id,
+    );
+    assert.equal(seedCommitted.status, 200, seedCommitted.text);
+    assert.ok(
+      typeof seedCommitted.json.commit_sequence === 'number',
+      'P5 durable seed receipt precedes Done settlement',
+    );
     const settled = await request('POST', '/v1/worker/dispatch/settle', {
       run_id: claimed.lease.run_id,
       epoch: claimed.lease.epoch,

@@ -122,7 +122,7 @@ pub struct GradingInput {
     pub transcript_snapshot: TranscriptSnapshotRef,
     pub transcript_ranges: Vec<TranscriptRange>,
     /// Materialized messages for `transcript_ranges`, in range order. This cache
-    /// avoids giving the Judge unrelated historical turns.
+    /// avoids giving the Judge unrelated historical messages.
     pub transcript: Vec<Message>,
     /// Global half-open Worker transcript range retained for Evaluation/report
     /// compatibility; it matches the single range above.
@@ -238,6 +238,29 @@ pub enum ExecutionFailure {
     GraderUnavailable(String),
     InvalidGraderOutput(String),
     Persistence(String),
+}
+
+impl ExecutionFailure {
+    /// Stable neutral classification for protocol adapters. These codes classify
+    /// the Outcome stage that failed; provider-specific categories remain owned
+    /// by the committed Run failure and are not reconstructed from its message.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::WorkerFailed(_) => "outcome_worker_failed",
+            Self::GraderUnavailable(_) => "outcome_grader_unavailable",
+            Self::InvalidGraderOutput(_) => "outcome_invalid_grader_output",
+            Self::Persistence(_) => "outcome_persistence_failed",
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::WorkerFailed(message)
+            | Self::GraderUnavailable(message)
+            | Self::InvalidGraderOutput(message)
+            | Self::Persistence(message) => message,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

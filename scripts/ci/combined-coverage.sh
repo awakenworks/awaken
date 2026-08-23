@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 # Combined test coverage: the Rust workspace test suite AND the Node/TS e2e suite
 # over one instrumented build, reported together. This is the project's true test
-# coverage — the e2e-only figure (see e2e/coverage.sh) understates it because the
+# coverage — the e2e-only figure (see scripts/ci/e2e-coverage.sh) understates it
+# because the
 # runtime-core error/edge paths are covered by Rust unit tests, not by the HTTP
 # e2e. Two figures are printed: overall (every linked crate) and e2e-surface
 # (server + protocols + config + runtime-core + ingress), the same principled
 # exclusions as scripts/ci/e2e-coverage.sh.
 #
-# Live-model e2e arms run only when ANTHROPIC_API_KEY (or KIMI_API_KEY) is set,
-# e.g. the Kimi coding endpoint:
-#   export ANTHROPIC_API_KEY=sk-...           ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/
-#   export ANTHROPIC_MODEL=kimi-for-coding
-#
 # Usage: scripts/ci/combined-coverage.sh   (from the repo root)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+source scripts/ci/_provider_environment.sh
+awaken_unset_ambient_api_keys
 
 # A dedicated, fresh target dir so the instrumented build is not shadowed by the
 # shared cargo target-dir's non-instrumented binary.

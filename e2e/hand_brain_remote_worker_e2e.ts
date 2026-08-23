@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-expect-error shared JavaScript harness intentionally has no declarations.
-import { childDirectories, onlyChildDirectory, pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { childDirectories, onlyChildDirectory, pass, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
 // @ts-expect-error shared JavaScript fixture intentionally has no declarations.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
@@ -72,54 +72,55 @@ function managedContainerIds(): Set<string> {
   return new Set(result.stdout.split('\n').filter(Boolean));
 }
 
-async function events(client: Anthropic, sessionId: string): Promise<any[]> {
-  const observed: any[] = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    observed.push(event);
-  }
-  return observed;
-}
-
-async function send(client: Anthropic, sessionId: string, prompt: string): Promise<void> {
-  await client.beta.sessions.events.send(
-    sessionId,
-    { events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }], betas: BETAS },
-    { signal: AbortSignal.timeout(CONTAINER ? 60_000 : 15_000) },
-  );
-}
-
 async function sendAndObserveDispatch(
   client: Anthropic,
   sessionId: string,
   prompt: string,
-): Promise<any> {
-  let settled = false;
-  let requestError: unknown;
-  // Attach the rejection handler before observation begins: a container cold
-  // start may outlive one poll interval, but it must not become an unhandled
-  // rejection that bypasses the dispatch/Worker diagnostics below.
-  const request = send(client, sessionId, prompt)
-    .catch((error) => { requestError = error; })
-    .finally(() => { settled = true; });
-  let last: any;
-  const deadline = Date.now() + (CONTAINER ? 75_000 : 30_000);
-  while (!settled) {
-    assert.ok(Date.now() < deadline, `timed out observing durable dispatch for ${sessionId}`);
-    const response = await json('GET', `/v1/durable/threads/${sessionId}/dispatches`);
-    if (response.dispatches?.[0]) last = response.dispatches[0];
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  expectedSandboxBound: boolean,
+  predicate: (observation: { events: any[]; delta: any[] }) => boolean,
+  description: string,
+): Promise<{ dispatch: any; events: any[] }> {
+  const receipt = await client.beta.sessions.events.send(
+    sessionId,
+    { events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }], betas: BETAS },
+    { signal: AbortSignal.timeout(CONTAINER ? 60_000 : 15_000) },
+  );
+  const receiptId = receipt?.data?.[0]?.id;
+  if (typeof receiptId !== 'string' || receiptId.length === 0) {
+    throw new TypeError('remote Worker send returned no exact Managed Event receipt id');
   }
-  await request;
-  if (requestError) throw requestError;
-  assert.ok(last, `observed in-flight durable dispatch for ${sessionId}`);
-  return last;
+
+  // Dispatch/receipt rule D0: C1=POST returns one exact durable receipt;
+  // C2=the lifecycle supervisor later exposes its durable dispatch with the
+  // scenario's expected Sandbox-binding state; C3=that receipt becomes processed;
+  // C4=the caller's Brain/Hand effect and idle commit after it. Effects: E1=capture
+  // C2 independently of POST liveness; E2=return only the exact C1-scoped history
+  // that satisfies C3+C4. Constraint K1: POST acknowledgement does not imply that
+  // C2 already exists, and the Hand rule cannot capture its earlier unbound row;
+  // both observers are read-only and never drive the Worker. Rules: !C1=>fail;
+  // C1&&!C2=>poll the dispatch authority; C1+C2&&!(C3+C4)=>poll exact-receipt
+  // history; all=>E1+E2.
+  const observedDispatch = await waitForValue(
+    () => dispatch(sessionId),
+    (item: any) => item?.sandbox_bound === expectedSandboxBound,
+    `timed out observing durable dispatch for ${sessionId}`,
+    { timeoutMs: CONTAINER ? 75_000 : 30_000, pollMs: 10 },
+  );
+  const observation = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    predicate,
+    description,
+    { timeoutMs: CONTAINER ? 75_000 : 30_000, pollMs: 10 },
+  );
+  return { dispatch: observedDispatch, events: observation.events };
 }
 
-async function dispatch(sessionId: string): Promise<any> {
+async function dispatch(sessionId: string): Promise<any | undefined> {
   const response = await json('GET', `/v1/durable/threads/${sessionId}/dispatches`);
-  const item = response.dispatches?.[0];
-  assert.ok(item, `durable dispatch exists for ${sessionId}`);
-  return item;
+  return response.dispatches?.[0];
 }
 
 async function json(method: string, route: string, body?: unknown): Promise<any> {
@@ -203,11 +204,21 @@ async function main(): Promise<void> {
       betas: BETAS,
     });
     try {
-      var brainDispatch = await sendAndObserveDispatch(client, brain.id, 'brain');
+      var brainObservation = await sendAndObserveDispatch(
+        client,
+        brain.id,
+        'brain',
+        false,
+        ({ delta }) => delta.some(
+          (event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add',
+        ) && delta.some((event) => event.type === 'session.status_idle'),
+        `${RULES.brain} exact receipt reaches MCP and idle`,
+      );
     } catch (error) {
       throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(brain.id))}\nworker=${workerOutput}`);
     }
-    const brainEvents = await events(client, brain.id);
+    const brainDispatch = brainObservation.dispatch;
+    const brainEvents = brainObservation.events;
     assert.ok(
       brainEvents.some((event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add'),
       `${RULES.brain} remote Worker executes MCP in Brain: ${JSON.stringify(brainEvents)}\n${workerOutput}`,
@@ -228,11 +239,22 @@ async function main(): Promise<void> {
       betas: BETAS,
     });
     try {
-      var handDispatch = await sendAndObserveDispatch(client, hand.id, 'hand');
+      var handObservation = await sendAndObserveDispatch(
+        client,
+        hand.id,
+        'hand',
+        true,
+        ({ delta }) => delta.some(
+          (event) => event.type === 'agent.tool_result'
+            && !JSON.stringify(event.content).includes('sandbox executor unavailable'),
+        ) && delta.some((event) => event.type === 'session.status_idle'),
+        `${RULES.hand} exact receipt reaches Hand result and idle`,
+      );
     } catch (error) {
       throw new Error(`${error}\ndispatch=${JSON.stringify(await dispatch(hand.id))}\nworker=${workerOutput}`);
     }
-    const handEvents = await events(client, hand.id);
+    const handDispatch = handObservation.dispatch;
+    const handEvents = handObservation.events;
     assert.ok(
       handEvents.some((event) => event.type === 'agent.tool_use' && event.name === 'read'),
       `${RULES.hand} remote Hand call is visible: ${JSON.stringify(handEvents)}\n${workerOutput}`,

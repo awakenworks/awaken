@@ -10,7 +10,7 @@ use awaken_runtime_contract::llm::{
 /// Stable, non-provider identity of the inert placeholder.
 pub const UNCONFIGURED_MODEL_REF: &str = "unconfigured";
 
-/// A deterministic, provider-free executor that ends the turn with guidance.
+/// A deterministic, provider-free executor that ends the Step with guidance.
 pub struct NoModelConfiguredExecutor;
 
 #[async_trait::async_trait]

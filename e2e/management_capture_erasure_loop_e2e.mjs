@@ -6,15 +6,19 @@
 //
 // Cause graph / decision table:
 //   C1 typed deployment ceiling=full; C2 telemetry consent granted;
-//   C3 Managed request carries removed user_profile_id; C4 erasure is requested;
-//   C5 erasure is retried.
+//   C3 strict Managed JSON carries removed user_profile_id; C4 erasure is
+//   requested; C5 erasure is retried.
 //
 // | Rule | C1 | C2 | C3 | C4 | C5 | Result |
 // |---|---|---|---|---|---|---|
-// | E1 | Y | Y | Y | N | N | 400; no event and no subject-owned content |
+// | E1 | Y | Y | Y | N | N | 400; no append, Run, or subject-owned capture |
 // | E2 | Y | Y | N | N | N | official event is accepted without attribution |
 // | E3 | Y | Y | Y | Y | N | zero-effect durable erasure receipt |
 // | E4 | Y | Y | Y | Y | Y | same durable receipt; no second deletion effect |
+//
+// Constraint K: `anthropic-user-profile-id` is the canonical request-context
+// carrier and is therefore not an invalid envelope extension. E1 places the
+// forbidden field in the strict JSON root; E2 omits both field and header.
 //
 // Run: (from e2e/)  node management_capture_erasure_loop_e2e.mjs
 
@@ -27,6 +31,7 @@ import {
   USER_PROFILES_BETA,
   deploymentEnv,
   withRealServer,
+  waitForSessionEventReceipt,
   pass,
 } from './harness.mjs';
 import { sqliteRows } from './sqlite.mjs';
@@ -72,16 +77,13 @@ async function main() {
         headers: {
           'content-type': 'application/json',
           'anthropic-beta': BETAS.join(','),
-          // The official Managed event JSON has no `user_profile_id` field.
-          // Attribution is request context, carried using the same header that
-          // Anthropic's Messages SDK projects from its `user_profile_id` option.
-          'anthropic-user-profile-id': 'dsub_full',
         },
         body: JSON.stringify({
           events: [{
             type: 'user.message',
             content: [{ type: 'text', text: 'please capture this content' }],
           }],
+          user_profile_id: 'dsub_full',
         }),
       });
       assert.equal(rejected.status, 400, `removed extension status ${rejected.status}`);
@@ -92,17 +94,21 @@ async function main() {
       }
       assert.equal(before.length, 0, 'rejected envelope must not append an event');
 
-      await client.beta.sessions.events.send(session.id, {
+      const receipt = await client.beta.sessions.events.send(session.id, {
         betas: BETAS,
         events: [{
           type: 'user.message',
           content: [{ type: 'text', text: 'official unattributed content' }],
         }],
       });
-      const events = [];
-      for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-        events.push(event);
-      }
+      const { events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+        'E2 official unattributed receipt reaches its committed reply',
+      );
       assert.ok(
         JSON.stringify(events).includes('official unattributed content'),
         `turn did not complete: ${JSON.stringify(events)}`,

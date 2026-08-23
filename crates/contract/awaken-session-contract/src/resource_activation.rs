@@ -125,7 +125,7 @@ impl SessionResourceState {
     #[must_use]
     pub fn from_active(active: ResolvedSessionResources) -> Self {
         Self {
-            revision: u64::from(!active.inputs().is_empty()),
+            revision: u64::from(!active.inputs().is_empty() || !active.skills().is_empty()),
             active,
             pending: None,
             activations: Vec::new(),
@@ -359,6 +359,27 @@ impl SessionResourceState {
             })
     }
 
+    /// Return the one installed Runtime generation as an inseparable revision
+    /// and manifest pair. `revision` remains a monotonic attempted-generation
+    /// watermark after rollback, so callers must not pair it with `active`
+    /// independently.
+    #[must_use]
+    pub fn active_generation(&self) -> (u64, &ResolvedSessionResources) {
+        (self.active_revision(), &self.active)
+    }
+
+    /// Return the generation that the Session currently asks realization to
+    /// converge. A pending replacement owns the latest revision; otherwise the
+    /// installed generation remains authoritative even after a failed newer
+    /// attempt advanced the monotonic watermark.
+    #[must_use]
+    pub fn desired_generation(&self) -> (u64, &ResolvedSessionResources) {
+        match &self.pending {
+            Some(pending) => (self.revision, pending),
+            None => self.active_generation(),
+        }
+    }
+
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
         self.pending.is_some()
@@ -449,39 +470,86 @@ mod tests {
         assert_eq!(state.activations[1].state, ActivationState::Active);
     }
 
-    /// Visible-generation cause/effect table. C1=pending replacement; C2=an
-    /// activation record exists. E1 reports the installed generation, never the
-    /// merely desired generation. Legacy rows use the same revision arithmetic.
+    /// Visible-generation cause/effect graph. C1=active mounted inputs; C2=active
+    /// Skill pins; C3=pending replacement; C4=input activation record exists.
+    /// E1 an empty active manifest stays at legacy generation zero; E2 either
+    /// resource family preserves generation one; E3 reports the installed
+    /// generation, never the merely desired generation. Constraints: input and
+    /// Skill collections are independent, but either makes the active manifest
+    /// non-empty; revision and manifest remain one selected generation pair.
     ///
-    /// | Rule | C1 | C2 | Effect |
-    /// |---|---|---|---|
-    /// | V1 | no | no | current revision |
-    /// | V2 | yes | no | revision - 1 |
-    /// | V3 | yes | yes | Active/Releasing activation revision |
+    /// | Rule | C1 | C2 | C3 | C4 | Effect |
+    /// |---|---|---|---|---|---|
+    /// | V0 | no | no | no | no | E1: revision 0 |
+    /// | V1 | yes | no | no | no | E2: revision 1 |
+    /// | V2 | no | yes | no | no | E2: revision 1 |
+    /// | V3 | yes | no | yes | no | E3: revision 1 |
+    /// | V4 | yes | no | yes | yes | E3: activation revision 1 |
     #[test]
     fn active_revision_tracks_the_visible_manifest_during_replacement() {
+        assert_eq!(
+            SessionResourceState::from_active(ResolvedSessionResources::default())
+                .active_revision(),
+            0,
+            "V0/E1"
+        );
+
         let mut legacy = SessionResourceState::from_active(manifest("legacy"));
-        assert_eq!(legacy.active_revision(), 1, "V1");
+        assert_eq!(legacy.active_revision(), 1, "V1/E2");
+
+        let skill_only = ResolvedSessionResources::try_new(
+            Vec::new(),
+            vec![crate::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "skill-only".into(),
+                version: 1,
+                bundle_sha256: "sha256-skill-only-v1".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            SessionResourceState::from_active(skill_only).active_revision(),
+            1,
+            "V2/E2"
+        );
+
         legacy.prepare("session-legacy", manifest("next")).unwrap();
-        assert_eq!(legacy.active_revision(), 1, "V2");
+        assert_eq!(legacy.active_revision(), 1, "V3/E3");
 
         let mut activated = SessionResourceState::default();
         activated.prepare("session-1", manifest("a")).unwrap();
         activated.commit().unwrap();
         activated.prepare("session-1", manifest("b")).unwrap();
-        assert_eq!(activated.active_revision(), 1, "V3");
+        assert_eq!(activated.active_revision(), 1, "V4/E3");
     }
 
+    /// Rollback generation cause/effect graph: C1 generation 1 is installed;
+    /// C2 generation 2 is pending; C3 its attempt fails and rolls back. Effects:
+    /// E1 pending pairs desired generation 2 while active remains generation 1;
+    /// E2 rollback retains watermark 2 but pairs both views with generation 1;
+    /// E3 only generation 2 becomes Failed.
+    ///
+    /// | Rule | C1 | C2 | C3 | Watermark | Active pair | Desired pair |
+    /// |---|---|---|---|---|---|---|
+    /// | R1 | yes | yes | no | 2 | (1, a) | (2, b) |
+    /// | R2 | yes | cleared | rollback | 2 | (1, a) | (1, a) |
+    /// Constraints/invariants: rollback cannot lower the generation watermark,
+    /// mutate the prior active manifest, or fail a generation that was active.
     #[test]
     fn rollback_restores_old_authority_and_fails_only_new_generation() {
         let mut state = SessionResourceState::default();
         state.prepare("session-1", manifest("a")).unwrap();
         state.commit().unwrap();
         state.prepare("session-1", manifest("b")).unwrap();
+        assert_eq!(state.active_generation(), (1, &manifest("a")), "R1/E1");
+        assert_eq!(state.desired_generation(), (2, &manifest("b")), "R1/E1");
         state.start_attempt().unwrap();
         state.rollback("clone failed").unwrap();
+        assert_eq!(state.revision, 2, "R2/E2");
         assert_eq!(state.active, manifest("a"));
         assert!(state.pending.is_none());
+        assert_eq!(state.active_generation(), (1, &manifest("a")), "R2/E2");
+        assert_eq!(state.desired_generation(), (1, &manifest("a")), "R2/E2");
         assert_eq!(state.activations[0].state, ActivationState::Active);
         assert_eq!(state.activations[1].state, ActivationState::Failed);
         assert_eq!(

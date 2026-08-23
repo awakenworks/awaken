@@ -32,20 +32,20 @@ impl SessionToolConfiguration {
                             .iter()
                             .find(|tool| tool.name == name)
                         {
-                            None => Some(ToolPolicyOverride {
-                                name: name.to_string(),
-                                policy: ToolExecutionPolicy {
+                            None => Some(ToolPolicyOverride::new(
+                                name,
+                                ToolExecutionPolicy {
                                     enabled: false,
                                     permission: ToolPermissionRequirement::AlwaysAllow,
                                 },
-                            }),
-                            Some(tool) if tool.ask => Some(ToolPolicyOverride {
-                                name: name.to_string(),
-                                policy: ToolExecutionPolicy {
+                            )),
+                            Some(tool) if tool.ask => Some(ToolPolicyOverride::new(
+                                name,
+                                ToolExecutionPolicy {
                                     enabled: true,
                                     permission: ToolPermissionRequirement::AlwaysAsk,
                                 },
-                            }),
+                            )),
                             Some(_) => None,
                         }
                     })

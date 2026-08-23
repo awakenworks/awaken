@@ -102,6 +102,10 @@ pub(super) async fn prepare_runtime_routers(
     let executable_environment_registrar = executable_environment_wiring.registrar;
     let executable_environment_projection_refresher =
         executable_environment_wiring.projection_refresher;
+    let executable_projection_refresh = executable_projection_refresh::shared(
+        executable_agent_projection_refresher,
+        executable_environment_projection_refresher,
+    );
     let executable_environment_private_router = executable_environment_wiring.private_router;
     let executable_environment_image_builds = executable_environment_wiring.image_builds;
     let coordinator_content_eraser =
@@ -397,34 +401,21 @@ pub(super) async fn prepare_runtime_routers(
     // against this Coordinator's sole Managed Session repository; split Control
     // neither mirrors that repository nor owns a second token directory.
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
-    let webhook_notifier: Arc<dyn awaken_session_contract::LifecycleFactNotifier> =
+    let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
-                let delivery = awaken_webhook_managed::config_plane_lifecycle_delivery(
+                awaken_webhook_managed::config_plane_lifecycle_delivery(
                     webhook_store,
                     secrets,
                     Some(org_id.clone()),
-                );
-                Arc::new(
-                    awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
-                        delivery,
-                        sessions.clone(),
-                        &process.service_lifecycle,
-                    ),
                 )
             }
-            None => Arc::new(
-                awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
-                    process
-                        .control_service
-                        .as_ref()
-                        .expect("split Coordinator requires Control webhook delivery")
-                        .webhooks
-                        .clone(),
-                    sessions.clone(),
-                    &process.service_lifecycle,
-                ),
-            ),
+            None => process
+                .control_service
+                .as_ref()
+                .expect("split Coordinator requires Control webhook delivery")
+                .webhooks
+                .clone(),
         };
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
@@ -579,7 +570,7 @@ pub(super) async fn prepare_runtime_routers(
     let mut session_application =
         awaken_session_application::SessionApplication::new_with_configuration(
             managed_host.clone(),
-            managed_host,
+            managed_host.clone(),
             sessions.clone(),
             environment_execution.clone(),
             awaken_session_application::SessionApplicationConfiguration {
@@ -603,6 +594,11 @@ pub(super) async fn prepare_runtime_routers(
         resource_authorities.reclamation(),
         resource_authorities.file_catalog(),
     );
+    if let Some(refresh) = executable_projection_refresh.clone() {
+        session_application
+            .set_executable_projection_refresh(refresh)
+            .expect("executable projection refresh binds once before Session sharing");
+    }
     // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
     // published agent's model sees the authoritative config-plane truth (M2).
     session_application.set_config_source(executable_agent_catalog.clone());
@@ -613,16 +609,24 @@ pub(super) async fn prepare_runtime_routers(
             ),
         ));
     }
-    session_application.set_lifecycle_notifier(webhook_notifier);
     if let Some(provider) = process.managed_services.list_price_provider.clone() {
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
-    let mut managed_state = ManagedState::from_application(session_application.clone());
+    awaken_coordinator::install_managed_agent_coordination(&managed_host, &session_application)
+        .expect("Managed Session coordination application binds before dispatch starts");
+    let mut managed_state =
+        ManagedState::from_application(session_application.clone(), environment_execution.clone());
     if let Some(policy) = process.managed_services.inference_geo_policy.clone() {
         managed_state = managed_state.with_inference_geo_policy(policy);
     }
     let managed_state = Arc::new(managed_state);
+    awaken_coordinator::install_managed_lifecycle_delivery(
+        &managed_state,
+        Some(webhook_delivery),
+        &process.service_lifecycle,
+    )
+    .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
     if let Some(vault_state) = local_vault_state {
         let local_target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget> =
             managed_state.clone();
@@ -681,6 +685,7 @@ pub(super) async fn prepare_runtime_routers(
             deployment_application,
             deployment_session_launcher,
             executable_agents: executable_agent_catalog,
+            executable_projection_refresh,
             environments: environment_execution,
             sessions,
             default_workspace: platform_workspace.clone(),
@@ -710,13 +715,9 @@ pub(super) async fn prepare_runtime_routers(
         deployment_remote_iam,
         Some(managed_rate_limiter.clone()),
     );
-    let data = executable_projection_refresh::layer(
-        coordinator_data
-            .merge(coordinator_managed)
-            .merge(coordinator_management),
-        executable_agent_projection_refresher,
-        executable_environment_projection_refresher,
-    );
+    let data = coordinator_data
+        .merge(coordinator_managed)
+        .merge(coordinator_management);
     let (flat, mcp_export) = match role {
         config::Role::AllInOne => (data.merge(control), mcp_export),
         config::Role::Coordinator => (data, Router::new()),

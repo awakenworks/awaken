@@ -49,7 +49,7 @@ impl RunState {
 /// terminal classification lives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndCause {
-    /// The model produced a final text turn with no further tool calls.
+    /// The model produced final text with no further tool calls.
     NaturalEnd,
     /// The model/tool loop hit its step ceiling without ending naturally.
     MaxSteps,

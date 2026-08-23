@@ -33,8 +33,6 @@ impl RunApplication for NoopRuntime {
                 "done",
             )],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

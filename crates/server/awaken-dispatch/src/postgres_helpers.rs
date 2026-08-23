@@ -1,5 +1,6 @@
 //! Focused PostgreSQL transaction helpers shared by dispatch command paths.
 
+use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -66,14 +67,15 @@ pub(super) async fn append_pending_transaction(
 ) -> Result<bool, DispatchError> {
     let inserted = sqlx::query(&format!(
         "INSERT INTO {prefix}_pending \
-         (message_id, run_id, thread_id, correlation_id, result, available_at) \
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
+         (message_id, run_id, thread_id, correlation_id, result, context_messages, available_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (message_id) DO NOTHING"
     ))
     .bind(&input.message_id)
     .bind(&input.run_id.0)
     .bind(&input.thread_id.0)
     .bind(&input.correlation_id)
     .bind(Json(&input.result))
+    .bind(Json(&input.context_messages))
     .bind(input.available_at_ms.map(crate::clock::db_millis))
     .execute(&mut **tx)
     .await
@@ -91,7 +93,7 @@ pub(super) async fn append_pending_transaction(
     }
 }
 
-async fn load_pending_input<'e, E>(
+pub(super) async fn load_pending_input<'e, E>(
     executor: E,
     prefix: &str,
     message_id: &str,
@@ -100,7 +102,7 @@ where
     E: Executor<'e, Database = Postgres>,
 {
     let row = sqlx::query(&format!(
-        "SELECT run_id, thread_id, correlation_id, result, available_at \
+        "SELECT run_id, thread_id, correlation_id, result, context_messages, available_at \
          FROM {prefix}_pending WHERE message_id = $1"
     ))
     .bind(message_id)
@@ -119,6 +121,11 @@ where
                 ))
             })?;
         let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+        let context_messages = row
+            .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
+            .map_err(reject)?
+            .map(|Json(messages)| messages)
+            .unwrap_or_default();
         Ok(PendingInput {
             message_id: message_id.to_string(),
             run_id: RunId(row.try_get("run_id").map_err(reject)?),
@@ -126,6 +133,7 @@ where
             correlation_id: row.try_get("correlation_id").map_err(reject)?,
             available_at_ms: available_at,
             result,
+            context_messages,
         })
     })
     .transpose()

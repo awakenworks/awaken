@@ -15,6 +15,8 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 TEST_MODULE = re.compile(r"^\s*#\s*\[\s*cfg\s*\([^]]*\btest\b[^]]*\)\s*\]")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+MOVED_ADDITION_PREFIXES = ("\x1b[1;36m+\x1b[m", "\x1b[36m+\x1b[m")
 
 
 def run(*args: str) -> str:
@@ -64,11 +66,99 @@ def test_only_lines(relative: str) -> set[int]:
     return set()
 
 
-def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[int]]:
+def added_and_moved_lines_from_diff(
+    document: str,
+) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
+    """Return every addition and Git's moved subset from one full-tree diff."""
+
+    added: dict[str, set[int]] = collections.defaultdict(set)
+    moved: dict[str, set[int]] = collections.defaultdict(set)
+    relative: str | None = None
+    new_line: int | None = None
+    destination_header_seen = False
+    for raw in document.splitlines():
+        line = ANSI.sub("", raw)
+        if line.startswith("diff --git "):
+            relative = None
+            new_line = None
+            destination_header_seen = False
+            continue
+        if new_line is None and line.startswith("+++ "):
+            relative = None
+            new_line = None
+            destination_header_seen = True
+            if line == "+++ /dev/null":
+                continue
+            if not line.startswith("+++ b/"):
+                raise ValueError(f"unexpected Git destination path: {line!r}")
+            candidate = line.removeprefix("+++ b/").partition("\t")[0]
+            path = pathlib.PurePosixPath(candidate)
+            if not candidate or path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"unsafe Git destination path: {candidate!r}")
+            relative = path.as_posix()
+            continue
+        match = HUNK.match(line)
+        if match:
+            if not destination_header_seen:
+                raise ValueError("Git diff hunk has no destination path")
+            new_line = int(match.group(1))
+            continue
+        if relative is None or new_line is None:
+            continue
+        if line.startswith("+"):
+            added[relative].add(new_line)
+            if raw.startswith(MOVED_ADDITION_PREFIXES):
+                moved[relative].add(new_line)
+            new_line += 1
+        elif line.startswith("-"):
+            continue
+        elif not line.startswith("\\ No newline at end of file"):
+            new_line += 1
+    return dict(added), dict(moved)
+
+
+def added_and_moved_lines(
+    baseline: str,
+) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
+    """Ask one Git diff for additions and conservative whole-block moves."""
+
+    document = run(
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "color.diff.new=green",
+        "-c",
+        "color.diff.newMoved=bold cyan",
+        "-c",
+        "color.diff.newMovedAlternative=bold cyan",
+        "diff",
+        "--find-renames=50%",
+        "--no-relative",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--color=always",
+        "--color-moved=blocks",
+        "--color-moved-ws=allow-indentation-change",
+        "--unified=0",
+        baseline,
+        "--",
+        "crates",
+    )
+    return added_and_moved_lines_from_diff(document)
+
+
+def changed_lines(
+    base: str,
+    ignore: re.Pattern[str] | None,
+) -> tuple[dict[str, set[int]], int]:
     baseline = diff_base(base)
-    names = run("git", "diff", "--name-only", "--diff-filter=ACMR", baseline, "--")
+    added, moved = added_and_moved_lines(baseline)
     result: dict[str, set[int]] = {}
-    for relative in names.splitlines():
+    moved_excluded = 0
+    for relative, lines in sorted(added.items()):
         if not (
             relative.startswith("crates/")
             and "/src/" in relative
@@ -77,20 +167,14 @@ def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[in
             continue
         if ignore is not None and ignore.search(relative):
             continue
-        lines: set[int] = set()
-        diff = run("git", "diff", "--unified=0", baseline, "--", relative)
-        for line in diff.splitlines():
-            match = HUNK.match(line)
-            if not match:
-                continue
-            start = int(match.group(1))
-            count = int(match.group(2) or "1")
-            lines.update(range(start, start + count))
         if lines:
             production = lines - test_only_lines(relative)
+            moved_production = production & moved.get(relative, set())
+            moved_excluded += len(moved_production)
+            production -= moved_production
             if production:
                 result[relative] = production
-    return result
+    return result, moved_excluded
 
 
 def lcov_lines(
@@ -231,7 +315,7 @@ def main() -> None:
         )
     except re.error as error:
         parser.error(f"invalid --ignore-filename-regex: {error}")
-    changed = changed_lines(args.base, ignore)
+    changed, moved_excluded = changed_lines(args.base, ignore)
     coverage = lcov_lines(args.ignore_filename_regex, args.lcov_path)
     try:
         unreachable, waiver_entries = unreachable_lines(args.unreachable_manifest)
@@ -270,6 +354,7 @@ def main() -> None:
         "  changed source lines without an executable LCOV region: "
         f"{non_executable_changed}"
     )
+    print(f"  mechanically moved production lines excluded: {moved_excluded}")
     if waived:
         waived_fraction = len(waived) / len(executable)
         print(

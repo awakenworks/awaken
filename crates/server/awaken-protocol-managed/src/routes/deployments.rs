@@ -519,17 +519,7 @@ fn project_run(view: DeploymentRunView) -> Result<DeploymentRun, WireError> {
 }
 
 fn validate_initial_events(events: &[DeploymentInitialEvent]) -> Result<(), WireError> {
-    crate::types::initial_event::validate_initial_events(
-        events,
-        &crate::types::initial_event::InitialEventPolicy {
-            min_count: 1,
-            max_count: 50,
-            allow_system_message: true,
-            max_outcomes: None,
-            outcome_iterations: Some(1..=20),
-        },
-    )
-    .map_err(invalid)
+    crate::types::initial_event::validate_deployment_initial_events(events).map_err(invalid)
 }
 
 fn validate_durable_resources(resources: &[ResourceInput]) -> Result<(), WireError> {

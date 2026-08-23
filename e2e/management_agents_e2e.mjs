@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -18,15 +18,38 @@ async function drain(pagePromise) {
 }
 
 async function runTurn(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
-  return drain(client.beta.sessions.events.list(sessionId, { betas: BETAS }));
+  // Registry turn rule T0: C1=exact receipt; C2=coordinated work reaches a
+  // post-receipt idle; E1=full committed history. Constraint: archived-agent
+  // rejections remain synchronous and no older idle qualifies. C1&&!C2=>observe;
+  // C1+C2=>E1; terminated=>fail immediately.
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receipt.data[0]?.id,
+    BETAS,
+    async ({ delta }) => {
+    const session = await client.beta.sessions.retrieve(sessionId, { betas: BETAS });
+    if (session.status === 'terminated') throw new Error(`Session ${sessionId} terminated during coordination`);
+      return session.status === 'idle'
+        && delta.some((event) => event.type === 'session.status_idle');
+    },
+    `Session ${sessionId} did not settle after coordinated child work`,
+    { timeoutMs: 60_000, pollMs: 200 },
+  );
+  return events;
 }
 
 const agentTexts = (events) => events
   .filter((event) => event.type === 'agent.message')
+  .flatMap((event) => event.content ?? [])
+  .map((block) => block.text ?? '');
+
+const childReplyTexts = (events) => events
+  .filter((event) => event.type === 'agent.thread_message_received')
   .flatMap((event) => event.content ?? [])
   .map((block) => block.text ?? '');
 
@@ -224,6 +247,104 @@ async function main() {
           .some((item) => item.name === 'overlapping-tool-owner'),
         'C1 rejection has no persisted Agent side effect',
       );
+      // Web-tool configuration cause/effect graph: the discriminated input
+      // config is validated once, normalized beside its ToolPolicyOverride,
+      // persisted in the Agent revision, and projected with required output
+      // `type`. Invalid combinations stop before repository mutation.
+      //
+      // Decision table:
+      // | Rule | tool/type | domains | specific setting | effect |
+      // | W1 | web_fetch/type omitted | allow only | positive max | persist + typed output |
+      // | W2 | web_search/matching type | block only | approximate location | persist + typed output |
+      // | W3 | either | allow + block | any | 400, no Agent |
+      // | W4 | non-Web or mismatched type | Web field | any | 400, no Agent |
+      // | W5 | web field boundary | empty/bad domain or bad country | 400, no Agent |
+      // | W6 | web_fetch | no domains | zero max | persist exact zero cap |
+      // | W7 | fetch location / search max | any | wrong tool-specific field | 400, no Agent |
+      // K/Constraint: admission is atomic; a rejected config creates no Agent
+      // and therefore cannot leave a revision or executable tool path behind.
+      const configuredWeb = await json(baseUrl, 'POST', '/v1/agents', {
+        name: 'configured-web-tools',
+        model: 'claude-sonnet-5',
+        tools: [{
+          type: 'agent_toolset_20260401',
+          configs: [{
+            name: 'web_fetch',
+            allowed_domains: ['docs.example.com'],
+            max_content_tokens: 4096,
+          }, {
+            name: 'web_search',
+            type: 'web_search',
+            blocked_domains: ['ads.example.com/tracker'],
+            user_location: {
+              type: 'approximate', city: 'Shanghai', country: 'CN',
+              region: 'Shanghai', timezone: 'Asia/Shanghai',
+            },
+          }],
+        }],
+      });
+      assert.equal(configuredWeb.status, 200, JSON.stringify(configuredWeb.body));
+      assert.deepEqual(configuredWeb.body.tools[0].configs, [{
+        name: 'web_fetch',
+        type: 'web_fetch',
+        enabled: true,
+        permission_policy: { type: 'always_allow' },
+        allowed_domains: ['docs.example.com'],
+        max_content_tokens: 4096,
+      }, {
+        name: 'web_search',
+        type: 'web_search',
+        enabled: true,
+        permission_policy: { type: 'always_allow' },
+        blocked_domains: ['ads.example.com/tracker'],
+        user_location: {
+          type: 'approximate', city: 'Shanghai', country: 'CN',
+          region: 'Shanghai', timezone: 'Asia/Shanghai',
+        },
+      }], 'W1/W2 normalized settings survive the durable projection');
+      const gotConfiguredWeb = await client.beta.agents.retrieve(configuredWeb.body.id, {
+        betas: BETAS,
+      });
+      assert.deepEqual(gotConfiguredWeb.tools, configuredWeb.body.tools, 'W1/W2 retrieve is exact');
+      const zeroCapWeb = await json(baseUrl, 'POST', `/v1/agents/${configuredWeb.body.id}`, {
+        version: 1,
+        tools: [{
+          type: 'agent_toolset_20260401',
+          configs: [{ name: 'web_fetch', max_content_tokens: 0 }],
+        }],
+      });
+      assert.equal(zeroCapWeb.status, 200, JSON.stringify(zeroCapWeb.body));
+      assert.equal(zeroCapWeb.body.tools[0].configs[0].max_content_tokens, 0, 'W6');
+
+      const invalidWebConfigs = [
+        ['both-domain-modes', { name: 'web_fetch', allowed_domains: ['a.test'], blocked_domains: ['b.test'] }],
+        ['mismatched-type', { name: 'web_fetch', type: 'web_search' }],
+        ['null-type', { name: 'web_fetch', type: null }],
+        ['web-field-on-bash', { name: 'bash', allowed_domains: ['a.test'] }],
+        ['empty-domains', { name: 'web_search', allowed_domains: [] }],
+        ['null-domains', { name: 'web_search', allowed_domains: null }],
+        ['bad-domain', { name: 'web_fetch', allowed_domains: ['https://a.test'] }],
+        ['bad-country', { name: 'web_search', user_location: { type: 'approximate', country: 'cn' } }],
+        ['web-fetch-location', {
+          name: 'web_fetch',
+          user_location: { type: 'approximate', country: 'CN' },
+        }],
+        ['web-search-content-cap', { name: 'web_search', max_content_tokens: 1 }],
+      ];
+      for (const [name, config] of invalidWebConfigs) {
+        const rejected = await json(baseUrl, 'POST', '/v1/agents', {
+          name: `invalid-web-${name}`,
+          model: 'claude-sonnet-5',
+          tools: [{ type: 'agent_toolset_20260401', configs: [config] }],
+        });
+        assert.equal(rejected.status, 400, `${name}: ${JSON.stringify(rejected.body)}`);
+      }
+      const agentNamesAfterInvalidWeb = (await drain(client.beta.agents.list({ betas: BETAS })))
+        .map((agent) => agent.name);
+      for (const [name] of invalidWebConfigs) {
+        assert.ok(!agentNamesAfterInvalidWeb.includes(`invalid-web-${name}`), `W3-W5/W7 ${name}`);
+      }
+      pass('Agent Web tool configuration decision table');
       const clientToolNames = ['client_bash', 'client_glob', 'client_read'];
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
@@ -243,10 +364,12 @@ async function main() {
             type: 'agent_toolset_20260401',
             configs: [{
               name: 'write',
+              type: 'write',
               enabled: false,
               permission_policy: { type: 'always_allow' },
             }, {
               name: 'web_search',
+              type: 'web_search',
               enabled: false,
               permission_policy: { type: 'always_ask' },
             }],
@@ -266,7 +389,7 @@ async function main() {
         ],
         multiagent: {
           type: 'coordinator',
-          agents: [rosterWorker.id, { type: 'advisor', model: 'claude-opus-5' }],
+          agents: [{ type: 'advisor', model: 'claude-opus-5' }, rosterWorker.id],
         },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
@@ -282,10 +405,12 @@ async function main() {
             type: 'agent_toolset_20260401',
             configs: [{
               name: 'write',
+              type: 'write',
               enabled: false,
               permission_policy: { type: 'always_allow' },
             }, {
               name: 'web_search',
+              type: 'web_search',
               enabled: false,
               permission_policy: { type: 'always_ask' },
             }],
@@ -306,13 +431,22 @@ async function main() {
         ],
         'create preserves the complete client-tool behavior contract',
       );
-      assert.deepEqual(rich.body.multiagent, {
+      // Advisor ordering cause/effect table: C1 submit advisor before an ordinary
+      // child; C2 project create/list/retrieve/update. E1 the authoritative
+      // authoring order may stay C1; E2 every Managed wire response preserves
+      // ordinary order and places the advisor last. One repository projector
+      // owns all four surfaces.
+      const projectedRichRoster = {
         type: 'coordinator',
         agents: [
           { type: 'agent', id: rosterWorker.id, version: 1 },
           { type: 'advisor', model: 'claude-opus-5' },
         ],
-      });
+      };
+      assert.deepEqual(rich.body.multiagent, projectedRichRoster, 'C1/C2 create -> E2');
+      const listedRich = (await drain(client.beta.agents.list({ betas: BETAS })))
+        .find((agent) => agent.id === rich.body.id);
+      assert.deepEqual(listedRich?.multiagent, projectedRichRoster, 'C1/C2 list -> E2');
       assert.deepEqual(rich.body.skills, [
         { type: 'anthropic', skill_id: 'xlsx', version: '1' },
         { type: 'custom', skill_id: 'skill-a', version: '2' },
@@ -375,10 +509,7 @@ async function main() {
       assert.equal(workerV2.version, 2);
       assert.deepEqual((await client.beta.agents.retrieve(rich.body.id, {
         betas: BETAS,
-      })).multiagent.agents, [
-        { type: 'agent', id: rosterWorker.id, version: 1 },
-        { type: 'advisor', model: 'claude-opus-5' },
-      ], 'R2 short-form target stays pinned after the target updates');
+      })).multiagent, projectedRichRoster, 'R2/C2 retrieve stays pinned and advisor-last');
       const exactOld = await client.beta.agents.create({
         name: 'exact-old-coordinator',
         model: 'claude-sonnet-5',
@@ -392,10 +523,15 @@ async function main() {
         { type: 'agent', id: rosterWorker.id, version: 1 },
       ], 'R2 exact historical target is preserved');
 
-      // Runtime pin rules extend R2 from representation to behavior:
-      // | rule | coordinator creation | worker current at Session start | child effect |
-      // | R6 | before worker v2 | v2 | executes frozen v1 publication |
-      // | R7 | after worker v2 | v2 | executes newly resolved v2 publication |
+      // Runtime pin rules extend R2 from representation to asynchronous Managed
+      // behavior. Cause graph: coordinator publication time freezes the roster
+      // revision -> list_agents exposes that roster -> send_to_agent admits a
+      // child Thread -> the child reply reflects only the frozen publication.
+      // The send receipt must not synchronously contain the child payload.
+      //
+      // | rule | coordinator creation | current worker | child Thread effect |
+      // | R6 | before worker v2 | v2 | reply executes frozen v1 publication |
+      // | R7 | after worker v2 | v2 | reply executes resolved v2 publication |
       const executionWorker = await client.beta.agents.create({
         name: 'execution-worker',
         model: 'management-agents',
@@ -431,9 +567,23 @@ async function main() {
           environment_id: 'env_local',
           betas: BETAS,
         });
-        const texts = agentTexts(await runTurn(client, session.id, `delegate to ${executionWorker.id}`));
-        assert.ok(texts.some((text) => text.includes(expected)), `${rule} executes ${expected}: ${texts}`);
-        assert.ok(!texts.some((text) => text.includes(rejected)), `${rule} must not drift to ${rejected}: ${texts}`);
+        const events = await runTurn(client, session.id, `delegate to ${executionWorker.id}`);
+        const coordinatorTexts = agentTexts(events);
+        const replies = childReplyTexts(events);
+        assert.ok(
+          coordinatorTexts.some((text) => text.includes('coordination accepted:')),
+          `${rule} coordinator ends on a send receipt: ${coordinatorTexts}`,
+        );
+        assert.ok(
+          coordinatorTexts.some((text) => text === 'coordination completed from child report'),
+          `${rule} later child report ends without another send: ${coordinatorTexts}`,
+        );
+        assert.ok(
+          !coordinatorTexts.some((text) => text.includes('WORKER_REVISION_')),
+          `${rule} receipt is not a synchronous child result: ${coordinatorTexts}`,
+        );
+        assert.ok(replies.some((text) => text.includes(expected)), `${rule} executes ${expected}: ${replies}`);
+        assert.ok(!replies.some((text) => text.includes(rejected)), `${rule} must not drift to ${rejected}: ${replies}`);
       }
 
       const archivedTarget = await client.beta.agents.create({
@@ -485,6 +635,7 @@ async function main() {
         speed: 'standard',
         effort: { type: 'xhigh' },
       }, 'same model preserves omitted effort');
+      assert.deepEqual(sameModel.body.multiagent, projectedRichRoster, 'C1/C2 update -> E2');
       const matchingNoop = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: sameModel.body.version,
         model: { id: 'claude-sonnet-5', speed: 'standard' },

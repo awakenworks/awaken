@@ -52,6 +52,8 @@ pub awaken_protocol_managed::types::agent::SelfRosterReferenceKind::SelfReferenc
 pub struct awaken_protocol_managed::types::agent::AdvisorRosterEntry
 pub awaken_protocol_managed::types::agent::AdvisorRosterEntry::kind: awaken_protocol_managed::types::agent::AdvisorRosterEntryKind
 pub awaken_protocol_managed::types::agent::AdvisorRosterEntry::model: alloc::string::String
+impl core::convert::From<awaken_protocol_managed::types::agent::AdvisorRosterEntry> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::agent::AdvisorRosterEntry) -> Self
 pub struct awaken_protocol_managed::types::agent::Agent
 pub awaken_protocol_managed::types::agent::Agent::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::Agent::created_at: alloc::string::String
@@ -121,6 +123,7 @@ pub awaken_protocol_managed::types::agent::AgentUpdateParams::tools: core::optio
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::version: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::agent::SelfRosterReference
 pub awaken_protocol_managed::types::agent::SelfRosterReference::kind: awaken_protocol_managed::types::agent::SelfRosterReferenceKind
+pub fn awaken_protocol_managed::types::agent::managed_advisor_pair_supported(&str, &str) -> bool
 pub mod awaken_protocol_managed::types::deployment
 pub enum awaken_protocol_managed::types::deployment::DeploymentInitialEvent
 pub awaken_protocol_managed::types::deployment::DeploymentInitialEvent::SystemMessage
@@ -314,7 +317,7 @@ pub awaken_protocol_managed::types::environment::EnvironmentCreateParams::name: 
 pub awaken_protocol_managed::types::environment::EnvironmentCreateParams::scope: core::option::Option<awaken_protocol_managed::types::environment::EnvironmentScope>
 pub struct awaken_protocol_managed::types::environment::EnvironmentUpdateParams
 pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::config: core::option::Option<core::option::Option<awaken_protocol_managed::types::environment::EnvironmentConfigUpdateParams>>
-pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::description: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::description: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
 pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::EnvironmentUpdateParams::scope: core::option::Option<awaken_protocol_managed::types::environment::EnvironmentScope>
@@ -553,6 +556,7 @@ pub enum awaken_protocol_managed::types::session::OutboundKind
 pub awaken_protocol_managed::types::session::OutboundKind::AgentCustomToolUse
 pub awaken_protocol_managed::types::session::OutboundKind::AgentCustomToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::session::OutboundKind::AgentCustomToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::session::OutboundKind::AgentCustomToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolResult::is_error: core::option::Option<bool>
@@ -562,6 +566,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::eval
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::mcp_server_name: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::session::OutboundKind::AgentMcpToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMessage
 pub awaken_protocol_managed::types::session::OutboundKind::AgentMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentThinking
@@ -581,6 +586,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::session::OutboundKind::AgentToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionDeleted
 pub awaken_protocol_managed::types::session::OutboundKind::SessionError
 pub awaken_protocol_managed::types::session::OutboundKind::SessionError::error: awaken_protocol_managed::types::SessionError
@@ -636,9 +642,11 @@ pub awaken_protocol_managed::types::session::OutboundKind::UserCustomToolResult
 pub awaken_protocol_managed::types::session::OutboundKind::UserCustomToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
 pub awaken_protocol_managed::types::session::OutboundKind::UserCustomToolResult::custom_tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::UserCustomToolResult::is_error: bool
+pub awaken_protocol_managed::types::session::OutboundKind::UserCustomToolResult::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::UserDefineOutcome
 pub awaken_protocol_managed::types::session::OutboundKind::UserDefineOutcome::description: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::UserDefineOutcome::max_iterations: core::option::Option<u32>
+pub awaken_protocol_managed::types::session::OutboundKind::UserDefineOutcome::outcome_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::UserDefineOutcome::rubric: awaken_protocol_managed::types::OutcomeRubric
 pub awaken_protocol_managed::types::session::OutboundKind::UserInterrupt
 pub awaken_protocol_managed::types::session::OutboundKind::UserInterrupt::session_thread_id: core::option::Option<alloc::string::String>
@@ -647,10 +655,12 @@ pub awaken_protocol_managed::types::session::OutboundKind::UserMessage::content:
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolConfirmation
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolConfirmation::deny_message: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolConfirmation::result: awaken_protocol_managed::types::ConfirmResult
+pub awaken_protocol_managed::types::session::OutboundKind::UserToolConfirmation::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolConfirmation::tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolResult
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolResult::is_error: bool
+pub awaken_protocol_managed::types::session::OutboundKind::UserToolResult::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::UserToolResult::tool_use_id: alloc::string::String
 impl awaken_protocol_managed::types::OutboundKind
 pub fn awaken_protocol_managed::types::OutboundKind::type_str(&self) -> &'static str
@@ -688,6 +698,17 @@ pub awaken_protocol_managed::types::session::SessionStatus::Running
 pub awaken_protocol_managed::types::session::SessionStatus::Terminated
 impl awaken_protocol_managed::types::SessionStatus
 pub const fn awaken_protocol_managed::types::SessionStatus::as_str(self) -> &'static str
+pub enum awaken_protocol_managed::types::session::SessionThreadAgentValue
+pub awaken_protocol_managed::types::session::SessionThreadAgentValue::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterEntry)
+pub awaken_protocol_managed::types::session::SessionThreadAgentValue::Agent(awaken_protocol_managed::types::SessionThreadAgent)
+impl awaken_protocol_managed::types::SessionThreadAgentValue
+pub const fn awaken_protocol_managed::types::SessionThreadAgentValue::as_agent(&self) -> core::option::Option<&awaken_protocol_managed::types::SessionThreadAgent>
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::display_name(&self) -> &str
+pub const fn awaken_protocol_managed::types::SessionThreadAgentValue::is_advisor(&self) -> bool
+impl core::convert::From<awaken_protocol_managed::types::SessionThreadAgent> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::SessionThreadAgent) -> Self
+impl core::convert::From<awaken_protocol_managed::types::agent::AdvisorRosterEntry> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::agent::AdvisorRosterEntry) -> Self
 pub enum awaken_protocol_managed::types::session::SessionThreadStatus
 pub awaken_protocol_managed::types::session::SessionThreadStatus::Idle
 pub awaken_protocol_managed::types::session::SessionThreadStatus::Rescheduling
@@ -723,10 +744,6 @@ pub awaken_protocol_managed::types::session::Event::kind: awaken_protocol_manage
 pub awaken_protocol_managed::types::session::Event::processed_at: core::option::Option<alloc::string::String>
 impl awaken_protocol_managed::types::Event
 pub fn awaken_protocol_managed::types::Event::type_str(&self) -> &'static str
-pub struct awaken_protocol_managed::types::session::EventReceipt
-pub awaken_protocol_managed::types::session::EventReceipt::id: alloc::string::String
-pub awaken_protocol_managed::types::session::EventReceipt::kind: &'static str
-pub awaken_protocol_managed::types::session::EventReceipt::processed_at: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::session::ListEventsResponse
 pub awaken_protocol_managed::types::session::ListEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub awaken_protocol_managed::types::session::ListEventsResponse::next_page: core::option::Option<alloc::string::String>
@@ -765,7 +782,7 @@ pub awaken_protocol_managed::types::session::PreviewTarget::id: alloc::string::S
 pub struct awaken_protocol_managed::types::session::SendEventsRequest
 pub awaken_protocol_managed::types::session::SendEventsRequest::events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>
 pub struct awaken_protocol_managed::types::session::SendEventsResponse
-pub awaken_protocol_managed::types::session::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::EventReceipt>
+pub awaken_protocol_managed::types::session::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub struct awaken_protocol_managed::types::session::ServerToolUsage
 pub awaken_protocol_managed::types::session::ServerToolUsage::web_fetch_requests: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::ServerToolUsage::web_search_requests: core::option::Option<u64>
@@ -829,7 +846,7 @@ pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::agent
 pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::session::SessionStats
 pub struct awaken_protocol_managed::types::session::SessionThread
-pub awaken_protocol_managed::types::session::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgent
+pub awaken_protocol_managed::types::session::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgentValue
 pub awaken_protocol_managed::types::session::SessionThread::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionThread::created_at: alloc::string::String
 pub awaken_protocol_managed::types::session::SessionThread::id: alloc::string::String
@@ -853,6 +870,8 @@ pub awaken_protocol_managed::types::session::SessionThreadAgent::tools: alloc::v
 pub awaken_protocol_managed::types::session::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
+impl core::convert::From<awaken_protocol_managed::types::SessionThreadAgent> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::SessionThreadAgent) -> Self
 pub struct awaken_protocol_managed::types::session::SessionThreadCacheCreationUsage
 pub awaken_protocol_managed::types::session::SessionThreadCacheCreationUsage::ephemeral_1h_input_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::SessionThreadCacheCreationUsage::ephemeral_5m_input_tokens: core::option::Option<u64>
@@ -919,6 +938,9 @@ pub awaken_protocol_managed::types::tunnel::TunnelToken::id: alloc::string::Stri
 pub awaken_protocol_managed::types::tunnel::TunnelToken::kind: alloc::string::String
 pub awaken_protocol_managed::types::tunnel::TunnelToken::tunnel_token: alloc::string::String
 pub mod awaken_protocol_managed::types::user_profile
+pub enum awaken_protocol_managed::types::user_profile::AccessType
+pub awaken_protocol_managed::types::user_profile::AccessType::Application
+pub awaken_protocol_managed::types::user_profile::AccessType::Passthrough
 pub enum awaken_protocol_managed::types::user_profile::Relationship
 pub awaken_protocol_managed::types::user_profile::Relationship::External
 pub awaken_protocol_managed::types::user_profile::Relationship::Internal
@@ -934,6 +956,7 @@ pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::url: alloc::str
 pub struct awaken_protocol_managed::types::user_profile::TrustGrant
 pub awaken_protocol_managed::types::user_profile::TrustGrant::status: awaken_protocol_managed::types::user_profile::TrustGrantStatus
 pub struct awaken_protocol_managed::types::user_profile::UserProfile
+pub awaken_protocol_managed::types::user_profile::UserProfile::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
 pub awaken_protocol_managed::types::user_profile::UserProfile::created_at: alloc::string::String
 pub awaken_protocol_managed::types::user_profile::UserProfile::external_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfile::id: alloc::string::String
@@ -944,11 +967,13 @@ pub awaken_protocol_managed::types::user_profile::UserProfile::relationship: awa
 pub awaken_protocol_managed::types::user_profile::UserProfile::trust_grants: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_protocol_managed::types::user_profile::TrustGrant>
 pub awaken_protocol_managed::types::user_profile::UserProfile::updated_at: alloc::string::String
 pub struct awaken_protocol_managed::types::user_profile::UserProfileCreateParams
+pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::external_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::name: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::relationship: awaken_protocol_managed::types::user_profile::Relationship
+pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::relationship: core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>
 pub struct awaken_protocol_managed::types::user_profile::UserProfileUpdateParams
+pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::access_type: core::option::Option<core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::external_id: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::name: core::option::Option<core::option::Option<alloc::string::String>>
@@ -1189,6 +1214,7 @@ pub enum awaken_protocol_managed::types::OutboundKind
 pub awaken_protocol_managed::types::OutboundKind::AgentCustomToolUse
 pub awaken_protocol_managed::types::OutboundKind::AgentCustomToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::OutboundKind::AgentCustomToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::OutboundKind::AgentCustomToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolResult::is_error: core::option::Option<bool>
@@ -1198,6 +1224,7 @@ pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::evaluated_per
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::mcp_server_name: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::OutboundKind::AgentMcpToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::AgentMessage
 pub awaken_protocol_managed::types::OutboundKind::AgentMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_protocol_managed::types::OutboundKind::AgentThinking
@@ -1217,6 +1244,7 @@ pub awaken_protocol_managed::types::OutboundKind::AgentToolUse
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::evaluated_permission: core::option::Option<awaken_protocol_managed::types::EvaluatedPermission>
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::input: serde_json::value::Value
 pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::name: alloc::string::String
+pub awaken_protocol_managed::types::OutboundKind::AgentToolUse::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::SessionDeleted
 pub awaken_protocol_managed::types::OutboundKind::SessionError
 pub awaken_protocol_managed::types::OutboundKind::SessionError::error: awaken_protocol_managed::types::SessionError
@@ -1272,9 +1300,11 @@ pub awaken_protocol_managed::types::OutboundKind::UserCustomToolResult
 pub awaken_protocol_managed::types::OutboundKind::UserCustomToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
 pub awaken_protocol_managed::types::OutboundKind::UserCustomToolResult::custom_tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::UserCustomToolResult::is_error: bool
+pub awaken_protocol_managed::types::OutboundKind::UserCustomToolResult::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::UserDefineOutcome
 pub awaken_protocol_managed::types::OutboundKind::UserDefineOutcome::description: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::UserDefineOutcome::max_iterations: core::option::Option<u32>
+pub awaken_protocol_managed::types::OutboundKind::UserDefineOutcome::outcome_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::UserDefineOutcome::rubric: awaken_protocol_managed::types::OutcomeRubric
 pub awaken_protocol_managed::types::OutboundKind::UserInterrupt
 pub awaken_protocol_managed::types::OutboundKind::UserInterrupt::session_thread_id: core::option::Option<alloc::string::String>
@@ -1283,10 +1313,12 @@ pub awaken_protocol_managed::types::OutboundKind::UserMessage::content: alloc::v
 pub awaken_protocol_managed::types::OutboundKind::UserToolConfirmation
 pub awaken_protocol_managed::types::OutboundKind::UserToolConfirmation::deny_message: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::UserToolConfirmation::result: awaken_protocol_managed::types::ConfirmResult
+pub awaken_protocol_managed::types::OutboundKind::UserToolConfirmation::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::UserToolConfirmation::tool_use_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::UserToolResult
 pub awaken_protocol_managed::types::OutboundKind::UserToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
 pub awaken_protocol_managed::types::OutboundKind::UserToolResult::is_error: bool
+pub awaken_protocol_managed::types::OutboundKind::UserToolResult::session_thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::UserToolResult::tool_use_id: alloc::string::String
 impl awaken_protocol_managed::types::OutboundKind
 pub fn awaken_protocol_managed::types::OutboundKind::type_str(&self) -> &'static str
@@ -1324,6 +1356,17 @@ pub awaken_protocol_managed::types::SessionStatus::Running
 pub awaken_protocol_managed::types::SessionStatus::Terminated
 impl awaken_protocol_managed::types::SessionStatus
 pub const fn awaken_protocol_managed::types::SessionStatus::as_str(self) -> &'static str
+pub enum awaken_protocol_managed::types::SessionThreadAgentValue
+pub awaken_protocol_managed::types::SessionThreadAgentValue::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterEntry)
+pub awaken_protocol_managed::types::SessionThreadAgentValue::Agent(awaken_protocol_managed::types::SessionThreadAgent)
+impl awaken_protocol_managed::types::SessionThreadAgentValue
+pub const fn awaken_protocol_managed::types::SessionThreadAgentValue::as_agent(&self) -> core::option::Option<&awaken_protocol_managed::types::SessionThreadAgent>
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::display_name(&self) -> &str
+pub const fn awaken_protocol_managed::types::SessionThreadAgentValue::is_advisor(&self) -> bool
+impl core::convert::From<awaken_protocol_managed::types::SessionThreadAgent> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::SessionThreadAgent) -> Self
+impl core::convert::From<awaken_protocol_managed::types::agent::AdvisorRosterEntry> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::agent::AdvisorRosterEntry) -> Self
 pub enum awaken_protocol_managed::types::SessionThreadStatus
 pub awaken_protocol_managed::types::SessionThreadStatus::Idle
 pub awaken_protocol_managed::types::SessionThreadStatus::Rescheduling
@@ -1359,10 +1402,6 @@ pub awaken_protocol_managed::types::Event::kind: awaken_protocol_managed::types:
 pub awaken_protocol_managed::types::Event::processed_at: core::option::Option<alloc::string::String>
 impl awaken_protocol_managed::types::Event
 pub fn awaken_protocol_managed::types::Event::type_str(&self) -> &'static str
-pub struct awaken_protocol_managed::types::EventReceipt
-pub awaken_protocol_managed::types::EventReceipt::id: alloc::string::String
-pub awaken_protocol_managed::types::EventReceipt::kind: &'static str
-pub awaken_protocol_managed::types::EventReceipt::processed_at: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::ListEventsResponse
 pub awaken_protocol_managed::types::ListEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub awaken_protocol_managed::types::ListEventsResponse::next_page: core::option::Option<alloc::string::String>
@@ -1416,7 +1455,7 @@ pub awaken_protocol_managed::types::PreviewTarget::id: alloc::string::String
 pub struct awaken_protocol_managed::types::SendEventsRequest
 pub awaken_protocol_managed::types::SendEventsRequest::events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>
 pub struct awaken_protocol_managed::types::SendEventsResponse
-pub awaken_protocol_managed::types::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::EventReceipt>
+pub awaken_protocol_managed::types::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::Event>
 pub struct awaken_protocol_managed::types::ServerToolUsage
 pub awaken_protocol_managed::types::ServerToolUsage::web_fetch_requests: core::option::Option<u64>
 pub awaken_protocol_managed::types::ServerToolUsage::web_search_requests: core::option::Option<u64>
@@ -1480,7 +1519,7 @@ pub awaken_protocol_managed::types::SessionMultiagentCoordinator::agents: alloc:
 pub awaken_protocol_managed::types::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::SessionStats
 pub struct awaken_protocol_managed::types::SessionThread
-pub awaken_protocol_managed::types::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgent
+pub awaken_protocol_managed::types::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgentValue
 pub awaken_protocol_managed::types::SessionThread::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionThread::created_at: alloc::string::String
 pub awaken_protocol_managed::types::SessionThread::id: alloc::string::String
@@ -1504,6 +1543,8 @@ pub awaken_protocol_managed::types::SessionThreadAgent::tools: alloc::vec::Vec<a
 pub awaken_protocol_managed::types::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
+impl core::convert::From<awaken_protocol_managed::types::SessionThreadAgent> for awaken_protocol_managed::types::SessionThreadAgentValue
+pub fn awaken_protocol_managed::types::SessionThreadAgentValue::from(awaken_protocol_managed::types::SessionThreadAgent) -> Self
 pub struct awaken_protocol_managed::types::SessionThreadCacheCreationUsage
 pub awaken_protocol_managed::types::SessionThreadCacheCreationUsage::ephemeral_1h_input_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::SessionThreadCacheCreationUsage::ephemeral_5m_input_tokens: core::option::Option<u64>
@@ -1544,8 +1585,8 @@ pub fn awaken_protocol_managed::types::paginate_by<T: core::clone::Clone>(alloc:
 pub type awaken_protocol_managed::types::McpServer = awaken_protocol_managed::types::agent::AgentMcpServer
 pub enum awaken_protocol_managed::InferenceGeoCheckpoint
 pub awaken_protocol_managed::InferenceGeoCheckpoint::AgentSave
+pub awaken_protocol_managed::InferenceGeoCheckpoint::Run
 pub awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate
-pub awaken_protocol_managed::InferenceGeoCheckpoint::Turn
 pub enum awaken_protocol_managed::InferenceGeoPolicyError
 pub awaken_protocol_managed::InferenceGeoPolicyError::Denied
 pub awaken_protocol_managed::InferenceGeoPolicyError::Denied::geo: &'static str
@@ -1598,7 +1639,12 @@ impl awaken_protocol_managed::ManagedDeploymentSessionLauncher
 pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
 pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>) -> Self
 impl awaken_deployment_application::DeploymentSessionLauncher for awaken_protocol_managed::ManagedDeploymentSessionLauncher
-pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_contract::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_protocol_managed::ManagedLifecycleFactDelivery
+impl awaken_protocol_managed::ManagedLifecycleFactDelivery
+pub fn awaken_protocol_managed::ManagedLifecycleFactDelivery::new(&alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
+impl awaken_session_contract::lifecycle::LifecycleFactDelivery for awaken_protocol_managed::ManagedLifecycleFactDelivery
+pub fn awaken_protocol_managed::ManagedLifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_protocol_managed::ManagedRateLimitDecision
 pub awaken_protocol_managed::ManagedRateLimitDecision::allowed: bool
 pub awaken_protocol_managed::ManagedRateLimitDecision::limit: u32
@@ -1630,7 +1676,6 @@ impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::check_bind(&self, &str, &awaken_protocol_managed::types::SessionCreateParams) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::delete_session(&self, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::list_sessions(&self) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
@@ -1654,20 +1699,22 @@ pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activatio
 pub async fn awaken_protocol_managed::ManagedState::replace_resource_manifest(&self, &str, awaken_protocol_managed::types::resource::ResourceManifestReplaceParams, core::option::Option<alloc::string::String>, core::option::Option<awaken_session_contract::session_repo::SessionRevision>, alloc::string::String) -> core::result::Result<(awaken_protocol_managed::types::resource::SessionResourceManifest, awaken_session_contract::session_repo::SessionRevision), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str, &str, awaken_protocol_managed::types::resource::ResourceUpdateParams) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
-pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::create_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
-pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>) -> Self
+pub fn awaken_protocol_managed::ManagedState::environment_execution(&self) -> alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>
+pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>, alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> Self
 pub fn awaken_protocol_managed::ManagedState::session_application(&self) -> alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub fn awaken_protocol_managed::ManagedState::with_inference_geo_policy(self, alloc::sync::Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>) -> Self
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::list_events(&self, &str, core::option::Option<&str>, core::option::Option<usize>, bool) -> core::result::Result<awaken_protocol_managed::types::ListEventsResponse, awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::send_events(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::send_events_attributed(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
-pub fn awaken_protocol_managed::ManagedState::stream_subscribe(&self, &str) -> core::result::Result<(alloc::vec::Vec<awaken_protocol_managed::types::Event>, tokio::sync::broadcast::Receiver<awaken_protocol_managed::types::StreamFrame>), awaken_protocol_managed::StateError>
+pub fn awaken_protocol_managed::ManagedState::stream_subscribe(&self, &str) -> core::result::Result<(alloc::vec::Vec<awaken_protocol_managed::types::Event>, tokio::sync::broadcast::Receiver<awaken_protocol_managed::types::Event>), awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_session_realizations(&self) -> usize
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&self) -> usize
+impl awaken_protocol_managed::ManagedState
+pub async fn awaken_protocol_managed::ManagedState::send_events(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::send_events_attributed(&alloc::sync::Arc<Self>, &str, awaken_protocol_managed::types::SendEventsRequest, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
 impl awaken_credential_vault::repo::ManagedCredentialRolloutTarget for awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::rollout<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::managed_rollout::ManagedCredentialRollout) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_vault::repo::ManagedCredentialAdoptionProgress, awaken_credential_vault::repo::ManagedCredentialAdoptionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState
@@ -1702,7 +1749,7 @@ pub async fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(
 pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>) -> Self
 pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> core::result::Result<usize, awaken_credential_vault::CredentialError>
 pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
-pub fn awaken_protocol_managed::VaultState::with_envelope_issuer(self, alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>) -> Self
+pub fn awaken_protocol_managed::VaultState::with_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
 impl awaken_session_application::session_services::RepositoryCredentialIngress for awaken_protocol_managed::VaultState
 pub fn awaken_protocol_managed::VaultState::enter_repository_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::CredentialSourceId, &'life1 str, awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialSourceId, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

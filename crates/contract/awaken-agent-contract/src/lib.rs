@@ -37,10 +37,15 @@ pub use stream::sink::Sink as StreamSink;
 pub use thread::commit::coordinator::Coordinator as CommitCoordinator;
 pub use thread::commit::run_fact::RunFact;
 pub use thread::commit::staged::ThreadCommit;
+pub use thread::disposition::{
+    ThreadDisposition, archive_thread_command, thread_disposition_from_committed_state,
+};
 pub use thread::read::checkpoint::{CheckpointReader, EventScope};
 pub use thread::read::lifecycle::{
-    CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind,
-    RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage, classify_run_lifecycle_event,
+    CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleCursorCodecError,
+    RunLifecycleEvent, RunLifecycleEventKind, RunLifecycleFeed, RunLifecycleFeedError,
+    RunLifecyclePage, classify_run_lifecycle_event, classify_run_lifecycle_record,
+    decode_run_lifecycle_cursor, encode_run_lifecycle_cursor,
 };
 pub use thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,

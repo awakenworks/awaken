@@ -186,6 +186,14 @@ mod tests {
 
     #[test]
     fn terminal_failure_yields_a_failed_task_with_the_fault_message() {
+        // Causes: the fixtures below establish `terminal failure` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `yields a failed task with the fault message` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
         // Cause/effect rule F1: an inference failure in authoritative RunState
         // produces a failed A2A task carrying the same neutral fault message.
         let outcome = StepOutcome::ended(
@@ -194,8 +202,6 @@ mod tests {
                 code: "inference_failed".into(),
                 message: "upstream is down".into(),
             }),
-            false,
-            false,
         );
         let task = encode_task("th", &[], &outcome);
         assert_eq!(task.status.state, TaskState::Failed);
@@ -218,9 +224,9 @@ mod tests {
 
     fn outcome(awaiting: bool, pending: Option<Pending>) -> StepOutcome {
         if awaiting {
-            StepOutcome::awaiting(Vec::new(), pending, false, false)
+            StepOutcome::awaiting(Vec::new(), pending)
         } else {
-            StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
+            StepOutcome::ended(Vec::new(), EndCause::NaturalEnd)
         }
     }
 
@@ -261,13 +267,22 @@ mod tests {
 
     #[test]
     fn exhausted_step_budget_projects_a_failed_task() {
+        // Causes: the fixtures below establish `exhausted step budget` with the concrete inputs,
+        // state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `projects a failed task` and every asserted state
+        // transition or side effect must hold.
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Coverage rationale: `exhausted step budget` is one independent branch selecting `projects
+        // a failed task`; a multi-row decision table is not applicable, and sibling tests own
+        // alternate causes.
         // A run that hit its step ceiling (not awaiting) is a `failed` A2A task, and
         // still carries the transcript + last agent status.
         let history = [
             msg("u1", Role::User, "do a lot"),
             msg("a1", Role::Assistant, "partial progress"),
         ];
-        let exhausted = StepOutcome::ended(Vec::new(), EndCause::MaxSteps, false, false);
+        let exhausted = StepOutcome::ended(Vec::new(), EndCause::MaxSteps);
         let task = encode_task("t", &history, &exhausted);
         assert_eq!(task.status.state, TaskState::Failed);
         assert_eq!(task.status.message.unwrap().text(), "partial progress");

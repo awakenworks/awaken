@@ -16,6 +16,10 @@ pub enum AwaitReason {
     ExternalEvent,
     RateLimit,
     ManualPause,
+    /// The owning aggregate denied the next logical model request because its
+    /// shared budget was reached. The current Run remains the sole continuation
+    /// authority and resumes from this ticket after admission becomes available.
+    BudgetReached,
     /// The run committed a `ScheduledAction` (ADR-0003 mechanism #1): a deferred
     /// action recorded in committed state, performed by the system (not decided
     /// by a human) and recovered from the committed request for consistency
@@ -55,6 +59,9 @@ pub enum RemoteInputReason {
 pub enum PauseReason {
     Manual,
     RateLimit,
+    /// The owning Session denied the next logical model request because its
+    /// shared budget was reached. The same Run remains the continuation owner.
+    BudgetReached,
 }
 
 /// The closed payload of an awaiting ticket. Optional `call_id` and
@@ -90,6 +97,7 @@ impl AwaitTarget {
             },
             Self::Pause(PauseReason::Manual) => AwaitReason::ManualPause,
             Self::Pause(PauseReason::RateLimit) => AwaitReason::RateLimit,
+            Self::Pause(PauseReason::BudgetReached) => AwaitReason::BudgetReached,
         }
     }
 
@@ -130,6 +138,7 @@ impl AwaitReason {
             AwaitReason::ExternalEvent => "external_event",
             AwaitReason::RateLimit => "rate_limit",
             AwaitReason::ManualPause => "manual_pause",
+            AwaitReason::BudgetReached => "budget_reached",
             AwaitReason::ScheduledAction => "scheduled_action",
             AwaitReason::Delegation => "delegation",
         }
@@ -286,12 +295,18 @@ mod tests {
 
     #[test]
     fn every_reason_has_a_distinct_stable_stream_token() {
+        // Test design — Causes: each declared await reason is encoded once.
+        // Effects: every reason yields its pinned, pairwise-distinct stream token.
+        // Constraints/invariants: tokens are stable public protocol identities;
+        // no reason may alias another. Decision rule R1: enumerate the complete
+        // enum => exact expected tokens and set cardinality equal variant count.
         let all = [
             (AwaitReason::ToolPermission, "tool_permission"),
             (AwaitReason::UserInput, "user_input"),
             (AwaitReason::ExternalEvent, "external_event"),
             (AwaitReason::RateLimit, "rate_limit"),
             (AwaitReason::ManualPause, "manual_pause"),
+            (AwaitReason::BudgetReached, "budget_reached"),
             (AwaitReason::ScheduledAction, "scheduled_action"),
             (AwaitReason::Delegation, "delegation"),
         ];
@@ -307,6 +322,11 @@ mod tests {
 
     #[test]
     fn every_closed_target_projects_and_round_trips() {
+        // Test design -- Causes: each closed target variant and reason is
+        // constructed, including the message-free budget pause. Effects: the
+        // authoritative reason/call/tool projections and serde round-trip agree.
+        // Constraints: Pause targets never manufacture call/tool payloads.
+        // Decision rule T1: enumerate the closed target set => exact projections.
         let pt = PendingTool {
             tool_id: "t".into(),
             arguments: serde_json::json!({"a": 1}),
@@ -379,6 +399,12 @@ mod tests {
             (
                 AwaitTarget::Pause(PauseReason::RateLimit),
                 AwaitReason::RateLimit,
+                None,
+                false,
+            ),
+            (
+                AwaitTarget::Pause(PauseReason::BudgetReached),
+                AwaitReason::BudgetReached,
                 None,
                 false,
             ),

@@ -5,7 +5,7 @@
 // the dev-only scenario resolver points the launched CLI at the GATEWAY with a
 // short-lived LEASE TOKEN in the key slot (never the raw ANTHROPIC_API_KEY, even
 // though the scenario harness exports one). Product composition instead consumes
-// a published gateway endpoint/credential pin. Here the fake `claude --acp` stand-in
+// a published gateway endpoint/credential pin. Here the fake ACP adapter stand-in
 // echoes the env it was launched with (base URL + key prefix — not the full secret),
 // so the managed-API client can assert: base == the gateway, key prefix == `lease-`.
 //
@@ -13,27 +13,37 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const GATEWAY = 'https://gw.e2e.internal/anthropic';
 const LEASE = 'lease-e2e-token'; // awaken-allow: secret
 
-async function agentTexts(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(ev);
-  }
+function agentTexts(events) {
   return events
     .filter((e) => e.type === 'agent.message')
     .map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
 }
 
 async function send(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact ACP User receipt; C2=gateway echo+terminal. E1=C2 after C1.
+  // K: environment capability remains process-private. Decision G1 C1&&!C2
+  // =>retry; G2 C1+C2=>return the gateway proof.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'G1 exact ACP gateway User Event receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    'G1 ACP gateway Run to commit its environment proof',
+  );
 }
 
 async function main() {
@@ -61,8 +71,7 @@ async function main() {
         betas: BETAS,
       });
       // The prompt triggers the fake CLI to echo the env it was launched with.
-      await send(client, acp.id, 'please acp-echo-env');
-      const texts = await agentTexts(client, acp.id);
+      const texts = agentTexts((await send(client, acp.id, 'please acp-echo-env')).delta);
       const echoed = texts.find((t) => t.includes('acp-env'));
       assert.ok(echoed, `expected an env echo from the ACP CLI, got ${JSON.stringify(texts)}`);
 

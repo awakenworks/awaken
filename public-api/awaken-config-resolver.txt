@@ -1,4 +1,6 @@
 pub mod awaken_config_resolver
+pub use awaken_config_resolver::AgentEnvironmentBinding
+pub use awaken_config_resolver::AgentInputConfig
 pub use awaken_config_resolver::BindingId
 pub use awaken_config_resolver::FileId
 pub use awaken_config_resolver::InputBinding
@@ -46,9 +48,9 @@ pub fn awaken_config_resolver::stores::WebhookMutationIntent::delete(awaken_conf
 pub fn awaken_config_resolver::stores::WebhookMutationIntent::id(&self) -> core::result::Result<&str, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::WebhookMutationIntent::material_refs(&self) -> alloc::vec::Vec<awaken_credential_vault::SecretRef>
 pub trait awaken_config_resolver::stores::AgentInputBindingRepository: core::marker::Send + core::marker::Sync
-pub fn awaken_config_resolver::stores::AgentInputBindingRepository::get_agent_inputs(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
-pub fn awaken_config_resolver::stores::AgentInputBindingRepository::list_agent_inputs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
-pub fn awaken_config_resolver::stores::AgentInputBindingRepository::put_agent_inputs(&self, &str, awaken_config_resolver::AgentInputConfig) -> core::result::Result<(), awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::AgentInputBindingRepository::get_agent_inputs(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_agent_config::agent_inputs::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::AgentInputBindingRepository::list_agent_inputs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_config::agent_inputs::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::AgentInputBindingRepository::put_agent_inputs(&self, &str, awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<(), awaken_config_resolver::stores::AgentInputRepositoryError>
 pub trait awaken_config_resolver::stores::InferenceProfileStore: core::marker::Send + core::marker::Sync
 pub fn awaken_config_resolver::stores::InferenceProfileStore::get(&self, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::InferenceProfileStore::put(&self, alloc::string::String, awaken_config_resolver::InferenceProfile) -> core::result::Result<(), awaken_config_resolver::stores::ConfigRepositoryError>
@@ -64,7 +66,7 @@ pub fn awaken_config_resolver::stores::WebhookStore::record_delivery(&self, &str
 pub fn awaken_config_resolver::stores::WebhookStore::update_authored(&self, awaken_config_resolver::stores::WebhookAuthoringPatch) -> core::result::Result<awaken_config_resolver::stores::WebhookAuthoringState, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::get_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::put_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str, awaken_config_resolver::InferenceProfile) -> core::result::Result<(), awaken_config_resolver::stores::ConfigRepositoryError>
-pub fn awaken_config_resolver::stores::validate_agent_input_revision(core::option::Option<&awaken_config_resolver::AgentInputConfig>, &awaken_config_resolver::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::validate_agent_input_revision(core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::stores::workspace_profile_key(&str, &str) -> alloc::string::String
 pub mod awaken_config_resolver::telemetry
 pub enum awaken_config_resolver::telemetry::RedactionMode
@@ -154,16 +156,6 @@ pub awaken_config_resolver::WebhookDeliveryState::Active::consecutive_failures: 
 pub awaken_config_resolver::WebhookDeliveryState::Disabled
 pub awaken_config_resolver::WebhookDeliveryState::Disabled::consecutive_failures: u32
 pub awaken_config_resolver::WebhookDeliveryState::Missing
-pub struct awaken_config_resolver::AgentEnvironmentBinding
-pub awaken_config_resolver::AgentEnvironmentBinding::environment_id: alloc::string::String
-pub awaken_config_resolver::AgentEnvironmentBinding::revision: u64
-pub struct awaken_config_resolver::AgentInputConfig
-pub awaken_config_resolver::AgentInputConfig::agent_id: alloc::string::String
-pub awaken_config_resolver::AgentInputConfig::environment: core::option::Option<awaken_config_resolver::AgentEnvironmentBinding>
-pub awaken_config_resolver::AgentInputConfig::inputs: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
-pub awaken_config_resolver::AgentInputConfig::revision: i64
-impl<'de> serde_core::de::Deserialize<'de> for awaken_config_resolver::AgentInputConfig
-pub fn awaken_config_resolver::AgentInputConfig::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_config_resolver::CredentialSelectionContext<'a>
 pub awaken_config_resolver::CredentialSelectionContext::availability: core::option::Option<(&'a awaken_credential_vault::availability::AvailabilityLedger, u64)>
 pub awaken_config_resolver::CredentialSelectionContext::backend_ref: core::option::Option<&'a str>
@@ -237,9 +229,9 @@ pub fn awaken_config_resolver::stores::WebhookMutationIntent::delete(awaken_conf
 pub fn awaken_config_resolver::stores::WebhookMutationIntent::id(&self) -> core::result::Result<&str, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::WebhookMutationIntent::material_refs(&self) -> alloc::vec::Vec<awaken_credential_vault::SecretRef>
 pub trait awaken_config_resolver::AgentInputBindingRepository: core::marker::Send + core::marker::Sync
-pub fn awaken_config_resolver::AgentInputBindingRepository::get_agent_inputs(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
-pub fn awaken_config_resolver::AgentInputBindingRepository::list_agent_inputs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
-pub fn awaken_config_resolver::AgentInputBindingRepository::put_agent_inputs(&self, &str, awaken_config_resolver::AgentInputConfig) -> core::result::Result<(), awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::AgentInputBindingRepository::get_agent_inputs(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_agent_config::agent_inputs::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::AgentInputBindingRepository::list_agent_inputs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_config::agent_inputs::AgentInputConfig>, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::AgentInputBindingRepository::put_agent_inputs(&self, &str, awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<(), awaken_config_resolver::stores::AgentInputRepositoryError>
 pub trait awaken_config_resolver::InferenceProfileStore: core::marker::Send + core::marker::Sync
 pub fn awaken_config_resolver::InferenceProfileStore::get(&self, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::InferenceProfileStore::put(&self, alloc::string::String, awaken_config_resolver::InferenceProfile) -> core::result::Result<(), awaken_config_resolver::stores::ConfigRepositoryError>
@@ -272,6 +264,6 @@ pub async fn awaken_config_resolver::resolve_inference_target(&awaken_model_cata
 pub async fn awaken_config_resolver::resolve_profile(&awaken_model_catalog::ProviderCatalog, &awaken_config_resolver::InferenceProfile, &dyn awaken_config_resolver::SourceLookup, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<awaken_config_resolver::ResolvedInference, awaken_config_resolver::ResolveError>
 pub async fn awaken_config_resolver::resolve_profile_candidates(&awaken_model_catalog::ProviderCatalog, &awaken_config_resolver::InferenceProfile, &dyn awaken_config_resolver::SourceLookup, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::ResolvedInference>, awaken_config_resolver::ResolveError>
 pub fn awaken_config_resolver::select_offering<'a>(&'a awaken_model_catalog::ProviderCatalog, &awaken_agent_contract::model_target::ModelTarget, &[alloc::string::String]) -> core::result::Result<&'a awaken_model_catalog::Offering, awaken_config_resolver::OfferingSelectionError>
-pub fn awaken_config_resolver::validate_agent_input_revision(core::option::Option<&awaken_config_resolver::AgentInputConfig>, &awaken_config_resolver::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::validate_agent_input_revision(core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::validate_executor_offering(&[awaken_config_resolver::ExecutorModelCapability], &str, &str) -> core::result::Result<(), awaken_config_resolver::ExecutableModelReadiness>
 pub fn awaken_config_resolver::workspace_profile_key(&str, &str) -> alloc::string::String

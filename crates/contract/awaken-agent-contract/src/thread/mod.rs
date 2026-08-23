@@ -3,4 +3,5 @@
 //! [`read`] reads committed truth back, [`commit`] makes new truth durable.
 
 pub mod commit;
+pub(crate) mod disposition;
 pub mod read;

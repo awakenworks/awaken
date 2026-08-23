@@ -1,6 +1,6 @@
 //! Fire-and-forget auxiliary runs with a bounded drain.
 //!
-//! Out-of-band aux agents (memory extraction, dream) run *after* a main turn
+//! Out-of-band aux agents (memory extraction, dream) run *after* a main Run
 //! finishes and must not block it, yet they should still be given a chance to
 //! finish before the process exits — otherwise a memory write is lost on
 //! shutdown. [`BackgroundRuns`] is that seam: [`spawn`](BackgroundRuns::spawn)
@@ -61,7 +61,7 @@ impl BackgroundRuns {
     /// starts a task with no ambient span, so an aux sub-run (memory extraction,
     /// dream) would otherwise emit a disconnected trace root. We attach a child
     /// span of the *current* span, so the aux run's spans nest under the
-    /// originating turn's trace. The child holds only the parent's id, so the turn
+    /// originating Run's trace. The child holds only the parent's id, so the Run
     /// span still closes on time while the aux run continues.
     pub async fn spawn(
         &self,

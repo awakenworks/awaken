@@ -16,18 +16,12 @@ impl RunExecutor for Runtime {
         // dispatch. Retain the exact immutable snapshot before the run can await so
         // an in-process resume resolves the same value by id.
         self.register_snapshot(activation.snapshot.clone());
-        // Track this run's cancellation token so live control can steer it, and
-        // always deregister on the way out.
+        // Register the complete attempt-control bundle atomically and always
+        // deregister this exact generation on the way out.
         let run_id = activation.run_id.clone();
-        if let Some(token) = &context.cancellation {
-            self.register_run(&run_id, token.clone());
-        }
-        if let Some(pause) = &context.pause {
-            self.register_pause(&run_id, pause.clone());
-        }
+        let registration = self.register_attempt_controls(&run_id, &activation.thread_id, &context);
         let result = run_agent_loop(self, activation, context).await;
-        self.deregister_run(&run_id);
-        self.deregister_pause(&run_id);
+        self.deregister_attempt_controls(&registration);
         result
     }
 }
@@ -64,6 +58,90 @@ pub(crate) async fn cancel_run(
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let step = RunStepResult::cancelled(run_id.clone());
+    finish(runtime, &context, &thread_id, run_id, step).await
+}
+
+/// Resolve an externally blocked coordinated child without another inference
+/// step. Every unfinished call in the authoritative ToolBatch receives the
+/// coordinated-child interruption result, the complete ordered result batch and
+/// `NaturalEnd` are committed together, and exact terminal replay is a no-op.
+pub(crate) async fn interrupt_awaiting_tools(
+    runtime: &Runtime,
+    run_id: RunId,
+    thread_id: ThreadId,
+    context: RuntimeRunContext,
+) -> Result<RunState> {
+    const INTERRUPTED: &str = "Tool execution was interrupted before completion. Please retry.";
+
+    let reader = context.reader.as_ref().ok_or_else(|| {
+        Error::Execution(
+            "interrupting an awaiting tool batch requires committed history".to_string(),
+        )
+    })?;
+    match reader.run_state(&run_id) {
+        Some(state @ RunState::Ended(_)) => return Ok(state),
+        Some(RunState::Awaiting) => {}
+        Some(RunState::Running) | None => {
+            return Err(Error::Execution(
+                "coordinated tool interruption requires an awaiting Run".to_string(),
+            ));
+        }
+    }
+    let ticket = reader.resume_ticket(&run_id).ok_or_else(|| {
+        Error::Execution("awaiting coordinated Run has no resume ticket".to_string())
+    })?;
+    if ticket.thread_id != thread_id
+        || !matches!(
+            ticket.reason(),
+            AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+        )
+    {
+        return Err(Error::Execution(
+            "coordinated interruption is limited to an Awaiting tool Run".to_string(),
+        ));
+    }
+
+    let store = store_from_commands(reader.committed_state(&thread_id), &run_id);
+    let mut batch = ActiveToolBatch::load(&store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .filter(|batch| batch.run_id() == &run_id && batch.phase() == ToolBatchPhase::Open)
+        .ok_or_else(|| {
+            Error::Execution("awaiting coordinated Run has no open ToolBatch".to_string())
+        })?;
+    let calls = batch
+        .calls()
+        .iter()
+        .map(|entry| (entry.call.clone(), entry.phase.clone()))
+        .collect::<Vec<_>>();
+    for (call, phase) in calls {
+        let output = ToolOutput::error(&call.call_id, INTERRUPTED);
+        match phase {
+            ToolCallPhase::Requested => batch
+                .complete_immediate(output.clone())
+                .map_err(|error| Error::Execution(error.to_string()))?,
+            ToolCallPhase::Executing { .. } | ToolCallPhase::Awaiting { .. } => batch
+                .complete(output.clone())
+                .map_err(|error| Error::Execution(error.to_string()))?,
+            ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. } => continue,
+        }
+        batch
+            .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
+            .map_err(|error| Error::Execution(error.to_string()))?;
+    }
+    batch
+        .finalize()
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    let messages = batch
+        .calls()
+        .iter()
+        .flat_map(|entry| entry.result_messages.iter().cloned())
+        .collect();
+    let step = RunStepResult {
+        new_messages: messages,
+        staged_state: vec![ActiveToolBatch::write(&Some(batch))],
+        audit: Vec::new(),
+        disposition: RunDisposition::ended(run_id.clone(), EndCause::NaturalEnd),
+    };
     finish(runtime, &context, &thread_id, run_id, step).await
 }
 
@@ -110,6 +188,7 @@ pub(crate) async fn perform_scheduled_action(
         snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id),
         catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint),
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms,
     };
     resume_run(runtime, command, reader, context).await
@@ -129,6 +208,11 @@ pub(crate) async fn resume_run(
         .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
     validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
 
+    let context_messages = fresh_resume_context(
+        &reader.committed_messages(&command.thread_id),
+        command.context_messages,
+    )?;
+
     let snapshot = runtime
         .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
         .ok_or_else(|| Error::Resolution("snapshot for resume not found".to_string()))?;
@@ -146,7 +230,8 @@ pub(crate) async fn resume_run(
                 error = %error,
                 "resumed run plugin environment violates its declared capability boundary"
             );
-            let step = RunStepResult::capability_bound(run_id.clone());
+            let mut step = RunStepResult::capability_bound(run_id.clone());
+            step.new_messages = context_messages;
             return finish(runtime, &context, &thread_id, run_id, step).await;
         }
     };
@@ -161,6 +246,7 @@ pub(crate) async fn resume_run(
             runtime,
             &ticket,
             command.result,
+            context_messages,
             &resolved,
             &env,
             &run_id,
@@ -180,6 +266,7 @@ pub(crate) async fn resume_run(
         &thread_id,
         &ticket,
         command.result,
+        context_messages,
         reader,
         &context,
     )

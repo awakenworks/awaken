@@ -53,6 +53,7 @@ fn assert_rejected(binding: ModelBinding, provisioning: ModelProvisioning, expec
 /// | P1 | Native | Provider | complete route, no ACP profile | accept |
 /// | P2 | exact ACP | Provider | complete route and ACP profile | accept |
 /// | P3 | Native/ACP/A2A | Provider | backend/profile family disagrees | reject |
+/// | P4 | Native/ACP | Provider | any required route coordinate is non-canonical | reject |
 /// | R1 | exact A2A | Remote | empty model and security fingerprint | accept |
 /// | R2 | other | Remote | any | reject |
 /// | R3 | exact A2A | Remote | local model or missing security proof | reject |
@@ -244,9 +245,12 @@ fn assert_wire_rejected(
     );
 }
 
-/// Persistence is an untrusted constructor. Each row starts from a valid value,
-/// changes exactly one invariant-bearing wire field, and must fail before an
-/// executable aggregate can enter memory.
+/// Persistence is an untrusted constructor. Causes: one valid candidate or one
+/// invariant-bearing wire field changed to an invalid value. Effects: the valid
+/// value round-trips elsewhere, while every changed value fails before an
+/// executable aggregate can enter memory. Constraint/K: custom Deserialize
+/// delegates to the same closed constructor as typed creation. Decision rule:
+/// P4 incomplete Provider route => reject; the other rows follow B3/B4/P3/R2/R3.
 #[test]
 fn deserialization_cannot_bypass_candidate_invariants() {
     let backend_owned = ResolvedModelCandidate::try_backend_owned(
@@ -279,6 +283,9 @@ fn deserialization_cannot_bypass_candidate_invariants() {
     });
     assert_wire_rejected(&provider, |wire| {
         wire["provisioning"]["endpoint"]["api_dialect"] = "".into();
+    });
+    assert_wire_rejected(&provider, |wire| {
+        wire["provisioning"]["endpoint"]["upstream_model"] = "".into();
     });
 
     let acp_provider = ResolvedModelCandidate::try_provider_with_acp(

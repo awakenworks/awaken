@@ -776,6 +776,8 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
     // Decision table: R1 owner+create/get/list -> E1+E2; R2 other+get -> E3;
     // R3 other+consent -> E3+E5; R4 owner+mixed patch -> E4;
     // R5 owner+empty patch -> E5.
+    // Constraints/invariants: organization fencing applies before every read or
+    // mutation and all accepted changes share one aggregate/revision sequence.
     let repo = Arc::new(InMemoryDataSubjectRepo::new());
     let clock = Arc::new(FixedClock::new(100));
     let application = DataSubjectApplication::with_clock(repo, vec![7; 32], clock.clone()).unwrap();
@@ -784,6 +786,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
             org: "org_a".into(),
             metadata: BTreeMap::from([("drop".into(), "1".into())]),
             relationship: UserProfileRelationship::External,
+            access_type: None,
             external_id: Some("external-a".into()),
             name: None,
         })
@@ -820,6 +823,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
                     ("keep".into(), "2".into()),
                 ])),
                 relationship: Some(UserProfileRelationship::Resold),
+                access_type: None,
                 trust_grants: Some(BTreeMap::from([(
                     "calendar".into(),
                     UserProfileTrustGrant {
@@ -857,6 +861,8 @@ async fn enrollment_hmac_and_expiry_decision_table() {
     // fails closed; E3 missing cannot mint; E4 accept grants both purposes;
     // E5 replay is idempotent. Rules R1 exact+before+present -> E1+E4+E5;
     // R2 tampered -> E2; R3 after -> E2; R4 missing -> E3.
+    // Constraints/invariants: the HMAC binds the exact subject and expiry;
+    // replay cannot duplicate consent or advance the aggregate revision.
     let repo = Arc::new(InMemoryDataSubjectRepo::new());
     let clock = Arc::new(FixedClock::new(1_000));
     let application =
@@ -866,6 +872,7 @@ async fn enrollment_hmac_and_expiry_decision_table() {
             org: "org".into(),
             metadata: BTreeMap::new(),
             relationship: UserProfileRelationship::External,
+            access_type: None,
             external_id: None,
             name: None,
         })
@@ -988,6 +995,8 @@ async fn stale_profile_writer_retries_without_losing_consent() {
     // revision N+1; C3 profile CAS is stale. Effects: E1 stale CAS is rejected;
     // E2 application reloads; E3 final N+2 contains both consent and profile
     // patch. Decision rule R1=C1+C2+C3 -> E1+E2+E3 (lost update forbidden).
+    // Constraints/invariants: compare-and-swap is the sole write fence and a
+    // retry must merge against current truth rather than overwrite consent.
     let inner = Arc::new(InMemoryDataSubjectRepo::new());
     let repo = Arc::new(InjectConsentConflict {
         inner: inner.clone(),
@@ -999,6 +1008,7 @@ async fn stale_profile_writer_retries_without_losing_consent() {
             org: "org".into(),
             metadata: BTreeMap::new(),
             relationship: UserProfileRelationship::External,
+            access_type: None,
             external_id: None,
             name: None,
         })

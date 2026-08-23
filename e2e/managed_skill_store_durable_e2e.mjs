@@ -21,7 +21,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -38,12 +46,6 @@ async function createSkill(content = SKILL_MD) {
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
-const listEvents = async (sid) => {
-  const evs = [];
-  for await (const ev of client.beta.sessions.events.list(sid, { betas: BETAS })) evs.push(ev);
-  return evs;
-};
-
 // Drive one session through discover (list_skills) → activate (Skill) → use, and
 // return the concatenated assistant text. The deterministic model replies
 // `USED-SKILL: <body>`, so the marker appears only when the skill was truly offered
@@ -54,12 +56,26 @@ async function useSkill() {
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(session.id, {
+  // C1=exact User receipt; C2=durable Skill marker reply and terminal. E1=C2
+  // after C1 proves this process incarnation used the catalog. K: restart
+  // durability remains the Skill-store oracle. Decision U1 C1&&!C2=>retry;
+  // U2 C1+C2=>return the committed transcript.
+  const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'discover and use a skill' }] }],
     betas: BETAS,
   });
-  const evs = await listEvents(session.id);
-  return JSON.stringify(evs);
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'U1 exact durable-Skill User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    'U1 durable Skill Run to commit its marker reply',
+  );
+  return JSON.stringify(events);
 }
 
 async function skillIds() {

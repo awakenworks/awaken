@@ -2,6 +2,7 @@ use super::test_support::{RehydrateFake, create_session_fixture, ephemeral_sessi
 use super::*;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_session_contract::ToolPermissionDecision;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
@@ -38,6 +39,7 @@ impl SessionRuntime for EndSessionRecorder {
         }
         Ok(awaken_session_contract::DelegatedRunSnapshot {
             delegated_runs: self.delegated.lock().unwrap().clone(),
+            coordinated_thread_ids: Vec::new(),
             watermark: 0,
         })
     }
@@ -67,9 +69,6 @@ impl SessionRuntime for EndSessionRecorder {
     ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Ok(())
-    }
     async fn prepare_session(&self, thread: &str, _init: SessionInit) -> Result<(), RunError> {
         self.prepared.lock().unwrap().push(thread.to_string());
         Ok(())
@@ -83,15 +82,23 @@ impl SessionRuntime for EndSessionRecorder {
     ) -> Result<OutcomeDrive, RunError> {
         unreachable!()
     }
-    async fn end_session(&self, thread: &str) -> Result<(), RunError> {
-        self.ended.lock().unwrap().push(thread.to_string());
-        Ok(())
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        // Terminal fake rule T0: these tests never commit a Run, so the one
+        // consistency owner truthfully returns no snapshot. The production
+        // default remains fail-closed and no split messages/ticket fallback is
+        // reintroduced merely to make archive/delete tests executable.
+        Ok(None)
     }
     async fn execute_terminal_cleanup(
         &self,
         command: awaken_session_contract::SessionCleanupCommand,
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.end_session(&command.thread_id).await?;
+        self.ended.lock().unwrap().push(command.thread_id.clone());
         Ok(awaken_session_contract::SessionCleanupCompletion::new(
             &command,
             Vec::new(),

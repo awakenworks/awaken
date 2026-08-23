@@ -1,17 +1,17 @@
 //! `ThreadEventHub` — the per-thread live observation point shared by protocol
 //! adapters.
 //!
-//! A turn is driven by exactly one protocol at a time (the *submitter*), but more
+//! A Run is driven by exactly one protocol at a time (the *submitter*), but more
 //! than one protocol may be bound to the same thread — e.g. an AI SDK frontend
 //! drives the run while a Managed-Agents backend services a client-executed tool.
 //! The non-submitting adapter needs to *observe* the same thread's committed
-//! deltas without issuing its own (competing) turn. This hub is that shared point:
+//! deltas without issuing its own competing Run. This hub is that shared point:
 //! the submitter publishes each committed delta by scoped thread id, and any
 //! number of observers subscribe.
 //!
-//! The runtime here is turn-synchronous, so the hub carries committed-message
-//! deltas rather than token-level events; the port is identical to the streaming
-//! shape and can carry richer events unchanged once a live sink is plumbed.
+//! The same channel carries best-effort neutral token deltas and committed-message
+//! observations. Neither is a second truth store: the former is lossy preview,
+//! while the latter is reconstructed from the canonical commit.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::message::Message;
 use tokio::sync::broadcast;
 
 /// Backlog per thread. Sized so a late-attaching observer still sees a short
-/// turn's opening delta; an observer that lags past this loses events (the turn
+/// Run's opening delta; an observer that lags past this loses events (the Run
 /// still completes for the submitter).
 const HUB_CAPACITY: usize = 256;
 
@@ -28,7 +28,11 @@ const HUB_CAPACITY: usize = 256;
 /// vocabulary — each adapter projects it into its own wire shape.
 #[derive(Debug, Clone)]
 pub enum ThreadEvent {
-    /// Messages committed during one step (a turn or a resume).
+    /// Best-effort model progress for this exact logical Thread. It uses the
+    /// Runtime's one neutral stream vocabulary; protocol adapters decide whether
+    /// and how to render it. Never durable truth.
+    Live(awaken_agent_contract::stream::event::Observation),
+    /// Messages committed during one Step (a new Run or a resume).
     Committed(Vec<Message>),
     /// The step reached a terminal position. `awaiting` is true when the run
     /// awaits a tool decision / client result, false on natural end.
@@ -65,7 +69,7 @@ impl ThreadEventHub {
     }
 
     /// Subscribe to a thread's live deltas. Only events published after this call
-    /// are delivered, so an observer must subscribe before the turn it wants to
+    /// are delivered, so an observer must subscribe before the Run it wants to
     /// watch is submitted.
     pub fn subscribe(&self, thread_key: &str) -> broadcast::Receiver<ThreadEvent> {
         self.sender(thread_key).subscribe()
@@ -74,6 +78,46 @@ impl ThreadEventHub {
     /// Publish one event to a thread's observers (a no-op if none are attached).
     pub fn publish(&self, thread_key: &str, event: ThreadEvent) {
         let _ = self.sender(thread_key).send(event);
+    }
+
+    /// Open the neutral Session-contract view over this same channel. This is a
+    /// wrapper, not a second fan-out path: committed/launch observations are
+    /// skipped and only `ThreadEvent::Live` crosses the port.
+    pub(crate) fn live_subscription(
+        &self,
+        thread_key: &str,
+    ) -> Box<dyn awaken_session_contract::SessionThreadLiveSubscription> {
+        Box::new(HubLiveSubscription {
+            receiver: self.subscribe(thread_key),
+        })
+    }
+}
+
+struct HubLiveSubscription {
+    receiver: broadcast::Receiver<ThreadEvent>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionThreadLiveSubscription for HubLiveSubscription {
+    async fn recv(
+        &mut self,
+    ) -> Result<
+        Option<awaken_agent_contract::stream::event::Observation>,
+        awaken_session_contract::RunError,
+    > {
+        loop {
+            match self.receiver.recv().await {
+                Ok(ThreadEvent::Live(event)) => return Ok(Some(event)),
+                Ok(
+                    ThreadEvent::Committed(_)
+                    | ThreadEvent::StepEnded { .. }
+                    | ThreadEvent::AgentLaunch { .. },
+                ) => continue,
+                // Preview is best-effort: lag drops only volatile prefixes.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return Ok(None),
+            }
+        }
     }
 }
 
@@ -122,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn a_late_subscriber_misses_a_pre_subscription_publish() {
         // The documented ordering guarantee: only events published AFTER subscribe are
-        // delivered, so an observer must attach before the turn it wants to watch. A
+        // delivered, so an observer must attach before the Run it wants to watch. A
         // publish before the (first ever) subscribe is not replayed to the newcomer.
         let hub = ThreadEventHub::new();
         hub.publish("t1", ThreadEvent::StepEnded { awaiting: false });

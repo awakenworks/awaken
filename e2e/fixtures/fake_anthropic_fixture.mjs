@@ -23,7 +23,7 @@ let fixturePortCursor = (process.pid * 37) % FIXTURE_PORT_COUNT;
 // Distinctive per-inference token usage the fake reports (Anthropic wire field names,
 // incl. the prompt-cache breakdown that genai maps to cache_read/cache_creation), so a
 // usage e2e can assert exact accumulated counts. Each model call reports these; an
-// N-step turn accumulates N× them. Exported so tests import the expected values.
+// N-Step Run accumulates N× them. Exported so tests import the expected values.
 export const FAKE_USAGE = {
   input_tokens: 11,
   output_tokens: 7,
@@ -45,7 +45,7 @@ function systemText(parsed) {
 
 function userMessages(parsed) {
   // A tool result rides on a `user` message as a `tool_result` block; it is not a
-  // user turn. A user turn is a user message carrying text (not just tool_result).
+  // User message. A User message carries text (not just tool_result).
   return (parsed.messages ?? []).filter(
     (m) => m.role === 'user' && (typeof m.content === 'string' || (m.content ?? []).some((b) => b.type === 'text')),
   );
@@ -81,7 +81,7 @@ function evaluatedOutcomeText(input) {
     .join('\n');
 }
 
-// Every `tool_result` block across the transcript — one per prior tool-role turn.
+// Every `tool_result` block across the transcript — one per prior tool-result message.
 function toolResults(parsed) {
   const out = [];
   for (const m of parsed.messages ?? []) {
@@ -93,9 +93,50 @@ function toolResults(parsed) {
   return out;
 }
 
+// Tool results after the most recent text-bearing User message. Managed
+// coordination is multi-Step and Sessions contain multiple Runs, so counting
+// the entire transcript would let an earlier Run skip roster discovery in a
+// later one. This mirrors the scenario-host model's current-Run boundary.
+function currentRunToolResults(parsed) {
+  const messages = parsed.messages ?? [];
+  let boundary = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message.role === 'user'
+      && (typeof message.content === 'string' || (message.content ?? []).some((block) => block.type === 'text'))
+    ) {
+      boundary = index;
+      break;
+    }
+  }
+  const out = [];
+  for (const message of messages.slice(boundary + 1)) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === 'tool_result') out.push(block);
+    }
+  }
+  return out;
+}
+
 function toolResultText(block) {
   if (typeof block?.content === 'string') return block.content;
   return (block?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+}
+
+function latestCoordinatedThreadId(parsed) {
+  for (const result of toolResults(parsed).reverse()) {
+    try {
+      const receipt = JSON.parse(toolResultText(result));
+      if (receipt?.accepted === true && typeof receipt.session_thread_id === 'string') {
+        return receipt.session_thread_id;
+      }
+    } catch {
+      // An unrelated tool result is not a coordination receipt.
+    }
+  }
+  return null;
 }
 
 function catalogSkillId(block) {
@@ -156,10 +197,44 @@ function hasTool(parsed, name) {
   return (parsed.tools ?? []).some((t) => t.name === name);
 }
 
-// A reply is either `{ text }` (end_turn) or `{ tool: { id, name, input } }`
-// (tool_use). The named behaviors below each port one `awaken-server` model.
+// A reply is `{ text }` (end_turn), `{ tool: { id, name, input } }`, or one
+// ordered `{ tools: [...] }` batch (tool_use). The batch form remains in this
+// canonical fake-wire fixture so multi-call Runtime behavior is not modeled by
+// a second test provider.
 const text = (t) => ({ text: t });
 const tool = (id, name, input) => ({ tool: { id, name, input } });
+const toolBatch = (tools) => ({ tools });
+
+// One canonical fake-wire implementation of the fixed Managed coordinator
+// choreography. `send_to_agent` returns only an admission receipt; the child
+// Agent's eventual response is projected independently on its Thread.
+function managedCoordinationReply(parsed, agentId, message) {
+  if (!hasTool(parsed, 'list_agents') || !hasTool(parsed, 'send_to_agent')) return null;
+  // A completed child is delivered to the coordinator as a later internal User
+  // message. The Anthropic wire shape does not retain Awaken's typed Message id,
+  // so this fake-provider port recognizes the stable text envelope produced by
+  // SessionApplication. It must finish that report Run without issuing another
+  // send, or one child completion recursively creates another child.
+  if (lastUserText(parsed).startsWith('Message from agent ')) {
+    return text('coordination completed from child report');
+  }
+  const results = currentRunToolResults(parsed);
+  const runOrdinal = userMessages(parsed).length;
+  if (results.length === 0) return tool(`list-agents-${runOrdinal}`, 'list_agents', {});
+  if (results.length === 1) {
+    if (lastUserText(parsed) === 'follow up with the same child') {
+      const sessionThreadId = latestCoordinatedThreadId(parsed);
+      if (!sessionThreadId) throw new Error('follow-up has no prior coordinated Thread receipt');
+      return tool(`send-agent-${runOrdinal}`, 'send_to_agent', {
+        session_thread_id: sessionThreadId,
+        message: 'confirm the previous research result from your retained history',
+      });
+    }
+    return tool(`send-agent-${runOrdinal}`, 'send_to_agent', { agent_id: agentId, message });
+  }
+  const result = results.at(-1);
+  return text(`coordination ${result.is_error ? 'failed' : 'accepted'}: ${toolResultText(result)}`);
+}
 
 function adminDriveReply(parsed) {
   switch (toolResults(parsed).length) {
@@ -251,7 +326,7 @@ export const BEHAVIORS = {
   // InstructionEchoModel: `instructions: <system prompt>`.
   instruction: (parsed) => text(`instructions: ${systemText(parsed)}`),
   // Outcome Worker + Judge behavior. Judge replies are strict JSON; Worker
-  // revisions produce FINAL after the runtime-owned feedback turn.
+  // revisions produce FINAL after the runtime-owned feedback Step.
   revise(parsed) {
     const users = allUserText(parsed);
     if (users.includes('Evaluate this Outcome input')) {
@@ -271,21 +346,21 @@ export const BEHAVIORS = {
     }
     return text(users.includes('Revise the deliverable') ? 'FINAL answer' : 'a rough draft');
   },
-  // VisionProbeModel: report the media types on the last user turn.
+  // VisionProbeModel: report the media types on the latest User message.
   vision(parsed) {
     const medias = lastUserImages(parsed);
     const t = blockText(((parsed.messages ?? []).filter((m) => m.role === 'user').pop() ?? {}).content);
     return text(medias.length ? `saw ${medias.join(',')}; text: ${t}` : `saw no media; text: ${t}`);
   },
-  // CompactionModel: the compactor sub-run returns a fixed summary; a main turn
+  // CompactionModel: the compactor sub-Run returns a fixed summary; a main Run
   // prefixes its reply with the system/context text it received.
   compaction(parsed) {
     const sys = systemLines(parsed);
-    if (allUserText(parsed).includes('summarize') || sys.includes('summar')) return text('SUMMARY: earlier turns folded');
+    if (allUserText(parsed).includes('summarize') || sys.includes('summar')) return text('SUMMARY: earlier Runs folded');
     return text(`ctx:[${sys}] echo:${lastUserText(parsed)}`);
   },
   // MemoryProbeModel: the extractor sub-run saves one memory via `write_memory`
-  // (named after a `fact-<tag>` token when present); a main turn prefixes its echo
+  // (named after a `fact-<tag>` token when present); a main Run prefixes its echo
   // with the system/context lines so recall injection is observable.
   memory(parsed) {
     const sys = systemLines(parsed);
@@ -300,7 +375,7 @@ export const BEHAVIORS = {
   // MemoryResourceModel cause/effect table (shared with the in-process scenario):
   // R1 no tool result -> write the marker; R2 exactly one result -> read the same
   // mounted path; R3 two results -> terminate. R2 makes the observation independent
-  // of the host's later harvest API: a successful terminal turn must have observed
+  // of the host's later harvest API: a successful terminal Run must have observed
   // the exact bytes through the sandbox mount first.
   memoryResource(parsed) {
     switch (toolResults(parsed).length) {
@@ -332,7 +407,7 @@ export const BEHAVIORS = {
       // what the agent committed — `push_repo_at` ships `@{u}..HEAD`). Inline identity
       // so a fresh host-side clone needs no prior git config.
       case 2: return tool('c', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add NEW.txt'" });
-      default: return text('repo turn done');
+      default: return text('repo Run done');
     }
   },
   // StateMachineModel: call `glob` twice (walk s0->s1, then an out-of-order call the
@@ -375,9 +450,9 @@ export const BEHAVIORS = {
     }
     return text(`Echo: ${t}`);
   },
-  // HandBrainLazyModel: separate turns deliberately select one Brain tool and
+  // HandBrainLazyModel: separate Runs deliberately select one Brain tool and
   // one Sandbox tool. The e2e observes the durable Session environment binding
-  // around each turn, proving placement rather than inferring it from output.
+  // around each Run, proving placement rather than inferring it from output.
   handBrainLazy(parsed) {
     const results = toolResults(parsed);
     const msgs = parsed.messages ?? [];
@@ -406,7 +481,7 @@ export const BEHAVIORS = {
       });
     }
     // The extraction sub-run (out-of-band): save one memory, then finish. It is seeded
-    // with the whole main-turn transcript (which carries tool results), so we can't key
+    // with the whole main-Run transcript (which carries tool results), so we can't key
     // off a tool-result *count*; instead write_memory unless the LAST message is our
     // write_memory result (i.e. the tool just ran) — then finish.
     if (systemText(parsed).includes('memory extraction Agent')) {
@@ -435,7 +510,7 @@ export const BEHAVIORS = {
       default: return text('done: used skill greet, wrote memory + repo + artifact');
     }
   },
-  // SkillDrivingModel: on the user turn call `list_skills`; given the catalog
+  // SkillDrivingModel: on the user-triggered Run call `list_skills`; given the catalog
   // activate `greet` via the `Skill` tool; given the activation instructions reply
   // `USED-SKILL: <instructions>` — discover → activate → use.
   skills(parsed) {
@@ -459,30 +534,67 @@ export const BEHAVIORS = {
   adminTypedEdges(parsed) {
     return adminTypedEdgesReply(parsed);
   },
-  // DelegatingModel: with `agent_run` it delegates to Native `researcher`, ACP
-  // `acp-worker`, its explicit self copy, or `ghost`, then reports the result. The self-copy task answers
-  // directly so this fixture exercises one recursive edge deterministically.
+  // DelegatingModel: a Managed coordinator discovers the fixed roster and sends
+  // asynchronously to Native `researcher`, ACP `acp-worker`, explicit self, or
+  // `ghost`. A child answers on its own Thread; the parent only reports the
+  // send receipt. The self-copy task answers directly to bound recursion.
   delegating(parsed) {
-    if (!hasTool(parsed, 'agent_run')) return text('researched: 42');
-    const results = toolResults(parsed);
-    if (results.length === 0) {
-      const requested = firstUserText(parsed);
-      if (requested.includes('self-copy task')) return text('self copy: 42');
-      const agentId = requested.includes('ghost')
-        ? 'ghost'
-        : requested.includes('acp agent')
-          ? 'acp-worker'
-        : requested.includes('self agent')
-          ? 'assistant'
-          : 'researcher';
-      const input = agentId === 'assistant'
-        ? 'self-copy task'
-        : requested.includes('delegate lifecycle:')
-          ? requested
-          : 'do the research';
-      return tool('d1', 'agent_run', { agent_id: agentId, input });
+    const requested = lastUserText(parsed);
+    if (requested.includes('self-copy task')) return text('self copy: 42');
+    if (requested === 'Provide your advice for the primary agent now.') {
+      return text('independent advisor advice: verify the durable evidence');
     }
-    return text(`delegate said: ${toolResultText(results[results.length - 1])}`);
+    if (requested.includes('consult the advisor')) {
+      const results = currentRunToolResults(parsed);
+      if (results.length === 0) {
+        return tool(`advisor-${userMessages(parsed).length}`, 'advisor', {});
+      }
+      const advice = toolResultText(results.at(-1));
+      return text(
+        advice.includes('Advisor consultation failed')
+          ? 'root handled the generic advisor failure'
+          : `root used advisor advice: ${advice}`,
+      );
+    }
+    if (requested === 'requires-action child task') {
+      const results = currentRunToolResults(parsed);
+      if (results.length > 0) {
+        return text(`requires-action child completed: ${results.map(toolResultText).join(' | ')}`);
+      }
+      return toolBatch([
+        {
+          id: 'interrupt-write',
+          name: 'write',
+          input: { path: 'managed-interrupt-one.txt', content: 'must not be written' },
+        },
+        {
+          id: 'interrupt-bash',
+          name: 'bash',
+          input: { command: "printf '%s' 'must not execute'" },
+        },
+      ]);
+    }
+    if (requested === 'confirm the previous research result from your retained history') {
+      const retained = (parsed.messages ?? []).some(
+        (entry) => entry.role === 'assistant' && blockText(entry.content).includes('researched: 42'),
+      );
+      return text(retained ? 'follow-up retained researched: 42' : 'follow-up history missing');
+    }
+    const agentId = requested.includes('ghost')
+      ? 'ghost'
+      : requested.includes('acp agent')
+        ? 'acp-worker'
+      : requested.includes('self agent')
+        ? 'assistant'
+        : 'researcher';
+    const message = agentId === 'assistant'
+      ? 'self-copy task'
+      : requested.includes('awaiting child')
+        ? 'requires-action child task'
+      : requested.includes('delegate lifecycle:')
+        ? requested
+        : 'do the research';
+    return managedCoordinationReply(parsed, agentId, message) ?? text('researched: 42');
   },
 };
 
@@ -538,11 +650,16 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       // is genuinely in flight, without peeking into the Rust process.
       state.received += 1;
       const arrival = JSON.parse(body || '{}');
-      const arrivalUsers = allUserText(arrival);
-      const arrivalKind = arrivalUsers.includes('Evaluate this Outcome input') ? 'outcome-judge'
-        : arrivalUsers.includes('Revise the deliverable') ? 'outcome-revision'
-          : arrivalUsers.includes('iteration limit was reached') ? 'outcome-ack'
-            : arrivalUsers.includes('Work toward this Outcome') ? 'outcome-initial'
+      // Outcome-arrival cause/effect rule A1: C1=a later command retains prior
+      // Outcome prompts in its transcript; C2=the last User prompt names the
+      // request currently arriving. Inspecting all history lets C1 overwrite
+      // C2, while selecting C2 yields exactly one initial/revision/judge/ack
+      // family and keeps failArrivalKind scoped to the current request.
+      const arrivalUser = lastUserText(arrival);
+      const arrivalKind = arrivalUser.includes('Evaluate this Outcome input') ? 'outcome-judge'
+        : arrivalUser.includes('Revise the deliverable') ? 'outcome-revision'
+          : arrivalUser.includes('iteration limit was reached') ? 'outcome-ack'
+            : arrivalUser.includes('Work toward this Outcome') ? 'outcome-initial'
               : 'other';
       state.arrivals.push(arrivalKind);
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
@@ -584,6 +701,11 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         url: req.url,
         model: parsed.model,
         stream: !!parsed.stream,
+        // Test-only request evidence. Dynamic Session System
+        // context is carried on the Anthropic top-level `system` field; keeping
+        // its text in this existing request ledger lets lifecycle E2E prove the
+        // context reached the provider instead of inferring it from model output.
+        system: systemText(parsed),
         memoryExtractor: systemText(parsed).includes('memory extraction Agent'),
         contentShape: requestContentShape(parsed),
       });
@@ -637,16 +759,18 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   });
 }
 
-// The Anthropic non-streaming response: one text or one tool_use content block.
+// The Anthropic non-streaming response: one text block or an ordered tool_use
+// batch. Existing single-tool behaviors are normalized through the same path.
 function emitJson(res, { id, model, reply }) {
-  const content = reply.tool
-    ? [{ type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: reply.tool.input }]
+  const toolCalls = reply.tools ?? (reply.tool ? [reply.tool] : []);
+  const content = toolCalls.length > 0
+    ? toolCalls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: call.input }))
     : [{ type: 'text', text: reply.text }];
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(
     JSON.stringify({
       id, type: 'message', role: 'assistant', model, content,
-      stop_reason: reply.tool ? 'tool_use' : 'end_turn',
+      stop_reason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
       stop_sequence: null,
       usage: { ...FAKE_USAGE },
     }),
@@ -666,8 +790,9 @@ function chunkString(s, n) {
   return out;
 }
 
-// The Anthropic streaming wire: the fixed event ladder around one text or tool_use
-// block, so the provider executor's streaming path assembles the same response as `infer`.
+// The Anthropic streaming wire: the fixed event ladder around one text block or
+// an ordered tool_use batch, so streaming and non-streaming infer assemble the
+// same response.
 function emitStream(res, { id, model, reply }) {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -684,16 +809,19 @@ function emitStream(res, { id, model, reply }) {
       },
     },
   });
-  if (reply.tool) {
-    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: {} } });
-    // Chunk the arguments across several `input_json_delta` events exactly as
-    // Anthropic streams `partial_json`, so the live channel carries true
-    // incremental tool-input deltas (not one whole-args frame). The server still
-    // accumulates + parses at content_block_stop, so the assembled call is identical.
-    for (const partial of chunkString(JSON.stringify(reply.tool.input), 4)) {
-      ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: partial } });
+  const toolCalls = reply.tools ?? (reply.tool ? [reply.tool] : []);
+  if (toolCalls.length > 0) {
+    for (const [index, call] of toolCalls.entries()) {
+      ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} } });
+      // Chunk every call's arguments across several `input_json_delta` events
+      // exactly as Anthropic streams `partial_json`. Each block keeps its own
+      // index, so ordered multi-call batches are reconstructed without a fixture
+      // side channel.
+      for (const partial of chunkString(JSON.stringify(call.input), 4)) {
+        ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: partial } });
+      }
+      ev('content_block_stop', { type: 'content_block_stop', index });
     }
-    ev('content_block_stop', { type: 'content_block_stop', index: 0 });
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   } else {
     ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });

@@ -31,8 +31,6 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
         Ok(awaken_session_contract::StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -53,15 +51,6 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
         _is_error: bool,
     ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
         unreachable!("cold event test never resumes a custom tool")
-    }
-
-    async fn add_system(
-        &self,
-        _agent: &str,
-        _thread: &str,
-        _text: &str,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        unreachable!("cold event test never adds a system message")
     }
 
     async fn define_outcome(
@@ -101,7 +90,34 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     let environments = Arc::new(RecordingEnvironmentSource::default());
     create(repo.as_ref(), persisted("dispatch-admission", true, "idle")).await;
     environments.fail_for("dispatch-admission");
-    let application = application(repo.clone(), environments.clone());
+    let refresh = Arc::new(ToggleProjectionRefresh::default());
+    refresh.fail.store(true, Ordering::SeqCst);
+    let mut application = application(repo.clone(), environments.clone());
+    application
+        .set_executable_projection_refresh(refresh.clone())
+        .unwrap();
+
+    // Projection prerequisite decision extension: C5 refresh unavailable;
+    // E4 recovery fails before Resource/Runtime/WorkQueue effects; C6 retry
+    // after recovery; E5 the existing canonical dispatch path runs. Constraint
+    // K1 durable Session intent remains unchanged. D3 C5=>E4; D4 C6=>E5.
+    let revision = repo.get("dispatch-admission").await.unwrap().revision;
+    assert!(
+        matches!(
+            application
+                .recover_session_projection("dispatch-admission", Some("workspace"))
+                .await,
+            Err(SessionProjectionRecoveryError::Unavailable(_))
+        ),
+        "D3/E4"
+    );
+    assert_eq!(
+        repo.get("dispatch-admission").await.unwrap().revision,
+        revision,
+        "D3/E4 no durable mutation"
+    );
+    assert!(environments.dispatched.lock().unwrap().is_empty(), "D3/E4");
+    refresh.fail.store(false, Ordering::SeqCst);
 
     let error = match application
         .recover_session_projection("dispatch-admission", Some("workspace"))
@@ -152,6 +168,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
             .contains("dispatch-admission"),
         "D2/E3 the admitted event explicitly wakes completed Work"
     );
+    assert!(refresh.calls.load(Ordering::SeqCst) >= 3, "D3-D4");
 }
 
 #[tokio::test]

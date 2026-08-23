@@ -661,10 +661,13 @@ async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
 
 #[tokio::test]
 async fn with_owner_drives_a_durable_run_over_any_sqlite() {
-    // The unique-owner seam end to end: a DurableRunIngress built with an explicit
-    // owner over the AnyDispatchStore(sqlite) backend awaits, then resumes to a
-    // committed terminal state — proving both the owner param and the wrapper work
-    // in the real ingress, not just at the store surface.
+    // Cause/effect graph: C1=foreground durable submit; C2=Any wraps SQLite;
+    // C3=the Worker binds a live claim verifier; C4=the Run reaches an external
+    // tool boundary. Effects: E1=claim, renewal, verifier, and settlement retain
+    // one edge-owned SystemClock source; E2=the first Step commits Awaiting;
+    // E3=the tool has no side effect.
+    // Decision rule R1=C1+C2+C3+C4 -> E1+E2+E3. A sentinel claim timestamp would
+    // instead make the live verifier reject its own lease before the first Step.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(any_in_memory());
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
@@ -695,6 +698,9 @@ async fn any_postgres_connect_and_claim() {
     // Decision table: R1 C1+!C2 -> skip environmental acceptance; R2 C1+C2+!C3 ->
     // E1+E2; R3 C1+C2+C3 -> E1+E2+E3. SQLite/remote wrappers own the complementary
     // `None` checkpoint row and must use FS/claim-bound transport respectively.
+    // Constraint/Invariant: AnyDispatchStore delegates to one selected backend
+    // and never creates a parallel checkpoint authority. Decision rule: execute
+    // R1-R3 according to environmental availability and recreation state.
     let schema = "t_any_store";
     let Some(_pool) = harness::schema_pool(schema).await else {
         return;
@@ -721,6 +727,7 @@ async fn any_postgres_connect_and_claim() {
         model: "provider/model".to_string(),
         partial_text: "partial".to_string(),
         partial_tools: Vec::new(),
+        retry_count: 0,
     };
     checkpoint
         .put(partial.clone())

@@ -216,6 +216,11 @@ pub struct RunDispatch {
     /// activation thread and first-class lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_thread_id: Option<ThreadId>,
+    /// Queue-owned Session activity coordinate for the next coordinated child
+    /// boundary. Ordinary and legacy Runs omit it. It is mutable across durable
+    /// Awaiting replies and is therefore excluded from caller-owned Run identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_activity_epoch: Option<u64>,
     /// W3C `traceparent` captured when the run was admitted, so a durably-dispatched
     /// execution continues the admitting request's distributed trace across the
     /// queue boundary. Absent when admitted without an active trace (or by an older
@@ -239,9 +244,10 @@ pub struct RunDispatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_runtime: Option<SessionRuntimeEnvelope>,
     /// Complete immutable publication closure required by this activation's
-    /// delegation graph. The activation already carries the parent snapshot;
-    /// this bundle contains only its non-self targets and crosses to a cold
-    /// Worker instead of granting that Worker mutable catalog access.
+    /// non-root execution graph (delegates and extension-authored auxiliary
+    /// Agents). The activation already carries the parent snapshot; this bundle
+    /// contains only its non-self targets and crosses to a cold Worker instead
+    /// of granting that Worker mutable catalog access.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
     /// Provider-neutral Environment creation shape. This is a placement
@@ -270,6 +276,11 @@ impl RunDispatch {
     fn canonicalized(&self) -> Self {
         let mut canonical = self.clone();
         canonical.traceparent = None;
+        // A coordinated child rotates this queue-owned coordinate whenever an
+        // Awaiting Run accepts another durable reply. Exact enqueue replays
+        // never overwrite the stored request, so excluding it from identity
+        // cannot grant a caller authority to change the current epoch.
+        canonical.session_activity_epoch = None;
         canonical
     }
 
@@ -282,6 +293,7 @@ impl RunDispatch {
         Self {
             activation,
             session_thread_id: None,
+            session_activity_epoch: None,
             traceparent: None,
             execution_scope: None,
             session_resources: None,
@@ -317,6 +329,14 @@ impl RunDispatch {
         self
     }
 
+    /// Bind a coordinated child to the Session activity admitted for its stable
+    /// operation identity.
+    #[must_use]
+    pub fn with_session_activity_epoch(mut self, epoch: u64) -> Self {
+        self.session_activity_epoch = Some(epoch);
+        self
+    }
+
     /// Attach the admitting request's W3C `traceparent` (see the field docs).
     pub fn with_traceparent(mut self, traceparent: Option<String>) -> Self {
         self.traceparent = traceparent;
@@ -344,7 +364,7 @@ impl RunDispatch {
         self
     }
 
-    /// Attach the exact delegation-publication closure frozen at admission.
+    /// Attach the exact non-root execution-publication closure frozen at admission.
     #[must_use]
     pub fn with_agent_publications(
         mut self,
@@ -503,6 +523,55 @@ mod tests {
     }
 
     #[test]
+    fn coordinated_activity_epoch_has_one_backward_compatible_dispatch_field() {
+        // Cause/effect graph: C1 a coordinated child carries an admitted
+        // Session activity epoch; C2 a legacy durable row omits the field; C3
+        // only the queue-owned epoch changes; C4 execution payload changes.
+        // Effects: E1 C1 round-trips the exact epoch; E2 C2 decodes as ordinary
+        // `None`; E3 the optional field is omitted for ordinary rows; E4 C3 is
+        // the same Run identity because Awaiting reply admission rotates it; E5
+        // C4 remains a collision.
+        //
+        // | Rule | Serialized field | Change | Effects |
+        // | R1 | present | none | E1 |
+        // | R2 | absent | none | E2+E3 |
+        // | R3 | present | activity epoch | E4 |
+        // | R4 | present | instructions | E5 |
+        // Constraint/Invariant: the queue-owned activity epoch is compatibility
+        // metadata, never a second Run identity input. Decision rule: R1-R4
+        // cover present/absent wire shape and metadata-only/payload changes.
+        let coordinated = RunDispatch::new(activation()).with_session_activity_epoch(17);
+        let encoded = serde_json::to_value(&coordinated).expect("R1 serializes");
+        assert_eq!(encoded["session_activity_epoch"], 17, "R1/E1");
+        let decoded: RunDispatch = serde_json::from_value(encoded).expect("R1 decodes");
+        assert_eq!(decoded.session_activity_epoch, Some(17), "R1/E1");
+
+        let ordinary = RunDispatch::new(activation());
+        let legacy = serde_json::to_value(&ordinary).expect("R2 serializes");
+        assert!(legacy.get("session_activity_epoch").is_none(), "R2/E3");
+        let decoded: RunDispatch = serde_json::from_value(legacy).expect("R2 legacy decodes");
+        assert_eq!(decoded.session_activity_epoch, None, "R2/E2");
+
+        let rotated = coordinated.clone().with_session_activity_epoch(18);
+        assert!(coordinated.same_canonical_dispatch(&rotated), "R3/E4");
+        assert_eq!(
+            coordinated.canonical_fingerprint(),
+            rotated.canonical_fingerprint(),
+            "R3/E4"
+        );
+        let mut changed_execution = coordinated.clone();
+        changed_execution
+            .activation
+            .snapshot
+            .resolved_spec
+            .instructions = "changed".to_string();
+        assert!(
+            !coordinated.same_canonical_dispatch(&changed_execution),
+            "R4/E5"
+        );
+    }
+
+    #[test]
     fn live_and_tombstone_identity_share_canonical_bytes() {
         // Identity decision rule I1: C1 two dispatch values are Rust-equal but
         // their serialized execution payload differs (`-0.0` versus `0.0`);
@@ -630,15 +699,15 @@ mod tests {
         assert_eq!(recovered.session_runtime, Some(runtime), "P2/E2");
     }
 
-    /// Delegation-publication transport cause/effect and FMECA design. Causes:
-    /// C1 the parent activation has a remote-only delegate publication; C2 a
-    /// legacy row omits the new bundle. Effects: E1 the exact immutable child
+    /// Execution-publication transport cause/effect and FMECA design. Causes:
+    /// C1 the parent activation has a non-root executable publication; C2 a
+    /// legacy row omits the bundle. Effects: E1 the exact immutable dependency
     /// snapshot survives queue serialization; E2 C2 remains readable as empty.
     /// Rules P1=C1=>E1, P2=!C1+C2=>E2. FMECA: losing the bundle (high severity,
     /// cold Worker cannot create `agent_run`) is detected by P1; older rows have
     /// no invented authority and fail closed later when delegation is attempted.
     #[test]
-    fn delegation_publications_round_trip_and_legacy_rows_default_empty() {
+    fn execution_publications_round_trip_and_legacy_rows_default_empty() {
         let child = ExecutableAgentSnapshot::builder("researcher")
             .model(awaken_runtime_contract::resolved::ModelBinding::new(
                 "test", "model", "native",

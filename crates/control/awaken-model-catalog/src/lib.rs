@@ -1125,6 +1125,13 @@ mod tests {
 
     #[test]
     fn populated_attributes_are_stamped_per_field_and_unknown_stays_unknown() {
+        // Test design — Causes: C1 neither token limit is known; C2 context only;
+        // C3 output only; C4 both are known and the caller supplies one trusted
+        // source/time. Effects: C1 has no provenance; C2-C4 stamp exactly the
+        // populated fields and replace forged/unrelated keys. Constraints:
+        // absence means unknown, never zero/default, and provenance cannot name
+        // an absent field. Decision rules A1=C1=>empty; A2-A4=C2/C3/C4=>the
+        // corresponding one/two exact provenance entries.
         let stamped = ModelAttributes {
             context_window: Some(200_000),
             max_output_tokens: Some(32_000),
@@ -1179,6 +1186,11 @@ mod tests {
 
     #[test]
     fn legacy_model_attributes_without_provenance_remain_readable() {
+        // Test design — Cause: a legacy stored attribute has a positive context
+        // value but no provenance member. Effect: the value remains readable and
+        // provenance remains unknown/empty. Constraints: compatibility never
+        // fabricates manual or provider authority. Decision rule L1=legacy
+        // omission=>decode value plus empty provenance.
         let attrs: ModelAttributes = serde_json::from_str(r#"{"context_window":128000}"#).unwrap();
         assert_eq!(attrs.context_window, Some(128_000));
         assert!(attrs.provenance.is_empty());
@@ -1303,6 +1315,11 @@ mod tests {
 
     #[test]
     fn api_dialect_adapter_kind_maps_each_variant() {
+        // Test design — Causes: the five closed dialect variants are selected.
+        // Effects: Anthropic=>anthropic, Chat/Responses=>openai, Gemini=>gemini,
+        // Vertex=>vertex. Constraints: Chat and Responses share a family but
+        // remain distinct dialect values; no unknown/default branch exists.
+        // Decision rules P1-P5 enumerate the complete enum partition.
         assert_eq!(ApiDialect::AnthropicMessages.adapter_kind(), "anthropic");
         assert_eq!(ApiDialect::OpenAiChat.adapter_kind(), "openai");
         assert_eq!(ApiDialect::OpenAiResponses.adapter_kind(), "openai");
@@ -1312,6 +1329,12 @@ mod tests {
 
     #[test]
     fn provider_descriptors_are_unique_and_internally_consistent() {
+        // Test design — Causes: every static descriptor exposes a provider kind,
+        // supported dialects, auth methods, fields, and default endpoints.
+        // Effects: provider/field keys are unique and every HTTPS default refers
+        // to a declared dialect. Constraints: descriptors are secret-free static
+        // capabilities and hold no catalog/vault mutation port. Decision rule D1:
+        // exhaustively validate every descriptor and nested field/endpoint.
         let descriptors = provider_driver_descriptors();
         assert!(!descriptors.is_empty());
         let mut kinds = std::collections::BTreeSet::new();
@@ -1332,6 +1355,11 @@ mod tests {
 
     #[test]
     fn openai_descriptor_prefers_responses_without_hiding_chat() {
+        // Test design — Cause: the OpenAI descriptor declares multiple protocols
+        // and a default endpoint. Effects: Responses is first, Chat remains
+        // declared, discovery stays enabled, and the base URL has no parallel
+        // endpoint-id suffix. Constraints: stable preference cannot alias the
+        // two dialects. Decision rule D2=OpenAI descriptor=>all four facts.
         let openai = provider_driver_descriptors()
             .into_iter()
             .find(|descriptor| descriptor.provider_kind == "openai")
@@ -1460,8 +1488,13 @@ mod tests {
 
     #[test]
     fn b4_brokered_attributes_are_explainable_stale_safe_and_never_override_manual() {
-        // B4 decision table: known Cloud value + no local fact -> brokered fact;
-        // later Cloud unknown/removal -> clear only brokered fact; manual fact -> preserve.
+        // Test design — Causes: C1 Cloud publishes known limits with no local
+        // fact; C2 a later complete projection omits/removes them; C3 a manual
+        // fact exists at refresh. Effects: C1 stores brokered provenance/time;
+        // C2 clears only stale brokered facts; C3 preserves manual authority.
+        // Constraints: Cloud omission cannot clear manual values and unknown is
+        // never guessed. Decision rules B1=C1=>brokered, B2=C1+C2=>clear,
+        // B3=C1+C3=>preserve manual.
         let mut catalog = catalog();
         let projection = |models| BrokeredCatalogProjection {
             broker_id: "awaken-cloud".into(),
@@ -1521,7 +1554,11 @@ mod tests {
 
     #[test]
     fn api_dialect_serde_is_snake_case_on_the_wire() {
-        // The wire tokens the console/config API round-trips — `rename_all = snake_case`.
+        // Test design — Causes: C1-C5 each declared dialect token; C6 an unknown
+        // token. Effects: C1-C5 serialize/parse without aliasing; C6 is rejected.
+        // Constraints: unknown never defaults to Chat, and Responses/Chat retain
+        // distinct snake-case tokens. Decision rules W1-W5=exact round trips;
+        // W6=unknown=>fail closed.
         for (dialect, wire) in [
             (ApiDialect::AnthropicMessages, "\"anthropic_messages\""),
             (ApiDialect::OpenAiChat, "\"open_ai_chat\""),

@@ -228,14 +228,14 @@ mod tests {
 
     #[test]
     fn exact_routes_multiple_clis_and_rejects_bare_acp() {
-        // Cause graph: explicit cli -> exact route; bare/unknown cli -> closed
-        // failure. ACP Default is a model-selection policy after an exact CLI
-        // route is chosen; it never means a default CLI.
+        // Cause graph: C1=the backend is an exact `acp:<cli>`; C2=that CLI has an
+        // installed route. E1=C1+C2 selects that route; E2=!C1|!C2 fails closed.
+        // Constraint: model-default policy applies only after exact CLI selection;
+        // the launch registry never owns an implicit/default CLI.
         // Decision table:
-        // explicit/known | any default     | selected route
-        // explicit/other | any default     | error
-        // bare           | known default   | default route
-        // bare           | missing default | error
+        // D1 exact ACP + known CLI   -> selected route
+        // D2 exact ACP + unknown CLI -> error
+        // D3 bare/invalid ACP        -> error before route lookup
         let routes = ["claude", "codex"]
             .into_iter()
             .map(|id| {

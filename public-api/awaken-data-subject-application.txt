@@ -27,6 +27,12 @@ pub enum awaken_data_subject_application::LawfulBasis
 pub awaken_data_subject_application::LawfulBasis::Consent
 pub awaken_data_subject_application::LawfulBasis::Contract
 pub awaken_data_subject_application::LawfulBasis::LegitimateInterest
+pub enum awaken_data_subject_application::UserProfileAccessType
+pub awaken_data_subject_application::UserProfileAccessType::Application
+pub awaken_data_subject_application::UserProfileAccessType::Passthrough
+pub enum awaken_data_subject_application::UserProfileFieldUpdate<T>
+pub awaken_data_subject_application::UserProfileFieldUpdate::Clear
+pub awaken_data_subject_application::UserProfileFieldUpdate::Replace(T)
 pub enum awaken_data_subject_application::UserProfileRelationship
 pub awaken_data_subject_application::UserProfileRelationship::External
 pub awaken_data_subject_application::UserProfileRelationship::Internal
@@ -58,12 +64,14 @@ pub awaken_data_subject_application::ConsentRecord::telemetry_content_ceiling: a
 impl core::convert::From<&awaken_data_subject_application::DataSubject> for awaken_data_subject_application::ConsentRecord
 pub fn awaken_data_subject_application::ConsentRecord::from(&awaken_data_subject_application::DataSubject) -> Self
 pub struct awaken_data_subject_application::CreateUserProfileCommand
+pub awaken_data_subject_application::CreateUserProfileCommand::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::CreateUserProfileCommand::external_id: core::option::Option<alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::name: core::option::Option<alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::org: alloc::string::String
 pub awaken_data_subject_application::CreateUserProfileCommand::relationship: awaken_data_subject_application::UserProfileRelationship
 pub struct awaken_data_subject_application::DataSubject
+pub awaken_data_subject_application::DataSubject::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::DataSubject::consents: alloc::vec::Vec<awaken_data_subject_application::ConsentGrant>
 pub awaken_data_subject_application::DataSubject::created_at: i64
 pub awaken_data_subject_application::DataSubject::erased_at: core::option::Option<i64>
@@ -125,16 +133,24 @@ impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_
 pub fn awaken_data_subject_application::RepoDataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_data_subject_application::RepoDataSubjectResolver
 pub fn awaken_data_subject_application::RepoDataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_data_subject_application::RepoOrganizationPrivacyResolver
+impl awaken_data_subject_application::RepoOrganizationPrivacyResolver
+pub fn awaken_data_subject_application::RepoOrganizationPrivacyResolver::new(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>) -> Self
+impl awaken_runtime_contract::data_subject::OrganizationPrivacyResolver for awaken_data_subject_application::RepoOrganizationPrivacyResolver
+pub fn awaken_data_subject_application::RepoOrganizationPrivacyResolver::erase_organization<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject_application::RepoOrganizationPrivacyResolver::export_organization<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 awaken_runtime_contract::data_subject::DataSubjectId>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::OrganizationPrivacyExport, awaken_runtime_contract::data_subject::PrivacyExportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_data_subject_application::SystemDataSubjectClock
 impl awaken_data_subject_application::DataSubjectClock for awaken_data_subject_application::SystemDataSubjectClock
 pub fn awaken_data_subject_application::SystemDataSubjectClock::now_millis(&self) -> i64
 pub struct awaken_data_subject_application::UpdateUserProfileCommand
-pub awaken_data_subject_application::UpdateUserProfileCommand::external_id: core::option::Option<core::option::Option<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::access_type: core::option::Option<core::option::Option<awaken_data_subject_application::UserProfileAccessType>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::external_id: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
-pub awaken_data_subject_application::UpdateUserProfileCommand::name: core::option::Option<core::option::Option<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::name: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::relationship: core::option::Option<awaken_data_subject_application::UserProfileRelationship>
 pub awaken_data_subject_application::UpdateUserProfileCommand::trust_grants: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_data_subject_application::UserProfileTrustGrant>>
 pub struct awaken_data_subject_application::UserProfileRecord
+pub awaken_data_subject_application::UserProfileRecord::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::UserProfileRecord::created_at: i64
 pub awaken_data_subject_application::UserProfileRecord::external_id: core::option::Option<alloc::string::String>
 pub awaken_data_subject_application::UserProfileRecord::id: alloc::string::String

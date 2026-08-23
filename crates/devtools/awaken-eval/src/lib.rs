@@ -23,12 +23,12 @@ pub mod transcript_corpus;
 
 use serde::{Deserialize, Serialize};
 
-/// One recorded model turn: either assistant text, or one/more tool calls the
-/// model made. A turn with `tool_calls` drives the engine's tool loop (the eval
+/// One recorded model response: either assistant text, or one/more tool calls the
+/// model made. A response with `tool_calls` drives the engine's tool loop (the eval
 /// registers a fixed echo executor for each referenced tool id); an empty
-/// `tool_calls` is a plain text turn that ends the turn.
+/// `tool_calls` is a plain text response that naturally ends the Run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ScriptedTurn {
+pub struct ScriptedResponse {
     #[serde(default)]
     pub text: String,
     #[serde(default)]
@@ -54,7 +54,7 @@ pub struct Case {
     /// The user input that starts the run.
     pub input: String,
     /// The recorded model responses, replayed in order.
-    pub script: Vec<ScriptedTurn>,
+    pub script: Vec<ScriptedResponse>,
     /// What the committed outcome must satisfy.
     pub expectations: Vec<Expectation>,
 }
@@ -234,7 +234,7 @@ mod tests {
             id: "c1".into(),
             instructions: String::new(),
             input: "hi".into(),
-            script: vec![ScriptedTurn {
+            script: vec![ScriptedResponse {
                 text: "the answer is 42".into(),
                 ..Default::default()
             }],

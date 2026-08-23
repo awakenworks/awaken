@@ -670,7 +670,11 @@ async fn open_process_stores(
 
 /// Build all-in-one from the standard typed deployment configuration.
 pub async fn build_all_in_one_router() -> Router {
-    build_all_in_one_router_with_model_supply(PublicationModelSupply::PublishedProviders).await
+    build_all_in_one_router_with_model_supply(
+        PublicationModelSupply::PublishedProviders,
+        ManagedServiceAdapters::default(),
+    )
+    .await
 }
 
 /// Hermetic all-in-one startup for tests and embedders that explicitly want
@@ -784,17 +788,24 @@ pub async fn prepare_coordinator_process_with_services(
 pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
+    managed_services: ManagedServiceAdapters,
 ) -> Router {
-    build_all_in_one_router_with_model_supply(PublicationModelSupply::Host {
-        executor: model,
-        binding: awaken_runtime_contract::resolved::ModelBinding::new(
-            "default", model_ref, "default",
-        ),
-    })
+    build_all_in_one_router_with_model_supply(
+        PublicationModelSupply::Host {
+            executor: model,
+            binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                "default", model_ref, "default",
+            ),
+        },
+        managed_services,
+    )
     .await
 }
 
-async fn build_all_in_one_router_with_model_supply(model_supply: PublicationModelSupply) -> Router {
+async fn build_all_in_one_router_with_model_supply(
+    model_supply: PublicationModelSupply,
+    managed_services: ManagedServiceAdapters,
+) -> Router {
     let deployment = config::ResolvedDeployment::load(config::ConfigOverrides::default())
         .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
     let key = deployment
@@ -806,26 +817,30 @@ async fn build_all_in_one_router_with_model_supply(model_supply: PublicationMode
         Some(&key),
         config::Role::AllInOne,
         model_supply,
-        ManagedServiceAdapters::default(),
+        managed_services,
     )
     .await
     .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
     .public_router
 }
 
-/// [`build_all_in_one_router_with_model`] plus a last-mile hook on the prepared host
-/// (`customize_host`) — the seam a process startup uses to wire a runtime backend the
-/// standard product process does not provide, e.g. `host.with_acp(executor)` so `acp:*`
+/// [`build_all_in_one_router_with_model`] plus explicit test-only process inputs.
+/// `web_search_providers` is selected before Control and Host are assembled, so
+/// publication, capability discovery, and dispatch all receive the same registry.
+/// `customize_host` remains the last-mile seam for a runtime backend the standard
+/// product process does not provide, e.g. `host.with_acp(executor)` so `acp:*`
 /// threads run on an external CLI while the full managed plane (vault + MCP staging +
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
+    web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     let stores = in_memory_process_stores();
-    let options = exact_host_model::local_test_process_options(&stores);
+    let mut options = exact_host_model::local_test_process_options(&stores);
+    options.web_search_providers = web_search_providers;
     prepare_runtime_routers(
         stores,
         None,
@@ -1156,7 +1171,9 @@ mod runtime_session_store_tests {
             metadata: Default::default(),
             tools: Default::default(),
             budget: Default::default(),
+            event_batches: Vec::new(),
             activity_epoch: 0,
+            active_activity_epochs: Default::default(),
             running_interval: None,
             runtime_active_millis: 0,
             environment: Default::default(),
@@ -1380,7 +1397,7 @@ mod process_role_surface_tests {
     /// | Control/public | mounted | absent | absent | absent |
     /// | Control/private | absent | absent | absent | authenticated |
     /// | Coordinator/public | absent | mounted | absent | absent |
-    /// | Coordinator/private | absent | absent | authenticated | authenticated |
+    /// | Coordinator/private | absent | absent | authenticated once | authenticated |
     ///
     /// AllInOne local-adapter startup is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
@@ -1390,6 +1407,10 @@ mod process_role_surface_tests {
     /// regression coverage. The hosted custom-publication entry point delegates
     /// to this same process and only substitutes publication SPIs, so these
     /// listener-presence and listener-absence rules cover that projection too.
+    /// The Worker column includes dispatch, resources, commit, and Environment
+    /// warmup. Building the split Coordinator proves the common returned Worker
+    /// router is merged once: a second warmup route merge would make Axum reject
+    /// the duplicate route during construction rather than reach these assertions.
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
         let control_routers = prepare_control_routers(

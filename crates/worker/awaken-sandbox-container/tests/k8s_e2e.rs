@@ -86,11 +86,11 @@ fn container_environment(image: String) -> pc::EnvironmentKind {
     pc::EnvironmentKind::Image { reference: image }
 }
 
-fn spec(scope: &str) -> pc::SandboxSpec {
+fn spec(scope: &str, image: String) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
-        environment: Some(container_environment(fixture_image())),
+        environment: Some(container_environment(image)),
         command: session_argv(),
         deny_tool_egress: false,
         mounts: Vec::new(),
@@ -377,9 +377,10 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
             .await
             .expect("connect to Kubernetes"),
     );
-    let provider = Arc::new(ContainerProvider::new(runtime.clone(), fixture_image()));
+    let image = fixture_image();
+    let provider = Arc::new(ContainerProvider::new(runtime.clone(), image.clone()));
     let pool = WarmContainerPool::new(provider, 1);
-    let session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()));
+    let session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()), image);
 
     assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
     assert_eq!(pool.ready_len(&session_spec), 1);
@@ -584,10 +585,11 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
-    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image());
+    let image = fixture_image();
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
 
     let sandbox = provider
-        .create_container(&spec(&scope))
+        .create_container(&spec(&scope, image))
         .await
         .expect("create the agent Pod");
     let pod = pod_of(&sandbox);
@@ -637,9 +639,10 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
-    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image());
+    let image = fixture_image();
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
     let sandbox = provider
-        .create_container(&spec(&scope))
+        .create_container(&spec(&scope, image))
         .await
         .expect("create the agent Pod");
     let pod = pod_of(&sandbox);
@@ -970,18 +973,22 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
 }
 
 #[tokio::test]
-async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
+async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_session_pod() {
     /*
      * Real Kubernetes Hand-expiry decision table. Causes: C1 a live Session Pod
      * executes bash through the production relay and Hand; C2 its attached-exec
      * process is killed before the next request; C3 the same dead executor is
-     * invoked; C4 one replacement Hand is attached to the unchanged Pod.
-     * Effects: E1 the initial call succeeds; E2 the dead channel is classified as
-     * UnavailableBeforeDispatch (and therefore safe for the Session owner to
-     * retry); E3 the replacement executes a second real bash; E4 the Session Pod
-     * identity is unchanged and is disposed. Rule KHR1=C1+C2+C3+C4=>E1+E2+E3+E4.
-     * Runtime-host's H1-H6 unit table separately proves that its canonical owner
-     * performs exactly this one bounded replacement and never retries after dispatch.
+     * invoked; C4 one replacement Hand receives a different operation in the
+     * unchanged Pod. Effects: E1 the initial call succeeds; E2 the attempted send
+     * on the dead stream is conservatively Indeterminate/Execution; E3 the later
+     * operation executes on the replacement; E4 the Session Pod identity is
+     * unchanged and is disposed. Constraint K1: a stream write cannot prove that
+     * zero bytes were dispatched, so C3 must never become the pre-dispatch retry
+     * signal. Rules: KHR1=C1+C2+C3=>E1+E2; KHR2=KHR1+C4=>E3+E4.
+     * The relay RPD1 test owns the transport classification, while Runtime-host's
+     * H1-H6 table owns the one bounded replacement for a separately proven
+     * pre-dispatch failure; this live test only composes those authorities with
+     * the Kubernetes exec lifecycle.
      */
     if !require_live_cluster() {
         return;
@@ -995,9 +1002,7 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
         .await
         .expect("connect to Kubernetes");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
-    let mut sandbox_spec = spec(&scope);
-    sandbox_spec.environment = Some(container_environment(image));
-    sandbox_spec.command = session_argv();
+    let sandbox_spec = spec(&scope, image);
     let sandbox = provider
         .create_container(&sandbox_spec)
         .await
@@ -1043,7 +1048,13 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
         })
         .await
         .expect_err("the expired channel cannot dispatch another call");
-    assert!(matches!(error, ToolError::UnavailableBeforeDispatch(_)));
+    assert!(
+        matches!(
+            error,
+            ToolError::Execution(ref message) if message.contains("indeterminate")
+        ),
+        "an attempted stream write is never safe to replay: {error:?}"
+    );
 
     let replacement = sandbox
         .spawn_agent(pc::Command {
@@ -1089,17 +1100,21 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
 async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() {
     /*
      * Real Kubernetes resident-takeover rules H1/H2/H3/H5 and Cloud RH1/RH5.
-     * Causes: C1 provider/Worker A creates a Session Pod whose PID1 is the real
-     * `awaken-sandbox hand --listen`; C2 operation O performs one filesystem
+     * Causes: C0 the exact declared Session image contains the resident Hand
+     * executable; C1 provider/Worker A creates a Session Pod whose PID1 is the
+     * real `awaken-sandbox hand --listen`; C2 operation O performs one filesystem
      * side effect and remains in flight; C3 A's port-forward disappears before
      * the reply; C4 independent provider/Worker B adopts the durable handle and
      * opens a new authenticated Pod subresource; C5 B re-drives O, then a third
      * channel re-drives completed O; C6 the Pod is deleted before another open.
      * Effects: E1 B joins the original result; E2 the third channel reads the
      * cache; E3 the side-effect count is one; E4 Pod identity never changes;
-     * E5 the unavailable Pod channel fails within its bound. Constraint: no
-     * attached Hand or Service is created. This is the executable control for
-     * duplicate effect, decorator/channel drift, and API-unavailable FMECA paths.
+     * E5 the unavailable Pod channel fails within its bound. Constraints: the
+     * SandboxSpec environment is the sole image authority, and no attached Hand
+     * or Service is created. Rules: RH0=C0+C1=>resident channel ready;
+     * RH1=RH0+C2+C3+C4=>E1+E3+E4; RH2=RH1+C5=>E2+E3; RH3=RH2+C6=>E5.
+     * This is the executable control for duplicate effect, decorator/channel
+     * drift, and API-unavailable FMECA paths.
      */
     if !require_live_cluster() {
         return;
@@ -1113,11 +1128,11 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         .await
         .expect("connect Worker A provider")
         .with_pod_channel_port(7777);
-    let provider_a = ContainerProvider::new(Arc::new(runtime_a), image).with_resident_hand(
+    let provider_a = ContainerProvider::new(Arc::new(runtime_a), image.clone()).with_resident_hand(
         ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
     );
     let sandbox = provider_a
-        .create_container(&spec(&scope))
+        .create_container(&spec(&scope, image))
         .await
         .expect("Worker A creates resident Session Pod");
     let pod = pod_of(&sandbox);

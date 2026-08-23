@@ -120,6 +120,11 @@ async fn enter_vault_cred(app: &Router, provider: &str, secret: &str) -> String 
 
 #[tokio::test]
 async fn model_attributes_publish_and_surface_in_the_catalog() {
+    // Test design — Causes: valid positive context/output limits are authored
+    // together through HTTP. Effects: both values are stored, each receives a
+    // server-time manual provenance stamp, and the catalog exposes them without
+    // requiring an Offering. Constraints: clients supply facts, never provenance;
+    // the write is one atomic replacement. Decision rule A4=both valid=>all facts.
     let app = router(None);
     let (s, _, echoed) = call(
         &app,
@@ -153,6 +158,11 @@ async fn model_attributes_publish_and_surface_in_the_catalog() {
 
 #[tokio::test]
 async fn model_attributes_upsert_replaces_the_prior_value() {
+    // Test design — Causes: C1 a prior context fact exists; C2 a later PUT changes
+    // context while omitting output. Effects: context is replaced and both the
+    // omitted output value and provenance are absent. Constraints: PUT owns full
+    // replacement, not a merge that retains stale metadata. Decision rule A9:
+    // C1+C2=>new context plus cleared omitted field/provenance.
     let app = router(None);
     for window in [128_000, 262_144] {
         let (s, _, _) = call(
@@ -176,6 +186,10 @@ async fn model_attributes_upsert_replaces_the_prior_value() {
 
 #[tokio::test]
 async fn model_attribute_clients_cannot_forge_provenance() {
+    // Test design — Cause: an HTTP client includes a provider_api provenance
+    // object beside an otherwise valid value. Effect: JSON admission rejects the
+    // request with 422 before repository mutation. Constraints: only the server
+    // stamps trusted field authority/time. Decision rule A7=forged provenance=>reject.
     let app = router(None);
     let (status, _, _) = call(
         &app,
@@ -194,6 +208,11 @@ async fn model_attribute_clients_cannot_forge_provenance() {
 
 #[tokio::test]
 async fn model_attribute_token_limits_fail_closed_when_impossible() {
+    // Test design — Causes: zero context, zero output, or output greater than
+    // context. Effects: each returns 422 and no partial model-attribute row
+    // exists. Constraints: known limits are positive and output<=context; one
+    // invalid field masks the whole write. Decision rules A5/A6 enumerate the
+    // two zero boundaries and the cross-field ordering violation.
     let app = router(None);
     for body in [
         json!({"context_window": 0}),
@@ -299,6 +318,11 @@ async fn resolve_over_http_reports_the_binding_and_credential_presence() {
 
 #[tokio::test]
 async fn resolve_target_rejects_ambiguity_and_the_retired_flat_shape() {
+    // Test design — Causes: C1 structured target is underqualified and matches
+    // twice; C2 request sends both target and legacy model_id; C3 sends neither.
+    // Effects: C1 returns model_ambiguous and C2/C3 return 422 invalid shape.
+    // Constraints: exactly one identity shape is admitted and validation precedes
+    // resolution/materialization. Decision rules T3/T5/T6 map C1/C2/C3 exactly.
     let app = router(None);
     author_model(&app, "anthropic", "anthropic_messages", "same-model").await;
     support::seed_model(

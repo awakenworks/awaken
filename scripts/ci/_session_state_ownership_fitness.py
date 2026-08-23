@@ -7,6 +7,9 @@ from pathlib import Path
 
 
 SESSION_CONTRACT = "crates/contract/awaken-session-contract/src/session_repo.rs"
+SESSION_EXECUTION_STATE_CONTRACT = (
+    "crates/contract/awaken-session-contract/src/session_repo/execution_state.rs"
+)
 SESSION_MUTATION_ROOTS = (
     "crates/server/awaken-session-application/src",
     "crates/server/awaken-protocol-managed/src",
@@ -37,8 +40,16 @@ def _is_test_module(relative: str) -> bool:
 def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
     errors: list[str] = []
     contract = sources.get(SESSION_CONTRACT, "")
+    execution_contract = sources.get(SESSION_EXECUTION_STATE_CONTRACT, "")
+    if not re.search(
+        r"\bmod\s+execution_state\s*;\s*pub\s+use\s+execution_state::\{",
+        contract,
+        re.S,
+    ):
+        errors.append(
+            f"{SESSION_CONTRACT}: missing private execution_state module and public re-export"
+        )
     for declaration in (
-        "pub enum SessionExecutionState",
         "pub enum SessionDisposition",
         "pub execution: SessionExecutionState",
         "pub disposition: SessionDisposition",
@@ -51,6 +62,15 @@ def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
                 f"{SESSION_CONTRACT}: missing authoritative Session state declaration "
                 f"{declaration!r}"
             )
+    if "pub enum SessionExecutionState" not in execution_contract:
+        errors.append(
+            f"{SESSION_EXECUTION_STATE_CONTRACT}: missing authoritative Session state "
+            "declaration 'pub enum SessionExecutionState'"
+        )
+    if "pub enum SessionExecutionState" in contract:
+        errors.append(
+            f"{SESSION_CONTRACT}: SessionExecutionState duplicates the private child owner"
+        )
     if "pub archived_at:" in contract:
         errors.append(
             f"{SESSION_CONTRACT}: archived_at is a projection of SessionDisposition, "
@@ -64,7 +84,7 @@ def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
                 f"{relative}: retired one-dimensional Session state; use "
                 "SessionExecutionState plus SessionDisposition"
             )
-        if relative == SESSION_CONTRACT:
+        if relative in (SESSION_CONTRACT, SESSION_EXECUTION_STATE_CONTRACT):
             continue
         if relative.startswith(SESSION_MUTATION_ROOTS) and DIRECT_STATE_WRITE.search(production):
             errors.append(
@@ -84,7 +104,8 @@ def check_all(repo_root: Path) -> list[str]:
 
 def selftest() -> None:
     owner = """
-pub enum SessionExecutionState { Idle, Terminated }
+mod execution_state;
+pub use execution_state::{SessionExecutionState, SessionExecutionStateError};
 pub enum SessionDisposition { Active, Archived }
 pub struct PersistedSession {
     pub execution: SessionExecutionState,
@@ -98,11 +119,22 @@ impl PersistedSession {
 """
     sources = {
         SESSION_CONTRACT: owner,
+        SESSION_EXECUTION_STATE_CONTRACT: (
+            "pub enum SessionExecutionState { Idle, Terminated }"
+        ),
         f"{SESSION_MUTATION_ROOTS[0]}/activity.rs": "session.transition_execution();",
         f"{SESSION_MUTATION_ROOTS[1]}/sessions.rs": "project(session.execution);",
         f"{SESSION_MUTATION_ROOTS[2]}/row_codec.rs": "decode(SessionDisposition::Active);",
     }
     assert session_state_ownership_violations(sources) == [], "canonical ownership"
+
+    # Cause/effect decision rules: R1 the root declares and re-exports one
+    # private child owner => accepted; R2 the root also declares the enum =>
+    # duplicate authority rejected. Constraint: responsibility splitting may
+    # move code, but it cannot create a second Session state declaration.
+    duplicate = dict(sources)
+    duplicate[SESSION_CONTRACT] += "\npub enum SessionExecutionState { Idle }"
+    assert session_state_ownership_violations(duplicate), "duplicate owner rejected"
 
     stale = dict(sources)
     stale[f"{SESSION_MUTATION_ROOTS[0]}/activity.rs"] = (

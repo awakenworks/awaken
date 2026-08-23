@@ -10,8 +10,8 @@
 //! the claim it pins, driven through the real router the mode builds.
 //!
 //! The seam exercised is the AI SDK adapter (`POST /v1/ai-sdk/chat`), which every
-//! `mount`-based factory exposes and which drives one real turn against the host's
-//! model — so the assistant text (or the tool the turn awaits on) is the observable
+//! `mount`-based factory exposes and which drives one real Run against the host's
+//! model — so the assistant text (or the tool the Run awaits on) is the observable
 //! that proves the factory wired the intended model/host.
 
 use awaken_scenario_host::{
@@ -23,10 +23,10 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Drive one AI SDK turn (`POST /v1/ai-sdk/chat`) with a single user message and
+/// Drive one AI SDK Run (`POST /v1/ai-sdk/chat`) with a single user message and
 /// collect the decoded UI-stream frames. This runs the host's model end to end and
-/// projects the committed turn, so the frames are the factory's observable behavior.
-async fn drive_turn(app: axum::Router, user_text: &str) -> Vec<Value> {
+/// projects the committed Run, so the frames are the factory's observable behavior.
+async fn drive_run(app: axum::Router, user_text: &str) -> Vec<Value> {
     let body = json!({
         "messages": [{ "role": "user", "parts": [{ "type": "text", "text": user_text }] }]
     });
@@ -41,7 +41,7 @@ async fn drive_turn(app: axum::Router, user_text: &str) -> Vec<Value> {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "the turn is served");
+    assert_eq!(response.status(), StatusCode::OK, "the Run is served");
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     text.lines()
@@ -61,7 +61,7 @@ fn assistant_text(frames: &[Value]) -> String {
         .collect()
 }
 
-/// The names of the tools the turn surfaced as an authoritative tool call
+/// The names of the tools the Run surfaced as an authoritative tool call
 /// (`tool-input-available`), so a client-executed-tool factory is provable.
 fn tool_names(frames: &[Value]) -> Vec<String> {
     frames
@@ -87,43 +87,59 @@ async fn get_status(app: axum::Router, uri: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn echo_factory_drives_a_turn_and_reflects_the_user() {
-    // The baseline: the default mode wires the `EchoModel` over the shared mount, so
-    // a turn reflects the user's text — proving the AI SDK seam + host are assembled.
-    let frames = drive_turn(build_echo_router(), "probe-42").await;
+async fn echo_factory_drives_a_run_and_reflects_the_user() {
+    // Causes: C1 the default factory receives one AI SDK User input. Effects:
+    // E1 the shared mount drives one Run and returns the EchoModel reply.
+    // Constraints/invariants: the factory selects the existing shared mount and
+    // EchoModel; it owns no parallel Run or response path. Decision rule F1:
+    // C1 -> E1 with the exact reflected text.
+    let frames = drive_run(build_echo_router(), "probe-42").await;
     assert_eq!(assistant_text(&frames), "Echo: probe-42");
 }
 
 #[tokio::test]
 async fn vision_factory_wires_the_media_reporting_model() {
-    // `build_vision_router` must wire the `VisionProbeModel` (not the echo model):
-    // its reply names the media it saw. A text-only turn reports "saw no media",
-    // which the echo model would never say — so this pins the model the factory chose.
-    let frames = drive_turn(build_vision_router(), "what color").await;
+    // Causes: C1 the vision factory receives a text-only Run. Effects: E1 the
+    // VisionProbeModel reports the text and explicit absence of media.
+    // Constraints/invariants: the factory must select VisionProbeModel through
+    // the shared mount, never substitute the echo fixture. Decision rule F2:
+    // C1 -> E1=`saw no media; text: what color`.
+    let frames = drive_run(build_vision_router(), "what color").await;
     assert_eq!(assistant_text(&frames), "saw no media; text: what color");
 }
 
 #[tokio::test]
 async fn custom_factory_exposes_the_client_executed_submit_answer_tool() {
-    // The custom-tool factory declares `submit_answer` as a client-executed tool and
-    // drives the `CustomToolModel`, which calls it on the first turn. The turn must
-    // therefore AWAIT on a `submit_answer` tool call (surfaced authoritatively), not
-    // answer with text — proving `with_client_tools` reached the run.
-    let frames = drive_turn(build_custom_router(), "solve it").await;
+    // Causes: C1 the custom factory receives a first-Step User input and declares
+    // `submit_answer` as client-executed. Effects: E1 CustomToolModel emits that
+    // authoritative tool call and the Run awaits instead of answering with text.
+    // Constraints/invariants: `with_client_tools` is the sole execution-policy
+    // source; the factory cannot host-execute or synthesize the result. Decision
+    // rule F3: C1 -> E1 with one surfaced `submit_answer` call.
+    let frames = drive_run(build_custom_router(), "solve it").await;
     assert!(
         tool_names(&frames).iter().any(|n| n == "submit_answer"),
-        "the turn awaiting on the client-executed submit_answer tool: {frames:?}"
+        "the Run awaiting on the client-executed submit_answer tool: {frames:?}"
     );
 }
 
 #[tokio::test]
-async fn delegation_factory_routes_a_child_run_to_completion() {
-    // `build_delegation_router` wires the `agent_run` delegation tool + the
-    // `researcher` roster and the `DelegatingModel`. A turn must delegate (server-side
-    // child Run), then report the delegate's answer — the whole delegate loop running
-    // to a final text proves the delegation topology (roster + tool), not just a model.
-    let frames = drive_turn(build_delegation_router(), "go research this").await;
-    assert_eq!(assistant_text(&frames), "delegate said: researched: 42");
+async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
+    // Causes: C1 the factory installs a frozen researcher roster and C2 Managed
+    // projection replaces authored delegation with the fixed coordination tools.
+    // Effects: E1 list_agents precedes E2 send_to_agent and E3 the coordinator
+    // ends on an admission receipt, never the child payload. Decision table:
+    // R1(C1+C2)->E1+E2+E3; missing roster/tool wiring cannot produce all three.
+    // Child settlement is asynchronous and belongs to the real-process Managed
+    // E2E; this in-process factory pin intentionally stops at the admission seam.
+    // Constraints/invariants: the frozen roster and fixed coordination tools are
+    // the only topology inputs; this factory must not turn admission into a
+    // synchronous child-result path.
+    let frames = drive_run(build_delegation_router(), "go research this").await;
+    assert_eq!(tool_names(&frames), ["list_agents", "send_to_agent"]);
+    let reply = assistant_text(&frames);
+    assert!(reply.starts_with("coordination accepted: "), "{reply}");
+    assert!(!reply.contains("researched: 42"), "{reply}");
 }
 
 #[tokio::test]

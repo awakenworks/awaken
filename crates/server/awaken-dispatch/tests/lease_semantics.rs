@@ -14,7 +14,7 @@
 //! 5. a run reclaimed while a non-recoverable tool is genuinely in flight does
 //!    NOT replay the tool: its committed Executing phase becomes an Indeterminate
 //!    result, while the stale owner's late commit remains fenced.
-//! 6. a reclaimed opaque ACP turn is terminally Indeterminate and its prompt is
+//! 6. a reclaimed opaque ACP Run is terminally Indeterminate and its prompt is
 //!    never sent again without an official idempotent receipt.
 
 mod harness;
@@ -203,6 +203,7 @@ async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
                 thread_id: ThreadId("atomic-child-thread".to_string()),
                 correlation_id: "permission-1".to_string(),
                 available_at_ms: None,
+                context_messages: Vec::new(),
                 result: ResumeResult::Input("approved".to_string()),
             },
             "parent-worker",
@@ -240,6 +241,12 @@ async fn parent_mediated_claims_are_atomic_in_sqlite() {
 
 #[tokio::test]
 async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
+    // Test design. Causes: C1 owner A claims a fresh Run and dies before execute;
+    // C2 its lease expires; C3 owner B ticks. Effects: E1 C3 reclaims and executes
+    // once; E2 the dispatch settles and cannot be claimed again. Constraint/
+    // Invariant: recovery preserves Run identity and the lease epoch fences A.
+    // Decision rule: compare before-expiry no-claim with after-expiry C3 and
+    // require one inference plus an empty queue.
     // A claims D at t=0 and dies without settling (simulated: claim, never drive).
     // After the lease expires, B MUST reclaim, drive, and settle exactly once.
     let (runtime, infers) = counting_text_runtime();
@@ -263,7 +270,7 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
     // B's worker reclaims after expiry, drives to Done, and settles.
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
-    let processed = worker_b.tick(LEASE + 1).await.unwrap();
+    let processed = worker_b.tick(harness::clock(LEASE + 1)).await.unwrap();
     assert_eq!(
         processed,
         Some((
@@ -311,6 +318,8 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
     // external mutation (S5/O2/D5). Conservative Indeterminate reduces the
     // effect to an explicit unknown terminal; no guessed protocol stage or
     // second effect journal is introduced.
+    // Decision rule: execute A1 here; A2 and A3 are the adjacent terminal/native
+    // recovery tests, while A4 remains the executor suite's fresh-run owner.
     let (runtime, infers) = counting_text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -331,13 +340,16 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
             .await
             .expect("A1 first claim")
             .is_some(),
-        "A1 first owner holds the opaque turn"
+        "A1 first owner holds the opaque Run"
     );
 
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     assert_eq!(
-        worker_b.tick(LEASE + 1).await.expect("A1 recovery"),
+        worker_b
+            .tick(harness::clock(LEASE + 1))
+            .await
+            .expect("A1 recovery"),
         Some((run.clone(), RunState::Ended(EndCause::Indeterminate))),
         "A1"
     );
@@ -363,6 +375,9 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     // C3 dominates C2, so E2 settles the exact existing terminal without a new
     // inference and without replacing it by Indeterminate. FMECA: ordering the
     // ACP guard first would corrupt known truth and bypass shared inbox cleanup.
+    // Constraint/Invariant: committed terminal truth precedes backend replay
+    // policy. Decision rule: execute A2 and assert the exact terminal remains,
+    // no inference occurs, and the dispatch settles.
     let (runtime, infers) = counting_text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -396,7 +411,10 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit, "owner-b").with_lease_ms(LEASE);
     assert_eq!(
-        worker_b.tick(LEASE + 1).await.expect("A2 recovery"),
+        worker_b
+            .tick(harness::clock(LEASE + 1))
+            .await
+            .expect("A2 recovery"),
         Some((
             RunId("run-acp-committed".to_string()),
             RunState::Ended(EndCause::NaturalEnd)
@@ -411,6 +429,11 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
 
 #[tokio::test]
 async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
+    // Test design. Causes: C1 owner A commits terminal truth; C2 it crashes before
+    // queue settlement; C3 owner B reclaims after lease expiry. Effects: E1 C3
+    // settles Done from the committed fact; E2 inference count does not increase.
+    // Constraint/Invariant: terminal committed truth dominates stale leased state.
+    // Decision rule: reproduce C1+C2+C3 and compare inference count before/after.
     // A claims D, drives it to a committed terminal record, then dies BEFORE it
     // settles the dispatch (the crash window between commit and settle). A stale
     // reclaim by B must settle Done from committed truth WITHOUT re-executing.
@@ -443,7 +466,7 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
     // record is authority: the worker settles Done and does not re-run the model.
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
-    let processed = worker_b.tick(LEASE + 1).await.unwrap();
+    let processed = worker_b.tick(harness::clock(LEASE + 1)).await.unwrap();
     assert_eq!(
         processed,
         Some((
@@ -468,10 +491,10 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
 
 #[tokio::test]
 async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
-    // owner-a holds a run and renews on a healthy heartbeat (the daemon's
-    // `renew_owned_leases`). Across three lease periods, owner-b's recovery claim
-    // is fenced every time; only once renewal STOPS does the lease expire and B
-    // steal it. This is the fence that stops the fleet double-drive.
+    // owner-a models a database-independent remote Worker whose signed owner
+    // heartbeat uses the `renew_owned_leases` transport adapter. Across three
+    // lease periods, owner-b's recovery claim is fenced every time; only once
+    // renewal stops does the lease expire and B steal it.
     let store = MemoryDispatchStore::new();
     let lease = 100u64;
     store
@@ -525,6 +548,12 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
 
 #[tokio::test]
 async fn mid_flight_reclaim_applies_never_replay_policy() {
+    // Test design. Causes: C1 owner A commits tool Executing then blocks; C2 its
+    // lease expires; C3 owner B recovers. Effects: E1 B emits Indeterminate for
+    // the NeverReplay tool; E2 it never enters the external effect twice; E3 one
+    // terminal log wins while A's late write is fenced. Constraint/Invariant:
+    // durable tool phase selects replay policy before any recovered effect.
+    // Decision rule: execute C1+C2+C3 under contention and require E1-E3.
     // Owner A commits Requested -> Executing before entering the blocking tool.
     // When its lease lapses, owner B recovers that durable phase. The descriptor's
     // conservative default is NeverReplay, so B publishes an Indeterminate tool
@@ -548,7 +577,7 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
     );
     let a_handle = {
         let worker_a = worker_a.clone();
-        tokio::spawn(async move { worker_a.tick(0).await })
+        tokio::spawn(async move { worker_a.tick(harness::clock(0)).await })
     };
 
     // Wait until A is frozen inside the tool (its first invocation).
@@ -576,7 +605,7 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
     // B's lease-expired reclaim drives the same Run to completion without replay.
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
-    let processed = worker_b.tick(LEASE + 1).await.unwrap();
+    let processed = worker_b.tick(harness::clock(LEASE + 1)).await.unwrap();
     assert_eq!(
         processed,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -630,7 +659,7 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
         .count();
     assert_eq!(
         all_done, 1,
-        "exactly one final assistant message — no duplicate terminal turn"
+        "exactly one final assistant message — no duplicate terminal Step"
     );
 
     // The reclaimed run's input is committed exactly once: A committed "go" in its
@@ -667,6 +696,11 @@ fn message_text(message: &awaken_agent_contract::agent::message::Message) -> Opt
 
 #[tokio::test]
 async fn fresh_claim_drives_a_run_to_completion() {
+    // Coverage rationale. Causes: one fresh dispatch and one uncontended owner.
+    // Effects: the Worker claims, executes, commits NaturalEnd, and settles the
+    // row. Constraint/Invariant: this control path contains no recovery or
+    // concurrency cause. Decision rule: exercise the single valid fresh-claim
+    // partition as the baseline for the recovery tests above.
     // A minimal end-to-end sanity check that the worker under test drives a freshly
     // claimed run to a terminal state on a single owner (no contention).
     let runtime = text_runtime();
@@ -677,7 +711,7 @@ async fn fresh_claim_drives_a_run_to_completion() {
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
-    let processed = worker.tick(0).await.unwrap();
+    let processed = worker.tick(harness::clock(0)).await.unwrap();
     assert_eq!(
         processed,
         Some((
@@ -687,6 +721,6 @@ async fn fresh_claim_drives_a_run_to_completion() {
     );
     assert_eq!(store.dispatch_count(), 0);
     // Settling makes it non-claimable — the queue is now idle.
-    assert!(worker.tick(1).await.unwrap().is_none());
+    assert!(worker.tick(harness::clock(1)).await.unwrap().is_none());
     let _ = DispatchOutcome::Done;
 }

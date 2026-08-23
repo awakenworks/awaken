@@ -7,7 +7,9 @@
 //! core stays deterministic and replayable.
 
 pub use awaken_agent_contract::agent::awaiting::PermissionDecision;
-use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket, ToolAwaitReason};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitTarget, PauseReason, ResumeTicket, ToolAwaitReason,
+};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,10 @@ use crate::tool::ToolOutput;
 /// What a resume delivers back into the awaiting run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResumeResult {
+    /// Continue the same Run without injecting a user or tool message. This is
+    /// accepted only for a committed `BudgetReached` ticket after the Session
+    /// authority has made model admission available again.
+    Continue,
     /// A tool result for the call the run was awaiting on.
     ToolResult(ToolOutput),
     /// A permission decision for the pending operation.
@@ -53,6 +59,11 @@ pub struct ResumeCommand {
     pub snapshot_id: ExecutableAgentSnapshotId,
     pub catalog_fingerprint: CatalogFingerprint,
     pub result: ResumeResult,
+    /// Stable context accepted atomically with this resume. Session tool
+    /// replies use Role::System Messages only; the runtime validates that
+    /// restriction and commits them immediately before the resumed result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_messages: Vec<awaken_agent_contract::agent::message::Message>,
     /// Caller-supplied clock (epoch millis) used to enforce the ticket deadline.
     pub now_ms: u64,
 }
@@ -72,8 +83,19 @@ impl ResumeCommand {
             snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id.clone()),
             catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint.clone()),
             result,
+            context_messages: Vec::new(),
             now_ms,
         }
+    }
+
+    /// Attach already-stable context frozen by durable ingress.
+    #[must_use]
+    pub fn with_context_messages(
+        mut self,
+        context_messages: Vec<awaken_agent_contract::agent::message::Message>,
+    ) -> Self {
+        self.context_messages = context_messages;
+        self
     }
 }
 
@@ -97,6 +119,10 @@ pub enum ResumeError {
     ResultKindMismatch,
     #[error("tool result call id does not match the committed ticket")]
     ToolCallMismatch,
+    #[error("resume context contains a non-System Message")]
+    InvalidContextRole,
+    #[error("resume context contains an incomplete or duplicate Message")]
+    InvalidContextMessage,
 }
 
 /// Validate a resume against the committed ticket. Every identity must match and
@@ -143,20 +169,41 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
                 reason: ToolAwaitReason::Delegation,
                 ..
             },
-            ResumeResult::Input(_) | ResumeResult::ToolResult(_)
+            ResumeResult::Input(_) | ResumeResult::ToolResult(_) | ResumeResult::Permission(_)
         ) | (
-            AwaitTarget::RemoteInput { .. } | AwaitTarget::Pause(_),
+            AwaitTarget::RemoteInput { .. }
+                | AwaitTarget::Pause(PauseReason::Manual | PauseReason::RateLimit),
             ResumeResult::Input(_)
+        ) | (
+            AwaitTarget::Pause(PauseReason::BudgetReached),
+            ResumeResult::Continue
         )
     );
     if !result_kind_matches {
         return Err(ResumeError::ResultKindMismatch);
     }
-    if let (AwaitTarget::ToolCall { call_id, .. }, ResumeResult::ToolResult(output)) =
-        (ticket.target(), &command.result)
+    if let (
+        AwaitTarget::ToolCall {
+            reason, call_id, ..
+        },
+        ResumeResult::ToolResult(output),
+    ) = (ticket.target(), &command.result)
+        && !matches!(reason, ToolAwaitReason::Delegation)
         && call_id != &output.call_id
     {
         return Err(ResumeError::ToolCallMismatch);
+    }
+    let mut context_ids = std::collections::HashSet::new();
+    for message in &command.context_messages {
+        if message.role != awaken_agent_contract::agent::message::Role::System {
+            return Err(ResumeError::InvalidContextRole);
+        }
+        if message.id.0.trim().is_empty()
+            || message.content.is_empty()
+            || !context_ids.insert(message.id.clone())
+        {
+            return Err(ResumeError::InvalidContextMessage);
+        }
     }
     Ok(())
 }
@@ -203,6 +250,7 @@ mod tests {
             snapshot_id: ExecutableAgentSnapshotId("snap-1".to_string()),
             catalog_fingerprint: CatalogFingerprint("fp-1".to_string()),
             result: ResumeResult::allow(),
+            context_messages: Vec::new(),
             now_ms: 50,
         }
     }
@@ -235,6 +283,19 @@ mod tests {
 
     #[test]
     fn result_kind_and_tool_identity_follow_the_closed_target() {
+        // Cause/effect graph: C1 the committed target is an ordinary Permission
+        // or ClientExecution ticket versus a parent Delegation ticket; C2 the
+        // Delegation result is Input, Permission, child ToolResult, or Continue;
+        // C3 a ToolResult id names this ticket or the delegated child's ticket.
+        // Effects: E1 ordinary targets retain their exact result/call-id checks;
+        // E2 a Delegation carries its typed child answer unchanged for validation
+        // against the child's committed ticket; E3 unsupported pairings reject.
+        // Constraints/invariants: the parent ticket authenticates the delegation
+        // relationship, never reclassifies the child's answer; the child resume
+        // validator remains the sole owner of that answer's kind and call id.
+        // Decision rules: D1 Delegation+Input=>E2; D2 Delegation+Permission=>E2;
+        // D3 Delegation+child ToolResult=>E2; D4 Delegation+Continue=>E3; ordinary
+        // Permission/ClientExecution cases remain E1.
         let input = ResumeCommand {
             result: ResumeResult::Input("not an approval".into()),
             ..command()
@@ -254,7 +315,6 @@ mod tests {
             validate_resume(&client, &wrong_call),
             Err(ResumeError::ToolCallMismatch)
         );
-
         let legal = [
             (
                 ticket_for(tool_target(ToolAwaitReason::ScheduledAction)),
@@ -267,6 +327,14 @@ mod tests {
             (
                 ticket_for(tool_target(ToolAwaitReason::Delegation)),
                 ResumeResult::Input("answer".into()),
+            ),
+            (
+                ticket_for(tool_target(ToolAwaitReason::Delegation)),
+                ResumeResult::allow(),
+            ),
+            (
+                ticket_for(tool_target(ToolAwaitReason::Delegation)),
+                ResumeResult::ToolResult(ToolOutput::ok("child-call", "done")),
             ),
             (
                 ticket_for(AwaitTarget::RemoteInput {
@@ -284,6 +352,57 @@ mod tests {
             let command = ResumeCommand::from_ticket(&ticket, result, 50);
             assert_eq!(validate_resume(&ticket, &command), Ok(()));
         }
+        let delegation = ticket_for(tool_target(ToolAwaitReason::Delegation));
+        assert_eq!(
+            validate_resume(
+                &delegation,
+                &ResumeCommand::from_ticket(&delegation, ResumeResult::Continue, 50)
+            ),
+            Err(ResumeError::ResultKindMismatch)
+        );
+    }
+
+    #[test]
+    fn message_free_continue_is_owned_only_by_budget_reached_waits() {
+        // Cause/effect graph: C1 the committed reason is BudgetReached or an
+        // externally answerable wait; C2 the delivery is Continue or ordinary
+        // input. Effects: E1 only BudgetReached+Continue resumes without adding
+        // transcript content; E2 every crossed pairing fails closed.
+        //
+        // | Rule | Ticket | Result | Effect |
+        // |---|---|---|---|
+        // | B1 | BudgetReached | Continue | E1 accept |
+        // | B2 | BudgetReached | Input | E2 reject |
+        // | B3 | ToolPermission | Continue | E2 reject |
+        // Constraints/invariants: message-free Continue has exactly one owner;
+        // every externally answerable wait still requires correlated content.
+        let budget_ticket = ticket_for(AwaitTarget::Pause(PauseReason::BudgetReached));
+        let continue_command =
+            ResumeCommand::from_ticket(&budget_ticket, ResumeResult::Continue, 50);
+        assert!(
+            validate_resume(&budget_ticket, &continue_command).is_ok(),
+            "B1/E1"
+        );
+        assert_eq!(
+            validate_resume(
+                &budget_ticket,
+                &ResumeCommand::from_ticket(
+                    &budget_ticket,
+                    ResumeResult::Input("wrong".into()),
+                    50,
+                ),
+            ),
+            Err(ResumeError::ResultKindMismatch),
+            "B2/E2"
+        );
+        assert_eq!(
+            validate_resume(
+                &ticket(),
+                &ResumeCommand::from_ticket(&ticket(), ResumeResult::Continue, 50),
+            ),
+            Err(ResumeError::ResultKindMismatch),
+            "B3/E2"
+        );
     }
 
     #[test]
@@ -298,6 +417,11 @@ mod tests {
 
     #[test]
     fn each_mismatch_fails_closed() {
+        // Test design — Causes: each immutable ResumeTicket identity axis or its
+        // deadline is changed independently. Effects: validation returns the
+        // corresponding typed mismatch. Constraints/invariants: no nearby ticket
+        // can authorize another Run/Thread/snapshot/catalog/correlation. Decision
+        // rule M1-M6: mutate one axis=>its exact error and no accepted resume.
         let cases = [
             (
                 ResumeCommand {
@@ -336,6 +460,7 @@ mod tests {
             ),
             (
                 ResumeCommand {
+                    context_messages: Vec::new(),
                     now_ms: 999,
                     ..command()
                 },
@@ -349,12 +474,72 @@ mod tests {
 
     #[test]
     fn no_deadline_never_expires() {
+        // Test design — Causes: a ticket deliberately has no deadline and now is
+        // u64::MAX. Effects: validation still accepts the otherwise exact command.
+        // Constraints/invariants: absence means unbounded, not deadline zero.
+        // Decision rule D1: None deadline+exact identity=>not Expired.
         let mut t = ticket();
         t.deadline_ms = None;
         let cmd = ResumeCommand {
+            context_messages: Vec::new(),
             now_ms: u64::MAX,
             ..command()
         };
         assert!(validate_resume(&t, &cmd).is_ok());
+    }
+
+    #[test]
+    fn resume_context_is_backward_compatible_and_system_only() {
+        use awaken_agent_contract::agent::content::ContentBlock;
+        use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+
+        // Cause/effect graph: C1 context is omitted/System/non-System; C2 ids
+        // and content are complete/duplicate. Effects: E1 legacy omission
+        // decodes empty; E2 one stable System is accepted; E3 any other role or
+        // incomplete/duplicate Message fails before Runtime execution.
+        //
+        // | Rule | Context | Complete/unique | Effect |
+        // |---|---|---|---|
+        // | C1 | omitted | - | E1 empty/accept |
+        // | C2 | System | yes | E2 accept |
+        // | C3 | non-System | yes | E3 role error |
+        // | C4 | System | no | E3 message error |
+        // Constraints/invariants: compatibility defaults only omission; accepted
+        // context is complete, unique, System-role data with stable ids.
+        let mut legacy = serde_json::to_value(command()).expect("serialize command");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("context_messages");
+        let legacy: ResumeCommand = serde_json::from_value(legacy).expect("C1");
+        assert!(legacy.context_messages.is_empty(), "C1/E1");
+        assert!(validate_resume(&ticket(), &legacy).is_ok(), "C1/E1");
+
+        let system = Message::new(
+            MessageId("system-1".into()),
+            Role::System,
+            vec![ContentBlock::text("context")],
+        );
+        let valid = command().with_context_messages(vec![system.clone()]);
+        assert!(validate_resume(&ticket(), &valid).is_ok(), "C2/E2");
+
+        let mut wrong_role = system.clone();
+        wrong_role.role = Role::User;
+        assert_eq!(
+            validate_resume(
+                &ticket(),
+                &command().with_context_messages(vec![wrong_role])
+            ),
+            Err(ResumeError::InvalidContextRole),
+            "C3/E3"
+        );
+        assert_eq!(
+            validate_resume(
+                &ticket(),
+                &command().with_context_messages(vec![system.clone(), system])
+            ),
+            Err(ResumeError::InvalidContextMessage),
+            "C4/E3"
+        );
     }
 }

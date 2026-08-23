@@ -88,6 +88,11 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
 
 #[tokio::test]
 async fn worker_builders_attach_a_stream_sink_and_lease() {
+    // Test design. Causes: C1 Worker builder receives a StreamSink; C2 it receives
+    // a custom lease duration; C3 a fresh Run is driven. Effects: E1 C3 reaches
+    // NaturalEnd; E2 events reach the supplied sink; E3 the custom lease governs
+    // the claim. Constraint/Invariant: builder composition preserves one Worker
+    // path. Decision rule: compose C1+C2, execute C3, and observe all ports.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -100,7 +105,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    let processed = worker.tick(0).await.expect("tick");
+    let processed = worker.tick(harness::clock(0)).await.expect("tick");
     assert_eq!(
         processed,
         Some((
@@ -145,6 +150,12 @@ async fn durable_ingress_attaches_one_best_effort_stream_sink_to_its_worker() {
 
 #[tokio::test]
 async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
+    // Test design. Causes: C1 a crash leaves a partial stream checkpoint; C2 the
+    // durable Run is reclaimed and resumed. Effects: E1 C2 includes the partial
+    // text exactly once before new output; E2 terminal completion clears the
+    // checkpoint. Constraint/Invariant: the checkpoint store is the sole partial
+    // stream authority. Decision rule: seed one checkpoint, drive once, and
+    // verify resumed output plus cleanup.
     use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
     use awaken_store_inmem::MemoryStreamCheckpointStore;
 
@@ -160,6 +171,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
             model: "m".to_string(),
             partial_text: "Resumed ".to_string(),
             partial_tools: Vec::new(),
+            retry_count: 0,
         })
         .await
         .expect("checkpoint put");
@@ -171,7 +183,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         .enqueue(RunDispatch::new(activation("run-ckpt")))
         .await
         .unwrap();
-    let processed = worker.tick(0).await.expect("tick");
+    let processed = worker.tick(harness::clock(0)).await.expect("tick");
     assert_eq!(
         processed,
         Some((
@@ -182,7 +194,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
 
     // The durable worker threaded the checkpoint store into the run context, so
     // the engine resumed the first step from the flushed partial: the committed
-    // turn is the recovered prefix stitched onto the model's continuation.
+    // Step message is the recovered prefix stitched onto the model's continuation.
     let committed = commit.committed();
     let assistant = committed
         .messages

@@ -11,6 +11,26 @@ use awaken_session_contract::{
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
+/// Advance retained Session Event commands through the production-owned
+/// [`awaken_session_application::SessionApplication`] driver.
+///
+/// Integration tests call this instead of teaching an HTTP request or Runtime
+/// fake to execute queued User work synchronously. Product composition invokes
+/// the same driver from its one lifecycle supervisor.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub async fn drive_retained_session_events(
+    state: &awaken_protocol_managed::ManagedState,
+    session_id: &str,
+) {
+    Box::pin(
+        state
+            .session_application()
+            .drive_session_event_batches(session_id, None),
+    )
+    .await
+    .expect("drive retained Session Event batch through the canonical application");
+}
+
 /// Shared integration-test decorator for deterministic root-CAS races.
 ///
 /// It delegates every real read/write to the SQLite adapter; only selected

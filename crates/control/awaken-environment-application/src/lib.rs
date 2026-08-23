@@ -501,6 +501,8 @@ mod tests {
         // R2 update -> append revision 2 + register it without overwriting v1;
         // R3 delete -> append terminal revision 3 + one withdrawal, retain history;
         // R4 built-in mutation -> reject without store or projection effect.
+        // Constraints/invariants: the Control history is authoritative and the
+        // executable projection is driven only by its immutable command intents.
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
@@ -559,6 +561,8 @@ mod tests {
         // | R2   | T  | F  | T  | F  | E3 |
         // | R3   | T  | F  | T  | F  | E4 |
         // | R4   | T  | F  | T  | T  | E5 |
+        // Constraints/invariants: the authority commit precedes projection,
+        // and recovery drains the same durable intent without minting revisions.
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(RecordingRegistrar::default());
         registrar.fail_registration.store(true, Ordering::SeqCst);
@@ -812,6 +816,9 @@ mod tests {
         // | A2 | no  | no  | no  | v2 Withdraw pending, caller error |
         // | A3 | yes | yes | yes | same v2 delivered, no registration |
         // | A4 | yes | yes | archive again | same v2, no new intent |
+        // Effects: A1-A4 converge on one terminal revision and one withdrawal.
+        // Constraints/invariants: archive is idempotent and a frozen Withdraw
+        // can never be replayed as an executable registration.
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
@@ -961,6 +968,8 @@ mod tests {
         // | T2 | false | archive | success | revision 2 + one withdrawal |
         // | T3 | true | update | Archived | none |
         // | T4 | true | bind policy | Archived | none |
+        // Constraints/invariants: the tombstone is absorbing for every mutation
+        // path and neither revision nor executable projection may resurrect.
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(RecordingRegistrar::default());
         let application =

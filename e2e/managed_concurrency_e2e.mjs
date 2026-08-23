@@ -5,19 +5,19 @@
 // machine — and asserts strict ISOLATION and completeness under contention: every
 // session sees exactly its own K echoes in order and nothing from any sibling, each
 // ends idle, and no request errors. Catches cross-session state bleed, lost/dropped
-// turns under load, and shared-counter races.
+// Runs under load, and shared-counter races.
 //
-// Tune with CONC_SESSIONS (default 40) and CONC_TURNS (default 4).
-// Run: (from e2e/)  CONC_SESSIONS=80 CONC_TURNS=6 node managed_concurrency_e2e.mjs
+// Tune with CONC_SESSIONS (default 40) and CONC_RUNS (default 4).
+// Run: (from e2e/)  CONC_SESSIONS=80 CONC_RUNS=6 node managed_concurrency_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { waitForSessionEventReceipt, withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38406);
 const SESSIONS = Number(process.env.CONC_SESSIONS ?? 40);
-const TURNS = Number(process.env.CONC_TURNS ?? 4);
+const RUNS = Number(process.env.CONC_RUNS ?? 4);
 
 async function runOne(client, idx) {
   const marker = `s${idx}`;
@@ -27,12 +27,31 @@ async function runOne(client, idx) {
     metadata: { marker },
     betas: BETAS,
   });
-  // K sequential turns on THIS session (each drives running -> idle).
-  for (let t = 0; t < TURNS; t++) {
-    await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: `${marker}-${t}` }] }],
+  // Cause/effect graph: C1=distinct Sessions execute concurrently; C2=each
+  // Session admits K inputs sequentially after the preceding Run settles;
+  // C3=each input has a Session-unique marker. Effects: E1=all Session ids are
+  // unique; E2=each history has exactly K ordered echoes and idle boundaries;
+  // E3=no sibling marker crosses the Session boundary. Decision rule
+  // K1(C1+C2+C3)->E1+E2+E3. Waiting after each send preserves the intended K
+  // Runs; queued-while-awaiting behavior has its own event-batch owner.
+  for (let step = 0; step < RUNS; step++) {
+    const receipt = await client.beta.sessions.events.send(session.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: `${marker}-${step}` }] }],
       betas: BETAS,
     });
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', `K1 ${marker} Run ${step + 1} exact receipt`);
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ events, delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle')
+        && events.filter((event) => event.type === 'agent.message').length === step + 1
+        && events.filter((event) => event.type === 'session.status_idle').length === step + 1,
+      `K1 ${marker} Run ${step + 1} to settle`,
+    );
   }
   const events = [];
   for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
@@ -42,10 +61,18 @@ async function runOne(client, idx) {
 }
 
 async function main() {
+  // Test design (contention matrix). Causes: C1=SESSIONS distinct Sessions run
+  // concurrently; C2=each receives RUNS ordered unique markers. Effects:
+  // E1=all ids remain distinct; E2=each Session commits exactly its own ordered
+  // replies/idles and ends idle; E3=no marker crosses Session boundaries.
+  // Constraints/invariant: the Session repository is the sole isolation owner
+  // and completion is observed from committed history, not task completion alone.
+  // Decision rule: Q1=C1+C2=>E1+E2+E3 for every matrix cell; any missing,
+  // duplicate, reordered, or foreign marker fails the whole stress test.
   try {
     await withRealServer('echo', PORT, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-      pass(`stressing ${SESSIONS} concurrent sessions x ${TURNS} turns`);
+      pass(`stressing ${SESSIONS} concurrent Sessions x ${RUNS} Runs`);
 
       const results = await Promise.all(
         Array.from({ length: SESSIONS }, (_, idx) => runOne(client, idx)),
@@ -55,22 +82,22 @@ async function main() {
       assert.equal(sessionIds.size, SESSIONS, 'every concurrent create returned a distinct session');
 
       for (const r of results) {
-        const expected = Array.from({ length: TURNS }, (_, t) => `Echo: ${r.marker}-${t}`);
-        // Isolation + order + completeness: this session sees exactly its own turns.
+        const expected = Array.from({ length: RUNS }, (_, step) => `Echo: ${r.marker}-${step}`);
+        // Isolation + order + completeness: this Session sees exactly its own Runs.
         assert.deepEqual(
           r.echoes,
           expected,
-          `session ${r.marker} sees exactly its own ${TURNS} echoes in order (got ${JSON.stringify(r.echoes)})`,
+          `Session ${r.marker} sees exactly its own ${RUNS} echoes in order (got ${JSON.stringify(r.echoes)})`,
         );
         // No sibling's marker leaked in.
         assert.ok(
           r.echoes.every((e) => e.startsWith(`Echo: ${r.marker}-`)),
           `no cross-session bleed into ${r.marker}`,
         );
-        assert.equal(r.idles, TURNS, `session ${r.marker} closed each turn with a status_idle`);
-        assert.equal(r.status, 'idle', `session ${r.marker} is idle at rest`);
+        assert.equal(r.idles, RUNS, `Session ${r.marker} closed each Run with a status_idle`);
+        assert.equal(r.status, 'idle', `Session ${r.marker} is idle at rest`);
       }
-      pass(`${SESSIONS}x${TURNS} = ${SESSIONS * TURNS} turns under contention: full isolation, in order, all idle`);
+      pass(`${SESSIONS}x${RUNS} = ${SESSIONS * RUNS} Runs under contention: full isolation, in order, all idle`);
     });
 
     console.log(`E2E PASS: ${SESSIONS} concurrent session state machines isolated + complete via TS SDK.`);

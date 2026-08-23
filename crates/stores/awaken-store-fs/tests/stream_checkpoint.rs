@@ -19,6 +19,7 @@ fn sample(run_id: &str) -> StreamCheckpoint {
             tool_id: "search".to_string(),
             raw_arguments: r#"{"q":"ru"#.to_string(),
         }],
+        retry_count: 0,
     }
 }
 

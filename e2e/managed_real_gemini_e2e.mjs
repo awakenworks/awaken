@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -32,15 +32,24 @@ async function main() {
       });
       pass(`session created against Gemini/Vertex: ${session.id}`);
 
-      await client.beta.sessions.events.send(session.id, {
+      // Test design: C1 exact SDK command receipt and C2 Vertex reply; E1 the
+      // receipt is processed with a nonempty agent.message. K1 old history is
+      // excluded by the receipt delta. D1=C1+C2=>E1.
+      const receipt = (await client.beta.sessions.events.send(session.id, {
         events: [
           { type: 'user.message', content: [{ type: 'text', text: 'Reply with exactly the single word: pong' }] },
         ],
         betas: BETAS,
-      });
-
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      })).data[0];
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+        'Gemini/Vertex Managed reply',
+        { timeoutMs: 180_000 },
+      );
       const types = events.map((e) => e.type);
       assert.ok(types.includes('agent.message'), `expected agent.message, got ${types}`);
       const msg = events.find((e) => e.type === 'agent.message');

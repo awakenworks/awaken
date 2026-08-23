@@ -26,7 +26,9 @@ use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
-use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::event::{
+    Event as StreamEvent, Observation as StreamObservation,
+};
 use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
@@ -35,10 +37,12 @@ use awaken_runtime_contract::delegation::{
     ChildRunResult, DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     PendingChildRunResults, ResultRecord, RunDelegations,
 };
-use awaken_runtime_contract::execution::{Error, Result, RunAttemptExecutor, RunExecutor};
+use awaken_runtime_contract::execution::{
+    Error, Result, RunAttemptExecutor, RunExecutor, verify_attempt_ownership,
+};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, StopReason, ThreadUsage,
-    ThreadUsageKey, ToolCall,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, ModelRequestAdmission,
+    ModelRequestAdmissionRequest, StopReason, ThreadUsage, ThreadUsageKey, ToolCall,
 };
 use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::{
@@ -82,26 +86,37 @@ pub(crate) use convert::*;
 pub(crate) use delegation::reconcile_delegation_cancellations;
 use delegation::{
     DelegationInvocation, DelegationParent, delegation_error_output, invoke_delegation,
-    persist_child_run_result, resume_delegation, run_delegation, stage_delegation_awaiting,
-    stage_delegation_completed, stage_delegation_request, stage_delegation_requests,
+    is_resolved_delegation_call, persist_child_run_result, resume_delegation, run_delegation,
+    stage_delegation_awaiting, stage_delegation_completed, stage_delegation_request,
+    stage_delegation_requests,
 };
 use finalize::{finalize, finish};
 use inference::*;
 use progress::*;
-use resume::drive_resumed;
+use resume::{drive_resumed, fresh_resume_context};
 use run_loop::*;
 use tool_execution::*;
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
 /// authoritative, not the live stream (G10/G13).
 async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {
+    emit_stream(
+        context,
+        StreamEvent {
+            run_id: run_id.clone(),
+            kind,
+        }
+        .into(),
+    )
+    .await;
+}
+
+/// Deliver one already-coordinated live observation. Keeping the best-effort
+/// failure policy beside `emit` prevents assistant response metadata from
+/// creating a second stream path.
+async fn emit_stream(context: &RuntimeRunContext, observation: StreamObservation) {
     if let Some(sink) = &context.stream_sink {
-        let _ = sink
-            .send(StreamEvent {
-                run_id: run_id.clone(),
-                kind,
-            })
-            .await;
+        let _ = sink.send_observation(observation).await;
     }
 }
 

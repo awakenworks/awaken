@@ -71,10 +71,11 @@ spec:
         - podSelector: { matchLabels: { app: awaken-api } }
       ports: [{ protocol: TCP, port: 3000 }]
     - from:
-        - podSelector:
-            matchExpressions:
-              - { key: app, operator: In, values: [control, worker] }
+        - podSelector: { matchLabels: { app: control } }
       ports: [{ protocol: TCP, port: 3001 }]
+    - from:
+        - podSelector: { matchLabels: { app: worker } }
+      ports: [{ protocol: TCP, port: 3443 }]
   egress:
     - to:
         - podSelector: { matchLabels: { app: control } }
@@ -92,7 +93,7 @@ spec:
   egress:
     - to:
         - podSelector: { matchLabels: { app: coordinator } }
-      ports: [{ protocol: TCP, port: 3001 }]
+      ports: [{ protocol: TCP, port: 3443 }]
     - to:
         - podSelector: { matchLabels: { app: provider } }
       ports: [{ protocol: TCP, port: 3000 }]

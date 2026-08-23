@@ -13,7 +13,13 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38294);
@@ -26,11 +32,15 @@ async function drain(pagePromise) {
 
 const replyText = (m) => (m.content ?? []).map((c) => c.text ?? '').join('');
 
-async function events(client, sessionId) {
-  return drain(client.beta.sessions.events.list(sessionId, { betas: BETAS }));
-}
-
 async function main() {
+  // Test design (fan-out worker rules). Causes: C1=three Sessions plus one
+  // healthcheck target one self-hosted Environment; C2=one worker polls/acks/
+  // heartbeats/stops leases; C3=each Session returns its own qualified custom
+  // tool result. Effects: E1=four items enqueue; E2=each lease is handled once;
+  // E3=all Sessions finish with their own value and queue depth returns to zero.
+  // Constraints/invariant: the Environment work queue is the single custody
+  // owner and the open-tier cap permits only one active lease at a time.
+  // Decision rules: W1=C1=>E1; W2=C1+C2=>E2; W3=W2+C3=>E3.
   const { server, baseUrl } = spawnServer('worker', PORT);
   try {
     await waitForPort(PORT);
@@ -80,22 +90,48 @@ async function main() {
       await work.ack(item.id, { environment_id: env.id, betas: BETAS });
       await work.heartbeat(item.id, { environment_id: env.id, betas: BETAS });
 
-      // Drive the session; it awaits on the agent's client-executed tool call.
-      await client.beta.sessions.events.send(sessionId, {
+      // Cause/effect graph: C1 one claimed Session receives a User Event; C2
+      // `submit_answer` is client-executed and projects `agent.custom_tool_use`;
+      // C3 this worker returns a Session-unique value using the matching public
+      // Event id and custom-result family. Effects: E1 the Run parks; E2 it
+      // resumes exactly once; E3 the terminal reply contains only that Session's
+      // value. Decision table: F1=C1+C2 -> E1; F2=C1+C2+C3 -> E2+E3. Generic
+      // `user.tool_result` is invalid here because no `agent.tool_use` exists.
+      const taskReceipt = await client.beta.sessions.events.send(sessionId, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'do the task' }] }],
       });
-      const awaiting = (await events(client, sessionId)).find((e) => e.type === 'agent.custom_tool_use');
+      const { delta: awaitingEvents } = await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        taskReceipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.custom_tool_use')
+          && delta.some((event) =>
+            event.type === 'session.status_idle'
+              && event.stop_reason?.type === 'requires_action'),
+        `F1 Session ${sessionId} reaches its durable custom-tool boundary`,
+      );
+      const awaiting = awaitingEvents.find((event) => event.type === 'agent.custom_tool_use');
       assert.ok(awaiting, `session ${sessionId} awaiting on a tool call`);
 
       // The worker's OWN per-session tool logic: a result unique to this session,
       // proving the worker (not the server) computed it.
       const answer = `handled-${sessionId}`;
-      await client.beta.sessions.events.send(sessionId, {
+      const resultReceipt = await client.beta.sessions.events.send(sessionId, {
         betas: BETAS,
-        events: [{ type: 'user.tool_result', tool_use_id: awaiting.id, content: [{ type: 'text', text: answer }] }],
+        events: [{ type: 'user.custom_tool_result', custom_tool_use_id: awaiting.id, content: [{ type: 'text', text: answer }] }],
       });
-      const replies = (await events(client, sessionId)).filter((e) => e.type === 'agent.message');
+      const { delta: completed } = await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        resultReceipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) =>
+          event.type === 'agent.message' && replyText(event).includes(answer)),
+        `F2 Session ${sessionId} commits its exact custom result`,
+      );
+      const replies = completed.filter((event) => event.type === 'agent.message');
       assert.ok(
         replies.some((m) => replyText(m).includes(answer)),
         `session ${sessionId}: the worker's per-session result reached the model`,

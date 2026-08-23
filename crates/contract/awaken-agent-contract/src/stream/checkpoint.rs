@@ -47,6 +47,10 @@ pub struct StreamCheckpoint {
     pub partial_text: String,
     /// Tool calls seen when the stream dropped (completed and/or in flight).
     pub partial_tools: Vec<PartialToolCall>,
+    /// Transparent provider retries already scheduled for this logical request.
+    /// Preserved so a fresh process emits the same completed observation.
+    #[serde(default)]
+    pub retry_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,4 +72,27 @@ pub trait StreamCheckpointStore: Send + Sync {
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError>;
     /// Remove the checkpoint for `run_id`; a no-op if absent.
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_checkpoint_without_retry_count_defaults_to_zero() {
+        // Cause C1: an older checkpoint omits retry_count. Effect E1: decode
+        // preserves its partial and initializes the neutral counter to zero.
+        // Decision rule R1=C1=>E1.
+        // Constraints/invariants: compatibility supplies only the absent field;
+        // existing Run, Thread, model, text, and tool partials remain unchanged.
+        let checkpoint: StreamCheckpoint = serde_json::from_value(serde_json::json!({
+            "run_id": "run",
+            "thread_id": "thread",
+            "model": "model",
+            "partial_text": "partial",
+            "partial_tools": []
+        }))
+        .expect("R1/E1");
+        assert_eq!(checkpoint.retry_count, 0, "R1/E1");
+    }
 }

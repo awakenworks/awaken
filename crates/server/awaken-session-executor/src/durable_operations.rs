@@ -57,13 +57,13 @@ impl DurableRunOperations for SharedHost {
         thread: &str,
         messages: Vec<Message>,
     ) -> Result<DurableSupersedeResult, ApplicationError> {
-        let turn = self
+        let run = self
             .supersede_run(agent, thread, messages)
             .await
             .map_err(map_error)?;
         let superseded = self.superseded(thread).await.map_err(map_error)?;
         Ok(DurableSupersedeResult {
-            state: format!("{:?}", turn.state),
+            state: format!("{:?}", run.state),
             superseded,
         })
     }

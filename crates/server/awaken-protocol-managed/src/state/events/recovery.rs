@@ -1,0 +1,386 @@
+//! Committed recovery snapshots, pending-tool identity resolution, and projection qualification.
+
+use super::*;
+
+impl ManagedState {
+    /// Resolve the public optional Thread selector onto the runtime's canonical
+    /// Thread keys. The primary Thread has one public `sthr_` projection, while
+    /// the runtime has always keyed it by the Session id; child Thread ids are
+    /// already the child Run keys. Keeping that translation here prevents the
+    /// event handler and Thread routes from growing competing identity rules.
+    pub(super) fn interrupt_targets(
+        &self,
+        session_id: &str,
+        requested_thread_id: Option<&str>,
+    ) -> Result<Vec<SessionThreadTarget>, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        if let Some(thread_id) = requested_thread_id {
+            let target = session_thread_target_from_public(session_id, thread_id);
+            let SessionThreadTarget::Child(child_thread_id) = &target else {
+                return Ok(vec![target]);
+            };
+            let child = record
+                .child_threads
+                .iter()
+                .find(|thread| thread.id == child_thread_id.0)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "session_thread_id does not name a thread in this session",
+                    ))
+                })?;
+            if child.status == SessionThreadStatus::Terminated {
+                return Err(StateError::Run(RunError::bad_request(
+                    "an archived or terminated session thread cannot be interrupted",
+                )));
+            }
+            return Ok(vec![target]);
+        }
+
+        Ok(std::iter::once(SessionThreadTarget::Primary)
+            .chain(
+                record
+                    .child_threads
+                    .iter()
+                    .filter(|thread| thread.status != SessionThreadStatus::Terminated)
+                    .map(|thread| {
+                        SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(
+                            thread.id.clone(),
+                        ))
+                    }),
+            )
+            .collect())
+    }
+
+    /// Read one logical Thread through the Runtime's existing recovery snapshot
+    /// boundary. Transcript, resume ticket, disposition and commit watermark are
+    /// one prefix; Managed never assembles those facts from independent reads.
+    pub(super) async fn recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<
+        Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+        StateError,
+    > {
+        let snapshot = self
+            .application
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await
+            .map_err(StateError::Run)?;
+        if snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
+        {
+            return Err(StateError::Run(RunError::internal(
+                "Runtime returned a recovery snapshot for a different Session Thread",
+            )));
+        }
+        Ok(snapshot)
+    }
+
+    /// Read each coordinated Thread through that same consistency boundary.
+    pub(super) async fn coordinated_recovery_snapshots(
+        &self,
+        session_id: &str,
+        links: &[CoordinatedThreadLink],
+    ) -> Result<
+        std::collections::HashMap<
+            String,
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
+        StateError,
+    > {
+        let mut children = std::collections::HashMap::new();
+        for link in links {
+            let Some(snapshot) = self
+                .recovery_snapshot(session_id, &link.thread_id.0)
+                .await?
+            else {
+                continue;
+            };
+            children.insert(link.thread_id.0.clone(), snapshot);
+        }
+        Ok(children)
+    }
+
+    pub(super) fn pending_ticket_from_recovery_snapshot(
+        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) -> Result<Option<(awaken_agent_contract::agent::run::Id, String, Pending)>, StateError> {
+        let run_id = snapshot
+            .latest_run_id
+            .as_ref()
+            .unwrap_or(&snapshot.claimed_run_id);
+        // The Runtime resumes one committed Awaiting ticket at a time. An
+        // ActiveToolBatch may retain later Requested calls, but they are not
+        // externally answerable until the current ticket is consumed and the
+        // Runtime advances the batch. Never pick arbitrarily if a malformed or
+        // future producer publishes two tickets for the same current Run.
+        let mut tickets = snapshot
+            .resume_tickets
+            .iter()
+            .filter(|ticket| &ticket.run_id == run_id);
+        let Some(ticket) = tickets.next() else {
+            return Ok(None);
+        };
+        if tickets.next().is_some() {
+            return Err(StateError::Run(RunError::internal(
+                "Runtime recovery exposed multiple answerable tickets for one Run",
+            )));
+        }
+        let pending = Pending::from_resume_ticket(&ticket.ticket);
+        Ok(pending.map(|pending| {
+            (
+                ticket.run_id.clone(),
+                ticket.ticket.correlation_id.clone(),
+                pending,
+            )
+        }))
+    }
+
+    pub(super) fn pending_from_recovery_snapshot(
+        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) -> Result<Option<Pending>, StateError> {
+        Self::pending_ticket_from_recovery_snapshot(snapshot)
+            .map(|pending| pending.map(|(_, _, pending)| pending))
+    }
+
+    pub(super) fn public_tool_thread_id(session_id: &str, owner_thread_id: Option<&str>) -> String {
+        public_thread_id(session_id, owner_thread_id.unwrap_or(session_id))
+    }
+
+    pub(super) fn tool_call_sources(
+        messages: &[awaken_agent_contract::agent::message::Message],
+    ) -> std::collections::HashMap<String, std::collections::VecDeque<String>> {
+        let mut sources =
+            std::collections::HashMap::<String, std::collections::VecDeque<String>>::new();
+        for message in messages.iter().filter(|message| {
+            message.role == awaken_agent_contract::agent::message::Role::Assistant
+        }) {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, .. } = block {
+                    sources
+                        .entry(id.clone())
+                        .or_default()
+                        .push_back(message.id.0.clone());
+                }
+            }
+        }
+        sources
+    }
+
+    /// Qualify every tool-use identity at the sole event append boundary, and
+    /// rewrite all references to that public identity. The Runtime call id stays
+    /// inside the reversible encoding and is decoded only at command admission.
+    pub(super) fn qualify_tool_projection(
+        &self,
+        record: &SessionRecord,
+        owner_thread_id: Option<&str>,
+        messages: &[awaken_agent_contract::agent::message::Message],
+        synthetic_source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
+        events: &mut [ProjectedEvent],
+    ) -> Result<(), StateError> {
+        let public_thread_id = Self::public_tool_thread_id(&record.session.id, owner_thread_id);
+        let declared_custom_tools = owner_thread_id
+            .and_then(|thread_id| {
+                record
+                    .child_threads
+                    .iter()
+                    .find(|thread| thread.id == thread_id)
+                    .and_then(|thread| thread.agent.as_agent())
+                    .map(|agent| agent.tools.as_slice())
+            })
+            .unwrap_or(record.session.agent.tools.as_slice())
+            .iter()
+            .filter_map(|tool| match tool {
+                awaken_session_contract::AgentTool::Custom { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut sources = Self::tool_call_sources(messages);
+        let mut latest = record.projected_tool_index_for(owner_thread_id).latest;
+        for event in events {
+            // Runtime's neutral pending state says only that the client must
+            // supply the result. Managed distinguishes authored custom tools
+            // from self-hosted Agent-toolset execution at this sole projection
+            // boundary, using the frozen Session/child Agent definition.
+            if let OutboundKind::AgentCustomToolUse {
+                name,
+                input,
+                session_thread_id,
+            } = &event.kind
+                && !declared_custom_tools.contains(name.as_str())
+            {
+                event.kind = OutboundKind::AgentToolUse {
+                    name: name.clone(),
+                    input: input.clone(),
+                    evaluated_permission: Some(EvaluatedPermission::Allow),
+                    session_thread_id: session_thread_id.clone(),
+                };
+            }
+            if matches!(
+                event.kind,
+                OutboundKind::AgentToolUse { .. }
+                    | OutboundKind::AgentCustomToolUse { .. }
+                    | OutboundKind::AgentMcpToolUse { .. }
+            ) {
+                let runtime_call_id = event.id.as_deref().ok_or_else(|| {
+                    StateError::Run(RunError::internal(
+                        "Managed tool-use projection is missing its Runtime call id",
+                    ))
+                })?;
+                let source_id = sources
+                    .get_mut(runtime_call_id)
+                    .and_then(std::collections::VecDeque::pop_front)
+                    .or_else(|| synthetic_source_run_id.map(|run_id| run_id.0.clone()))
+                    .ok_or_else(|| {
+                        StateError::Run(RunError::internal(format!(
+                            "Managed tool call `{runtime_call_id}` has no committed message or Run identity"
+                        )))
+                    })?;
+                let public_id =
+                    managed_tool_event_id(&public_thread_id, &source_id, runtime_call_id);
+                latest.insert(runtime_call_id.to_string(), public_id.clone());
+                event.id = Some(public_id);
+            }
+            match &mut event.kind {
+                OutboundKind::AgentToolResult { tool_use_id, .. } => {
+                    *tool_use_id = latest.get(tool_use_id).cloned().ok_or_else(|| {
+                        StateError::Run(RunError::internal(
+                            "Managed tool result has no preceding tool-use identity",
+                        ))
+                    })?;
+                }
+                OutboundKind::AgentMcpToolResult {
+                    mcp_tool_use_id, ..
+                } => {
+                    *mcp_tool_use_id = latest.get(mcp_tool_use_id).cloned().ok_or_else(|| {
+                        StateError::Run(RunError::internal(
+                            "Managed MCP result has no preceding tool-use identity",
+                        ))
+                    })?;
+                }
+                OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::RequiresAction { event_ids },
+                } => {
+                    for event_id in event_ids {
+                        *event_id = latest.get(event_id).cloned().ok_or_else(|| {
+                            StateError::Run(RunError::internal(
+                                "Managed requires_action has no answerable tool-use identity",
+                            ))
+                        })?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn invalid_tool_reply() -> StateError {
+        StateError::Run(RunError::bad_request(
+            "tool result does not match the pending tool event",
+        ))
+    }
+
+    /// Resolve a tool reply once at batch admission from committed pending
+    /// snapshots. Anthropic Managed multiagent replies route by the qualified
+    /// tool-use Event id. A pre-qualification id has no embedded owner, so it is
+    /// safe only when exactly one pending call of the requested reply kind
+    /// matches across the Session (upgrade recovery for a previously emitted
+    /// raw call id).
+    pub(super) fn resolve_tool_reply(
+        session_id: &str,
+        public_event_id: &str,
+        family: ToolReplyFamily,
+        candidates: &[PendingToolReplyCandidate],
+    ) -> Result<ResolvedToolReply, StateError> {
+        if let Some(identity) = decode_managed_tool_event_id(public_event_id) {
+            let target = session_thread_target_from_public(session_id, identity.thread_id);
+            let candidate = candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.key.target == target
+                        && candidate.key.runtime_call_id == identity.call_id
+                        && candidate.key.client_executed == family.requires_client_execution()
+                        && candidate
+                            .projected_family
+                            .is_some_and(|kind| family.accepts(kind))
+                        && candidate.projected_event_id.as_deref() == Some(public_event_id)
+                })
+                .ok_or_else(Self::invalid_tool_reply)?;
+            return Ok(ResolvedToolReply {
+                key: candidate.key.clone(),
+            });
+        }
+
+        // An old event id carries only the Runtime-local call id. Prove the
+        // call/type pair has exactly one pending owner across the Session.
+        let mut matching = candidates.iter().filter(|candidate| {
+            candidate.key.runtime_call_id == public_event_id
+                && candidate.key.client_executed == family.requires_client_execution()
+                && candidate
+                    .projected_family
+                    .is_some_and(|kind| family.accepts(kind))
+        });
+        let candidate = matching.next().ok_or_else(Self::invalid_tool_reply)?;
+        if matching.next().is_some() {
+            return Err(Self::invalid_tool_reply());
+        }
+        Ok(ResolvedToolReply {
+            key: candidate.key.clone(),
+        })
+    }
+
+    pub(super) fn consume_tool_reply_identity(
+        unresolved: &mut std::collections::HashSet<PendingToolReplyKey>,
+        resolved: &ResolvedToolReply,
+    ) -> Result<(), StateError> {
+        if unresolved.remove(&resolved.key) {
+            Ok(())
+        } else {
+            Err(Self::invalid_tool_reply())
+        }
+    }
+
+    pub(super) fn unresolved_tool_replies_block_followup(
+        event: &InboundEvent,
+        unresolved: &std::collections::HashSet<PendingToolReplyKey>,
+    ) -> bool {
+        !unresolved.is_empty()
+            && matches!(
+                event,
+                InboundEvent::SystemMessage { .. } | InboundEvent::UserMessage { .. }
+            )
+    }
+
+    pub(super) fn assistant_response_coordinates(
+        messages: &[awaken_agent_contract::agent::message::Message],
+        run_ids: &[awaken_agent_contract::agent::run::Id],
+    ) -> std::collections::HashMap<String, (String, usize, usize)> {
+        let mut candidates = run_ids.to_vec();
+        candidates.sort_by_key(|run_id| std::cmp::Reverse(run_id.0.len()));
+        let mut next_response = std::collections::HashMap::<(String, usize), usize>::new();
+        let mut coordinates = std::collections::HashMap::new();
+        for message in messages.iter().filter(|message| {
+            message.role == awaken_agent_contract::agent::message::Role::Assistant
+        }) {
+            for run_id in &candidates {
+                if let Some((step, response)) = message.id.assistant_truncated_response_of(run_id) {
+                    next_response
+                        .entry((run_id.0.clone(), step))
+                        .and_modify(|next| *next = (*next).max(response + 1))
+                        .or_insert(response + 1);
+                    coordinates.insert(message.id.0.clone(), (run_id.0.clone(), step, response));
+                    break;
+                }
+                if let Some(step) = message.id.assistant_step_of(run_id) {
+                    let response = *next_response.entry((run_id.0.clone(), step)).or_default();
+                    coordinates.insert(message.id.0.clone(), (run_id.0.clone(), step, response));
+                    break;
+                }
+            }
+        }
+        coordinates
+    }
+}

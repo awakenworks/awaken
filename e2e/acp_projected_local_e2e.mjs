@@ -41,7 +41,7 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { waitForValue } from './harness.mjs';
+import { waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38442);
@@ -162,7 +162,6 @@ function start(binary, cli) {
     // Docker E2E owns the isolation assertion.
     'sandbox_allow_local_fallback = true',
     `acp_clis = [${JSON.stringify(cli)}]`,
-    `acp_default_cli = ${JSON.stringify(cli)}`,
   ].join('\n'));
   return spawn(binary, automatedAllInOneArgs('--config', configPath), {
     env: {
@@ -215,11 +214,15 @@ async function stop(child) {
   await exited;
 }
 
-async function messages(client, sessionId) {
+async function listEvents(client, sessionId) {
   const events = [];
   for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     events.push(event);
   }
+  return events;
+}
+
+function projectedMessages(events) {
   const texts = events
     .filter((event) => event.type === 'agent.message')
     .flatMap((event) => event.content ?? [])
@@ -306,6 +309,15 @@ async function startModelDirectory() {
 }
 
 async function main() {
+  // Test design (projected local ACP arms). Causes: C1=the catalog verifies the
+  // projected Gemini executable; C2=the publication pins provider/model/MCP;
+  // C3=the server restarts over the same durable store; C4=the ACP exits cleanly
+  // or by signal. Effects: E1=C1+C2 runs the exact JSON-RPC lifecycle and tool;
+  // E2=C3 reloads the existing ACP Session and history; E3=C4 maps process exit
+  // to the classified terminal boundary without a phantom success.
+  // Constraints/invariant: catalog identity, publication pin, and durable ACP
+  // session id are single authorities. Decision rules: L1=C1+C2=>E1;
+  // L2=L1+C3=>E2; L3=C4=>E3.
   installGeminiFixture();
   fs.mkdirSync(STORAGE, { recursive: true });
   const binary = awakenBin();
@@ -333,16 +345,23 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // P1 receipt rule: C4 exact projected command receipt; E4 processed receipt
+    // plus PROJECTED reply; K1 older history cannot satisfy the provider oracle.
+    // Decision P1+C4=>launch facts+E4 through the canonical SDK observer.
+    const projectedReceipt = (await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise projection' }] }],
       betas: BETAS,
-    });
-    const geminiTexts = await waitForValue(
-      () => messages(client, session.id),
-      (observed) => observed.some((text) => text.includes('PROJECTED')),
+    })).data[0];
+    const projectedObservation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      projectedReceipt.id,
+      BETAS,
+      ({ delta }) => projectedMessages(delta).some((text) => text.includes('PROJECTED')),
       'projected local Gemini response',
       { timeoutMs: 60_000 },
     );
+    const geminiTexts = projectedMessages(projectedObservation.delta);
     const reply = geminiTexts.find((text) => text.includes('PROJECTED'));
     assert.ok(reply, `the production projected ACP process returned an agent message: ${JSON.stringify(geminiTexts)}`);
     assert.match(reply, new RegExp(`base=${directory.url.replaceAll(".", "\\.")}/gemini/v1beta/`, "u"));
@@ -401,18 +420,21 @@ async function main() {
     // Cause/effect graph for MCP on the local Namespace provider:
     // C1=credential is selected; C2=provider proves substitution + no bypass;
     // C3=a driving event wakes the registered Worker realization.
-    // C1 + !C2 + C3 -> M1 reject the event and Worker custody before launch.
+    // C1 + !C2 + C3 -> M1 durably admit the exact command, then retain it
+    //                      unprocessed while the permanent custody failure
+    //                      projects one error, settles then terminates the root
+    //                      Thread, and terminates the Session.
     // !C1       -> M2 isolate MCP custody from the independently unsupported
     //               provider/CLI launch failure; the Run reports that execution
     //               failure while the Session remains reusable.
     //
     // | Rule | credential | provider proof | driving event | result                    |
-    // | M1   | yes        | no             | yes           | event rejects; Session terminated; no launch |
+    // | M1   | yes        | no             | yes           | exact receipt; retained/unprocessed; error + Thread settle/terminal; no launch |
     // | M2   | no         | n/a            | yes           | failed Run event; Session idle; no MCP I/O |
-    // FMECA: treating M1 as a successful event loses the activation failure
-    // returned by the authoritative Worker. A permanent activation failure is
-    // intentionally no longer publicly writable, while its existing wire-cache
-    // projection remains terminal for the creating client to observe.
+    // FMECA: rolling M1 back into an HTTP error would erase the already committed
+    // Session command. This missing no-bypass proof is classified permanently,
+    // so the authoritative effect failure terminates after admission; it must not
+    // fabricate model/tool execution or create another admission path.
     const secureSession = await codexClient.beta.sessions.create({
       agent: agentWithMcpServer(CODEX_AGENT, {
         name: 'calc-secure', type: 'url', url: fixture.url,
@@ -421,21 +443,62 @@ async function main() {
       vault_ids: [vault.id],
       betas: BETAS,
     });
-    await assert.rejects(
-      codexClient.beta.sessions.events.send(secureSession.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
-        betas: BETAS,
-      }),
-      (error) => error.status === 400 && String(error.message).includes('Session was not found'),
-      'M1: the driving event reports the permanent realization failure',
+    const secureReceipt = await codexClient.beta.sessions.events.send(secureSession.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
+      betas: BETAS,
+    });
+    const acceptedSecure = secureReceipt.data[0];
+    assert.equal(acceptedSecure?.type, 'user.message', 'M1 exact User Event receipt family');
+    assert.equal(acceptedSecure?.processed_at, null, 'M1 effect failure is not falsely processed');
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const secureEvents = await listEvents(codexClient, secureSession.id);
+    const retainedSecure = secureEvents.find((event) => event.id === acceptedSecure.id);
+    assert.equal(retainedSecure?.processed_at, null, 'M1 durable history retains the exact failed command');
+    const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
+    assert.equal(secureErrors.length, 1, 'M1 permanent custody failure projects exactly one error');
+    assert.ok(
+      typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
+      'M1 error retains a nonempty failure cause',
     );
-    const secureFailure = await waitForValue(
-      () => codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
-      (observed) => observed.status === 'terminated',
-      'claim-fenced Namespace MCP custody failure status',
-      { timeoutMs: 60_000 },
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.thread_status_terminated').length,
+      1,
+      'M1 terminates the exact root Thread once',
     );
-    assert.equal(secureFailure.status, 'terminated', 'M1: realization failure is durable');
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.thread_status_idle').length,
+      1,
+      'M1 settles the failed root Run before terminal Session policy applies',
+    );
+    assert.ok(
+      secureEvents.findIndex((event) => event.type === 'session.thread_status_idle')
+        < secureEvents.findIndex((event) => event.type === 'session.thread_status_terminated'),
+      'M1 root Thread settles before it is terminated',
+    );
+    assert.equal(
+      secureEvents.filter((event) => event.type === 'session.status_terminated').length,
+      1,
+      'M1 terminates the Session once',
+    );
+    assert.ok(
+      !secureEvents.some((event) => [
+        'agent.message',
+        'agent.mcp_tool_use',
+        'agent.mcp_tool_result',
+        'agent.tool_use',
+        'agent.tool_result',
+        'session.status_idle',
+        'session.usage',
+        'span.model_request_start',
+        'span.model_request_end',
+      ].includes(event.type)),
+      `M1 no model/tool/success effect is fabricated: ${secureEvents.map((event) => event.type)}`,
+    );
+    assert.equal(
+      (await codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS })).status,
+      'terminated',
+      'M1 permanent realization failure is durable after the accepted receipt',
+    );
     assert.equal(
       fixture.calls.length,
       0,
@@ -448,18 +511,26 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await codexClient.beta.sessions.events.send(codexSession.id, {
+    // M2 receipt rule: C1 provider execution is rejected after realization and
+    // C2 the exact command receipt exists; E1 its processed delta exposes one
+    // public diagnostic while Session remains reusable. K1 excludes M1/older
+    // errors. Decision M2=C1+C2=>E1.
+    const codexReceipt = (await codexClient.beta.sessions.events.send(codexSession.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise provider rejection' }] }],
       betas: BETAS,
-    });
-    const codexTexts = await waitForValue(
-      () => messages(codexClient, codexSession.id),
-      (observed) => observed.some((text) => (
+    })).data[0];
+    const codexObservation = await waitForSessionEventReceipt(
+      codexClient,
+      codexSession.id,
+      codexReceipt.id,
+      BETAS,
+      ({ delta }) => projectedMessages(delta).some((text) => (
         text.startsWith('ERROR:') || text.includes('stream disconnected before completion')
       )),
       'Codex provider/CLI failure diagnostic',
       { timeoutMs: 60_000 },
     );
+    const codexTexts = projectedMessages(codexObservation.delta);
     assert.ok(
       codexTexts.some((text) => (
         text.startsWith('ERROR:') || text.includes('stream disconnected before completion')

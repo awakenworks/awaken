@@ -16,17 +16,11 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38251);
 const BETAS = ['managed-agents-2026-04-01'];
 const MARKER = 'BANANA';
-
-const listEvents = async (client, id) => {
-  const out = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) out.push(ev);
-  return out;
-};
 
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
@@ -38,13 +32,26 @@ async function main() {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(session.id, {
+      // Tool-loop decision T1: C1 exact prompt receipt and C2 model requests
+      // bash; E1 processed receipt, matching tool_use, and requires_action. K1
+      // older tool calls cannot satisfy this turn. D1=C1+C2=>E1.
+      const promptReceipt = (await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: `Use your bash tool to run exactly: echo ${MARKER}\nThen reply with the exact command output on its own line.` }] }],
         betas: BETAS,
-      });
+      })).data[0];
 
       // Round 1: the real model requests a tool; awaken awaits it for confirmation.
-      const first = await listEvents(client, session.id);
+      const { delta: first } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        promptReceipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.tool_use' && event.name === 'bash')
+          && delta.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'requires_action'),
+        'real model bash request and requires_action boundary',
+        { timeoutMs: 180_000 },
+      );
       const toolUse = first.find((e) => e.type === 'agent.tool_use' && e.name === 'bash');
       assert.ok(toolUse, `expected a bash agent.tool_use, saw: ${[...new Set(first.map((e) => e.type))].join(', ')}`);
       assert.match(JSON.stringify(toolUse.input ?? {}), new RegExp(MARKER), 'bash command references the marker');
@@ -53,12 +60,26 @@ async function main() {
       pass('real model requested the bash tool; session awaiting at requires_action');
 
       // Confirm the tool; awaken's sandbox runs it for real and feeds the result back.
-      await client.beta.sessions.events.send(session.id, {
+      // Confirmation decision T2: C3 exact allow receipt; E2 processed receipt,
+      // sandbox tool_result, final marker answer, and end_turn. K2 events before
+      // the confirmation receipt cannot satisfy E2. D2=T1+C3=>E2.
+      const confirmationReceipt = (await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
         betas: BETAS,
-      });
+      })).data[0];
 
-      const all = await listEvents(client, session.id);
+      const { delta: all } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        confirmationReceipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.tool_result')
+          && delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'end_turn'),
+        'confirmed bash result and final answer',
+        { timeoutMs: 180_000 },
+      );
       const toolResult = all.find((e) => e.type === 'agent.tool_result');
       assert.ok(toolResult, 'a tool_result was committed after confirmation (sandbox executed the tool)');
       assert.match(JSON.stringify(toolResult), new RegExp(MARKER), 'the tool_result carries the real bash output');
