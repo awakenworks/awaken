@@ -56,6 +56,7 @@ use provider_connections::{list_executable_models, list_provider_connections};
 mod cloud_login;
 pub use cloud_login::{CloudLoginApplication, CloudLoginState, CloudLoginStatusView};
 use cloud_login::{CloudLoginHandle, cloud_login_router};
+mod hosted_credential_request;
 
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
@@ -1435,30 +1436,30 @@ async fn validate_credential(
 /// [`SecretStore`] and never appears on any response (the returned row is
 /// secret-free). `RedactedString` is intentionally not `Deserialize`, so the raw
 /// secret crosses the wire exactly once, here.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EnterCredentialRequest {
     workspace_id: String,
     /// Stable hosted-governance operation identity. When present, `provider_id`
     /// is required and the exact tuple is the idempotent credential identity.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     idempotency_key: Option<String>,
     kind: CredentialKind,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     env_key: Option<String>,
     /// The secret to seal — required for `vault`. Environment-backed credentials
     /// are not accepted; environment discovery is exposed only as proposals.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     secret: Option<String>,
     /// Structured material sealed as one versioned Vault document. Mutually
     /// exclusive with the legacy `secret` field.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     material: Option<CredentialMaterialInput>,
     /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
     /// never an operator-supplied command line.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     oauth_helper: Option<OAuthHelper>,
 }
 
@@ -1475,7 +1476,7 @@ pub struct RotateCredentialRequest {
     material: Option<CredentialMaterialInput>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct CredentialMaterialInput {
     /// Namespaced, versioned type owned by the installed consumer extension,
