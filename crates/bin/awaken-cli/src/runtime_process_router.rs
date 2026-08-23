@@ -30,10 +30,9 @@ pub(super) async fn prepare_runtime_routers(
         .expect("runtime process requires explicit Worker observation wiring");
     let worker_observations = worker_observation_wiring.source;
     let worker_observation_private_router = worker_observation_wiring.private_router;
-    let worker_authenticator = process.worker_authenticator.unwrap_or_else(|| {
-        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
-            as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
-    });
+    let worker_authenticator = process
+        .worker_authenticator
+        .expect("runtime process requires an explicitly selected Worker authenticator");
     let worker_placement_policy = process.worker_placement_policy;
     let cloud_native_credential_realization = process.cloud_native_credential_realization;
     let (
@@ -56,6 +55,7 @@ pub(super) async fn prepare_runtime_routers(
         awaken_session_application::SessionExecutionPlacement::LocalWorker
     };
     let cloud_api_base_url = process.cloud_api_base_url;
+    let cloud_developer_key_file = process.cloud_developer_key_file;
     let model_capabilities = process.model_supply.clone();
     let cloud_models_enabled = model_capabilities.cloud_models_enabled;
     let injected_brokered_catalog = process.brokered_catalog.clone();
@@ -128,8 +128,10 @@ pub(super) async fn prepare_runtime_routers(
     let brokered_client = brokered_inference_client(
         cloud_models_enabled && role == config::Role::AllInOne,
         remote_iam.as_ref(),
+        cloud_developer_key_file.as_deref(),
         cloud_api_base_url.as_deref(),
         &platform_workspace,
+        &local_client_instance_id(stores.workspace_root.as_deref()),
     );
     // Cloud-catalog startup decision table:
     // | Cloud models | authenticated brokered client | effect |

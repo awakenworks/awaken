@@ -1,5 +1,6 @@
 //! Typed services selected before a Control or Coordinator process starts.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{
@@ -19,6 +20,7 @@ pub(super) struct ProcessStartup {
     pub(super) mcp_bearer_token: Option<String>,
     pub(super) role: config::Role,
     pub(super) cloud_api_base_url: Option<String>,
+    pub(super) cloud_developer_key_file: Option<PathBuf>,
     pub(super) model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     pub(super) brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     pub(super) cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,

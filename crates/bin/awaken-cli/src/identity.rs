@@ -311,6 +311,7 @@ mod tests {
             oauth_client_id: "awaken-desktop".into(),
             oauth_redirect_uri: "http://127.0.0.1:34115/callback".into(),
             access_token: None,
+            developer_key_file: None,
             service_token: None,
             service_token_file: None,
         }
