@@ -1446,6 +1446,7 @@ impl SharedHost {
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
                 web_search: Some(self.web_search_plugin(thread, None)),
+                web_fetch: Some(self.web_fetch_plugin(thread)),
             },
             Some(publication_source),
             workspace,

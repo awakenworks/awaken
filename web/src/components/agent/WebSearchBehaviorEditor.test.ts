@@ -14,8 +14,8 @@ describe("WebSearch capability projection", () => {
       ],
     };
     expect(webSearchProviderOptions(schema)).toEqual([
-      { id: "free", label: "Free", requiresCredential: false, optionsSchema: { type: "object" } },
-      { id: "paid", label: "Paid", requiresCredential: true, optionsSchema: { type: "object" } },
+      { id: "free", label: "Free", requiresCredential: false, optionsSchema: { type: "object" }, realization: "host_executed" },
+      { id: "paid", label: "Paid", requiresCredential: true, optionsSchema: { type: "object" }, realization: "host_executed" },
     ]);
     expect(defaultWebSearchConfig(schema)).toEqual({ provider_id: "free", options: {} });
     expect(webSearchProviderOptions({})).toEqual([]);

@@ -11570,12 +11570,11 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
 
     // Cause/effect decision table:
     // | publication | frozen Session policy | effect |
-    // | present     | present               | execution clone receives policy; publication unchanged |
+    // | present     | present               | Runtime gate receives policy; publication unchanged |
     // | generated   | present               | generated execution config receives policy |
     // The second rule is owned by the fallback construction path. This test owns
     // the distributed continuation boundary: a second claim must compare the
-    // same immutable publication while the execution clone exposes the Session's
-    // exact MCP policy to the dynamic-tool filter.
+    // same immutable publication instead of a Session-augmented copy.
     let publication = crate::config::server_config(
         "assistant",
         "stub",
@@ -11594,15 +11593,13 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
     host.session_slots.update("policy-session", |slot| {
         slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
             toolsets: vec![ToolsetPolicy {
-                source: ToolsetSource::Mcp {
-                    server_name: "flow".into(),
-                },
+                source: ToolsetSource::Agent,
                 default: ToolExecutionPolicy::default(),
                 overrides: vec![ToolPolicyOverride::new(
-                    "workflow_get",
+                    "write",
                     ToolExecutionPolicy {
                         enabled: true,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
                     },
                 )],
             }],
@@ -11614,26 +11611,7 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .ctx_for("policy-session", Some("assistant"))
         .await
         .expect("build Session from immutable publication");
-    assert_eq!(
-        context
-            .config
-            .resolved_spec
-            .plugin_config
-            .agent
-            .tool_policy("mcp__flow__workflow_get"),
-        Some(ToolExecutionPolicy {
-            enabled: true,
-            permission: ToolPermissionRequirement::AlwaysAllow,
-        })
-    );
-    assert!(
-        publication
-            .resolved_spec
-            .plugin_config
-            .agent
-            .toolsets
-            .is_empty()
-    );
+    assert_eq!(context.config, publication);
 }
 
 #[test]
