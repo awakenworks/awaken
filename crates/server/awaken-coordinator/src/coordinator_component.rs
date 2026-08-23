@@ -99,6 +99,10 @@ pub struct CoordinatorComponent {
     /// Coordinator-owned management commands before the process-level audit/IAM
     /// edge is applied.
     pub management_router: Router,
+    /// WorkQueue-backed capability edge shared by the Managed data and Work
+    /// routers. Process composition installs it outside management IAM so the
+    /// per-Work bearer is classified before generic API-token authentication.
+    pub work_session_access: Arc<awaken_protocol_managed::ManagedWorkSessionAccess>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -208,6 +212,8 @@ pub async fn build_coordinator_component(
         None => private_router,
     };
     let private_router = private_router.merge(worker_transport);
+    let work_session_access =
+        awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(
@@ -256,6 +262,7 @@ pub async fn build_coordinator_component(
         managed_router: managed,
         private_router,
         management_router,
+        work_session_access,
     })
 }
 

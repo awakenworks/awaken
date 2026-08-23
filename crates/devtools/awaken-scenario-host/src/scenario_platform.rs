@@ -122,6 +122,10 @@ pub(super) fn mount_with_environments_and_agent_source(
             environment_execution.clone(),
         ),
     };
+    let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
+        environment_execution.clone(),
+        managed.clone(),
+    );
     awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
         .merge(awaken_protocol_managed::environment_authoring_router(
             environment_authoring.clone(),
@@ -132,6 +136,10 @@ pub(super) fn mount_with_environments_and_agent_source(
         .merge(awaken_protocol_awaken::environment_extensions_router(
             environment_authoring.application(),
             environment_authoring.sandbox_policy_store(),
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            work_session_access,
+            awaken_protocol_managed::work_session_guard,
         ))
 }
 

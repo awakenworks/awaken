@@ -8,7 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import {
+  managedFileUploadForm,
+  spawnProduction,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 import { sqliteExec, sqliteRows, sqliteScalar } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -76,10 +81,10 @@ async function json(method, tail, body) {
 }
 
 async function upload(content, filename) {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([content]), filename);
-  const response = await fetch(scoped('files'), { method: 'POST', body: form });
+  const response = await fetch(scoped('files'), {
+    method: 'POST',
+    body: managedFileUploadForm(content, filename),
+  });
   assert.equal(response.status, 200);
   return (await response.json()).id;
 }

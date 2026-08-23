@@ -298,7 +298,8 @@ pub enum WorkData {
 }
 
 /// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` is
-/// populated only by the claim/poll projection and remains null on list/retrieve.
+/// present only on the one Session poll response that acquired the lease;
+/// list/retrieve and HealthCheck projections keep it `null`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]

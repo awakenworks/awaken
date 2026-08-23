@@ -39,8 +39,8 @@ async fn create_session(app: &Router) -> serde_json::Value {
 
 /// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
 /// registered tools stay (read/glob/grep auto-allowed → toolset default;
-/// bash/write/edit/web_fetch gated → `always_ask`), while configurable
-/// `web_search` is disabled when no search connector is published. Offered skills
+/// bash/write/edit gated → `always_ask`), while the configurable WebFetch and
+/// WebSearch routes are disabled when no connector is published. Offered skills
 /// appear on `agent.skills`.
 ///
 /// Cause/effect graph and decision table:
@@ -49,15 +49,16 @@ async fn create_session(app: &Router) -> serde_json::Value {
 /// toolset member; E1=the tool remains enabled, E2=its wire policy is
 /// `always_ask`, E3=the tool is disabled, E4=the config's `type` repeats the
 /// closed member discriminator.
-/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers `web_fetch`;
-/// R2(!C1,!C2,C3,C4)->E3+E4 covers `web_search`;
+/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers bash/write/edit;
+/// R2(!C1,!C2,C3,C4)->E3+E4 covers WebFetch and WebSearch;
 /// R3(C1,!C2,!C3)->the default config covers read/glob/grep;
 /// R4(C4)->E4 covers every emitted override.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
-/// the Managed projector is the only wire owner, and has no legacy type-less path.
-/// FMECA: advertising absent search would create an inexecutable tool (fail closed
-/// through E3); disabling fetch would hide a real capability (caught by R1); losing
-/// the approval policy could perform network I/O without consent (caught by E2).
+/// the Managed projector is the only wire owner, Web providers use the unified
+/// configured-provider registry, and there is no legacy static WebFetch path.
+/// FMECA: advertising an absent Web route would create an inexecutable tool (fail
+/// closed through E3); losing an enabled tool's approval policy could perform an
+/// effect without consent (caught by E2).
 #[tokio::test]
 async fn managed_session_folds_builtins_into_the_agent_toolset() {
     let skill = SkillSpec::new(
@@ -82,7 +83,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
                 { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "type": "web_fetch", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
                 { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }

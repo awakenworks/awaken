@@ -149,6 +149,14 @@ export function fileDigest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
+// Keep the canonical prebuilt trio under the repository target by default.
+// Namespace E2Es bind that one generated tree writable while keeping the
+// checkout and the rest of the host read-only; a host `/tmp` cache would be
+// hidden by their private tmpfs and would force a forbidden in-sandbox build.
+export function prebuiltDirectory(explicitDirectory) {
+  return explicitDirectory ?? 'target/e2e-prebuilt';
+}
+
 export function validPrebuiltManifest(
   manifest,
   fingerprint,
@@ -394,10 +402,8 @@ export function runMain() {
     throw new Error('--prebuild-only requires AWAKEN_E2E_PREBUILT_DIR');
   }
   const prebuildStarted = performance.now();
-  const environment = preparedEnvironment(
-    process.env,
-    process.env.AWAKEN_E2E_PREBUILT_DIR,
-  );
+  const selectedPrebuiltDirectory = prebuiltDirectory(process.env.AWAKEN_E2E_PREBUILT_DIR);
+  const environment = preparedEnvironment(process.env, selectedPrebuiltDirectory);
   report.prebuildDurationMs = Math.round(performance.now() - prebuildStarted);
   report.prebuilt = {
     awaken: environment[AWAKEN_BIN_ENV],
@@ -406,7 +412,7 @@ export function runMain() {
   };
   writeTimings(timingFile, report);
   if (process.argv.includes('--prebuild-only')) {
-    console.log(`E2E prebuilt binaries: ${process.env.AWAKEN_E2E_PREBUILT_DIR ?? 'temporary'}`);
+    console.log(`E2E prebuilt binaries: ${selectedPrebuiltDirectory}`);
     return;
   }
 

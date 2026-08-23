@@ -22,6 +22,8 @@ const BETAS = [];
 const SKILLS_BETA = 'skills-2025-10-02';
 const SKILL_MD_V1 = '---\nname: greeter\ndescription: says hi\n---\nSay hi to the user.';
 const SKILL_MD_V2 = '---\nname: greeter\ndescription: says hi (v2)\n---\nSay a warm hi.';
+const GA_SKILL_MD_V1 = '---\nname: ga-greeter\ndescription: says hi through GA\n---\nSay hi.';
+const GA_SKILL_MD_V2 = '---\nname: ga-greeter\ndescription: says hi through GA (v2)\n---\nSay hi warmly.';
 
 async function drain(pagePromise) {
   const items = [];
@@ -50,17 +52,19 @@ async function main() {
     await withScenarioServer('management', 'mcp', 38142, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // Causes: Skills collection request with no beta, the ordinary Managed
-      // beta only, or the endpoint-specific Skills beta. Constraint: the Skills
-      // family has one independent beta and extra unrelated betas do not replace
-      // it. Effects: wrong/missing headers reject before mutation; the official
-      // SDK's automatically injected Skills beta reaches the domain. Rule A7.
+      // Causes: Skills collection request has no selector, only an unrelated
+      // Managed beta, or `beta=true` without the endpoint-specific Skills beta.
+      // Effects: the first two select GA and succeed; the incomplete explicit
+      // beta selector rejects before mutation. Constraint: unrelated betas do
+      // not replace the Skills selector. Decision rules A7.1 !selector->GA;
+      // A7.2 unrelated header->GA; A7.3 beta=true&&!SkillsHeader->400.
       for (const beta of [null, 'managed-agents-2026-04-01']) {
-        const rejected = await fetch(`${baseUrl}/v1/skills`, {
+        const accepted = await fetch(`${baseUrl}/v1/skills`, {
           headers: beta ? { 'anthropic-beta': beta } : {},
         });
-        assert.equal(rejected.status, 400);
+        assert.equal(accepted.status, 200);
       }
+      assert.equal((await fetch(`${baseUrl}/v1/skills?beta=true`)).status, 400);
 
       // Create a skill via a multipart SKILL.md upload.
       const skill = await client.beta.skills.create({
@@ -204,6 +208,49 @@ async function main() {
         404,
       );
       pass('beta.skills.delete -> SkillDeleteResponse; repeated reads/deletes 404');
+
+      // GA Skills cause/effect graph: C4=GA root omits every beta selector;
+      // C5=one valid bundle creates version 1; C6=a second valid bundle advances
+      // latest while version 1 remains addressable. Effects: E4=all four Skill
+      // and all four GA Version SDK methods decode; E5=deleting version 1 leaves
+      // version 2 authoritative; E6=deleting the Skill removes the aggregate.
+      // Constraints: GA and Beta project the same SkillStore; GA has no archive
+      // download method. Decision rules: R4 C4+C5 -> create/retrieve/list;
+      // R5 C4+C5+C6 -> version create/retrieve/list/delete + E5;
+      // R6 C4+E5 -> Skill delete + E6.
+      const gaSkill = await client.skills.create({
+        display_name: 'GA Greeter',
+        files: [await toFile(Buffer.from(GA_SKILL_MD_V1), 'ga-greeter/SKILL.md')],
+      });
+      assert.equal(gaSkill.type, 'skill', 'R4/E4');
+      assert.equal(gaSkill.display_name, 'GA Greeter');
+      assert.equal(gaSkill.source.type, 'custom');
+      assert.equal((await client.skills.retrieve(gaSkill.id)).id, gaSkill.id, 'R4/E4');
+      assert.ok(
+        (await drain(client.skills.list({ source: 'custom' }))).some((item) => item.id === gaSkill.id),
+        'R4/E4',
+      );
+
+      const gaV2 = await client.skills.versions.create(gaSkill.id, {
+        files: [await toFile(Buffer.from(GA_SKILL_MD_V2), 'ga-greeter/SKILL.md')],
+      });
+      assert.equal(gaV2.type, 'skill_version', 'R5/E4');
+      assert.equal(gaV2.skill_id, gaSkill.id);
+      assert.equal(
+        (await client.skills.versions.retrieve(gaV2.id, { skill_id: gaSkill.id })).id,
+        gaV2.id,
+        'R5/E4',
+      );
+      const gaVersions = await drain(client.skills.versions.list(gaSkill.id));
+      assert.deepEqual(gaVersions.map((version) => version.id), [gaSkill.latest_version_id, gaV2.id]);
+      assert.equal(
+        (await client.skills.versions.delete(gaSkill.latest_version_id, { skill_id: gaSkill.id })).type,
+        'skill_version_deleted',
+        'R5/E5',
+      );
+      assert.equal((await client.skills.delete(gaSkill.id)).type, 'skill_deleted', 'R6/E6');
+      await expectStatus(() => client.skills.retrieve(gaSkill.id), 404);
+      pass('GA Skills and Versions methods share one durable SkillStore with Beta');
     });
 
     console.log('E2E PASS: the skills family round-trips through the official @anthropic-ai/sdk.');

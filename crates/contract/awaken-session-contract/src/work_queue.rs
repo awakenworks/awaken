@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use awaken_agent_contract::RedactedString;
 
 /// The frozen object timestamp the managed wire uses (single-machine builds have
 /// no real clock in the *projection*; wire timestamps carry presence, not wall
@@ -242,6 +243,31 @@ pub struct WorkItem {
     pub started_at: Option<String>,
     pub stop_requested_at: Option<String>,
     pub stopped_at: Option<String>,
+}
+
+/// A freshly claimed Work item plus the one-time per-Session bearer minted by
+/// the authoritative WorkQueue transaction. The cleartext is returned only by
+/// `poll`; list/retrieve projections continue to expose `secret: null`.
+#[derive(Clone, Debug)]
+pub struct ClaimedWork {
+    pub item: WorkItem,
+    pub sessions_token: Option<RedactedString>,
+}
+
+/// Current Work lease recovered from a presented per-Session bearer.
+///
+/// The token is not a Worker identity or a second lease. This projection
+/// carries the exact owner/epoch already persisted by the WorkQueue so protocol
+/// adapters can authorize downstream Session calls and map heartbeat/stop back
+/// onto the same lease owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkSessionAccess {
+    pub work_id: String,
+    pub environment_id: String,
+    pub session_id: String,
+    pub lease_owner: String,
+    pub lease_epoch: u64,
+    pub expires_at_unix_ms: u64,
 }
 
 /// Durable authority currently binding one Session work item to one Worker.
@@ -533,6 +559,67 @@ pub trait WorkQueue: Send + Sync {
         let _ = reclaim_older_than_ms;
         let _ = poller_id;
         self.claim(env_id, lease_owner, now_ms).await
+    }
+    /// Claim through the public self-hosted Worker protocol and atomically mint
+    /// a per-Session bearer when the selected item is Session work. Durable
+    /// implementations persist only its digest beside the lease and return the
+    /// cleartext once in [`ClaimedWork`].
+    async fn claim_with_session_access(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        Ok(self
+            .claim_with_reclaim(
+                env_id,
+                lease_owner,
+                poller_id,
+                now_ms,
+                reclaim_older_than_ms,
+            )
+            .await?
+            .map(|item| ClaimedWork {
+                item,
+                sessions_token: None,
+            }))
+    }
+    /// Authenticate one presented per-Session bearer against the current live
+    /// Work lease. Expired, reclaimed, stopped, retired, or replaced leases
+    /// return `None`; implementations never retain the cleartext.
+    async fn authenticate_session_access(
+        &self,
+        _presented: &RedactedString,
+        _now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
+        Ok(None)
+    }
+    /// Apply an acknowledgement only while the exact lease epoch recovered
+    /// from a sessions token is still current. Backends that do not issue
+    /// sessions tokens fail closed unless they explicitly implement this seam.
+    async fn ack_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        Ok(WorkMutationResult::PreconditionFailed)
+    }
+    /// Extend only the exact lease epoch recovered from a sessions token.
+    async fn heartbeat_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+        _now_ms: u64,
+        _heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        Ok(HeartbeatResult::PreconditionFailed)
+    }
+    /// Stop only the exact lease epoch recovered from a sessions token.
+    async fn stop_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        Ok(WorkMutationResult::PreconditionFailed)
     }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(

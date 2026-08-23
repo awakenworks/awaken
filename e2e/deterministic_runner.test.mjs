@@ -10,6 +10,7 @@ import {
   expandSuites,
   fileDigest,
   parseShard,
+  prebuiltDirectory,
   prebuildFingerprint,
   preparedEnvironment,
   timingWeights,
@@ -131,6 +132,17 @@ test('fingerprints build inputs but ignores Cargo storage locations', () => {
   assert.equal(prebuildFingerprint({ CARGO_TARGET_DIR: '/different/target' }), baseline);
   assert.notEqual(prebuildFingerprint({ RUSTFLAGS: '-C target-cpu=native' }), baseline);
   assert.notEqual(prebuildFingerprint({ CARGO_PROFILE_RELEASE_LTO: 'true' }), baseline);
+});
+
+// Prebuilt-location cause/effect graph: C1 caller supplies a shared artifact
+// directory; C2 no directory is supplied; C3 namespace E2Es expose only the
+// repository target as generated writable state. Effects: E1 preserve C1
+// exactly; E2 select the ignored target cache visible inside C3. Constraint K1:
+// location never changes the source/build fingerprint or creates a second
+// artifact owner. Decision rules: R1 C1->E1; R2 !C1&&C3->E2.
+test('keeps the canonical prebuilt trio visible to read-only namespace E2Es', () => {
+  assert.equal(prebuiltDirectory('/shared/e2e'), '/shared/e2e', 'R1');
+  assert.equal(prebuiltDirectory(undefined), 'target/e2e-prebuilt', 'R2');
 });
 
 // Artifact consistency boundary: C1 all three immutable artifacts exist, C2 only

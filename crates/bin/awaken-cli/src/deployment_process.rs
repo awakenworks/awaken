@@ -43,8 +43,10 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         &deployment.org_id,
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
+        awaken_iam_client::CredentialCache::open(),
         managed_services.entitlement_provider.take(),
-    )?;
+    )
+    .await?;
     let postgres_schema = match deployment.mode {
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,

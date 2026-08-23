@@ -18,7 +18,8 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentWithdrawalOutcome,
 };
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
+    ClaimedWork, HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
+    WorkSessionAccess,
 };
 
 /// Application-level failure returned to outer transports.
@@ -251,6 +252,44 @@ impl EnvironmentExecutionApplication {
             .await?)
     }
 
+    /// Claim through the same WorkQueue transaction while returning the
+    /// one-time per-Session capability needed by the official Environment
+    /// Worker. The original secret-free claim method remains source-compatible.
+    pub async fn claim_work_with_session_access(
+        &self,
+        environment_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<ClaimedWork>, EnvironmentExecutionError> {
+        self.require_environment(environment_id).await?;
+        Ok(self
+            .work
+            .claim_with_session_access(
+                environment_id,
+                lease_owner,
+                poller_id,
+                now_ms,
+                reclaim_older_than_ms,
+            )
+            .await?)
+    }
+
+    /// Resolve one per-Session bearer through the same durable WorkQueue that
+    /// minted it. The application owns no credential cache or fallback token
+    /// directory.
+    pub async fn authenticate_session_access(
+        &self,
+        presented: &awaken_agent_contract::RedactedString,
+        now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, EnvironmentExecutionError> {
+        Ok(self
+            .work
+            .authenticate_session_access(presented, now_ms)
+            .await?)
+    }
+
     pub async fn work_stats(
         &self,
         environment_id: &str,
@@ -293,6 +332,18 @@ impl EnvironmentExecutionApplication {
         Ok(self.work.ack(environment_id, work_id, worker_id).await?)
     }
 
+    /// Acknowledge only if the exact lease epoch recovered from the Work secret
+    /// is still current. This closes the authenticate-then-reclaim race without
+    /// changing the Environment-key mutation path.
+    pub async fn acknowledge_work_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
+    {
+        self.require_environment(&access.environment_id).await?;
+        Ok(self.work.ack_with_session_access(access).await?)
+    }
+
     pub async fn heartbeat_work(
         &self,
         environment_id: &str,
@@ -308,6 +359,20 @@ impl EnvironmentExecutionApplication {
             .await?)
     }
 
+    /// Heartbeat only the exact Work-secret lease epoch.
+    pub async fn heartbeat_work_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, EnvironmentExecutionError> {
+        self.require_environment(&access.environment_id).await?;
+        Ok(self
+            .work
+            .heartbeat_with_session_access(access, now_ms, heartbeat)
+            .await?)
+    }
+
     pub async fn stop_work(
         &self,
         environment_id: &str,
@@ -317,6 +382,16 @@ impl EnvironmentExecutionApplication {
     {
         self.require_environment(environment_id).await?;
         Ok(self.work.stop(environment_id, work_id, worker_id).await?)
+    }
+
+    /// Stop only the exact Work-secret lease epoch.
+    pub async fn stop_work_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
+    {
+        self.require_environment(&access.environment_id).await?;
+        Ok(self.work.stop_with_session_access(access).await?)
     }
 }
 

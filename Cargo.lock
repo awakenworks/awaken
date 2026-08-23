@@ -948,6 +948,7 @@ name = "awaken-environment-execution-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -2483,13 +2484,17 @@ name = "awaken-work-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
+ "awaken-iam-core",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "base64 0.22.1",
  "loom",
  "proptest",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
 ]

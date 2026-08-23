@@ -122,6 +122,20 @@ export function managedWorkspaceClient(baseURL, workspace) {
   });
 }
 
+// Files upload test-wire cause/effect table:
+// C1=current Managed Files contract + caller bytes/name -> E1=one multipart
+// `file` part; C2=retired purpose/scope metadata -> E2=never emitted here.
+// K1=the official SDK/product contract remains the validation authority; this
+// helper owns only raw E2E multipart construction, not route, beta, auth, or
+// lifecycle policy. Decision rule F1: C1+C2 => E1+E2. The raw Files scenarios
+// below exercise F1 through distinct persistence, IAM, reclamation, ephemeral,
+// distributed, and Worker-resource effects rather than cloning the wire codec.
+export function managedFileUploadForm(content, filename) {
+  const form = new FormData();
+  form.append('file', new Blob([content]), filename);
+  return form;
+}
+
 // Build the server once, up front, and resolve its binary path. We spawn the
 // binary directly (not `cargo run`) so each server is a single process the
 // harness can kill cleanly — a `cargo run` wrapper would leave the real server
